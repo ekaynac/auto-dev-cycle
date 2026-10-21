@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,8 +50,8 @@ type Daemon struct {
 // projections; refuse event kinds
 // this build does not read; replay the log and refuse projections that
 // differ from the replay (nothing is repaired); load or create the
-// system actor; mark pending effects uncertain, unless this start created
-// the store. A refusal releases what
+// system actor; mark pending effects uncertain (every start, #226 entry
+// 64); run restart recovery (recoverAtStart). A refusal releases what
 // was taken and is a *StartError (a configuration refusal, ErrConfig).
 func Start(ctx context.Context, cfg Config) (d *Daemon, err error) { return start(ctx, cfg, false) }
 
@@ -70,8 +71,9 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	}
 	reg, err := vocab.Load()
 	kinds, kerr := eventKinds()
-	if err = errors.Join(err, kerr); err != nil {
-		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary or the event kinds cannot be loaded", err)
+	effects, eerr := effectKinds()
+	if err = errors.Join(err, kerr, eerr); err != nil {
+		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary, the event kinds or the effect kinds cannot be loaded", err)
 	}
 	acquire := eventstore.AcquireLock
 	if offline {
@@ -107,7 +109,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 		clock = time.Now
 	}
 	az := authorizer(reg)
-	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline, Now: clock,
+	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Effects: effects, Blobs: blobs, Existing: offline, Now: clock,
 		Hooks: hooks(az, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
@@ -137,14 +139,16 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 			return nil, err
 		}
 	}
-	sys, created, err := systemActor(ctx, store, !offline)
+	sys, err := systemActor(ctx, store, !offline)
 	if err != nil {
 		return nil, err
 	}
-	// A store this start bootstrapped holds one event and no effect, so it
-	// skips the restart transition: a fresh start that appends is never
-	// refused after.
-	if !created && !offline {
+	// The restart rule runs at every non-offline start, a store this start created
+	// included (it marks nothing there): the model calls' Recorder refuses a
+	// store where it has not run (#226 entry 64). Then restart recovery
+	// (P21a, X3 steps 1-4), before the writer admits any other command
+	// (#226 entry 81).
+	if !offline {
 		if _, err := markPending(store, ctx, string(sys)); err != nil {
 			return nil, couldNotRun(vocab.ReasonStoreUnreadable, "pending effects cannot be marked uncertain", err)
 		}
@@ -156,9 +160,18 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
 	}
+	var recovered string
+	if !offline {
+		if recovered, err = recoverAtStart(ctx, store, system, blobs); err != nil {
+			return nil, err
+		}
+	}
 	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), clock, !offline)
 	if err != nil {
 		return nil, err
+	}
+	if recovered != "" {
+		note = strings.TrimSpace(note + "\n" + recovered)
 	}
 	return &Daemon{lock: lock, store: store, blobs: blobs, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
 }
@@ -196,7 +209,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		return err
 	}
-	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), log: logw,
+	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated})
 	if err == nil && tc != nil {
 		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {

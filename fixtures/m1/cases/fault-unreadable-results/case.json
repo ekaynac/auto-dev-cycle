@@ -1,0 +1,42 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-unreadable-results",
+  "profile_overlay": {
+    "gate": {
+      "command": [
+        "sh",
+        "-c",
+        "if [ -f inventory/transfer.go ]; then exec go test -count=1 ./...; else exec go test -count=1 -json ./...; fi"
+      ]
+    }
+  },
+  "control": "The baseline is measured with this overlaid command: the base tree has no inventory/transfer.go, so there it runs go test -json and the baseline is green. On the builder's candidate, which adds transfer.go, it prints go test's text (an ok line), which a reader that guessed from text would take as a pass; with -json the same tree is the candidate case's clean gate.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "empty",
+        "reason": "completed_clean"
+      },
+      "gate": {
+        "outcome": "could_not_run",
+        "reason": "runner_fault"
+      }
+    },
+    "holds": [
+      "wrong_owner"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}

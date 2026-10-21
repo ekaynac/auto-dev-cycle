@@ -1,0 +1,27 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-test-deletion-skip",
+  "control": "Without the skip the change is the reference one, which accept takes (the candidate case); TestLowStock passes at the base.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "failed",
+        "reason": "test_integrity_violation"
+      }
+    },
+    "holds": [],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}

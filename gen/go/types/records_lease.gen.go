@@ -67,6 +67,8 @@ type Lease struct {
 	Unit     UnitID     `json:"unit"`
 	Role     Name       `json:"role"`
 	Executor ExecutorID `json:"executor"`
+	// The executor's price declared when the lease was placed (dispatch.Match, M1 P17b), which the USD rails price the lease's spend at; absent for an executor with none. A later registry edit does not change it.
+	Price *RegistryPrice `json:"price,omitempty"`
 	// requested, waiting, granted, active and releasing; settling, then (evidence targets) restoring, restore_failed and settling_verified; settled and released are terminal.
 	State LeaseState `json:"state"`
 	// One per resource group, all made or none.

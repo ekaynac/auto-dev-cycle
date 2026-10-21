@@ -11,12 +11,15 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -34,13 +37,22 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 // (authority.NoReviewSource) until receipts are recorded.
 func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
-		if slices.Contains([]string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction}, c.Action) {
+		if slices.Contains(systemActions, c.Action) {
 			return authorizeSystem(t, c)
 		}
 		return az.Authorize(t, c)
 	}
 	return eventstore.Hooks{Identify: identity.Recheck, Authorize: authorize, Project: project}
 }
+
+// systemActions are the controller's own commands, the system actor's
+// alone: the bootstrap's, the upload purge, restart recovery's steps and
+// its orphan refusal (P21a, P21b; #226 entry 81), and the model calls'
+// intent, count and reconciliation (P12a, P11b, P20; #226 entry 60). None
+// is a registered action a principal may ask for.
+var systemActions = []string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction,
+	recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
+	modelcall.Action, modelcall.Counted, ledger.ReconcileAction}
 
 // authorizer is the one authorizer over the wired handlers: the writer's
 // Authorize hook and the request layer's logic (logics, issuers) share it.
@@ -51,13 +63,9 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 // handlers are the wired actions' handlers: proposal.confirm,
 // proposal.withdraw, note.add, the seat's, agent.enrol and actor.revoke
 // (14 PR 7a), grant.create, grant.revoke and grant.extend (14 PR 7c, 7d),
-// and token.issue, token.revoke and token.replace (14 M4, PR 7b). Every
-// other registered action has none and is refused. project.create has a
-// handler (authority.ProjectCreateHandler) that is not wired here: it stays
-// deferred until P22a activates the intake capability (M1 slice plan §1);
-// so does task.create's (authority.TaskCreateHandler, P3). input.answer
-// (authority.InputAnswerHandler, P5) is wired: P6 activates the answers
-// capability, with the graph fold checking the recorded answers.
+// token.issue, token.revoke and token.replace (14 M4, PR 7b), and the
+// gated actions of every active capability (gated). Every other
+// registered action has none and is refused.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
@@ -68,8 +76,22 @@ func handlers() map[string]authority.Handler {
 	hs[authority.GrantCreateAction] = authority.GrantCreateHandler{}
 	hs[authority.GrantRevokeAction] = authority.GrantRevokeHandler{}
 	hs[authority.GrantExtendAction] = authority.GrantExtendHandler{}
-	hs[authority.InputAnswerAction] = authority.InputAnswerHandler{}
+	for action, h := range gated() {
+		if c, _ := capability.Gating(action); c.Active() {
+			hs[action] = h
+		}
+	}
 	return hs
+}
+
+// gated are the handlers of the actions a capability wires
+// (capability.Table): intake's project.create and task.create (P1, P3)
+// and task.cancel (#226 entry 23), and answers' input.answer (P5, P6).
+// Each is wired only while its capability is active, and deferred
+// otherwise (deferredActions).
+func gated() map[string]authority.Handler {
+	return map[string]authority.Handler{authority.ProjectCreateAction: authority.ProjectCreateHandler{}, authority.TaskCreateAction: authority.TaskCreateHandler{},
+		authority.TaskCancelAction: authority.TaskCancelHandler{}, authority.InputAnswerAction: authority.InputAnswerHandler{}}
 }
 
 // logic is a wired action's command logic, which the request layer passes
@@ -81,6 +103,10 @@ type logic func(eventstore.Command) eventstore.Decide
 // submit with the command and the delivery of what that commits.
 type issuer func(context.Context, *eventstore.Store, eventstore.Command) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error)
 
+// request is the request layer of an action that acts again once its
+// command is decided: the logic, and what runs on the commit.
+type request func(eventstore.Command) (eventstore.Decide, func(eventstore.Committed) error)
+
 // issuers are the credential-issuing actions' request layers: agent.enrol,
 // token.issue and token.replace.
 func issuers(az authority.Authorizer) map[string]issuer {
@@ -88,13 +114,28 @@ func issuers(az authority.Authorizer) map[string]issuer {
 		authority.TokenReplaceAction: az.TokenReplaceRequest}
 }
 
+// requests are the wired actions' request layers that act on the commit:
+// task.create, which drops the uploads it published (P3).
+func requests(az authority.Authorizer, uploads authority.Uploads) map[string]request {
+	out := map[string]request{}
+	if az.Handlers[authority.TaskCreateAction] != nil {
+		out[authority.TaskCreateAction] = authority.TaskCreate{Uploads: uploads}.Request
+	}
+	return out
+}
+
 // logics are the wired actions' logic, by action: every action handlers
-// wires has one, or an issuer (a test checks), and an action without
-// either is refused before anything is submitted (14 D1).
+// wires has one, an issuer or a request (Matrix checks), and an action
+// without any is refused before anything is submitted (14 D1).
 func logics(az authority.Authorizer) map[string]logic {
 	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor,
 		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic,
-		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken, authority.InputAnswerAction: authority.InputAnswer}
+		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken}
+	for action, l := range map[string]logic{authority.ProjectCreateAction: authority.CreateProject, authority.TaskCancelAction: authority.CancelTask, authority.InputAnswerAction: authority.InputAnswer} {
+		if az.Handlers[action] != nil {
+			out[action] = l
+		}
+	}
 	for action, h := range az.Handlers {
 		if s, ok := h.(authority.SeatHandler); ok {
 			out[action] = s.Logic
@@ -103,11 +144,40 @@ func logics(az authority.Authorizer) map[string]logic {
 	return out
 }
 
+// effectKinds are the effect kinds of the active capabilities
+// (capability.EffectKinds), each as the package implementing it defines
+// it: model_call (P12a). An active kind no package defines refuses the
+// start; any other kind stays unregistered, and IntendEffect refuses it
+// (I15 effect).
+func effectKinds() (eventstore.EffectKinds, error) {
+	defs, out := modelcall.Effects(), eventstore.EffectKinds{}
+	for _, k := range capability.EffectKinds() {
+		d, ok := defs[k]
+		if !ok {
+			return nil, fmt.Errorf("daemon: the active effect kind %s has no definition in this build", k)
+		}
+		out[k] = d
+	}
+	return out, nil
+}
+
+// nodeKinds are the node kinds adcd records (I15 admission, Opus #298
+// M2): M1(a)'s, and those the active capabilities add (merge, P22b). The
+// graph fold refuses a node.recorded of any other, a template's or not,
+// on append and on replay.
+func nodeKinds() []types.NodeKind {
+	ks := slices.Clone(graph.M1Kinds)
+	for _, k := range capability.NodeKinds() {
+		ks = append(ks, types.NodeKind(k))
+	}
+	return ks
+}
+
 // eventKinds merges the event kinds of every package the writer projects;
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds(), api.BlobKinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -121,7 +191,7 @@ func eventKinds() (eventstore.Kinds, error) {
 // projector is the writer's Project hook, composed as a rebuild replays
 // it: each event goes through identity, then grants, the seat, proposals,
 // notes, projects, tasks, owed inputs, leases with their capacity reservations, the usage
-// ledger, then the graph, before the next event (eventstore.ProjectEach).
+// ledger, the model calls' bindings, then the graph, before the next event (eventstore.ProjectEach).
 // The graph comes after leases, whose projections its supersession fold
 // reads. Units are nodes (graph.Units): an attempt starts only on a claimed
 // node's unit, and a seal binds its node's project and task. No graph
@@ -141,6 +211,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.OwedProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
-		graph.Projector{Answers: authority.Answers{}}.Project, // the folds check the recorded answers (M1 P6)
+		modelcall.Project, // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
+		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds()}.Project, // the folds check the recorded answers (M1 P6) and the deferred surfaces (I15)
 	)
 }

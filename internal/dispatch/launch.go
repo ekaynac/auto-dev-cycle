@@ -159,7 +159,9 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	}
 	now := named(d.checks(card, l.Executor, roster))
 	for i, was := range named(l.PlacementChecks) {
-		if was != now[i] {
+		// The budget check was the USD rails' at the grant, with the spend then
+		// (P17b); the grant reserved it, so the launch does not re-read it.
+		if was != now[i] && was.name != "budget" {
 			return held("placement "+was.name+" changed since the grant",
 				"source_invalid_config", "executor "+string(l.Executor), types.OwnerOperator, nil)
 		}

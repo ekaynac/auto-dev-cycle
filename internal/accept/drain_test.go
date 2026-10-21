@@ -49,7 +49,16 @@ func TestDrainBoundsBothStreams(t *testing.T) {
 		start := time.Now()
 		out, stderr, err := drain(ctx, sh(t, ctx, "M="+marker+"; "+script), 64<<10, 64<<10)
 		cancel()
-		if took := time.Since(start); !errors.Is(err, ErrTooLarge) || out != nil || stderr != nil || took > 3*time.Second {
+		// Promptly: within a few times the same flood with no sleep after it,
+		// timed now (#226 entry 89: no fixed wall-clock bound), and a pipe
+		// delay; waiting for the sleep would take the deadline's 10 s.
+		took := time.Since(start)
+		bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bstart := time.Now()
+		_, _, _ = drain(bctx, sh(t, bctx, strings.ReplaceAll(strings.ReplaceAll(script, `; touch "$M"; sleep 20`, ""), "trap '' PIPE; ", "")), 64<<10, 64<<10)
+		base := time.Since(bstart)
+		bcancel()
+		if !errors.Is(err, ErrTooLarge) || out != nil || stderr != nil || took > 4*base+pipeDelay {
 			t.Errorf("%s: %v after %v (%d, %d bytes kept); want ErrTooLarge promptly", name, err, took, len(out), len(stderr))
 		}
 		if _, err := os.Stat(marker); err == nil {
@@ -114,10 +123,13 @@ func TestDrainKillsTheGroup(t *testing.T) {
 // pipe ends drain within pipeDelay, with its output, not when the
 // descendant exits.
 func TestDrainCutsInheritedPipes(t *testing.T) {
+	bstart := time.Now() // the same leader with no descendant, timed now (#226 entry 89)
+	_, _, _ = drain(context.Background(), sh(t, context.Background(), `echo done`), 64<<10, 64<<10)
+	base := time.Since(bstart)
 	cmd, pid := descendant(t, `sleep 10 & echo $! > "$P"; echo done`)
 	start := time.Now()
 	out, _, err := drain(context.Background(), cmd, 64<<10, 64<<10)
-	if took := time.Since(start); err != nil || string(out) != "done\n" || took > 4*time.Second {
+	if took := time.Since(start); err != nil || string(out) != "done\n" || took > 2*pipeDelay+4*base {
 		t.Errorf("drain: %q, %v after %v; want done within pipeDelay", out, err, took)
 	}
 	pid() // read for cleanup

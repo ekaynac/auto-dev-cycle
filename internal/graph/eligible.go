@@ -43,7 +43,12 @@ import (
 // Projector is the graph fold that also checks, through Answers, the
 // recorded answers each event takes (M1 P6). It fails closed: with no
 // authority it admits no graph event.
-type Projector struct{ Answers Authority }
+type Projector struct {
+	Answers Authority
+	// Kinds, when set, are the node kinds a node.recorded may hold
+	// (CheckSurface's allowlist, I15 admission: adcd's); nil, every kind.
+	Kinds []types.NodeKind
+}
 
 // Project is the eventstore.Hooks.Project fold for the graph projections,
 // with the answer checks.
@@ -51,7 +56,7 @@ func (p Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	if p.Answers == nil && slices.ContainsFunc(evs, func(ev eventstore.Event) bool { return slices.Contains(kinds, ev.Kind) }) {
 		return errors.New("graph: the fold needs the authority that holds the recorded answers")
 	}
-	return project(tx, evs, p.Answers)
+	return project(tx, evs, p.Answers, p.Kinds)
 }
 
 // eligible: v takes only answers eligible for its node, under auth.

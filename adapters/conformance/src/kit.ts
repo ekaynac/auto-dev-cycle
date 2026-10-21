@@ -65,11 +65,38 @@ const stallTickMs = 10;
 
 type Msg = Record<string, unknown> & { id?: unknown; result?: any; error?: any; method?: unknown; params?: any };
 
-/** show formats any value for a finding, whatever the adapter sent. */
+/** show formats any value for a finding, whatever the adapter sent: the
+ *  first n characters of its JSON, built only that far. A 4 MiB string is
+ *  never serialized whole to keep n characters of it (#226 entry 104). */
 const show = (v: unknown, n = 200) => {
-  let t: string;
+  let t = "";
+  // put appends s, and is false once t holds n characters: nothing more is built.
+  const put = (s: string) => (t += s).length < n;
+  // The values are JSON's (parsed, or the validator's errors): an undefined is JSON.stringify's omission.
+  const json = (x: unknown): boolean => {
+    if (typeof x === "string") return put(JSON.stringify(x.slice(0, n)));
+    if (Array.isArray(x)) {
+      if (!put("[")) return false;
+      for (let i = 0; i < x.length; i++) {
+        if ((i > 0 && !put(",")) || !json(x[i] ?? null)) return false;
+      }
+      return put("]");
+    }
+    if (x !== null && typeof x === "object" && !("toJSON" in x)) {
+      if (!put("{")) return false;
+      let first = true;
+      for (const k in x) {
+        const e = (x as Record<string, unknown>)[k];
+        if (!Object.hasOwn(x, k) || e === undefined) continue;
+        if ((!first && !put(",")) || !put(`${JSON.stringify(k.slice(0, n))}:`) || !json(e)) return false;
+        first = false;
+      }
+      return put("}");
+    }
+    return put(JSON.stringify(x) ?? String(x));
+  };
   try {
-    t = JSON.stringify(v) ?? String(v);
+    json(v);
   } catch {
     t = String(v);
   }
@@ -571,17 +598,27 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | "late"> {
   }
 }
 
+/** overGrace is how long the one-byte-over request may take to be rejected,
+ *  in times the at-bound request's round trip: the same bytes, timed in the
+ *  same session, so a loaded host slows both alike (#226 entry 102). */
+const overGrace = 4;
+
 /** oversize: a request of exactly the framing bound (09: 16 MiB) is served;
  *  the same request one byte over is rejected observably, by an error reply
  *  to it or by the process ending, never served and never ignored. The two
- *  differ only in whitespace inside the JSON. */
+ *  differ only in whitespace inside the JSON. The rejection is awaited for
+ *  overGrace times the at-bound request's time, and at least graceMs. */
 export async function oversize(a: AdapterUnderTest, limits: Partial<Limits> = {}, graceMs = 5_000): Promise<Finding[]> {
   const s = new Session(a, { ...defaultLimits, ...limits });
   try {
     result(s, "describe", await s.request("describe"), "adapter/describe-result");
+    const start = performance.now();
     result(s, "describe", await s.request("describe", undefined, maxMessageBytes), "adapter/describe-result");
-    const reply = await within(s.request("describe", undefined, maxMessageBytes + 1), graceMs);
-    if (reply === "late") return s.find("oversize", `no observable rejection within ${graceMs} ms of a ${maxMessageBytes + 1}-byte message: neither an error reply nor the process ending`), s.finish();
+    const atBound = performance.now() - start, grace = Math.max(graceMs, overGrace * atBound);
+    const reply = await within(s.request("describe", undefined, maxMessageBytes + 1), grace);
+    if (reply === "late") {
+      return s.find("oversize", `no observable rejection within ${Math.round(grace)} ms of a ${maxMessageBytes + 1}-byte message (the ${maxMessageBytes}-byte one took ${Math.round(atBound)} ms): neither an error reply nor the process ending`), s.finish();
+    }
     if (reply && "result" in reply) return s.find("oversize", `a ${maxMessageBytes + 1}-byte message was served`), s.finish();
     // No reply: the output ended, which happens only once bubblewrap (which
     // holds it too) has exited with everything in its PID namespace, so the

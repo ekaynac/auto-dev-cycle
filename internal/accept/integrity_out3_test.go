@@ -160,10 +160,11 @@ func TestDecisionAOut3(t *testing.T) {
 	// Opus #282 H1 (probe A): a package the base guard refused (a second
 	// package name; a later parse error) is never checked by the layer: the
 	// directory is incomplete, at once, and no worker is left.
+	unit := f.ordinary(t, unitGo)
 	for _, bad := range []string{"bad1", "bad2"} {
 		begin := time.Now()
 		v := outGuarded(t, f, map[string]string{"use/u.go": "package use\n\nimport (\n\t\"flag\"\n\n\t\"example.com/m/" + bad + "\"\n)\n\nvar _ = " + bad + ".X\n\nfunc f() { flag.Parse() }\n"})
-		if !finds(v.Warnings, "use decision A's check by types could not finish") || stopped(v) || finds(v.Warnings, "check by types stopped") || outWorkers.Load() != 0 || time.Since(begin) > time.Minute {
+		if took := time.Since(begin); !finds(v.Warnings, "use decision A's check by types could not finish") || stopped(v) || finds(v.Warnings, "check by types stopped") || outWorkers.Load() != 0 || !within(t, took, unit, 40) {
 			t.Errorf("H1 %s: warnings %q, %d workers, %v", bad, whats(v.Warnings), outWorkers.Load(), time.Since(begin))
 		}
 	}
@@ -214,12 +215,13 @@ func TestOutTypedBounded(t *testing.T) {
 	typesStopped := func(v Verdict) bool { return finds(v.Warnings, "decision A's check by types stopped") }
 	// Opus #282 M1 (probe B): a live peer holds the slot: the types check
 	// stops within outSlotWait of the run's start, not at its deadline.
+	unit := f.ordinary(t, unitGo)
 	outWorkers.Add(1)
 	begin := time.Now()
 	v := outGuarded(t, f, change)
 	took := time.Since(begin)
 	outWorkers.Add(-1)
-	if !v.Accepted() || !typesStopped(v) || finds(v.Warnings, "stopped at its work bound") || took > time.Minute {
+	if !v.Accepted() || !typesStopped(v) || finds(v.Warnings, "stopped at its work bound") || !within(t, took-outSlotWait, unit, 20) {
 		t.Errorf("a held slot: blocks %q, warnings %q, %v", whats(v.Blocks), whats(v.Warnings), took)
 	}
 	// A dropped worker still running: the types check stops at once.

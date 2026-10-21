@@ -43,9 +43,9 @@ BINARIES   := adcd adc adc-harness adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check inventory-count vocab-check build dist install-check installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
-SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
+SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
 
 help: ## List targets
@@ -81,11 +81,23 @@ dist: go-check ts-deps ## Cross-build release binaries into dist/<os>-<arch>/; f
 	@scripts/dist-lib.sh $(DIST_DIR) $(SERVER_PLATFORMS)
 	@find $(DIST_DIR) -mindepth 2 -maxdepth 2 | sort
 
+# INSTALL_PREFIX installs the dist build into $$tmp/prefix, a fresh temporary directory removed on exit.
+INSTALL_PREFIX = tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix"
+
 install-check: dist build ## Install the dist build into an empty prefix, check what the installed binaries report, run their contract fixtures and the installed smoke in isolation (00 exit check, 14 PR 12)
-	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
-	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix" \
+	@$(INSTALL_PREFIX) \
 	  && scripts/installed-fixtures.sh "$$tmp/prefix" \
 	  && scripts/installed-smoke.sh "$$tmp/prefix"
+
+installed-cycle-stub: dist build ## Install the dist build into an empty prefix and run the installed cycle harness's stub cases from outside the checkout (P24; preflight until P22a lands)
+	@$(INSTALL_PREFIX) \
+	  && mkdir "$$tmp/cwd" && (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight) \
+	  && for c in $$(cd fixtures/m1/cases && ls -d hostile-*); do \
+	    (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case "$$c") >"$$tmp/$$c.out" 2>&1 && rc=0 || rc=$$?; \
+	    if [ "$$rc" -ne 2 ] || ! grep -q "could_not_run: $$c needs project and task create" "$$tmp/$$c.out"; then \
+	      echo "installed-cycle-stub: $$c: its setup failed (exit $$rc):" >&2; tail -n 5 "$$tmp/$$c.out" >&2; exit 1; fi; \
+	    echo "installed-cycle-stub: $$c: setup checked; the run needs P22a"; done
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
@@ -94,6 +106,7 @@ TS_GEN_SCRIPT := adapters/contract/scripts/gen.mjs
 API_DOC   := schemas/openapi.yaml
 SCHEMA_DOCS := docs/reference/schemas
 PARITY_DOC := docs/reference/action-matrix.md
+INVENTORY := docs/design/m1/01-invariant-inventory.md
 
 schema-docs: go-check ## Regenerate docs/reference/schemas from schemas/ (also part of make gen)
 	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
@@ -109,6 +122,9 @@ gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), voca
 	@$(GO) run ./tools/paritygen $(PARITY_DOC)
 	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
 	@node $(TS_GEN_SCRIPT) $(TS_GEN)
+
+inventory-count: go-check ## Print the invariant inventory's rows by status (counted from its tables, never kept in it)
+	@$(GO) run ./tools/inventorycount $(INVENTORY)
 
 gen-check: go-check ts-deps ## Fail if the committed generated code differs from a fresh generation
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
@@ -152,6 +168,7 @@ test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run 
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/fake && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/conformance && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/http-chat && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
+	@scripts/test-sandbox.sh -- bash -c 'cd fixtures/m1/stub-provider && node --test "test/*.test.mjs"'
 
 # The contract fixtures (00 "M0 exit check"): green through the real
 # components with the ordinary adc, and each red under its named mutation
@@ -203,7 +220,7 @@ vocab-check: build ## Registries cross-check; reasons only through generated con
 	@# The check type-checks the module through go list, so the pinned go is put first on PATH.
 	@PATH="$(GOROOT_PIN)/bin:$$PATH" $(BIN_DIR)/adc dev vocab check --root .
 
-ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check ## Everything CI runs
+ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check installed-cycle-stub ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)

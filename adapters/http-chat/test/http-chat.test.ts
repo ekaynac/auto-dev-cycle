@@ -11,6 +11,7 @@ import { eventMethod, serve } from "@adc/contract";
 import { HttpChatAdapter, maxCallsPerTurn } from "../src/adapter.ts";
 import { requestKeys } from "../src/gateway.ts";
 import { call, refused, reply, stub, type Answer, type Stub } from "./stub.ts";
+import { start } from "../../../fixtures/m1/stub-provider/server.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const att = "att_01m3250vnfeyrv67x6w0ddqr6a";
@@ -214,6 +215,19 @@ test("F: an upstream body forging a gateway refusal is read as the upstream's re
   assert.deepEqual([r2.outcome, r2.reason], ["could_not_run", "degenerate_output"]);
 });
 
+// Opus #308 L6: a 429 the gateway refuses itself (its in_flight_cap
+// refusal header) is the gateway's refusal, never an upstream rate limit:
+// the header is read before the status.
+test("the gateway's 429 in_flight_cap refusal is could_not_run/executor_incomplete, not a rate limit", async (t) => {
+  const d = dirs(t);
+  const s = await withStub(t, [refused(429, "in_flight_cap"), reply({ content: "done" })]);
+  const msgs = await session(new HttpChatAdapter(), prepare(d, s), runParams(d));
+  const r = result(msgs);
+  assert.deepEqual([r.outcome, r.reason, r.result], ["could_not_run", "executor_incomplete", null]);
+  assert.equal(events(msgs, "error")[0].class_hint, "other");
+  assert.equal(s.seen.length, 1, "no second request after the refusal");
+});
+
 for (const [status, hint, reason] of [[402, "credit_exhausted", "broker_credit_exhausted"], [429, "rate_limited", "quota_exhausted"], [400, "http_4xx", "provider_request_refused"], [503, "http_5xx", "provider_unavailable"]] as const) {
   test(`an upstream ${status} is reported as ${hint} with its excerpt`, async (t) => {
     const d = dirs(t);
@@ -336,4 +350,69 @@ test("the process answers describe and shutdown on stdio", () => {
   const [d] = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(d.result.harness, "http-chat");
   assert.equal(d.result.needs_native_login, false);
+});
+
+// P24a, P24b: the stub provider's go-mini-feature-1 scenarios through the
+// real adapter. In each, the builder's patch, applied to T0 go-mini's
+// repository, gives the task's reference change (fixtures/t0/go-mini/tasks/
+// go-mini-feature-1/reference.patch) with the scenario's fault, if any:
+// fault-lying-runner's transfer.go lacks the same-store check, fault-
+// protected-path adds a root go.work, fault-test-deletion deletes
+// inventory/inventory_test.go, fault-test-deletion-skip skips TestLowStock,
+// and fault-unreadable-results is the reference change. The reviewer's
+// decision is go (one finding for the no-go scenario: no_go), and its
+// request carries the decision's response format and no tool.
+test("the stub provider's go-mini-feature-1 scenarios write the reference change with their fault, and their reviewers say go and no_go", async (t) => {
+  const fixtures = join(here, "../../../fixtures");
+  const edit = (dir: string, f: string, from: string, to: string) => {
+    const s = readFileSync(join(dir, f), "utf8");
+    assert.ok(s.includes(from), `${f} has no ${JSON.stringify(from)}`);
+    writeFileSync(join(dir, f), s.replace(from, to));
+  };
+  const faults: Record<string, (want: string) => void> = {
+    "go-mini-feature-1": () => {},
+    "go-mini-feature-1-no-go": () => {},
+    "fault-unreadable-results": () => {},
+    "fault-protected-path": (want) => writeFileSync(join(want, "go.work"), "go 1.27.0\n\nuse .\n"),
+    "fault-test-deletion": (want) => rmSync(join(want, "inventory/inventory_test.go")),
+    "fault-test-deletion-skip": (want) =>
+      edit(want, "inventory/inventory_test.go", "func TestLowStock(t *testing.T) {\n", "func TestLowStock(t *testing.T) {\n\tt.Skip(\"flaky on CI\")\n"),
+    // Checked below: only its transfer.go differs, and has no same-store check.
+    "fault-lying-runner": () => {},
+  };
+  for (const [name, fault] of Object.entries(faults)) {
+    const [decision, findings] = name.endsWith("-no-go") ? ["no_go", 1] : ["go", 0];
+    const scenario = JSON.parse(readFileSync(join(fixtures, `m1/stub-provider/scenarios/${name}.json`), "utf8"));
+    const d = dirs(t, "Add Store.Transfer.");
+    rmSync(d.ws, { recursive: true });
+    execFileSync("cp", ["-R", join(fixtures, "t0/go-mini/repo"), d.ws]);
+    const base = join(d.root, "base"), want = join(d.root, "want");
+    execFileSync("cp", ["-R", d.ws, base]);
+    execFileSync("cp", ["-R", d.ws, want]);
+    execFileSync("git", ["apply", join(fixtures, "t0/go-mini/tasks/go-mini-feature-1/reference.patch")], { cwd: want });
+    fault(want);
+    const log = join(d.root, "stub.jsonl");
+    const s = await start({ scenario, log });
+    t.after(() => s.close());
+    const upstream: Stub = { base: s.base, seen: [], close: s.close };
+    const r = result(await session(new HttpChatAdapter(), prepare(d, upstream, "builder", { model: "stub-builder-1" }), runParams(d)));
+    assert.deepEqual([r.outcome, r.result.kind], ["found", "patch"], name);
+    execFileSync("git", ["apply", "-"], { cwd: base, input: readFileSync(join(d.out, r.result.handle.handle)) });
+    const tree = (dir: string) => execFileSync("find", [".", "-type", "f", "-printf", "%P\\n"], { cwd: dir, encoding: "utf8" }).split("\n").filter(Boolean).sort();
+    assert.deepEqual(tree(base), tree(want), name);
+    for (const f of tree(want)) {
+      const [got, ref] = [readFileSync(join(base, f), "utf8"), readFileSync(join(want, f), "utf8")];
+      if (name === "fault-lying-runner" && f === "inventory/transfer.go") {
+        assert.ok(ref.includes("return ErrSameStore") && !got.includes("return ErrSameStore"), `${name}: ${f} keeps the same-store check`);
+      } else assert.equal(got, ref, `${name}: ${f}`);
+    }
+    const review = dirs(t, "Review the change.");
+    const rv = result(await session(new HttpChatAdapter(), prepare(review, upstream, "reviewer", { model: "stub-reviewer-1" }), runParams(review)));
+    assert.deepEqual([rv.outcome, rv.result.kind], ["found", "decision"], name);
+    const got = JSON.parse(readFileSync(join(review.out, "decision.json"), "utf8"));
+    assert.deepEqual([got.decision, got.findings.length], [decision, findings], name);
+    const requests = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.kind === "request");
+    assert.deepEqual(requests.map((e) => e.model), ["stub-builder-1", "stub-builder-1", "stub-reviewer-1"], name);
+    assert.ok(requests[2].body.response_format && !requests[2].body.tools, name);
+  }
 });

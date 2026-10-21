@@ -247,17 +247,31 @@ test("oversize: served at the bound, rejected one byte over", async () => {
   assert.ok(checks(await oversize(raw("size-off-by-one"))).includes("describe"));
   // Ending its output is not ending: the process must exit.
   assert.deepEqual(checks(await oversize(raw("size-closes"), {}, 1_000)), ["oversize"]);
+  // A slow host (#226 entry 102): each line over 1 MiB costs the adapter 2 s, at the
+  // bound and past it alike, past a 1 s floor. The grace scales with the at-bound
+  // request, so a rejection is still seen, and a malformed one still is none.
+  const slow = (mode: string): AdapterUnderTest => ({ ...raw(mode), env: { RAW_MODE: mode, RAW_SLOW_MS: "2000" } });
+  assert.deepEqual(await oversize(slow("size-errors"), {}, 1_000), [], "a slow rejection");
+  assert.deepEqual(checks(await oversize(slow("size-error-null"), {}, 1_000)), ["envelope", "oversize"], "a slow malformed rejection");
 });
 
 test("large invalid events do not exhaust a bounded heap", () => {
-  // Four 4 MiB strings under a 96 MiB heap, plain, escaped or alternating,
-  // or millions of nested arrays: findings, not an out-of-memory abort.
+  // Seven 4 MiB strings (at most 56 MiB of output, under the kit's 64 MiB),
+  // plain, escaped or alternating, or millions of nested arrays: findings,
+  // not an out-of-memory abort. The kit holds one line at a time: the string
+  // pads need 16 to 20 MiB, dense 32 MiB (#226 entry 104), so 40 and 48 MiB
+  // leave twice and 1.5 times that, while keeping the seven lines or the
+  // seven events (28 MiB or more) aborts. Every full GC is atomic (no
+  // incremental or concurrent marking), so the heap at a GC is what the kit
+  // holds, not garbage a slow host's marking left floating: the bound does
+  // not depend on the host's speed.
   const kit = new URL("../src/kit.ts", import.meta.url).href;
-  for (const [pad, want] of [["plain", "event"], ["escapes", "event"], ["alternating", "event"], ["dense", "framing"]]) {
+  for (const [pad, want, mib] of [["plain", "event", 40], ["escapes", "event", 40], ["alternating", "event", 40], ["dense", "framing", 48]] as const) {
     const code = `const k = await import(${JSON.stringify(kit)});
       const fs = await k.roundTrip({ command: [process.execPath, ${JSON.stringify(rawMain)}], env: { RAW_MODE: "big-strings", RAW_PAD: "${pad}" } });
       console.log(JSON.stringify([...new Set(fs.map((f) => f.check))]));`;
-    const r = spawnSync(process.execPath, ["--max-old-space-size=96", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 60_000 });
+    const flags = [`--max-old-space-size=${mib}`, "--single-threaded-gc", "--no-incremental-marking"];
+    const r = spawnSync(process.execPath, [...flags, "--input-type=module", "-e", code], { encoding: "utf8", timeout: 60_000 });
     assert.equal(r.status, 0, `${pad}: ${r.stderr.slice(-2000)}`);
     assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").pop()!), [want], pad);
   }

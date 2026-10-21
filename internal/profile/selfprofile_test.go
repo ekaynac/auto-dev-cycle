@@ -112,7 +112,7 @@ func TestPreparedManifestMatchesP9(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("bash", prepare, "manifest", repoRoot).Output()
+	out, err := exec.Command("bash", prepare, "manifest", "auto-dev-cycle").Output()
 	if err != nil {
 		t.Fatalf("the generator: %v", err)
 	}

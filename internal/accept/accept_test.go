@@ -16,6 +16,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/profile"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -178,6 +179,33 @@ func TestRefusesProtectedPaths(t *testing.T) {
 	if v := f.accept(t, f.patch(t, nil, "conftest.py")); v.Reason() != vocab.ReasonProtectedPath {
 		t.Errorf("a deleted protected path: %v", reasons(v.Blocks))
 	}
+	// go-mini's own profile (P24b, fault-protected-path): go.mod, go.sum,
+	// go.work, go.work.sum and vendor/** at the root.
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomini, err := profile.Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.policy, err = PolicyOf(*gomini); err != nil {
+		t.Fatal(err)
+	}
+	for _, files := range []map[string]string{
+		{"go.work": "go 1.27.0\n\nuse .\n"},
+		{"go.mod": "module example.com/gomini\n\ngo 1.27.0\n\nreplace example.com/x => ../x\n"},
+		{"go.sum": "example.com/x v1.0.0 h1:x=\n"},
+		{"go.work.sum": "x\n"},
+		{"vendor/modules.txt": "# example.com/x v1.0.0\n"},
+	} {
+		if v := f.accept(t, f.patch(t, files)); v.Accepted() || v.Reason() != vocab.ReasonProtectedPath {
+			t.Errorf("go-mini: %v: %v, want protected_path", files, reasons(v.Blocks))
+		}
+	}
+	if v := f.accept(t, f.patch(t, map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc Sub(a, b int) int { return a - b }\n"})); !v.Accepted() {
+		t.Errorf("go-mini: an ordinary change: %v", reasons(v.Blocks))
+	}
 }
 
 // Accept's own path rules hold on git's file list whatever git refuses
@@ -250,6 +278,43 @@ func TestRefusesUnsafeOutput(t *testing.T) {
 	}
 	if strings.Contains(plain(t, f.repo.Dir, "status", "--porcelain"), "outside") {
 		t.Error("the controller's repository was written")
+	}
+}
+
+// P24c: the §2.7 hostile cases' own patches (fixtures/m1/cases/*/patch.diff),
+// under go-mini's profile: each is unsafe_output, and accept writes nothing
+// outside the index (on go-mini's http-chat route the builder's workspace
+// refuses them first; this row is accept's refusal of the same patch).
+func TestHostilePatches(t *testing.T) {
+	f := newFixture(t)
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomini, err := profile.Load(raw)
+	if err == nil {
+		f.policy, err = PolicyOf(*gomini)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	patches, err := filepath.Glob("../../fixtures/m1/cases/hostile-*/patch.diff")
+	if err != nil || len(patches) != 2 {
+		t.Fatalf("the hostile patches: %q %v", patches, err)
+	}
+	for _, file := range patches {
+		patch, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := f.accept(t, patch); v.Accepted() || v.Reason() != vocab.ReasonUnsafeOutput {
+			t.Errorf("%s: %v, want unsafe_output", file, reasons(v.Blocks))
+		}
+	}
+	for _, dir := range []string{f.src, filepath.Dir(f.src), f.repo.Dir, filepath.Dir(f.repo.Dir)} {
+		if _, err := os.Lstat(filepath.Join(dir, "canary-hostile-symlink-path")); !os.IsNotExist(err) {
+			t.Errorf("accept wrote canary-hostile-symlink-path in %s: %v", dir, err)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -23,7 +24,25 @@ const (
 	AttemptProjection = "attempts"
 	UnitProjection    = "unit_attempts"
 	StopProjection    = "attempt_stops" // attempt id → the command that requested its stop
+	// GrantProjection: lease id → its grant's time, RFC 3339 (the USD day
+	// rail, P17b); command/<command id> → the priced lease that command
+	// granted (one per command, Astra #302 H2).
+	GrantProjection = "lease_grants"
 )
+
+// GrantedAt is lease id's grant time; false for a lease never granted.
+func GrantedAt(tx *eventstore.Tx, id types.LeaseID) (time.Time, bool, error) {
+	raw, ok, err := tx.Get(GrantProjection, string(id))
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	var at string
+	if err := json.Unmarshal(raw, &at); err != nil {
+		return time.Time{}, false, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, at)
+	return t, err == nil, err
+}
 
 // StaleRecord refuses a command that expected another revision of a record.
 type StaleRecord struct{ Detail string }
@@ -494,7 +513,39 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 			return err
 		}
 	}
+	if pl.Transition == Granted {
+		if err := p.grantedOnce(tx, ev, *pl.Lease); err != nil {
+			return err
+		}
+		at, err := json.Marshal(ev.At)
+		if err == nil {
+			err = tx.Put(GrantProjection, string(pl.Lease.ID), at)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	return p.changeLease(tx, pl.Transition, pl.Reason, *pl.Lease)
+}
+
+// grantedOnce refuses a second priced lease granted by ev's command: each
+// placement prices its lease against the spend committed before its
+// command (dispatch.Match), so two in one command could each fit a USD
+// rail they pass together (Astra #302 H2). One per command keeps every
+// placement's check sound, for the task's rail and the day's.
+func (p Projector) grantedOnce(tx *eventstore.Tx, ev eventstore.Event, l types.Lease) error {
+	if l.Price == nil || ev.Command == nil {
+		return nil
+	}
+	key := "command/" + *ev.Command
+	if other, dup, err := tx.Get(GrantProjection, key); err != nil || dup {
+		return errors.Join(err, fmt.Errorf("command %s grants priced lease %s after %s: one per command", *ev.Command, l.ID, other))
+	}
+	id, err := json.Marshal(l.ID)
+	if err != nil {
+		return err
+	}
+	return tx.Put(GrantProjection, key, id)
 }
 
 // same compares two records by their canonical JSON.

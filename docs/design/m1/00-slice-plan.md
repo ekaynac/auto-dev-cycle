@@ -79,7 +79,7 @@ Across all three:
 | Two independent HTTP routes through the registry, reservation and the launch readiness check | `capacity.Reservations` (`internal/capacity/reserve.go`); no registry | P7; P8b (`match(card, executor)` and launch readiness); P11 (launch readiness at the gateway); P13 | a |
 | Gateway intent-before-egress, usage and liability settlement, spend rails | `ledger.Reconcile`, `ledger.Project`; the liability ledger (P12b: `capacity.Settlement`, reservation → liability at settlement, late usage) | P11, P11b, P12a, P12b, P17, P20 (`model_call` half) | a |
 | Build → accept → gate → qualified independent review | `adapterhost.Host.Run`; `graph.Build`; roster and requirement (`graph/roster.go`); `receipt.Check`, `receipt.Applies` | P8a, P14a, P14b, P14b-out-1, P14b-out-2, P14b-out-3a, P14b-out-3b, P14e-1, P14e-2a, P14e-2b, P14e-2b2, P14e-2c, P14d, P15, P16, P31 (reviewer qualification, D56), P32 (this repository's recipe); for a Python profile also P14c-1 to P14c-2b (operator answer "python gate") | a |
-| Restart, stale-output and uncertain-effect handling | `lease.FenceOutput`, `lease.RecoverAfterRestart`; `recovery.Recovery` (P21a, P21b; not run by `adcd` until P22a); `MarkPendingUncertain` at start | P21a, P21b (enforced from a); P20; qualified in b | a, b |
+| Restart, stale-output and uncertain-effect handling | `lease.FenceOutput`, `lease.RecoverAfterRestart`; `recovery.Recovery` (P21a, P21b; `Run` at every `adcd` start since P22a-1, `RefuseOrphans` at P22a-5); `MarkPendingUncertain` at start | P21a, P21b (enforced from a); P20; qualified in b | a, b |
 | Serial merge and deterministic closure to a local `git` remote | `graph.Generate`, `CarryOver`, merge folds (`queue.go`); `graph.Operate`, `RunEffect`; fake forge | P18, P19, P22b | b |
 | Minimal `github` delivery to this repository; every merge operator-approved | none | P27 (GitHub target); P28 (merge approval, fresh review after a base move, required-configuration checks) | b |
 | Liveness and the `stalled` hold (D63) | none | P29 | c |
@@ -132,7 +132,7 @@ is derived from this table, never edited apart from it.
 
 | Capability | Checkpoint | Required inventory rows (all four, unless named) | Activated by | Until then |
 |---|---|---|---|---|
-| `intake`: `project.create`, `task.create` (creation and the Ready backlog) | a | I1 admission (P3), fold (P3, P6, with P5's recorded answers); I18 admission (P3); I15 admission (P22a's guard) | P22a | the actions refuse `action_deferred`. P1's and P3's acceptance runs in-process (unit and `internal/fixtures`); their installed creation smokes are deferred to P22a. No guard is bypassed: the installed binary keeps refusing until P22a |
+| `intake`: `project.create`, `task.create`, `task.cancel` (creation, the Ready backlog and its cancel, #226 entry 23) | a | I1 admission (P3), fold (P3, P6, with P5's recorded answers); I18 admission (P3); I15 admission (P22a's guard) | P22a | the actions refuse `action_deferred`. P1's and P3's acceptance runs in-process (unit and `internal/fixtures`); their installed creation smokes are deferred to P22a. No guard is bypassed: the installed binary keeps refusing until P22a |
 | `answers`: `input.answer` | a | I2, I3, I4; I15 | P6 | `action_deferred` |
 | `admission`: one admitted task, held tasks included (D51) | a | I22; I15 | P22a | no task leaves Ready |
 | `launch`: dispatch and attempts, through `match(card, executor)` | a | I5 admission; I6 `model_call` rows; I7 consumption; I8; I9; I10; I11; I12; I16; I17; I21; I22; I15 | P22a | no attempt starts; `match` returns no assignment; `model_call` unregistered |
@@ -151,7 +151,7 @@ is derived from this table, never edited apart from it.
   only then is B admitted.
 
 **Owned actions.** `internal/daemon/matrix.go:deferred` owns seven actions as M1 (15 D1, A7). This plan wires three:
-`project.create`, `task.create` and `input.answer`. The other four are re-homed per Q7, and P23 records it.
+`project.create`, `task.create` and `input.answer`; P22a-2 adds `task.cancel` (#226 entry 23), a fourth. The other four are re-homed per Q7, and P23 records it.
 
 **Intake fixtures (15 §1.3).**
 - **In M1:** 11:189, 11:196, the answer half of 11:197, 11:239-248 (§2.7's interrupted-call cases), basic gate-result
@@ -502,8 +502,34 @@ The rails are P17's: 2 attempts per round, 3 rounds per task, and 2 merge operat
 | `hostile-test-escape` | `tests/conftest_probe.py`, imported by a visible test, tries five things and writes what it saw into a results attachment: read `$HOME/.config/adc`, open the `adcd` socket, list env names matching `TOKEN\|KEY\|SECRET`, connect to `1.1.1.1:443` and the gateway socket, and write outside the workspace | the probe run by host Python reads a decoy file and sees decoy env names | all five attempts are denied or empty in the sandbox; the gate verdict is unchanged; the secret scan is clean |
 | `hostile-gate-output` | the base adds `tests/test_env_probe.py`, whose assertion fails only when the gate environment holds a file the driver writes into the gate's results mount at run time (`$RESULTS/.canary`, outside every repo, patch and diff); its assertion message prints that file's content, the canary. The builder's patch is the reference patch, so the canary is in no reviewer-visible input | the canary is in the gate's JUnit blob | the canary never appears verbatim in a reviewer request: the reviewer gets test ids and statuses, never failure text (P15 sanitises gate results for consumers; P16 renders only ids and statuses). Gate `found/gate_test_failed` |
 | `hostile-symlink` | the stub builder's patch creates `docs/key -> ~/.ssh/id_ed25519` (mode `120000`) | plain `git apply` of the patch creates the link | accept `failed/unsafe_output`; nothing is read through the link |
-| `hostile-symlink-path` | the stub builder's patch writes `docs/../../outside.txt` (a `..` path that escapes the repo) | P24's explicitly unsafe fixture applier, which resolves `..` without checks, runs inside a disposable scratch parent directory. It takes the same patch and asserts that exactly `<scratch parent>/outside.txt` is written, with the patch's bytes. Plain `patch -p1` cannot be the control: GNU patch 2.7 and later rejects `..` paths | accept `failed/unsafe_output`; nothing is written outside the workspace |
+| `hostile-symlink-path` | the stub builder's patch writes `docs/../../canary-hostile-symlink-path` (a `..` path that escapes the repo) | P24's explicitly unsafe fixture applier, which resolves `..` without checks, runs inside a disposable scratch parent directory. It takes the same patch and asserts that exactly `<scratch parent>/canary-hostile-symlink-path` is written, with the patch's bytes. Plain `patch -p1` cannot be the control: GNU patch 2.7 and later rejects `..` paths | accept `failed/unsafe_output`; nothing is written outside the workspace |
 | `hostile-model-switch` | the driver sends, from inside the attempt's container (`podman exec`), a request on the attempt's gateway socket naming another model, and one naming another destination | the same requests with the leased model and destination succeed | both are refused before egress, `failed/routing_violation`, recorded on the attempt. The adapter offers no subagent or model-switch tool (P13 conformance) |
+
+**As built on go-mini (P24c, `fixtures/m1/cases/hostile-*`; each deviation is also in its case's `control`):**
+- **The workspace refuses first.** http-chat's workspace refuses `..`, absolute and `.git/` paths, and never follows
+  or creates a symlink, so a stub builder on go-mini's route cannot produce these hostile patches:
+  - `hostile-symlink`: the base holds `docs/key`, a symlink to a decoy holding a canary; the builder reads it and
+    gets `refused:` (`expect.builder_sees`); the decoy's content is in no request (`expect.canaries`). The task
+    ends a clean candidate, not accept `failed/unsafe_output`.
+  - `hostile-symlink-path`: the builder's write gets `refused:`, and the task ends a clean candidate.
+  - For both, accept's `unsafe_output` on the case's `patch.diff` is a CI row (`TestHostilePatches`).
+  - `hostile-git-dir`: the workspace refuses `.git/config` (`refused:`), so no mechanism is configured in the
+    product run; the controller half is CI rows (`sandbox.TestCopyTreeAndTeardown`, `TestGitIsHardened`,
+    `TestPlainGitRunsHostileCommands`, `TestCloneRefusesRunWrittenRepositories`,
+    `accept.TestDiffRefusesGitDirectories`). A `file://` submodule URL is never fetchable, so "no fetch" is not
+    observed. The control triggers each of the three mechanisms alone.
+- **`hostile-model-switch`:** the gateway takes no destination from a request, so one naming another origin is not
+  refused: it reaches only the leased destination. Another model is refused before egress (`model_not_pinned`).
+  The case's `expect.gateway_requests` gives each request's status and reason.
+- **`hostile-gate-output`:** the gate command (the case's `profile_overlay`), not the driver, writes the per-run
+  canary into the results mount, so the canary is also in the profile and the gate's argv; no reviewer-visible gate
+  provenance may carry them. The reviewer answers `no_go` each round, so every round is reviewed (the case names
+  its review node) until `budget_rail` holds.
+- **`hostile-test-escape`:** a Go test (`inventory/escape_probe_test.go`) fails naming each probe that succeeded;
+  in the gate it must pass. Its control points it at decoys the control opens (`ADC_SOCKET`, `ADC_PROBE_GATEWAY`,
+  `ADC_PROBE_NET`), never at the host's sockets or network.
+- **`hostile-instructions`:** the builder's request after its read carries the canary (`expect.builder_sees`). The
+  instruction files are committed as `NAME.hostile`; `base_remote` commits them under their real names.
 
 
 ### 2.8 Benchmark

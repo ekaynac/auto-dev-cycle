@@ -367,15 +367,15 @@ func TestOfflineMarksNoPendingEffect(t *testing.T) {
 		return s.MarkPendingUncertain(ctx, actor)
 	}
 	t.Cleanup(func() { markPending = (*eventstore.Store).MarkPendingUncertain })
-	d := restart(t, dir) // created: no transition
-	if err := d.Close(); err != nil {
-		t.Fatal(err)
+	d := restart(t, dir) // created: the transition too (#226 entry 64)
+	if err := d.Close(); err != nil || calls != 1 {
+		t.Fatalf("a fresh start ran %d transition(s): %v", calls, err)
 	}
-	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitOK || calls != 0 {
+	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitOK || calls != 1 {
 		t.Fatalf("renew: %d %s, %d transition(s)", code, msg, calls)
 	}
 	d = restart(t, dir)
-	if err := d.Close(); err != nil || calls != 1 {
+	if err := d.Close(); err != nil || calls != 2 {
 		t.Fatalf("a restart ran %d transition(s): %v", calls, err)
 	}
 }

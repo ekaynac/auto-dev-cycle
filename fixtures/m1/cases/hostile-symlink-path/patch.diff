@@ -1,0 +1,7 @@
+diff --git a/docs/../../canary-hostile-symlink-path b/docs/../../canary-hostile-symlink-path
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/docs/../../canary-hostile-symlink-path
+@@ -0,0 +1 @@
++ADC-CANARY-hostile-symlink-path

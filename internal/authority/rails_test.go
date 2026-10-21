@@ -30,20 +30,10 @@ func (b *tasks) raise(p identity.Principal, task, rail string, to int) error {
 // raisedEvent is a raw task.rail_raised of task's rail to to, by by, in prjA.
 func raisedEvent(t *testing.T, task, rail string, to int, by types.ActorID) func(*eventstore.Tx) ([]eventstore.Event, error) {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		r := types.RailRaised{Task: types.TaskID(task), Project: prjA, Rail: types.CountRail(rail), To: types.RailCap(to), By: by, At: types.Time(tx.Now().Format(time.RFC3339Nano))}
+		r := types.RailRaised{Task: types.TaskID(task), Project: prjA, Rail: types.RaisableRail(rail), To: &[]types.RailCap{types.RailCap(to)}[0], By: by, At: types.Time(tx.Now().Format(time.RFC3339Nano))}
 		p := string(prjA)
 		return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.TaskRailRaised, Subject: task, Project: &p, Payload: must(json.Marshal(r))}}, nil
 	}
-}
-
-// newTask creates a task of prjA, by the operator, and returns its id.
-func (b *tasks) newTask(key string) string {
-	b.t.Helper()
-	d := b.upload(b.op, "def test_"+key+"(): pass\n", suiteNow())
-	if _, _, err := b.create(b.op, key, spec(prjA, "task "+key, "hidden/test.py", d)); err != nil {
-		b.t.Fatal(err)
-	}
-	return b.events(2)[0].Subject
 }
 
 // rails is task's caps in force.
@@ -60,8 +50,8 @@ func (b *tasks) rails(task string) (c graph.Caps) {
 func TestTaskRaiseRail(t *testing.T) {
 	b := openTasks(t)
 	b.az.Handlers[authority.TaskRaiseRailAction] = authority.TaskRaiseRailHandler{}
-	one, two := b.newTask("one"), b.newTask("two")
-	if c := b.rails(one); c != (graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 3, MergeOperationsPerGeneration: 2}) { // py-mini's, not the defaults
+	one, two := b.newTask(b.op, prjA), b.newTask(b.op, prjA)
+	if c := b.rails(one); c != (graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 3, MergeOperationsPerGeneration: 2, PerTaskMicros: 5_000_000, PerDayMicros: 20_000_000}) { // py-mini's, not the defaults
 		t.Fatalf("the profile's caps: %+v", c)
 	}
 	if err := b.raise(b.op, one, graph.RailRounds, 7); err != nil {
@@ -131,11 +121,51 @@ func TestRailRaisedReplay(t *testing.T) {
 	}
 	t.Cleanup(func() { taskFold = authority.TaskProjector{}.Project })
 	b := openTasks(t)
-	task := b.newTask("one")
+	task := b.newTask(b.op, prjA)
 	if err := b.trySeed(b.op, raisedEvent(t, task, graph.RailRounds, 2, b.op.Actor())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.s.RebuildProjections(context.Background()); !errors.Is(err, eventstore.ErrReplayRefused) || !strings.Contains(err.Error(), "above the cap in force") {
 		t.Errorf("the replay of a raise below the profile's cap: %v", err)
 	}
+}
+
+// raiseWith submits task.raise_rail by p with in as its scope.
+func (b *tasks) raiseWith(p identity.Principal, in map[string]any) error {
+	c := p.Command(newID(b.t, "cmd"), authority.TaskRaiseRailAction, newID(b.t, "cmd"), must(json.Marshal(in)), nil)
+	_, err := b.s.Submit(context.Background(), c, authority.TaskRaiseRailHandler{}.Logic(c))
+	return err
+}
+
+// TestTaskRaiseUSDRail (P17b): the operator raises a task's per_task_usd
+// (py-mini's $5) with to_usd, for that task only, to micros in force; a
+// raise not above it, one with to, one with both, and per_day_usd (the
+// project's, a profile change) are refused; the fold replays it.
+func TestTaskRaiseUSDRail(t *testing.T) {
+	b := openTasks(t)
+	b.az.Handlers[authority.TaskRaiseRailAction] = authority.TaskRaiseRailHandler{}
+	one, two := b.newTask(b.op, prjA), b.newTask(b.op, prjA)
+	if err := b.raiseWith(b.op, map[string]any{"task": one, "rail": graph.RailTaskUSD, "to_usd": "7.50"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := b.rails(one); c.PerTaskMicros != 7_500_000 || c.PerDayMicros != 20_000_000 || b.rails(two).PerTaskMicros != 5_000_000 {
+		t.Errorf("after the raise: %+v, the other task %+v", c, b.rails(two))
+	}
+	head := b.head()
+	for name, in := range map[string]map[string]any{
+		"to the cap in force": {"task": one, "rail": graph.RailTaskUSD, "to_usd": "7.5"},
+		"below it":            {"task": one, "rail": graph.RailTaskUSD, "to_usd": "6"},
+		"with to":             {"task": two, "rail": graph.RailTaskUSD, "to": 9},
+		"with both":           {"task": two, "rail": graph.RailTaskUSD, "to": 9, "to_usd": "9"},
+		"a count rail in USD": {"task": two, "rail": graph.RailRounds, "to_usd": "9"},
+		"per_day_usd":         {"task": two, "rail": graph.RailDayUSD, "to_usd": "90"},
+	} {
+		err := b.raiseWith(b.op, in)
+		// A cap that is not its rail's is an invalid scope, never a stale cap.
+		invalid := strings.HasPrefix(name, "with") || name == "a count rail in USD" || name == "per_day_usd"
+		if err == nil || b.head() != head || invalid != errors.Is(err, authority.ErrInvalidScope) {
+			t.Errorf("%s: raised (%v)", name, err)
+		}
+	}
+	b.rebuilds()
 }

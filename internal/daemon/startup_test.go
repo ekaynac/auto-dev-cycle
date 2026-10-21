@@ -241,8 +241,9 @@ func TestCapacityGroupsCheckedAtStart(t *testing.T) {
 }
 
 // A failed restart transition refuses the start and appends nothing. A
-// fresh store, which this start bootstraps, has no effect to mark: the
-// transition is skipped rather than refused after the append.
+// fresh store runs it too (#226 entry 64: the model calls' Recorder needs
+// it on every open store): its failure refuses that start, after the
+// system actor's event alone, which the next start reads as its store.
 func TestFailedRestartTransitionRefused(t *testing.T) {
 	markPending = func(*eventstore.Store, context.Context, string) (int, error) { return 0, errors.New("injected") }
 	t.Cleanup(func() { markPending = (*eventstore.Store).MarkPendingUncertain })
@@ -253,11 +254,12 @@ func TestFailedRestartTransitionRefused(t *testing.T) {
 		t.Fatal("a refused start appended to the log")
 	}
 	fresh := stateDir(t)
+	if _, err := Start(context.Background(), Config{StateDir: fresh}); err == nil || lastSeq(t, fresh) != 1 {
+		t.Fatalf("a fresh start whose transition failed: %v, log at %d", err, lastSeq(t, fresh))
+	}
+	markPending = (*eventstore.Store).MarkPendingUncertain
 	d, err := Start(context.Background(), Config{StateDir: fresh})
 	if err != nil {
-		if lastSeq(t, fresh) != 0 {
-			t.Fatalf("a refused fresh start appended to the log: %v", err)
-		}
 		t.Fatal(err)
 	}
 	if err := d.Close(); err != nil {
@@ -430,7 +432,7 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 		t.Fatalf("the daemon holds %s's principal, not the system actor's", d.system.Actor())
 	}
 	cmd := newID(t, "cmd")
-	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "task.create", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
+	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "review.request", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
 		t.Fatalf("the system principal's command was not refused: %v", err)
 	}
 	// note.add is wired: its handler checks the scope, and refuses a note

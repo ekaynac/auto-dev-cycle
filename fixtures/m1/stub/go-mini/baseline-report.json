@@ -1,5 +1,5 @@
 {
-  "note": "go-mini's measured baseline (checkpoint (a)'s stub project, #226 entry 94): gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in the pinned prepared Go image (ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97, image d1a298571f62, linux/arm64), offline, in gate mode, on the tree of fixtures/t0/go-mini/repo (ab5dba4edb5fabdc80d94127565b60dde00ab3c4). The run ended on its own and is green: five tests, no skip. baseline-stream.json is the measured run's go test -json stream. The pin is provisional: go-mini gets its own prepared image before P22a-5 (#226 entry 97), and this baseline is re-recorded then.",
+  "note": "go-mini's measured baseline (checkpoint (a)'s stub project, #226 entry 94): gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in go-mini's own prepared image (ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d, image 88e9e039a6ba, linux/arm64), offline, in gate mode, on the tree of fixtures/t0/go-mini/repo (ab5dba4edb5fabdc80d94127565b60dde00ab3c4). The run ended on its own and is green: five tests, no skip. baseline-stream.json is the measured run's go test -json stream. The image is go-mini's own (#226 entry 97): scripts/prepare-go-image.sh build go-mini, labelled with go-mini's go.mod.",
   "command": [
     "go",
     "test",
@@ -7,8 +7,8 @@
     "-json",
     "./..."
   ],
-  "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97",
-  "image_id": "d1a298571f62cfddb6deaea8eaf43ea32365a52ac6e5ec4e371700931c6e73ae",
+  "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d",
+  "image_id": "88e9e039a6ba7719b386347388c00292458a81bc44de5f370731c7dea5bfbe6a",
   "os": "linux",
   "arch": "arm64",
   "base_tree": "ab5dba4edb5fabdc80d94127565b60dde00ab3c4",

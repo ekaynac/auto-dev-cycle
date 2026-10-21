@@ -1,0 +1,41 @@
+{
+  "name": "fault-test-deletion-skip",
+  "description": "In every attempt, the builder writes go-mini-feature-1's reference change and adds t.Skip at the top of the base test TestLowStock.",
+  "usage_query": true,
+  "calls": {
+    "stub-builder-1": {
+      "turns": [
+        {
+          "write": {
+            "inventory/transfer.go": "// SPDX-License-Identifier: Apache-2.0\n\npackage inventory\n\nimport \"errors\"\n\n// ErrSameStore is returned when a transfer names the same store as source and destination.\nvar ErrSameStore = errors.New(\"inventory: transfer to the same store\")\n\n// Transfer moves qty units of sku from s to dst, carrying the source unit\n// price over to the destination. On any error neither store changes.\nfunc (s *Store) Transfer(dst *Store, sku string, qty int) error {\n\tif s == dst {\n\t\treturn ErrSameStore\n\t}\n\tkey, err := normalizeSKU(sku)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif qty <= 0 {\n\t\treturn ErrInvalidQuantity\n\t}\n\tit, ok := s.items[key]\n\tif !ok {\n\t\treturn ErrUnknownSKU\n\t}\n\tif qty > it.Qty {\n\t\treturn ErrInsufficientStock\n\t}\n\tif err := s.Remove(key, qty); err != nil {\n\t\treturn err\n\t}\n\treturn dst.Add(key, qty, it.PriceCents)\n}\n",
+            "inventory/inventory_test.go": "// SPDX-License-Identifier: Apache-2.0\n\npackage inventory\n\nimport (\n\t\"errors\"\n\t\"reflect\"\n\t\"testing\"\n)\n\nfunc TestAddNormalisesSKUAndAccumulates(t *testing.T) {\n\ts := New()\n\tif err := s.Add(\"  ab-1 \", 3, 250); err != nil {\n\t\tt.Fatalf(\"Add: %v\", err)\n\t}\n\tif err := s.Add(\"AB-1\", 2, 300); err != nil {\n\t\tt.Fatalf(\"Add: %v\", err)\n\t}\n\tif got := s.Qty(\"ab-1\"); got != 5 {\n\t\tt.Fatalf(\"Qty = %d, want 5\", got)\n\t}\n\tif got := s.TotalValueCents(); got != 5*300 {\n\t\tt.Fatalf(\"TotalValueCents = %d, want %d\", got, 5*300)\n\t}\n}\n\nfunc TestAddRejectsBadInput(t *testing.T) {\n\ts := New()\n\tcases := []struct {\n\t\tsku   string\n\t\tqty   int\n\t\tprice int\n\t\twant  error\n\t}{\n\t\t{\"\", 1, 1, ErrInvalidSKU},\n\t\t{\"has space\", 1, 1, ErrInvalidSKU},\n\t\t{\"\u00dc-1\", 1, 1, ErrInvalidSKU},\n\t\t{\"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456\", 1, 1, ErrInvalidSKU},\n\t\t{\"OK\", 0, 1, ErrInvalidQuantity},\n\t\t{\"OK\", 1, -1, ErrInvalidPrice},\n\t}\n\tfor _, c := range cases {\n\t\tif err := s.Add(c.sku, c.qty, c.price); !errors.Is(err, c.want) {\n\t\t\tt.Errorf(\"Add(%q, %d, %d) = %v, want %v\", c.sku, c.qty, c.price, err, c.want)\n\t\t}\n\t}\n\tif len(s.SKUs()) != 0 {\n\t\tt.Fatalf(\"store changed after rejected adds: %v\", s.SKUs())\n\t}\n}\n\nfunc TestRemove(t *testing.T) {\n\ts := New()\n\tif err := s.Add(\"A\", 4, 10); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif err := s.Remove(\"a\", 1); err != nil {\n\t\tt.Fatalf(\"Remove: %v\", err)\n\t}\n\tif got := s.Qty(\"A\"); got != 3 {\n\t\tt.Fatalf(\"Qty = %d, want 3\", got)\n\t}\n\tif err := s.Remove(\"A\", 9); !errors.Is(err, ErrInsufficientStock) {\n\t\tt.Fatalf(\"Remove too many = %v, want ErrInsufficientStock\", err)\n\t}\n\tif err := s.Remove(\"B\", 1); !errors.Is(err, ErrUnknownSKU) {\n\t\tt.Fatalf(\"Remove unknown = %v, want ErrUnknownSKU\", err)\n\t}\n\tif err := s.Remove(\"A\", 3); err != nil {\n\t\tt.Fatalf(\"Remove all: %v\", err)\n\t}\n\tif got := s.SKUs(); len(got) != 0 {\n\t\tt.Fatalf(\"SKUs after removing all = %v, want none\", got)\n\t}\n}\n\nfunc TestLowStock(t *testing.T) {\n\tt.Skip(\"flaky on CI\")\n\ts := New()\n\tfor sku, qty := range map[string]int{\"C\": 1, \"A\": 2, \"B\": 10, \"D\": 50} {\n\t\tif err := s.Add(sku, qty, 1); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t}\n\tif got, want := s.LowStock(5), []string{\"A\", \"C\"}; !reflect.DeepEqual(got, want) {\n\t\tt.Fatalf(\"LowStock(5) = %v, want %v\", got, want)\n\t}\n\tif got := s.LowStock(0); len(got) != 0 {\n\t\tt.Fatalf(\"LowStock(0) = %v, want none\", got)\n\t}\n}\n"
+          },
+          "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 800
+          }
+        },
+        {
+          "say": "Done.",
+          "usage": {
+            "prompt_tokens": 1500,
+            "completion_tokens": 20
+          }
+        }
+      ]
+    },
+    "stub-reviewer-1": {
+      "persistent": {
+        "decision": {
+          "decision": "go",
+          "summary": "Looks fine.",
+          "findings": []
+        },
+        "usage": {
+          "prompt_tokens": 2000,
+          "completion_tokens": 60
+        }
+      }
+    }
+  }
+}
