@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/benchmark-run.json",
+  "title": "BenchmarkRun",
+  "description": "One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json (bench.Path), written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens from each call's internal/capacity/ledger.StandingOf, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "checkpoint", "recorded_at", "arch", "build_commit", "schema_set", "routes", "fixtures", "tasks"],
+  "properties": {
+    "schema": {"const": "adc.benchmark-run/v1"},
+    "checkpoint": {"enum": ["a", "b", "c"]},
+    "recorded_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "arch": {"description": "The controller host's GOOS/GOARCH, as linux/arm64.", "type": "string", "pattern": "^[a-z0-9]+/[a-z0-9]+$"},
+    "build_commit": {"$ref": "../common/defs.json#/$defs/GitID"},
+    "schema_set": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "routes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/BenchmarkRoute"}},
+    "fixtures": {"description": "Each fixture the runs read, by its path from the repository root, with its digest.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkFixture"}},
+    "tasks": {"type": "array", "items": {"$ref": "#/$defs/BenchmarkTask"}}
+  },
+  "$defs": {
+    "BenchmarkRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executor", "role", "family"],
+      "properties": {
+        "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+        "role": {"enum": ["builder", "reviewer"]},
+        "family": {"$ref": "receipt.json#/$defs/Name"}
+      }
+    },
+    "BenchmarkFixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+      }
+    },
+    "BenchmarkTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "outcome", "reason", "hold", "wall_ms", "stages", "rescues"],
+      "properties": {
+        "task": {"$ref": "../common/defs.json#/$defs/TaskID"},
+        "outcome": {"description": "The closure's outcome; null when the task did not close.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Outcome"}]},
+        "reason": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReasonCode"}]},
+        "hold": {"description": "The task's hold when it did not close: a hold of schemas/vocab/holds.yaml.", "oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}]},
+        "wall_ms": {"description": "From approval.recorded to the closure's result.selected; null when it did not close.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
+        "stages": {"type": "array", "items": {"$ref": "#/$defs/BenchmarkStage"}},
+        "rescues": {"description": "Rescue interventions over the task; zero in (c).", "type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      },
+      "if": {"required": ["hold"], "properties": {"hold": {"const": null}}},
+      "then": {"properties": {"outcome": {"not": {"const": null}}, "reason": {"not": {"const": null}}, "wall_ms": {"not": {"const": null}}}},
+      "else": {"properties": {"outcome": {"const": null}, "reason": {"const": null}, "wall_ms": {"const": null}}}
+    },
+    "BenchmarkStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "wall_ms", "unfinished", "pending", "tokens", "sources", "charge", "outstanding", "attempts", "rounds", "interventions"],
+      "properties": {
+        "stage": {"enum": ["build", "accept", "gate", "review", "rebase", "review_fresh", "gate_refresh", "merge", "closure"]},
+        "wall_ms": {"description": "Σ over the stage's finished nodes of node.claimed to its result.selected (merge: to the effect's observed or reconciled completed).", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "unfinished": {"description": "The stage's nodes claimed and not finished, left out of wall_ms.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "pending": {"description": "The stage's nodes planned and never claimed, left out of wall_ms, attempts and rounds.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "tokens": {"$ref": "#/$defs/BenchmarkTokens"},
+        "sources": {"description": "The source_of_truth values of the stage's usage measurements, sorted.", "type": "array", "uniqueItems": true, "items": {"enum": ["provider_usage", "adapter_report", "gateway_count", "gateway_floor", "none"]}},
+        "charge": {"description": "Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: each call, on any basis, at no less than its tokens at the route's registry price.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
+        "outstanding": {"description": "The unsettled and unmeasured calls' liabilities, under basis cash, per currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
+        "attempts": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "rounds": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "interventions": {"$ref": "#/$defs/BenchmarkInterventions"}
+      }
+    },
+    "BenchmarkTokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["in", "out", "cache_read", "cache_write"],
+      "properties": {
+        "in": {"$ref": "resource-group.json#/$defs/Amount"},
+        "out": {"$ref": "resource-group.json#/$defs/Amount"},
+        "cache_read": {"$ref": "resource-group.json#/$defs/Amount"},
+        "cache_write": {"$ref": "resource-group.json#/$defs/Amount"}
+      }
+    },
+    "BenchmarkAmount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis", "currency", "amount_micros", "calls"],
+      "properties": {
+        "basis": {"enum": ["cash", "subscription_equivalent", "free", "local"]},
+        "currency": {"description": "ISO 4217; an unsettled call no report priced is priced in USD at its route's registry price.", "type": "string", "pattern": "^[A-Z]{3}$"},
+        "amount_micros": {"$ref": "resource-group.json#/$defs/Amount"},
+        "calls": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "BenchmarkInterventions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvals", "answers", "rail_raises"],
+      "properties": {
+        "approvals": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "answers": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "rail_raises": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      }
+    }
+  }
+}
