@@ -98,7 +98,7 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 func run(ctx context.Context, name, action string, args []string, stdout, stderr io.Writer, c Client) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	expect := fs.String("expect", "", "the exact revision inspected: a version (0: the object does not exist yet) or a sha256: digest (required)")
-	reason := fs.String("reason", "", "why (required)")
+	reason := fs.String("reason", "", "why (required); task cancel also records it in its scope, whose own reason, if given, must equal it")
 	scope := fs.String("scope", "{}", "the action's parameters, a JSON object")
 	key := fs.String("idempotency-key", "", "repeat a command safely with the same key (default: a new key)")
 	asJSON := fs.Bool("json", false, "print the response as one JSON document")
@@ -179,19 +179,34 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	}
 	// task.cancel records its reason in its scope, since the envelope's is
 	// not recorded with commands yet (#147): --reason fills a scope that
-	// names none (Opus #298 L5).
+	// names none (Opus #298 L5). The scope is read strictly first, so a
+	// duplicate key, literal or escaped, is refused rather than resolved by
+	// the re-encoding (Astra #314 M1); a scope reason that differs from
+	// --reason is refused, never silently preferred (L2).
 	if action == "task.cancel" {
-		var o map[string]json.RawMessage
-		if json.Unmarshal([]byte(*scope), &o) == nil && o != nil && o["reason"] == nil {
-			r, err := json.Marshal(*reason)
-			if err == nil {
-				o["reason"] = r
-				r, err = json.Marshal(o)
+		doc, err := contract.ReadStrict([]byte(*scope))
+		if err != nil {
+			return usage("--scope: %v", err)
+		}
+		if o, ok := doc.(map[string]any); ok {
+			switch r, named := o["reason"]; {
+			case named && r != *reason:
+				return usage("--reason %q and the scope's reason differ: give one, or the same", *reason)
+			case !named:
+				var raw map[string]json.RawMessage
+				b, err := json.Marshal(*reason)
+				if err == nil {
+					err = json.Unmarshal([]byte(*scope), &raw)
+				}
+				if err == nil {
+					raw["reason"] = b
+					b, err = json.Marshal(raw)
+				}
+				if err != nil {
+					return usage("--reason: %v", err)
+				}
+				*scope = string(b)
 			}
-			if err != nil {
-				return usage("--reason: %v", err)
-			}
-			*scope = string(r)
 		}
 	}
 	req := types.CommandRequest{IdempotencyKey: *key, Expected: expected, Scope: json.RawMessage(*scope), Reason: *reason}

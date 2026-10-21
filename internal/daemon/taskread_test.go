@@ -203,8 +203,11 @@ func TestTaskReadFirstAttemptOwnResult(t *testing.T) {
 				return lease.SupersedeAttempt(tx, first, 3, ls.ID, 2, second, types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"})
 			})
 			by := &second
-			if !bySuccessor {
+			if !bySuccessor { // a result with no attempt is recorded only once no attempt runs the node (Astra #316 H1)
 				by = nil
+				w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+					return lease.LoseRunning(tx, second, types.AttemptLostReasonValueControllerRestart)
+				})
 			}
 			commitPlan(t, w, plan, by)
 			w.view(func(tx *eventstore.Tx) error {
