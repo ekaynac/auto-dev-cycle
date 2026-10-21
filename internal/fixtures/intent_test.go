@@ -343,7 +343,7 @@ func TestIntentSafeOutputs(t *testing.T) {
 		p := pred("tests", vocab.Found, vocab.ReasonGateTestFailed, types.PredicateEvidenceItem{Blob: put(raw), MediaType: "application/x-go-test-json", Artifact: "results"})
 		p.Detail = "1 tests or packages fail against the baseline"
 		r := types.Receipt{ID: types.ReceiptID(named), Kind: types.ReceiptKindGate, Subject: subject,
-			Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest},
+			Instrument: types.InstrumentRef{Name: "gate.go_test_json", Version: "1", Digest: instrumentDigest},
 			Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
 			ProducedAt: types.Time(time.Now().UTC().Format(time.RFC3339Nano)), Outcome: p.Outcome, Reason: p.Reason, Detail: p.Detail, Predicates: []types.Predicate{p}}
 		if edit != nil {
@@ -400,6 +400,13 @@ func TestIntentSafeOutputs(t *testing.T) {
 			s := treeOf(r)
 			r.Subject = types.Subject{Variant: &types.EnvironmentSubject{Type: "environment", Identity: s.Environment.Identity, Description: "linux/arm64", Demand: s.Demand}}
 		}, false},
+		// Mythos #355 M1: exactly what gate.Result makes (the reason that is
+		// no code is gate's row: decoding refuses it, so it is never recorded).
+		"two predicates":                 {rcp + "h", rcp + "h", func(r *types.Receipt) { r.Predicates = append(r.Predicates, r.Predicates[0]) }, false},
+		"a predicate named otherwise":    {rcp + "m", rcp + "m", func(r *types.Receipt) { r.Predicates[0].Name = "canary-7f3a" }, false},
+		"a 1024-byte instrument name":    {rcp + "j", rcp + "j", func(r *types.Receipt) { r.Instrument.Name = "gate." + strings.Repeat("a", gate.MaxDetail-len("gate.")) }, false},
+		"a model family":                 {rcp + "k", rcp + "k", func(r *types.Receipt) { r.Provenance.ModelFamilies = []types.Name{"canary-7f3a"} }, false},
+		"evidence of another media type": {rcp + "n", rcp + "n", func(r *types.Receipt) { r.Predicates[0].Evidence[0].MediaType = "text/plain" }, false},
 	}
 	receiptRefs := map[string]types.Ref{}
 	n := 5

@@ -3,6 +3,7 @@
 package gate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -640,6 +641,18 @@ func TestGateLineage(t *testing.T) {
 		// neighbours are not.
 		if err := CheckReport(report); err != nil {
 			t.Errorf("%s: the report: %v", name, err)
+		}
+		// Result's own receipt is a gate receipt (Mythos #355 M1); under
+		// another id, or with a reason that is no code, it is not.
+		rcpt, id := read(t, blobs, res.Value[0].ContentDigest), res.Value[0].ID
+		if err := CheckReceipt(rcpt, id); err != nil {
+			t.Errorf("%s: Result's receipt: %v", name, err)
+		}
+		if err := CheckReceipt(rcpt, "rcp_01m3250vz2ezn81cgvbkcn17jd"); !errors.Is(err, ErrSpec) {
+			t.Errorf("%s: Result's receipt under another id: %v", name, err)
+		}
+		if err := CheckReceipt(bytes.ReplaceAll(rcpt, []byte(`"reason":"`), []byte(`"reason":"canary_`)), id); !errors.Is(err, ErrSpec) {
+			t.Errorf("%s: Result's receipt with a reason that is no code: %v", name, err)
 		}
 		for what, b := range map[string][]byte{
 			"another key":     append([]byte(`{"raw":"x",`), report[1:]...),

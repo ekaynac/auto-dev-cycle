@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
@@ -49,6 +50,9 @@ const (
 	maxReported  = 1000 // blocking findings in a report
 	maxID        = 256  // bytes of a reported package or test name
 	evidenceType = "application/x-go-test-json"
+	// instrumentName is the instrument of every gate receipt Result makes:
+	// Contract's name for the one result adapter Run accepts.
+	instrumentName = "gate." + results.GoTestJSON
 )
 
 // Blobs is the blob store as the gate needs it.
@@ -295,6 +299,48 @@ func CheckReport(b []byte) error {
 	}
 	if again, err := json.Marshal(r); err != nil || !bytes.Equal(again, b) {
 		return fmt.Errorf("%w: not a gate report's bytes (%v)", ErrSpec, err)
+	}
+	return nil
+}
+
+// CheckReceipt is whether b is a gate receipt under id exactly as Result
+// makes one (Opus #321 r2 M2; Mythos #348 M1, #355 M1): decoded strictly as
+// records/receipt, of kind gate, its id the ref's, its instrument the
+// gate's (instrumentName, its version at most MaxDetail bytes), its
+// subject a tree whose environment description and contract revision are
+// at most MaxDetail bytes, no call, model family or contributor in its
+// provenance, its reason a registered code and its detail at most
+// MaxDetail bytes, and exactly one predicate: tests, its reason a
+// registered code, its detail at most MaxDetail bytes, no payload, and
+// exactly one evidence item, the results artifact of the gate's media
+// type.
+func CheckReceipt(b []byte, id string) error {
+	r, err := contract.Decode[types.Receipt]("records/receipt", b)
+	if err != nil {
+		return fmt.Errorf("%w: not a receipt (%v)", ErrSpec, err)
+	}
+	_, rerr := vocab.ParseReason(r.Reason.String())
+	switch {
+	case r.Kind != types.ReceiptKindGate || string(r.ID) != id:
+		return fmt.Errorf("%w: not a gate receipt under %s", ErrSpec, id)
+	case r.Instrument.Name != instrumentName || len(r.Instrument.Version) > MaxDetail:
+		return fmt.Errorf("%w: a receipt of another instrument", ErrSpec)
+	case len(r.Provenance.Calls) != 0 || len(r.Provenance.ModelFamilies) != 0 || len(r.Provenance.Contributors) != 0:
+		return fmt.Errorf("%w: a gate receipt with calls, model families or contributors", ErrSpec)
+	case rerr != nil || len(r.Detail) > MaxDetail:
+		return fmt.Errorf("%w: a gate receipt's reason or detail (%v)", ErrSpec, rerr)
+	case len(r.Predicates) != 1:
+		return fmt.Errorf("%w: a gate receipt of %d predicates", ErrSpec, len(r.Predicates))
+	}
+	tree, ok := r.Subject.Variant.(*types.TreeSubject)
+	if !ok || len(tree.Environment.Description) > MaxDetail || len(tree.ContractRevision) > MaxDetail {
+		return fmt.Errorf("%w: a gate receipt's subject", ErrSpec)
+	}
+	p := r.Predicates[0]
+	_, perr := vocab.ParseReason(p.Reason.String())
+	if p.Name != "tests" || perr != nil || len(p.Detail) > MaxDetail || len(p.Payload) != 0 || len(p.Evidence) != 1 ||
+		p.Evidence[0].Artifact != "results" || p.Evidence[0].MediaType != evidenceType {
+		return fmt.Errorf("%w: a gate receipt's predicate", ErrSpec)
 	}
 	return nil
 }
