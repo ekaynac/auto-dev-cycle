@@ -406,7 +406,7 @@ func TestIntegritySkipsCancel(t *testing.T) {
 func TestIntegritySkipsAliases(t *testing.T) {
 	scan := func(src string) (*pkgScan, map[string]*ast.FuncDecl) {
 		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, "p.go", "package p\n\nimport (\n\t\"encoding/xml\"\n\t\"testing\"\n\ttt \"testing\"\n\n\t\"example.com/x\"\n\t\"m/own\"\n)\n\nvar _, _, _, _ = xml.Decoder{}, testing.Short, tt.Short, x.Y\n\nvar _ = own.Z\n"+src, 0)
+		f, err := parser.ParseFile(fset, "p.go", "package p\n\nimport (\n\t\"encoding/xml\"\n\t\"testing\"\n\ttt \"testing\"\n\n\t. \"encoding/json\"\n\n\t\"example.com/x\"\n\t\"m/own\"\n)\n\nvar _, _, _, _, _ = xml.Decoder{}, testing.Short, tt.Short, x.Y, Valid\n\nvar _ = own.Z\n"+src, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -451,6 +451,7 @@ func TestIntegritySkipsAliases(t *testing.T) {
 		"a standard-library type, stated":     {"func f(d *xml.Decoder) {}\n", true}, // #226 entry 116
 		"another module's type":               {"func f(t *x.T) {}\n", true},
 		"a dotless import's type":             {"func f(t *own.T) {}\n", true},
+		"a dot-imported type":                 {"func f(d *Decoder) {}\n", true},
 		"an alias of testing.T":               {"type TT = testing.T\n\nfunc f(t *TT) {}\n", true},
 		"an alias of int":                     {"type I = int\n\nfunc f(t I) {}\n", false},
 		"an alias of another module's type":   {"type B = x.T\n\nfunc f(t *B) {}\n", true},
