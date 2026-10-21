@@ -62,7 +62,7 @@ and is never edited apart from it.
 | I8 Fencing and attempt binding | partial | P22a (P8a done; P21a, P21b done, inert) | `launch`: all |
 | I9 Accounting | partial | P22a (P11b, P12a, P12b, P20's `model_call` half and P21a done, inert) | `launch`: all |
 | I10 Egress, data policy, context | partial | P16, P22a (P7, P8b, P11, P11b done, inert) | `launch`: all |
-| I11 Restart and replay | partial | P4a, P22a (P21a done, inert) | `launch`: all |
+| I11 Restart and replay | enforced | P4a, P21a, P22a-1 | `launch`: all |
 | I12 Build facts and accept | partial | P14b-out, P14c-2a, P14c-2a-allow, P14c-2a2, P14c-2a3, P14c-2b, P14d, P22a (P14a, P14b, P14c-1 done, inert) | `launch`: all |
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
@@ -72,7 +72,7 @@ and is never edited apart from it.
 | I18 Acceptance confidentiality | partial | P15, P16 (the builder's I18, moved from P14), P22a | `intake`: admission; `review`: all |
 | I19 Liveness (D63) | unenforced | P29 | `repeat`: all |
 | I20 Merge approval, fresh review, required configuration | partial | P19, P28, P22b | `merge-local`: consumption, effect; `merge-github`: all |
-| I21 Launch readiness (D51) | unenforced | P17, P22a (P8b, P11 done, inert) | `launch`: all |
+| I21 Launch readiness (D51) | unenforced | P22a (P8b, P11, P17a done, inert) | `launch`: all |
 | I22 One admitted task, held included (D51) | enforced | P22a (P22a-3) | `admission`, `launch`, `repeat`: all |
 
 **Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template. **Re-checked by P22a-2:** `adcd`'s graph fold refuses every node kind outside M1(a)'s (I15 admission), so `answers` now holds every row it needs.
@@ -202,8 +202,8 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `checkCapacityHistory`, `checkCapacityGroups`, `checkKinds` (`daemon/startup.go`); no graph history check (X1 §4, 15 §3.1) | kept + GAP | P4a |
-| fold/replay | `checkProjections` (`daemon/startup.go`) compares replay for the wired projectors; graph kinds are not wired | GAP | P4a |
+| admission | `checkCapacityHistory`, `checkGraphHistory` (`graph.CheckHistory`: each operation against its effect record, and the hold index; P4a, #228), `checkCapacityGroups`, `checkKinds` (`daemon/startup.go`), run by `adcd` at every start before any replay (`daemon/daemon.go:start`). Shown by `TestGraphHistoryCheckedBeforeReplay` (`daemon/graph_test.go`; skipping the check fails it) and `graph.TestCheckHistory`, `TestCheckHistorySeesWhatReplayCannot` | kept | — |
+| fold/replay | `checkProjections` (`daemon/startup.go`) compares a replay of every registered projection, graph kinds included (`graph.Projector` in `daemon/wiring.go`, P4a), and builds a projection the store has never built (#347). Shown by `TestGraphReplayedAtStart` (`daemon/graph_test.go`: a graph projection edited behind replay is refused), `TestProjectionDriftRefused` and `TestProjectionsRegistered` (`daemon/startup_test.go`) | kept | — |
 | consumption | at start, running attempts become `lost` before anything else runs (05): `Recovery.Run`'s step 1 (P21a, #259), run by `adcd` at every non-offline start after `MarkPendingUncertain` (P22a-1). A recovery that leaves an attempt running refuses the start; a later step's failure is noted and resumed at the next start | kept | — |
 | effect | `markPending` → `MarkPendingUncertain` (`daemon/startup.go`, `daemon/daemon.go:start`) | kept | — |
 
@@ -293,7 +293,7 @@ through `lease.completed`. P21a keeps this check.
 | Check | Today | Status | Item |
 |---|---|---|---|
 | admission | launch readiness at `attempt.started` (`internal/dispatch/launch.go`, P8b #247): `Observe` and `Launch` check that the pinned image is present at its digest, re-check the roster, executor and destination, and ask the gateway whether it holds the destination's credential (`gateway.Holds`, P11 #248). Kept in code, inert until P22a | kept + GAP | P22a |
-| fold/replay | none: rail counters do not exist yet, so nothing says a refused launch spends none | GAP | P17 (a refused launch counts against no rail) |
+| fold/replay | no counter is stored (I16 fold): the attempt rail counts the unit's fencing token (`graph.RoundAttempts`), which only `attempt.started` advances, and the USD rails cost an ended lease with no call nothing (`dispatch/usd.go:cost`). A refused launch (`lease.RefuseStart`: `lease.start_refused`, `lease.released`) starts no attempt and binds no call, so it counts against no rail: `TestLaunchReadiness` (`dispatch/dispatch_test.go`, `missed`), `TestLaunchAttemptRail`, `TestUSDCost`. Kept in code (P17a, #295), inert until P22a, as I16's rows are | kept + GAP | P22a |
 | consumption | n/a: a refused launch consumes nothing | n/a | — |
 | effect | `lease.start_refused` → `releasing` (`lease/lease.go` table). On a miss, `dispatch.Launch` (P8b, #247) refuses the start, releases the lease and raises a registered node hold naming the missing item: `source_invalid_config` for a credential, `wrong_owner` for an image. Kept in code, inert until P22a | kept + GAP | P22a |
 
