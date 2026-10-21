@@ -78,7 +78,9 @@ func (f fakeTasks) Claimable(_ *eventstore.Tx, task types.TaskID) error {
 // P22a-3 (Opus #309 H1, M5, F5): the fold takes the task authority for a
 // node recorded (Recordable), and for every event that runs a node again
 // or anew: claimed, reused, invalidated (claimed at its next generation)
-// and renewed (Claimable), each of the node's task; nothing else asks.
+// and renewed (Claimable), each of the node's task; a review's supersession,
+// which records its replacement, asks Recordable of the predecessor's task
+// (Astra #316 M2: a done task's review is never replaced); nothing else asks.
 func TestTakenAsksTheTask(t *testing.T) {
 	g := openStore(t)
 	var recordable, claimable []types.TaskID
@@ -89,7 +91,7 @@ func TestTakenAsksTheTask(t *testing.T) {
 		for _, v := range []types.GraphEventVariant{
 			&types.NodeRecorded{Task: tskID, Project: prjID},
 			&types.NodeClaimed{Node: g.plan}, &types.NodeReused{Node: g.plan}, &types.NodeInvalidated{Node: g.plan}, &types.NodeRenewed{Node: g.plan},
-			&types.HoldCleared{Node: g.plan},
+			&types.HoldCleared{Node: g.plan}, &types.ReviewSuperseded{Predecessor: g.plan},
 		} {
 			_ = taken(tx, ev, v, tasks)
 		}
@@ -97,7 +99,7 @@ func TestTakenAsksTheTask(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(recordable, []types.TaskID{tskID}) || !slices.Equal(claimable, []types.TaskID{tskID, tskID, tskID, tskID}) {
+	if !slices.Equal(recordable, []types.TaskID{tskID, tskID}) || !slices.Equal(claimable, []types.TaskID{tskID, tskID, tskID, tskID}) {
 		t.Errorf("asked: recordable %v, claimable %v", recordable, claimable)
 	}
 }

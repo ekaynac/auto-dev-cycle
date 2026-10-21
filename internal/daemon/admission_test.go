@@ -136,8 +136,8 @@ func withSystem(t *testing.T) (*seeder, types.ActorID) {
 // authority_revoked, appending nothing: a build's claim, the plan's
 // re-claim by invalidation, and the attempt start on the plan's granted
 // lease (no attempt recorded). The task is not abandoned while that lease
-// is live, nor once it expires while it is still releasing (Opus #312 M3:
-// a lease that has not ended); once it is released, it is, and the slot
+// is live, nor once it expires while it is still releasing (a lease that
+// has not ended, Astra #316 H1); once it is released, it is, and the slot
 // frees.
 func TestDaemonClaimTakesAdmission(t *testing.T) {
 	w, sys := withSystem(t)

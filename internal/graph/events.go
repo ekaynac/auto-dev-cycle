@@ -73,6 +73,7 @@ const (
 	RenewalProjection   = "graph_renewals"   // node id → its selection boundary (renewal)
 	SuccessorProjection = "graph_successors" // node id → its one successor
 	TaskProjection      = "graph_tasks"      // task id → its project
+	TaskNodeProjection  = "graph_task_nodes" // "<task>/<node>": each node of a task (Astra #316 M3)
 	ResultProjection    = "graph_results"    // result id → the result.recorded payload
 	GenProjection       = "graph_gens"       // task/identity → its current generation (memoizable kinds)
 	HoldProjection      = "graph_holds"      // hold id → the node that last held it (heldBy)
@@ -159,7 +160,8 @@ func putNode(tx *eventstore.Tx, rec nodeRecord) error {
 	if _, err := contract.Encode("records/node-state", rec.State); err != nil {
 		return err
 	}
-	return put(tx, NodeProjection, string(rec.Recorded.Node.ID), rec)
+	return errors.Join(put(tx, TaskNodeProjection, string(rec.Recorded.Task)+"/"+string(rec.Recorded.Node.ID), true),
+		put(tx, NodeProjection, string(rec.Recorded.Node.ID), rec))
 }
 
 func event(kind, subject string, project types.ProjectID, payload types.GraphEventVariant) ([]eventstore.Event, error) {
