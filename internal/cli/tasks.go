@@ -209,14 +209,16 @@ func taskWait(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 
 // permanent: err is a refusal no later read undoes: the bearer no longer
 // authenticates (401), a read refused failed (403 failed/*: the grant is
-// gone), or a request the controller cannot parse. A transport failure and
-// a could_not_run answer are not.
+// gone), a request the controller cannot parse, or a controller that
+// serves no task read (404: an adcd from before it, Mythos #353 L1), which
+// ends as adc task show does. A transport failure and a could_not_run
+// answer are not.
 func permanent(err error) bool {
 	var refused *client.Refused
 	switch {
 	case errors.As(err, &refused):
 		return refused.Result.Outcome == vocab.Failed
-	case errors.Is(err, client.ErrUnauthenticated), errors.Is(err, client.ErrBadRequest):
+	case errors.Is(err, client.ErrUnauthenticated), errors.Is(err, client.ErrBadRequest), errors.Is(err, client.ErrNoResource):
 		return true
 	}
 	return false
