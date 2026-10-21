@@ -15,6 +15,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
@@ -36,6 +37,13 @@ func rawDone(task types.TaskID, project types.ProjectID) func(*eventstore.Tx) ([
 // planResult commits plan's completed result, recorded with no attempt.
 func planResult(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID) error {
 	t.Helper()
+	return planResultBy(t, w, sys, plan, nil)
+}
+
+// planResultBy commits plan's completed result, recorded by attempt (nil:
+// by none; graph.CommitAttempt otherwise).
+func planResultBy(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID, attempt *types.AttemptID) error {
+	t.Helper()
 	return w.try(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		nodes, err := graph.Nodes(tx)
 		var key types.ComputationKey
@@ -50,8 +58,130 @@ func planResult(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID) e
 		r := types.Result{ID: types.ResultID(newID(t, "res")), Computation: key.Key, Kind: types.ResultKindPlan, Value: []types.Ref{},
 			Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
 		none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
-		return nil, graph.Commit(tx, plan, r, graph.Env{Need: none, Authority: authority.Answers{}})
+		env := graph.Env{Need: none, Authority: authority.Answers{}}
+		if attempt != nil {
+			return nil, graph.CommitAttempt(tx, plan, r, *attempt, env)
+		}
+		return nil, graph.Commit(tx, plan, r, env)
 	})
+}
+
+// grantedOn requests and grants a lease on node's unit, returning it.
+func grantedOn(w *seeder, sys types.ActorID, node types.NodeID) types.Lease {
+	ls := w.lease(4)
+	ls.Unit = graph.UnitOf(node)
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
+	})
+	return ls
+}
+
+var emptyBase = types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"}
+
+// Opus #316 r3 L1(a), L2(b): a node whose attempt is stopping, or
+// finishing, records no result with no attempt; its finishing attempt's
+// own result is recorded through graph.CommitAttempt, and completes it.
+func TestANodeItsAttemptRunsTakesItsResultAlone(t *testing.T) {
+	w, sys := withSystem(t)
+	_, task := admittedTask(t, w, sys)
+	plan := templateNodes(w, task)[types.NodeKindPlan]
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+	})
+	first := grantedOn(w, sys, plan)
+	a1 := types.AttemptID(newID(t, "att"))
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, first.ID, 2, a1, emptyBase)
+	})
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StopRunning(tx, a1, types.AttemptStopReasonValuePreempt)
+	})
+	if err := planResult(t, w, sys, plan); err == nil || !strings.Contains(err.Error(), "is stopping") {
+		t.Errorf("a result with no attempt while it is stopping: %v", err)
+	}
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SealMinimal(tx, a1, 2, graph.Units{Tasks: authority.Tasks{}}, w.blobs, nil, sys)
+	})
+	second := grantedOn(w, sys, plan)
+	a2 := types.AttemptID(newID(t, "att"))
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SupersedeAttempt(tx, a1, 3, second.ID, 2, a2, emptyBase)
+	})
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SubmitResult(tx, a2, 2, types.SubmittedResult{Call: types.CallID(newID(t, "cal")), Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
+	})
+	if err := planResult(t, w, sys, plan); err == nil || !strings.Contains(err.Error(), "is finishing") {
+		t.Errorf("a result with no attempt while it is finishing: %v", err)
+	}
+	if err := planResultBy(t, w, sys, plan, &a2); err != nil {
+		t.Fatalf("the finishing attempt's own result: %v", err)
+	}
+	if s := nodesStateOf(w, plan); s != types.NodeStateStateCompleted {
+		t.Errorf("the plan after its attempt's result: %s", s)
+	}
+}
+
+// nodesStateOf is node's state.
+func nodesStateOf(w *seeder, node types.NodeID) types.NodeStateState {
+	var st types.NodeStateState
+	w.view(func(tx *eventstore.Tx) error {
+		nodes, err := graph.Nodes(tx)
+		for _, n := range nodes {
+			if n.Node.ID == node {
+				st = n.State.State
+			}
+		}
+		return err
+	})
+	return st
+}
+
+// Opus #316 r3 L1(b): a superseded node of the task whose attempt is lost
+// and not sealed still runs: neither the command nor a raw task.done ends
+// the task. (Only a review is superseded, and a review needs P16's
+// requirement: the plan's record is marked superseded directly here.)
+func TestASupersededNodeStillRuns(t *testing.T) {
+	w, sys := withSystem(t)
+	_, task := admittedTask(t, w, sys)
+	plan := templateNodes(w, task)[types.NodeKindPlan]
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+	})
+	ls := grantedOn(w, sys, plan)
+	a := types.AttemptID(newID(t, "att"))
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, ls.ID, 2, a, emptyBase)
+	})
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.LoseRunning(tx, a, types.AttemptLostReasonValueControllerRestart)
+	})
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		raw, _, err := tx.Get(graph.NodeProjection, string(plan))
+		var rec map[string]map[string]any
+		if err == nil {
+			err = json.Unmarshal(raw, &rec)
+		}
+		if err != nil {
+			return nil, err
+		}
+		rec["state"]["state"], rec["state"]["superseded_by"] = string(types.NodeStateStateSuperseded), newID(t, "nod")
+		b, err := json.Marshal(rec)
+		if err == nil {
+			err = tx.Put(graph.NodeProjection, string(plan), b)
+		}
+		return nil, err
+	})
+	var project types.ProjectID
+	w.view(func(tx *eventstore.Tx) (err error) { project, _, err = graph.TaskProject(tx, task); return err })
+	for name, err := range map[string]error{
+		"the command": w.try(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, task) }),
+		"a raw done":  w.try(sys, rawDone(task, project)),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "still runs") {
+			t.Errorf("%s while a superseded node's attempt is lost, unsealed: %v", name, err)
+		}
+	}
 }
 
 // Astra #316 H1, through adcd's own fold: task A admitted, its plan
@@ -125,24 +255,46 @@ func TestDoneWaitsForEveryAttemptAndLease(t *testing.T) {
 	}
 }
 
-// Astra #316 M3: admission and a task's end read indexes, never the
-// history: admitting the next task and ending it read the same number of
-// projection rows whether 2 or 12 tasks were admitted and done before
-// (counted, never timed).
+// Astra #316 M3; Opus #316 r3 L1(c): admission and a task's end read
+// indexes, never the history: admitting the next task, ending it as a
+// candidate, and abandoning another read the same number of projection
+// rows whether 2 or 12 tasks were admitted and done before, each with a
+// lease on its plan granted, expired and released (counted, never timed).
 func TestAdmissionWorkIsBounded(t *testing.T) {
 	work := func(retained int) int64 {
 		w, sys := withSystem(t)
+		var op types.ActorID
 		for range retained {
-			_, task := admittedTask(t, w, sys)
+			var task types.TaskID
+			op, task = admittedTask(t, w, sys)
+			plan := templateNodes(w, task)[types.NodeKindPlan]
+			w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+			})
+			ls := grantedOn(w, sys, plan)
+			w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.ChangeLease(tx, ls.ID, 2, lease.LeaseEvent{Kind: lease.Expired}, nil)
+			})
+			w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.ChangeLease(tx, ls.ID, 3, lease.LeaseEvent{Kind: lease.Released}, nil)
+			})
+			if err := planResult(t, w, sys, plan); err != nil {
+				t.Fatal(err)
+			}
 			w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, task) })
 		}
 		_, next := readyTask(t, w, sys)
 		before := eventstore.ProjectionRowsRead()
 		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.Admit(tx, nodeKinds()) })
 		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, next) })
-		return eventstore.ProjectionRowsRead() - before
+		rows := eventstore.ProjectionRowsRead() - before
+		_, abandoned := admittedTask(t, w, sys)
+		w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return identity.RevokeActor(tx, op, time.Now()) })
+		before = eventstore.ProjectionRowsRead()
+		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.AbandonTask(tx, abandoned) })
+		return rows + eventstore.ProjectionRowsRead() - before
 	}
 	if few, many := work(2), work(12); few != many {
-		t.Errorf("rows read to admit and end a task: %d after 2 tasks, %d after 12", few, many)
+		t.Errorf("rows read to admit, end and abandon a task: %d after 2 tasks, %d after 12", few, many)
 	}
 }
