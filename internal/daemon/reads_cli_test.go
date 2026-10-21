@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -63,24 +62,4 @@ func TestReadsThroughTheCLI(t *testing.T) {
 	}
 
 	secretNotPrinted(t, outs, c.op, c.bare)
-}
-
-// M1 P1: adcd projects project.created and serves the projects read, but
-// project.create stays deferred until P22a activates intake: the fixture
-// profile is refused action_deferred and no project is listed.
-func TestProjectCreateStaysDeferred(t *testing.T) {
-	c := runCommanded(t)
-	op := c.op.Reveal()
-	profile, err := os.ReadFile("../../fixtures/m1/profiles/py-mini.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	code, out, errb := c.adc(op, "project", "create", "--expect", "0", "--reason", "r", "--scope", string(profile))
-	if code != entry.ExitCouldNotRun || !strings.Contains(out+errb, "action_deferred") {
-		t.Fatalf("project create: %d %s %s", code, out, errb)
-	}
-	code, out, errb = c.adc(op, "project", "list", "--json")
-	if code != entry.ExitOK || contract.Validate("api/read-list", []byte(out)) != nil || !strings.Contains(out, `"outcome":"empty"`) {
-		t.Fatalf("project list: %d %s %s", code, out, errb)
-	}
 }

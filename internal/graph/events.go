@@ -302,17 +302,20 @@ func claimNode(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, 
 // checks no recorded answer: only the M0 fixtures, whose answers are the
 // owed-answer fake's, and tests use it. adcd folds with Projector
 // (eligible.go).
-func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil) }
+func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil, nil) }
 
 // project folds evs, checking each event's answers first under auth (nil:
 // none, M0's fold).
-func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority) error {
+func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed []types.NodeKind) error {
 	for _, ev := range evs {
 		if !slices.Contains(kinds, ev.Kind) {
 			continue
 		}
 		var g types.GraphEvent
 		err := json.Unmarshal(ev.Payload, &g)
+		if r, ok := g.Variant.(*types.NodeRecorded); err == nil && ok && allowed != nil && !slices.Contains(allowed, r.Node.Kind) {
+			err = fmt.Errorf("deferred surface: a %s node is not among this build's kinds", r.Node.Kind)
+		}
 		if err == nil && auth != nil {
 			err = eligible(tx, ev, g.Variant, auth)
 		}

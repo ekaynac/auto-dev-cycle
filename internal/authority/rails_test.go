@@ -36,16 +36,6 @@ func raisedEvent(t *testing.T, task, rail string, to int, by types.ActorID) func
 	}
 }
 
-// newTask creates a task of prjA, by the operator, and returns its id.
-func (b *tasks) newTask(key string) string {
-	b.t.Helper()
-	d := b.upload(b.op, "def test_"+key+"(): pass\n", suiteNow())
-	if _, _, err := b.create(b.op, key, spec(prjA, "task "+key, "hidden/test.py", d)); err != nil {
-		b.t.Fatal(err)
-	}
-	return b.events(2)[0].Subject
-}
-
 // rails is task's caps in force.
 func (b *tasks) rails(task string) (c graph.Caps) {
 	b.t.Helper()
@@ -60,7 +50,7 @@ func (b *tasks) rails(task string) (c graph.Caps) {
 func TestTaskRaiseRail(t *testing.T) {
 	b := openTasks(t)
 	b.az.Handlers[authority.TaskRaiseRailAction] = authority.TaskRaiseRailHandler{}
-	one, two := b.newTask("one"), b.newTask("two")
+	one, two := b.newTask(b.op, prjA), b.newTask(b.op, prjA)
 	if c := b.rails(one); c != (graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 3, MergeOperationsPerGeneration: 2, PerTaskMicros: 5_000_000, PerDayMicros: 20_000_000}) { // py-mini's, not the defaults
 		t.Fatalf("the profile's caps: %+v", c)
 	}
@@ -131,7 +121,7 @@ func TestRailRaisedReplay(t *testing.T) {
 	}
 	t.Cleanup(func() { taskFold = authority.TaskProjector{}.Project })
 	b := openTasks(t)
-	task := b.newTask("one")
+	task := b.newTask(b.op, prjA)
 	if err := b.trySeed(b.op, raisedEvent(t, task, graph.RailRounds, 2, b.op.Actor())); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +144,7 @@ func (b *tasks) raiseWith(p identity.Principal, in map[string]any) error {
 func TestTaskRaiseUSDRail(t *testing.T) {
 	b := openTasks(t)
 	b.az.Handlers[authority.TaskRaiseRailAction] = authority.TaskRaiseRailHandler{}
-	one, two := b.newTask("one"), b.newTask("two")
+	one, two := b.newTask(b.op, prjA), b.newTask(b.op, prjA)
 	if err := b.raiseWith(b.op, map[string]any{"task": one, "rail": graph.RailTaskUSD, "to_usd": "7.50"}); err != nil {
 		t.Fatal(err)
 	}

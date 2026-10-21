@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/task-cancelled.json",
+  "title": "TaskCancelled",
+  "description": "The payload of task.cancelled/v1 (backlog #226 entry 23): a task in Ready was cancelled, terminally. internal/authority admits it only under its task's id and project, by its event's actor at its time, of a task in Ready, by a live operator or by the supervisor that created the task with no approval in force.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task", "project", "reason", "by", "at"],
+  "properties": {
+    "task": {"$ref": "../common/defs.json#/$defs/TaskID"},
+    "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+    "reason": {"$ref": "../api/scope/task-cancel.json#/$defs/CancelReason"},
+    "by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

@@ -37,15 +37,16 @@ const CommandsPath = "/v1/commands/{action}"
 // verifications held to gate; a fault no refusal names goes to log, with
 // its detail, and the client gets a fixed text.
 type commands struct {
-	store *eventstore.Store
-	gate  *api.Slots
-	reg   *vocab.Registry
-	logic map[string]logic
-	issue map[string]issuer // the credential-issuing actions'
-	log   io.Writer
-	blobs *blobstore.Store // the uploads' store, which BlobsPath serves beside the commands (api.Blobs)
-	clock func() time.Time // the store clock, which uploads are timed by (nil: time.Now)
-	probe *sandbox.Host    // the sandbox SandboxProbePath runs in (nil: none configured)
+	store   *eventstore.Store
+	gate    *api.Slots
+	reg     *vocab.Registry
+	logic   map[string]logic
+	issue   map[string]issuer  // the credential-issuing actions'
+	request map[string]request // the actions that act on their commit
+	log     io.Writer
+	blobs   *blobstore.Store // the uploads' store, which BlobsPath serves beside the commands (api.Blobs)
+	clock   func() time.Time // the store clock, which uploads are timed by (nil: time.Now)
+	probe   *sandbox.Host    // the sandbox SandboxProbePath runs in (nil: none configured)
 	// authenticated, when set, runs after a request is authenticated and
 	// before its command is submitted: a test revokes the caller there.
 	authenticated func(identity.Principal)
@@ -134,7 +135,8 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 	}
 	run, ok := h.logic[action]
 	issue, issues := h.issue[action]
-	if !ok && !issues {
+	layer, requested := h.request[action]
+	if !ok && !issues && !requested {
 		return refusal(vocab.CouldNotRun, vocab.ReasonActionDeferred, action+" is not wired in this build"), nil
 	}
 	id, err := ids.New("cmd")
@@ -143,6 +145,16 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 	}
 	c := p.Command(id, action, req.IdempotencyKey, req.Scope, nil)
 	c.Expect = &eventstore.State{Version: req.Expected.Version, Digest: (*string)(req.Expected.Digest)}
+	if requested { // what runs on the commit fails nothing the command decided: it is logged
+		decide, after := layer(c)
+		res, err := h.store.Submit(ctx, c, decide)
+		if err == nil {
+			if aerr := after(res); aerr != nil {
+				fmt.Fprintf(h.log, "adcd: command %s (%s): after its commit: %v\n", c.ID, action, aerr)
+			}
+		}
+		return h.answer(res, err)
+	}
 	if !issues {
 		res, err := h.store.Submit(ctx, c, run(c))
 		return h.answer(res, err)
