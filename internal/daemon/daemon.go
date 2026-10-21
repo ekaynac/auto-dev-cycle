@@ -37,6 +37,12 @@ type Daemon struct {
 	captures *blobstore.Store // the egress captures' (api.PurgeCaptures)
 	// capturing is held while a capture is kept and while captures are
 	// purged, so a purge never removes bytes a capture is being kept on.
+	// An exit run's capture waits for a whole purge: one commit for each
+	// capture expired since the last purge (captures live 7 days, and the
+	// purge runs every period), then one walk of the capture store, whose
+	// files are the captures of the last 7 days and unnamed bytes younger
+	// than api.CaptureGrace (Mythos #359 L2, Opus #322 r2 L4). A capture
+	// itself holds it for at most its write and captureRecordBound.
 	capturing sync.Mutex
 	head      eventstore.Head    // verified at start
 	system    identity.Principal // the system actor's, held only here

@@ -60,13 +60,25 @@ func newEgress(d *Daemon, reg registry.Registry, capture bool) (*egress, error) 
 	return &egress{gw: gw, recon: &modelcall.Reconciler{Store: d.store, Actor: actor, Now: d.clock, Clock: clock, Principal: d.system}}, nil
 }
 
+// captureRecordBound bounds a capture's record: a store writer that does
+// not answer within it fails the capture, so the request is refused
+// capture_failed, and the lock, the request's admission and Unbind are
+// released (Mythos #359 L1). The bytes it kept are swept after
+// api.CaptureGrace.
+const captureRecordBound = 30 * time.Second
+
+// recordCapture is api.RecordCapture; a test makes it wait on its context.
+var recordCapture = api.RecordCapture
+
 // captureOf is d's egress capture: each body kept in its capture store and
 // recorded as the system actor, whatever becomes of the request (the
-// record outlives its context: Opus #322 M1), under the lock the purge
-// takes too (L1).
+// record outlives its context: Opus #322 M1) but within
+// captureRecordBound, under the lock the purge takes too (L1).
 func captureOf(d *Daemon) gateway.Capture {
 	return lockedCapture{mu: &d.capturing, c: gateway.BlobCapture{Blobs: d.captures, Now: d.clock, Record: func(ctx context.Context, c gateway.Captured) error {
-		return api.RecordCapture(context.WithoutCancel(ctx), d.store, d.system, c)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), captureRecordBound)
+		defer cancel()
+		return recordCapture(rctx, d.store, d.system, c)
 	}}}
 }
 
