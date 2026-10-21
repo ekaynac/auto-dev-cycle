@@ -51,6 +51,7 @@ var (
 type stat struct {
 	asserts, skips, cert int
 	cons                 string
+	uses                 int // skipping helpers used, apart from direct skips (P14d-a1)
 }
 
 // pkgFacts is what the guard reads of one version of a package directory.
@@ -112,6 +113,7 @@ type run struct {
 	listRuns           int
 	budget             int64
 	work               int
+	skipWork           int                 // the skip layer's own (integrity_skips.go: maxSkipWork)
 	blobs              map[string][]byte   // blobs read, once
 	cgoBlobs           map[string][]byte   // read by the cgo pass, not yet charged to the budget
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
@@ -394,6 +396,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, fmt.Sprintf("fewer assertions in a test (%d → %d)", bt.asserts, at.asserts))
 		case at.skips > bt.skips:
 			add(&r.blocks, k, "a test skipped")
+		case at.uses > bt.uses:
+			add(&r.blocks, k, "a test skipped (a skipping helper used)")
 		}
 	}
 	more := func(a, b []int) bool { // on some platform: none is traded across them
