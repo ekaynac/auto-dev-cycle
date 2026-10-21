@@ -667,6 +667,8 @@ func TestGateLineage(t *testing.T) {
 			"a SHA-256 tree":                   {func(r *reportRecord) { r.Tree = strings.Repeat("0a", 32) }, true},
 			"a tree that is no git id":         {func(r *reportRecord) { r.Tree = canary }, false},
 			"an upper-case tree":               {func(r *reportRecord) { r.Tree = strings.Repeat("AB", 20) }, false},
+			"a hex tree of another length":     {func(r *reportRecord) { r.Tree = strings.Repeat("ab", 21) }, false},
+			"an empty tree":                    {func(r *reportRecord) { r.Tree = "" }, false},
 			"a reason that is no code":         {func(r *reportRecord) { r.Reason = canary }, false},
 			"an outcome that is none":          {func(r *reportRecord) { r.Outcome = vocab.Outcome(canary) }, false},
 			"a finding's outcome that is none": {func(r *reportRecord) { r.Blocking[0].Outcome = results.Outcome(canary) }, false},

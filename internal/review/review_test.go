@@ -310,6 +310,13 @@ func TestFindingsViewRedaction(t *testing.T) {
 		"test.refund/rejects:negative! now": "[test]! now",
 		"keep the rest: TestRefund":         "keep the rest: TestRefund",
 	})
+	// An id whose compact form is under minRedacted is matched spaced only:
+	// its white space runs and separators are one space.
+	check([]string{"ab_c"}, map[string]string{
+		"AB\t\t c fails": "[test] fails",
+		"ab-c fails":     "[test] fails",
+		"abc fails":      "abc fails",
+	})
 }
 
 // blobText is the blob d's content.
