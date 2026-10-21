@@ -1,0 +1,12 @@
+diff --git a/inventory/inventory.go b/inventory/inventory.go
+--- a/inventory/inventory.go
++++ b/inventory/inventory.go
+@@ -136,7 +136,7 @@
+ func (s *Store) LowStock(threshold int) []string {
+ 	out := []string{}
+ 	for k, it := range s.items {
+-		if it.Qty <= threshold {
++		if it.Qty < threshold { // strictly below, as documented
+ 			out = append(out, k)
+ 		}
+ 	}

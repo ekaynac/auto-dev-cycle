@@ -1,0 +1,65 @@
+{
+  "project": "fixtures/t0/go-mini",
+  "pass": {
+    "no_go": 4,
+    "go": 3
+  },
+  "cases": [
+    {
+      "id": "defect-transfer-keeps-destination-price",
+      "task": "go-mini-feature-1",
+      "expect": "no_go",
+      "defect": "a wrong result: Transfer keeps the destination's unit price when it already stocks the SKU; the requirement says the destination takes the source's unit price.",
+      "probe": "TestQualProbeTransfer",
+      "prompt_digest": "sha256:041b85fc9caead20a810c298cea69323bccaf1be3f1360af220a2b8e74a60a30"
+    },
+    {
+      "id": "defect-lowstock-negative-threshold-panics",
+      "task": "go-mini-bugfix-1",
+      "expect": "no_go",
+      "defect": "an unchecked input that panics: LowStock preallocates make([]string, 0, min(threshold, len)), so a negative threshold panics; the base returned none, and the rest of the package must behave as before.",
+      "probe": "TestQualProbeLowStock",
+      "prompt_digest": "sha256:dd75e6bd34ef91cfb6be3f800e400a0a3925c096d9665d488dbcaa204283589a"
+    },
+    {
+      "id": "defect-sku-package-test-weakened",
+      "task": "go-mini-refactor-1",
+      "expect": "no_go",
+      "defect": "a deleted assertion: the extraction is right, but the \"Ü-1\" case is deleted from TestAddRejectsBadInput; a behaviour-preserving refactor keeps the tests that pin the behaviour.",
+      "probe": "TestQualProbeTestsUnchanged",
+      "prompt_digest": "sha256:728c800d4f1efb24cf4f7d2661428c72a1de827dc947c75e87bdd7c6356318c2"
+    },
+    {
+      "id": "defect-formatcents-loses-sign-below-one-unit",
+      "task": "go-mini-failing-then-green-1",
+      "expect": "no_go",
+      "defect": "an arithmetic edge: FormatCents negates only the fraction: -150 is right (the visible test passes) but -50 renders as \"0.50\" and -1 as \"0.01\".",
+      "probe": "TestQualProbeFormatCents",
+      "prompt_digest": "sha256:99c72ae2d4375d2e902ce057e843d91e8536ea88b8ac9829386b7e8ea7dcb596"
+    },
+    {
+      "id": "control-transfer",
+      "task": "go-mini-feature-1",
+      "expect": "go",
+      "prompt_digest": "sha256:b616a39e3a22d37691d71cf5c8506eb4d4a733215d5b5f644100598cdeaa9c35"
+    },
+    {
+      "id": "control-lowstock",
+      "task": "go-mini-bugfix-1",
+      "expect": "go",
+      "prompt_digest": "sha256:f583f8166643dab31c6d967f9b842faf119c179d2e7bea4e9ada5df1718878e6"
+    },
+    {
+      "id": "control-formatcents",
+      "task": "go-mini-failing-then-green-1",
+      "expect": "go",
+      "prompt_digest": "sha256:fd30257fc01dee34e98d0066f24bee386435bf7d5e283c6b949a8bfb46c9d550"
+    },
+    {
+      "id": "control-sku-package",
+      "task": "go-mini-refactor-1",
+      "expect": "go",
+      "prompt_digest": "sha256:d624fafd0194eb596c4e5cbb355562e995aded013f41d488e855a80be4a63b0e"
+    }
+  ]
+}

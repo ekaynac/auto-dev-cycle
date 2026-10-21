@@ -1,0 +1,47 @@
+diff --git a/inventory/transfer.go b/inventory/transfer.go
+new file mode 100644
+--- /dev/null
++++ b/inventory/transfer.go
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: Apache-2.0
++
++package inventory
++
++import "errors"
++
++// ErrSameStore is returned when a transfer's source and destination are the same store.
++var ErrSameStore = errors.New("inventory: transfer to the same store")
++
++// Transfer moves qty units of sku from s to dst. A new SKU takes the
++// source's unit price. Every check runs before either store changes.
++func (s *Store) Transfer(dst *Store, sku string, qty int) error {
++	if s == dst {
++		return ErrSameStore
++	}
++	key, err := normalizeSKU(sku)
++	if err != nil {
++		return err
++	}
++	if qty <= 0 {
++		return ErrInvalidQuantity
++	}
++	src, ok := s.items[key]
++	switch {
++	case !ok:
++		return ErrUnknownSKU
++	case qty > src.Qty:
++		return ErrInsufficientStock
++	case qty == src.Qty:
++		delete(s.items, key)
++	default:
++		src.Qty -= qty
++		s.items[key] = src
++	}
++	have, stocked := dst.items[key]
++	price := src.PriceCents
++	if stocked {
++		price = have.PriceCents // keep the destination's price list
++	}
++	dst.items[key] = Item{SKU: key, Qty: have.Qty + qty, PriceCents: price}
++	return nil
++}
