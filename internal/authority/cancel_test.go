@@ -15,7 +15,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
-	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -115,9 +114,9 @@ func TestTaskCancelRefusals(t *testing.T) {
 		return nil, approve(tx, approved, b.op.Actor())
 	})
 	admitted := b.newTask(b.op, prjA)
-	if err := b.admitWith(b.sys, admitted, graph.M1Kinds); err != nil { // P22a-3's admission
-		t.Fatal(err)
-	}
+	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, setState(tx, admitted, authority.TaskAdmitted)
+	})
 	h := b.head()
 	for name, c := range map[string]struct {
 		p     identity.Principal
@@ -146,6 +145,11 @@ func approve(tx *eventstore.Tx, task string, actor types.ActorID) error {
 	return editTask(tx, task, func(r *authority.TaskRecord) {
 		r.Approval = &authority.TaskApproval{ID: types.ApprovalID("apr_x"), Actor: actor, Digest: r.SpecDigest, Status: authority.ApprovalInForce}
 	})
+}
+
+// setState writes task's State, as P22a's task.admitted fold will.
+func setState(tx *eventstore.Tx, task, state string) error {
+	return editTask(tx, task, func(r *authority.TaskRecord) { r.State = state })
 }
 
 func editTask(tx *eventstore.Tx, task string, edit func(*authority.TaskRecord)) error {

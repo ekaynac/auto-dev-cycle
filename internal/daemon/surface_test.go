@@ -60,9 +60,7 @@ func TestDeferredSurfacesInAdcd(t *testing.T) {
 			t.Errorf("a %s node recorded: %v", k, err)
 		}
 	}
-	// An M1(a) kind passes the guard: it is refused only as a node of a task
-	// that is not admitted (P22a-3).
-	if err := asSystem(t, d, recordedAs(t, types.NodeKindBuild)); err == nil || strings.Contains(err.Error(), "deferred surface") || !strings.Contains(err.Error(), "not admitted") {
+	if err := asSystem(t, d, recordedAs(t, types.NodeKindBuild)); err != nil {
 		t.Errorf("a build node: %v", err)
 	}
 	for _, kind := range []string{"merge", modelcall.Kind} {

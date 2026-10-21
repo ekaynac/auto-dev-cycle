@@ -194,14 +194,12 @@ func eventKinds() (eventstore.Kinds, error) {
 // ledger, the model calls' bindings, then the graph, before the next event (eventstore.ProjectEach).
 // The graph comes after leases, whose projections its supersession fold
 // reads. Units are nodes (graph.Units): an attempt starts only on a claimed
-// node's unit, and a seal binds its node's project and task. A node is
-// claimed only while its task is admitted, a build only under the task's
-// approval in force (authority.Tasks; I22, I1 consumption). No wired
-// action builds a graph event yet: admission's command is the reconcile
-// loop's (P22a-4), so the graph's projections stay empty, and no attempt
-// starts, until it runs.
+// node's unit, and a seal binds its node's project and task. No graph
+// event is admitted yet: no wired action builds one, so the graph's
+// projections stay empty, and no attempt starts, until its actions are
+// wired.
 func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reservations) func(*eventstore.Tx, []eventstore.Event) error {
-	leases := lease.Projector{Blobs: blobs, Holds: holds, Units: graph.Units{Tasks: authority.Tasks{}}} // an attempt starts only for an admitted task, its approval in force (Opus #309 M1)
+	leases := lease.Projector{Blobs: blobs, Holds: holds, Units: graph.Units{}}
 	return eventstore.ProjectEach(
 		identity.Projector{}.Project,
 		authority.GrantProjector{}.Project,
@@ -214,6 +212,6 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		capacity.Hook(leases, r),
 		ledger.Project,
 		modelcall.Project, // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
-		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds(), Tasks: authority.Tasks{}}.Project, // the folds check the recorded answers (M1 P6), the deferred surfaces (I15) and the claims' tasks (I22)
+		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds()}.Project, // the folds check the recorded answers (M1 P6) and the deferred surfaces (I15)
 	)
 }

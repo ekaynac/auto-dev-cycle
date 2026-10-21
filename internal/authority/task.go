@@ -49,7 +49,7 @@ const (
 	TaskProjection     = "tasks"
 	TaskObjectType     = "task"
 	TaskReady          = "ready"
-	TaskAdmitted       = "admitted" // task.admitted (admit.go); the board reads it
+	TaskAdmitted       = "admitted" // P22a's task.admitted; the board reads it (P22a's obligations: backlog #226 entry 42)
 	MaxReadyTasks      = 5
 	ApprovalInForce    = "in_force"
 	ApprovalRevoked    = "revoked"
@@ -57,14 +57,12 @@ const (
 )
 
 // TaskRecord is a task as recorded: the task.created payload, its state,
-// the approval of its spec digest (nil: none), its creating command, and,
-// once done, what it ended as (candidate or abandoned).
+// the approval of its spec digest (nil: none) and its creating command.
 type TaskRecord struct {
 	types.Task
 	State    string        `json:"state"`
 	Approval *TaskApproval `json:"approval"`
 	Command  string        `json:"command"`
-	DoneAs   string        `json:"done_as,omitempty"`
 }
 
 // TaskApproval is the approval bound to a task's spec digest, in force or
@@ -83,13 +81,11 @@ type TaskApproval struct {
 func TaskIDs(tx *eventstore.Tx) ([]types.TaskID, error) { return tx.Keys(TaskProjection, "tsk_") }
 
 // TaskKinds registers the task event kinds: task.created (records/task),
-// task.rail_raised (records/rail-raised, P17a), task.cancelled
-// (records/task-cancelled), task.admitted (records/task-admitted) and
-// task.done (records/task-done).
+// task.rail_raised (records/rail-raised, P17a) and task.cancelled
+// (records/task-cancelled).
 func TaskKinds() eventstore.Kinds {
 	return eventstore.Kinds{TaskCreated: {Schema: "records/task"}, TaskRailRaised: {Schema: "records/rail-raised"},
-		TaskCancelled: {Schema: "records/task-cancelled"}, TaskAdmittedEvent: {Schema: "records/task-admitted"},
-		TaskDoneEvent: {Schema: "records/task-done"}}
+		TaskCancelled: {Schema: "records/task-cancelled"}}
 }
 
 // TaskRecordOf is task id's record, which --expect is checked against.
@@ -254,10 +250,9 @@ func TaskApprovalOf(t types.Task, spec json.RawMessage, id types.ApprovalID, at 
 		Answers:      []types.OwedInputID{}, Supersedes: []types.ApprovalID{}, Reason: taskApprovalReason, At: at}
 }
 
-// TaskProjector admits task.created, task.cancelled, task.admitted and
-// task.done events and revokes a revoked actor's task approvals; it runs
-// after the projects projector and before the graph's, whose claims read
-// the admission. A task's approval
+// TaskProjector admits task.created and task.cancelled events and revokes
+// a revoked actor's task approvals; it runs after the projects projector.
+// A task's approval
 // is folded by recordApproval, which hands it to recordTaskApproval.
 type TaskProjector struct{}
 
@@ -272,10 +267,6 @@ func (TaskProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 			err = railRaised(tx, ev)
 		case TaskCancelled:
 			err = cancelTask(tx, ev)
-		case TaskAdmittedEvent:
-			err = admitTask(tx, ev)
-		case TaskDoneEvent:
-			err = doneTask(tx, ev)
 		case identity.ActorRevoked + "/v1":
 			var a types.IdentityEvent
 			if err = json.Unmarshal(ev.Payload, &a); err == nil && a.Actor != nil {
@@ -316,7 +307,7 @@ func addTask(tx *eventstore.Tx, ev eventstore.Event) error {
 	if err := errors.Join(err1, err2, err3); err != nil || !project || exists || len(ready) >= MaxReadyTasks {
 		return errors.Join(err, errors.New("the project is unregistered, the task exists or the backlog is full"))
 	}
-	if err := putTask(tx, TaskRecord{Task: t, State: TaskReady, Command: *ev.Command}); err != nil {
+	if err := putJSON(tx, TaskProjection, t.ID, TaskRecord{Task: t, State: TaskReady, Command: *ev.Command}); err != nil {
 		return err
 	}
 	return putJSON(tx, TaskProjection, "ready/"+string(t.Project)+"/"+t.ID, t.ID)
@@ -364,7 +355,7 @@ func recordTaskApproval(tx *eventstore.Tx, ev eventstore.Event, a types.Approval
 		return err
 	}
 	t.Approval = &TaskApproval{ID: a.ID, Actor: a.Actor, Digest: t.SpecDigest, At: a.At, Status: ApprovalInForce}
-	if err := putTask(tx, t); err != nil {
+	if err := putJSON(tx, TaskProjection, t.ID, t); err != nil {
 		return err
 	}
 	return putJSON(tx, TaskProjection, "approver/"+string(a.Actor)+"/"+t.ID, t.ID)
@@ -381,7 +372,7 @@ func revokeApprovals(tx *eventstore.Tx, actor types.ActorID, at types.Time) erro
 			return errors.Join(err, fmt.Errorf("the approval index names no approved task: %s", k))
 		}
 		t.Approval.Status, t.Approval.RevokedAt = ApprovalRevoked, &at
-		if err := errors.Join(putTask(tx, t), tx.Delete(TaskProjection, k)); err != nil {
+		if err := errors.Join(putJSON(tx, TaskProjection, t.ID, t), tx.Delete(TaskProjection, k)); err != nil {
 			return err
 		}
 	}

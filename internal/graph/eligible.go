@@ -48,9 +48,6 @@ type Projector struct {
 	// Kinds, when set, are the node kinds a node.recorded may hold
 	// (CheckSurface's allowlist, I15 admission: adcd's); nil, every kind.
 	Kinds []types.NodeKind
-	// Tasks, when set, is the task authority a claim or reuse takes (I22
-	// consumption: adcd's); nil, none is checked.
-	Tasks Tasks
 }
 
 // Project is the eventstore.Hooks.Project fold for the graph projections,
@@ -59,7 +56,7 @@ func (p Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	if p.Answers == nil && slices.ContainsFunc(evs, func(ev eventstore.Event) bool { return slices.Contains(kinds, ev.Kind) }) {
 		return errors.New("graph: the fold needs the authority that holds the recorded answers")
 	}
-	return project(tx, evs, p.Answers, p.Kinds, p.Tasks)
+	return project(tx, evs, p.Answers, p.Kinds)
 }
 
 // eligible: v takes only answers eligible for its node, under auth.

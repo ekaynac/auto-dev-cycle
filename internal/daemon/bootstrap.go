@@ -70,10 +70,8 @@ type bootstrapper struct {
 // it issues one; otherwise it only says what is pending. A restart never
 // renews or recreates a secret, and a consumed bootstrap's leftover file
 // (a crash after the commit) is removed. Unless issue (an offline
-// command), it only holds the state directory. It takes the store only once
-// restart recovery has run on it (recoveredStore).
-func openBootstrap(ctx context.Context, recovered recoveredStore, system identity.Principal, stateDir string, now func() time.Time, issue bool) (_ *bootstrapper, note string, err error) {
-	store := recovered.store
+// command), it only holds the state directory.
+func openBootstrap(ctx context.Context, store *eventstore.Store, system identity.Principal, stateDir string, now func() time.Time, issue bool) (_ *bootstrapper, note string, err error) {
 	dir, err := openDir(stateDir, func(st unix.Stat_t) bool { return st.Mode&0o777 == 0o700 })
 	if errors.Is(err, errUnknownFS) {
 		return nil, "", configError(fsRefusal)

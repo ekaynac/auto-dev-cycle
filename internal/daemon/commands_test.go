@@ -74,7 +74,6 @@ func runCommanded(t *testing.T, extra ...func(w *seeder, op types.ActorID)) *com
 	}
 	sys := actor(types.ActorKindSystem, "")
 	op := actor(types.ActorKindOperator, sys.ID)
-	w.sys, w.op = sys.ID, op.ID
 	c.opID, c.op = op.ID, token(op.ID, sys.ID)
 	supervisor := func(override types.GrantConfirmationOverridesValue, grant bool) (types.ActorID, identity.Secret) {
 		a := actor(types.ActorKindSupervisor, op.ID)

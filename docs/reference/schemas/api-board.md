@@ -20,10 +20,9 @@ A document is one of: [BoardPlacedCard](#boardplacedcard) or [BoardUnplacedCard]
 | `id` | yes | [TaskID](common-defs.md#taskid) |  |
 | `project` | yes | [ProjectID](common-defs.md#projectid) |  |
 | `title` | yes | string (minLength `1`, maxLength `200`) |  |
-| `column` | yes | one of `awaiting_approval`, `ready`, `running`, `verifying`, `done_candidate`, `done` | awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge), or abandoned (with the abandoned badge). |
+| `column` | yes | one of `awaiting_approval`, `ready`, `running`, `verifying`, `done_candidate`, `done` | awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge). |
 | `admitted` | yes | boolean | The admitted badge: the task holds admitted WIP, held or not. |
 | `cancelled` | yes | boolean | The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done. |
-| `abandoned` | yes | boolean | The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done. |
 | `approval` | yes | one of `none`, `in_force`, `revoked` | Its spec's approval: none, in force, or revoked. |
 | `created_at` | yes | [Time](common-defs.md#time) |  |
 | `nodes` | yes | array of [BoardNodeCard](#boardnodecard) | The task's nodes in node id order, superseded ones included as history. |

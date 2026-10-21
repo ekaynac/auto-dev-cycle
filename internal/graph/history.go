@@ -173,30 +173,7 @@ func TaskProject(tx *eventstore.Tx, task types.TaskID) (types.ProjectID, bool, e
 // Nodes is every node, in node id order (the board, M1 P4b).
 func Nodes(tx *eventstore.Tx) ([]NodeView, error) {
 	keys, err := tx.Keys(NodeProjection, "")
-	if err != nil {
-		return nil, err
-	}
-	return views(tx, keys)
-}
-
-// TaskNodes are task's nodes, superseded ones included, in node id order,
-// read from the task's index alone (Astra #316 M3).
-func TaskNodes(tx *eventstore.Tx, task types.TaskID) ([]NodeView, error) {
-	prefix := string(task) + "/"
-	keys, err := tx.Keys(TaskNodeProjection, prefix)
-	if err != nil {
-		return nil, err
-	}
-	for i := range keys {
-		keys[i] = keys[i][len(prefix):]
-	}
-	return views(tx, keys)
-}
-
-// views are the nodes keys name, with their selected results' outcomes.
-func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 	var out []NodeView
-	var err error
 	for _, k := range keys {
 		rec, lerr := loadNode(tx, types.NodeID(k))
 		if err = errors.Join(err, lerr); err != nil {

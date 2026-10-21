@@ -140,5 +140,5 @@ func cancelTask(tx *eventstore.Tx, ev eventstore.Event) error {
 		return err
 	}
 	t.State = TaskCancelledState
-	return errors.Join(putTask(tx, t), tx.Delete(TaskProjection, "ready/"+string(t.Project)+"/"+t.ID))
+	return errors.Join(putJSON(tx, TaskProjection, t.ID, t), tx.Delete(TaskProjection, "ready/"+string(t.Project)+"/"+t.ID))
 }

@@ -69,7 +69,7 @@ func (u *BoardCard) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// BoardPlacedCardColumn: awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge), or abandoned (with the abandoned badge).
+// BoardPlacedCardColumn: awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge).
 type BoardPlacedCardColumn string
 
 const (
@@ -95,14 +95,12 @@ type BoardPlacedCard struct {
 	ID      TaskID    `json:"id"`
 	Project ProjectID `json:"project"`
 	Title   string    `json:"title"`
-	// awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge), or abandoned (with the abandoned badge).
+	// awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge).
 	Column BoardPlacedCardColumn `json:"column"`
 	// The admitted badge: the task holds admitted WIP, held or not.
 	Admitted bool `json:"admitted"`
 	// The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done.
 	Cancelled bool `json:"cancelled"`
-	// The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done.
-	Abandoned bool `json:"abandoned"`
 	// Its spec's approval: none, in force, or revoked.
 	Approval  BoardPlacedCardApproval `json:"approval"`
 	CreatedAt Time                    `json:"created_at"`

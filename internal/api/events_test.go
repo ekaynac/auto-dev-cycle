@@ -51,7 +51,7 @@ type fixture struct {
 	s            *eventstore.Store
 	srv          *httptest.Server
 	now          atomic.Int64 // the server's clock, unix nanoseconds
-	sys, op, sup types.Actor
+	op, sup      types.Actor
 	opTok, supTk identity.Secret
 	grant        types.Grant
 }
@@ -136,7 +136,6 @@ func open(t *testing.T) *fixture {
 	f.s = s
 	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
 	sys.CreatedBy = sys.ID
-	f.sys = sys
 	f.op = types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
 	f.sup = types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: f.op.ID}
 	for _, a := range []struct {
