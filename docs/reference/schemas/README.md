@@ -54,6 +54,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/attempt-output-refusal.json`](records-attempt-output-refusal.md) | AttemptOutputRefusal |
 | [`records/attempt-record.json`](records-attempt-record.md) | AttemptRecord |
 | [`records/attempt.json`](records-attempt.md) | Attempt |
+| [`records/benchmark-run.json`](records-benchmark-run.md) | BenchmarkRun |
 | [`records/blob-upload-purged.json`](records-blob-upload-purged.md) | BlobUploadPurged |
 | [`records/bootstrap-renewed.json`](records-bootstrap-renewed.md) | BootstrapRenewed |
 | [`records/challenge.json`](records-challenge.md) | Challenge |

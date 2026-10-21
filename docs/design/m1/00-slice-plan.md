@@ -268,7 +268,7 @@ acceptance tests, baseline). The three (c) issues are chosen the same way, one a
 
 | | |
 |---|---|
-| **Commands** | Live (the exit record, controller host): `installed-cycle.sh $P --routes live --project repo --issue $N --until candidate --bench benchmarks/m1/<date>-<arch>-a.json`. <br>Stub (CI): `--routes stub --project go-mini --case candidate` (task `go-mini-feature-1`, #226 entry 94), the cases `launch-missing-credential`, `launch-missing-image`, `admission-held` and `owed-input` (X6, below), and §2.6's build, accept, gate, review, provider and usage faults, all with `--expect candidate`: each case's `expect.candidate` block applies (no `merge` node, the task closed as a candidate after review), and the benchmark records stages up to review only |
+| **Commands** | Live (the exit record, controller host): `installed-cycle.sh $P --routes live --project repo --issue $N --until candidate --bench benchmarks/m1/<date>-<GOOS>-<GOARCH>-a.json`. <br>Stub (CI): `--routes stub --project go-mini --case candidate` (task `go-mini-feature-1`, #226 entry 94), the cases `launch-missing-credential`, `launch-missing-image`, `admission-held` and `owed-input` (X6, below), and §2.6's build, accept, gate, review, provider and usage faults, all with `--expect candidate`: each case's `expect.candidate` block applies (no `merge` node, the task closed as a candidate after review), and the benchmark records stages up to review only |
 | **Fixtures** | `fixtures/m1/profiles/auto-dev-cycle.json` (P32: `forge.kind: github`, base `refs/heads/main`, the pinned Go image, gate `["go","test","-json","./<pkg>/..."]` with `result_adapter: go_test_json`, `protected_paths` covering criterion 2's paths); `fixtures/m1/issues/<N>/`; for CI, go-mini (#226 entry 94, #300): T0's `fixtures/t0/go-mini` with the task `go-mini-feature-1`, the profile `fixtures/m1/profiles/go-mini.json` (gate `["go","test","-count=1","-json","./..."]` with `result_adapter: go_test_json`), the measured records `fixtures/m1/stub/go-mini/`, and the stub provider. go-mini gets its own prepared Go image (the same base and toolchain, go-mini's manifest), pinned in its profile before 22a-5; its baseline is then measured again (#226 entry 97); `fixtures/m1/review-qualification/` (P31) |
 | **Prerequisites** | §2.1; Q1's runtime with both pinned images present (this repository's and go-mini's); Q2's two routes inside Q8, with credentials; read access to clone this repository at its base; P31's qualification recorded for the reviewer route |
 | **Assertions** | See below |
@@ -399,7 +399,7 @@ acceptance tests, baseline). The three (c) issues are chosen the same way, one a
 
 | | |
 |---|---|
-| **Commands** | **Live:** `installed-cycle.sh $P --routes live --project repo --issues $I1,$I2,$I3 --until merged --no-rescue --bench benchmarks/m1/<date>-<arch>-c.json`. <br>**Installed:** `adc dev fixtures --contract stalled-task-pages`. <br>**Afterwards:** `adc dev liveness --since <run start> --json`; `adc dev gate-ledger --since <first live attempt> --json` |
+| **Commands** | **Live:** `installed-cycle.sh $P --routes live --project repo --issues $I1,$I2,$I3 --until merged --no-rescue --bench benchmarks/m1/<date>-<GOOS>-<GOARCH>-c.json`. <br>**Installed:** `adc dev fixtures --contract stalled-task-pages`. <br>**Afterwards:** `adc dev liveness --since <run start> --json`; `adc dev gate-ledger --since <first live attempt> --json` |
 | **Fixtures** | `fixtures/m1/issues/<I1..I3>/`, each chosen by §2.2's rules; the contract fixture `stalled-task-pages`, with a golden and a named mutation |
 | **Prerequisites** | (b) passed; P29 and P30 merged; the `stalled` hold registered in `schemas/vocab/holds.yaml` with signal, owner and paging (below) |
 | **Assertions** | See below |
@@ -582,18 +582,19 @@ Repair rounds count as their kind.
 
 | Metric, per task and per stage | How it is measured |
 |---|---|
-| wall time (s) | **Stage:** from a node's `node.claimed` to its `result.selected`; for `merge`, to `effect.observed` or `effect.reconciled{completed}`; summed over the stage's nodes. **Task:** from `approval.recorded` to the closure's `result.selected`. Controller event times only |
-| tokens: in, out, cache_read, cache_write | Σ `ledger.Reconcile` figures over the calls of the stage's attempts (attempt → node, P8a), with each call's `source_of_truth` |
-| charge | Σ `cost.amount` per `cost.basis`. Outstanding liabilities are listed apart, never counted as zero |
+| wall time (s) | **Stage:** from a node's `node.claimed` to its `result.selected`; for `merge`, to `effect.observed` or `effect.reconciled{completed}`; summed over the stage's nodes. A node not finished is counted `unfinished`, one never claimed `pending`, both apart. **Task:** from `approval.recorded` to the closure's `result.selected`. Controller event times only |
+| tokens: in, out, cache_read, cache_write | Σ each call's `ledger.StandingOf` figure (the gateway's count included) over the calls of the stage's attempts (attempt → node, P8a; a call of two stages is refused), with each call's `source_of_truth` |
+| charge | Σ `cost.amount` of the settled calls per `cost.basis` (the adapter's or provider's, never the gateway's); every settled call, on any basis, at no less than its standing figure at the route's registry price (`ledger.PriceMicros`), as the ledger never trusts a reported cost nor its basis label (#226 entry 62); a charge the floor raised is recorded under basis `cash`, any other under its reported basis; free and local routes declare a zero price, so there it leaves no floor. Outstanding liabilities, the unsettled or unmeasured calls at the largest of their USD cost, their tokens at the route's registry price and their ledger liability, are listed apart under basis `cash`, never counted as zero. No currency is converted: a settled call in another currency is refused when its floor is positive, and an unsettled one when it reports an amount |
 | attempts, rounds | attempts per stage; review and repair rounds |
 | interventions | operator and supervisor commands attributed to the task, per stage (approvals, answers, rail raises); rescues are counted apart and must be zero in (c) |
 | outcome | the closure's `(outcome, reason)`, or the task's hold |
 
-- **Recorder:** `adc dev bench record --task T… --json` (P25), reading `adc task show` and the ledger over the API.
-- **Output:** `benchmarks/m1/<date>-<arch>.json` (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
+- **Recorder:** `adc dev bench record --task T… --json` (P25), reading `adc task show` and the ledger over the API, then `internal/bench.Record`, which computes the metrics from them, project-agnostic.
+  `Record` trusts, and the command must pass: as `Task.Calls`, every call `ledger.BoundTo` returns for each lease of the task, each with the attempt it is attributed to; as `Task.Usage`, every measurement the ledger holds for each of those calls (a dropped report changes a call's standing, with no trace); as a call's liability, the `usd_micros` group's amount of `capacity.LiabilitiesOf` once its lease has settled, and the lease's `usd_micros` reservation while it has not, passed once per lease (on one of its unmeasured or unsettled calls, zero on the others), never repeated per call; and each route's registry price (a zero price removes the floor). It also trusts the reported `cost.basis` and `currency` labels, which select the rule that prices a call.
+- **Output:** `benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json` (`bench.Path`) (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
   routes (executor ids and families) and fixture digests. A summary goes in the exit record.
-- **Re-runs:** every later exit re-runs it with the same command and records the deltas. It reports regressions and
-  never gates on them.
+- **Re-runs:** every later exit re-runs it with the same command and records the deltas (`bench.Compare`, rendered by `bench.Deltas`). It reports regressions and
+  never gates on them. The exit record follows `exit-record-template.md`.
 
 ## 3. Invariant-enforcement inventory (D45, D58)
 
@@ -740,7 +741,7 @@ Rough sizes in lines; **H** marks high-risk contracts (external review by Astra)
 | P29 | liveness check in the reconcile driver; the `stalled` hold registered (§2.5) | P22a | c | 300 | a frontierless task with no hold |
 | P30 | gate ledger read model over the gate, accept and review records that P14a-P16 keep from (a)'s first live attempt. False blocks and escapes are operator annotations (`note.add` on the node's subject), kept from (a) as well. The `adc.accept-report/v1` schema, bounded, with its inventory entry (#226 entry 67) | P22a | c | 300 | an unknown charge reported as zero |
 | P24b | the cases, the install wiring and the driver, split from P24: the case format `fixtures/m1/cases/<case>/case.json`, with its schema and a loader row that loads every case; `dist-adapters.sh` and `install-check.sh` install `lib/adc/fixtures/m1/` (T0's go-mini included), `lib/adc/scripts/lib/*.sh` and `installed-cycle.sh`, all in `lib/adc/SHA256SUMS`; the driver (§2.1), with `make installed-cycle-stub` in `make ci`. Until 22a-7, the driver runs only `--case preflight`, and a step that needs a later 22a PR refuses (exit 2). Then the `candidate` case and (a)'s stub cases on go-mini, with §2.6's Go forms | P24a; the cases follow 22a-2 to 22a-7 | a, b, c | about 220 before the driver's later steps (M) | — |
-| P25 | benchmark recorder, `records/benchmark-run`, and the per-checkpoint exit records | P24b | a, b, c | 350 | — |
+| P25 | benchmark recorder, `records/benchmark-run`, and the per-checkpoint exit records. Done without P22a and P24b: the schema, `internal/bench` (`Record`, `Compare`, `Summary`, project-agnostic) and `exit-record-template.md`; `adc dev bench record` reads over the API once W18 (`adc task show`) lands | P24b | a, b, c | 350 | — |
 | P23 | action owners per Q7; regenerate `action-matrix.md` | — | any | 60 | — |
 | P10 | the allowlisted registry proxy (phase 1 for changing dependencies) | P9 | backlog | 500 | an install script contacting another host |
 | P26a-d | 15's D7 follow-ups (Q6 note) | — | backlog, off the M1 path | 600 | per item |
