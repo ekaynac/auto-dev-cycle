@@ -30,7 +30,11 @@ No other fields are allowed.
 | `absent` |  | array of one of `plan`, `build`, `accept`, `gate`, `review` (unique items) | Node kinds of which no node is ever claimed for the task; none is also in nodes. |
 | `holds` | yes | array of string (minLength `1`) | The registered holds the task ends with. |
 | `merge` | yes | boolean | Whether a merge node is recorded (checkpoint (a): never). |
-| `canaries` | yes | array of string (minLength `8`) | Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance). |
+| `canaries` | yes | array of string (minLength `8`) | Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance) or of the case's base_overlay (a decoy nothing may read). |
+| `reviewer_canaries` |  | array of string (minLength `8`) (unique items) | Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7), which logs at least one reviewer request (a case with reviewer_canaries names its review node): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay. |
+| `builder_sees` |  | array of string (minLength `8`, maxLength `256`) (unique items) | Strings each of which appears in the content of a message of at least one builder request the stub provider logs: what the builder's tool calls returned, such as the workspace's refusal (refused: ...) of a hostile call. The scenario never carries one (the stub cannot produce it itself). |
+| `gateway_requests` |  | array of object ([fields](#fields-of-expectgateway_requests)) | Requests, files of this case, the driver sends on the attempt's gateway socket with the attempt's token, each with the HTTP status the gateway answers and, for a refusal, the reason its body names. |
+| `canary_paths` |  | array of string (pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) (unique items) | File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-&lt;case&gt;). |
 | `usage` |  | object ([fields](#fields-of-expectusage)) | The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts). |
 
 No other fields are allowed.
@@ -41,6 +45,16 @@ No other fields are allowed.
 |---|---|---|---|
 | `outcome` | yes | string (minLength `1`) |  |
 | `reason` | yes | string (minLength `1`) |  |
+
+No other fields are allowed.
+
+## Fields of expect.gateway_requests[]
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `file` | yes | string (pattern `^[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9.-]{0,63}$`) |  |
+| `status` | yes | integer (minimum `100`, maximum `599`) |  |
+| `reason` |  | string (pattern `^[a-z][a-z0-9_]{0,63}$`) |  |
 
 No other fields are allowed.
 

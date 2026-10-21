@@ -57,9 +57,10 @@ read -r node_version node_sum < <(awk -v p="$platform" '$1 == p { print $2, $5 }
 [[ -d "$src/lib/adc" && ! -L "$src/lib/adc" ]] || die "$src/lib/adc is missing (run make dist)"
 mkdir -p -- "$prefix/lib"
 cp -R -- "$src/lib/adc" "$prefix/lib/adc"
-links="$(cd "$prefix/lib/adc" && find . -type l -printf '%p -> %l\n' | sort)"
+# hostile-symlink's base link (P24c) is allowed only to its decoy, beside it in its case.
+links="$(cd "$prefix/lib/adc" && find . -type l -printf '%p -> %l\n' | grep -vxF './fixtures/m1/cases/hostile-symlink/testdata/docs/key -> ../decoy/key' | sort)"
 [[ "$links" == $'./node_modules/@adc/contract -> ../../adapters/contract\n./node_modules/@adc/contract-gen -> ../../gen/ts' ]] ||
-  die "lib/adc holds other symlinks than the two @adc links: $links"
+  die "lib/adc holds other symlinks than the two @adc links and hostile-symlink's base link: $links"
 lib="$prefix/lib/adc"
 [[ -f "$lib/SHA256SUMS" && ! -L "$lib/SHA256SUMS" ]] || die "lib/adc has no SHA256SUMS"
 (cd "$lib" && sha256sum --check --strict --quiet SHA256SUMS) || die "lib/adc does not match its SHA256SUMS"

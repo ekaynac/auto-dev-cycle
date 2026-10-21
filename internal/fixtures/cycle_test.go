@@ -24,7 +24,8 @@ const m1 = "../../fixtures/m1"
 // exists, whose overlay and hook are files of the case, whose expected
 // outcomes are registered reasons of their outcomes and holds registered
 // holds, whose absent kinds are none of its nodes', and whose canaries
-// each occur in a file of the task's hidden/ (its acceptance) and are not
+// each occur in a file of the task's hidden/ (its acceptance) or, a decoy
+// (P24c), of the case's base overlay, and are not
 // carried by the scenario (the positive control: the stub cannot leak them
 // itself). Its usage, when given, is the scenario's sum, and is given only
 // for a scenario whose every script is replies.
@@ -117,16 +118,61 @@ func TestCycleCases(t *testing.T) {
 		}); err != nil {
 			t.Errorf("%s: the task's hidden/: %v", name, err)
 		}
+		// P24c: the contents of the case's base overlay's regular files (a
+		// symlink in it is never followed).
+		var overlay []string
+		if c.BaseOverlay != nil {
+			_ = filepath.WalkDir(filepath.Join(filepath.Dir(file), string(*c.BaseOverlay)), func(path string, d os.DirEntry, err error) error {
+				if err == nil && d.Type().IsRegular() {
+					b, rerr := os.ReadFile(path)
+					overlay, err = append(overlay, string(b)), rerr
+				}
+				return err
+			})
+		}
+		in := func(files []string, s string) bool {
+			for _, f := range files {
+				if strings.Contains(f, s) {
+					return true
+				}
+			}
+			return false
+		}
 		for _, canary := range c.Expect.Canaries {
 			if strings.Contains(string(body), canary) {
 				t.Errorf("%s: the scenario itself carries the canary %q", name, canary)
 			}
-			found := false
-			for _, h := range hidden {
-				found = found || strings.Contains(h, canary)
+			if !in(hidden, canary) && !in(overlay, canary) {
+				t.Errorf("%s: the canary %q is in no file of %s nor of its base overlay", name, canary, hiddenDir)
 			}
-			if !found {
-				t.Errorf("%s: the canary %q is in no file of %s", name, canary, hiddenDir)
+		}
+		// P24c: a reviewer canary is in a file of the case's base overlay, or
+		// is the driver's {canary}, which the case's profile overlay carries;
+		// the scenario never carries it (the stub cannot leak it itself). Its
+		// case names its review node: a run with no reviewer request would
+		// hold it trivially.
+		if c.Expect.ReviewerCanaries != nil {
+			if _, ok := c.Expect.Nodes["review"]; !ok {
+				t.Errorf("%s: it has reviewer canaries, but names no review node", name)
+			}
+			for _, canary := range *c.Expect.ReviewerCanaries {
+				found := canary == "{canary}" && strings.Contains(string(c.ProfileOverlay), "{canary}") || in(overlay, canary)
+				if !found || strings.Contains(string(body), canary) {
+					t.Errorf("%s: the reviewer canary %q is in no file of its base overlay (nor its profile overlay's {canary}), or the scenario carries it", name, canary)
+				}
+			}
+		}
+		// P24c: what the builder must see comes from the run, never from the scenario.
+		if c.Expect.BuilderSees != nil {
+			for _, s := range *c.Expect.BuilderSees {
+				if strings.Contains(string(body), s) {
+					t.Errorf("%s: the scenario itself carries %q, which the builder must see", name, s)
+				}
+			}
+		}
+		if c.Expect.GatewayRequests != nil {
+			for _, r := range *c.Expect.GatewayRequests {
+				exists("a gateway request", filepath.Join(filepath.Dir(file), r.File))
 			}
 		}
 		if c.Expect.Usage != nil {

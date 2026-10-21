@@ -1,0 +1,1 @@
+http://198.51.100.7/chat/completions

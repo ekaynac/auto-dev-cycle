@@ -72,7 +72,10 @@ while IFS= read -r d; do
 done <<<"$deps"
 ((third > 0)) || die "pnpm listed no third-party dependency: is the workspace installed?"
 
-# The two @adc links are the only symlinks packaged.
-links="$(cd "$out" && find . -type l | sort)"
+# The two @adc links and hostile-symlink's base link (P24c: a link to the
+# decoy beside it, inside its case) are the only symlinks packaged.
+case_link=./fixtures/m1/cases/hostile-symlink/testdata/docs/key
+[[ ! -L "$out/$case_link" || "$(readlink "$out/$case_link")" == ../decoy/key ]] || die "$case_link does not point to ../decoy/key"
+links="$(cd "$out" && find . -type l ! -path "$case_link" | sort)"
 [[ "$links" == $'./node_modules/@adc/contract\n./node_modules/@adc/contract-gen' ]] || die "unexpected symlinks: $links"
 echo "dist-adapters: the fake and http-chat adapters, $third third-party packages, py-mini, go-mini, fixtures/m1 and the cycle harness into $out"

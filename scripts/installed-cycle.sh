@@ -21,14 +21,20 @@
 #   - CASE preflight (P24b) checks that much: the base remote's tree is the
 #     one go-mini's measured baseline binds, the stub answers its scenario
 #     and its usage query, and the operator's token reads the controller;
-#   - any other CASE (fixtures/m1/cases/CASE/case.json) needs project and
+#   - any other CASE (fixtures/m1/cases/CASE/case.json) builds its base
+#     remote with its base_overlay (every file and symlink of it in main, a
+#     NAME.hostile file as NAME) and writes its profile (the profile_overlay
+#     merged, a {canary} in it replaced by a canary minted for this run,
+#     recorded in out/canary: §2.7 hostile-gate-output's gate command, not
+#     the driver, writes it into its results mount); it then needs project and
 #     task create (P22a-2), admission (P22a-3), launch (P22a-5), review
 #     (P22a-6) and task wait and show (P22a-7): until they land it exits 2,
 #     naming them, and claims nothing.
 # Afterwards, every case stops adcd, verifies its log (adc dev verify-log,
 # whose head is seq N > 0), restarts it (it must report its event log
 # verified to seq N, with no new bootstrap secret: it replayed the same
-# store), stops it again, and runs the shared secret scan
+# store), stops it again, checks that no path under the work directory, or
+# beside it, is named as one of the case's canary_paths (§2.7), and runs the shared secret scan
 # (scripts/lib/secrets.sh) over the whole temporary directory, both runs'
 # logs (out/adcd-1.log, out/adcd-2.log) included. --routes live is P25's. Every wait is
 # bounded. Exit 0 only when every check holds; 1 when one fails; 2 when the
@@ -145,14 +151,38 @@ sock="$work/state/adcd.sock"
 step() { echo "installed-cycle: $case: $*"; }
 adc() { "${run_env[@]}" ADC_SOCKET="$sock" timeout 60 "$prefix/bin/adc" "$@"; }
 
-task="go-mini-feature-1" scenario="go-mini-feature-1"
+task="go-mini-feature-1" scenario="go-mini-feature-1" overlay=""
 if [[ -n "$case_file" ]]; then
   task="$(json "$case_file" d.task)" scenario="$(json "$case_file" d.scenario)" want="$(json "$case_file" d.project)"
   [[ "$want" == "$project" ]] || cannot "case $case is $want's, not $project's"
+  o="$(json "$case_file" d.base_overlay)"
+  if [[ -n "$o" ]]; then overlay="$(dirname "$case_file")/$o"; fi
 fi
 
 step "the base remote of $project's $task"
-tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "" "$work/remote.git")" || die "the base remote failed"
+tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "$overlay" "$work/remote.git")" || die "the base remote failed"
+if [[ -n "$overlay" ]]; then
+  while IFS= read -r -d '' f; do
+    f="${f#"$overlay"/}" f="${f%.hostile}"
+    git --git-dir="$work/remote.git" cat-file -e "main:$f" 2>/dev/null || die "the base remote lacks the case's $f"
+  done < <(find "$overlay" \( -type f -o -type l \) -print0)
+fi
+if [[ -n "$case_file" ]]; then
+  step "the case's profile, its canary minted for this run"
+  canary="ADC-CANARY-$case-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  printf '%s\n' "$canary" >"$work/out/canary"
+  # The profile_overlay merged over the profile (RFC 7396), {canary} replaced in every string.
+  "$node" -e 'const fs = require("node:fs"); const [profile, file, canary, out] = process.argv.slice(1);
+    const merge = (t, p) => { if (p === null || typeof p !== "object" || Array.isArray(p)) return p;
+      const r = t !== null && typeof t === "object" && !Array.isArray(t) ? { ...t } : {};
+      for (const [k, v] of Object.entries(p)) { if (v === null) delete r[k]; else r[k] = merge(r[k], v); } return r; };
+    const sub = (v) => typeof v === "string" ? v.replaceAll("{canary}", canary) : Array.isArray(v) ? v.map(sub)
+      : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sub(x)])) : v;
+    const c = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(out, JSON.stringify(sub(merge(JSON.parse(fs.readFileSync(profile, "utf8")), c.profile_overlay ?? {}))))' \
+    "$fixtures/m1/profiles/$project.json" "$case_file" "$canary" "$work/profile.json" || die "the case's profile failed"
+  if grep -q '{canary}' "$case_file" && ! grep -qF "$canary" "$work/profile.json"; then die "the case's profile does not carry its canary"; fi
+fi
 if [[ "$project" == go-mini && -z "$case_file" ]]; then
   want="$(json "$fixtures/m1/stub/go-mini/baseline.json" d.base_tree)"
   [[ "$tree" == "$want" ]] || die "the base remote's tree is $tree, the measured baseline's $want"
@@ -232,6 +262,19 @@ kill "$stub" 2>/dev/null || true
 wait "$stub" 2>/dev/null || true
 stub=""
 
+if [[ -n "$case_file" ]]; then
+  step "no canary path under the work directory or beside it"
+  while IFS= read -r name; do
+    [[ -z "$name" ]] && continue
+    rc=0
+    found="$(canary_path "$work" "$name")" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) die "a canary path exists: $found" ;;
+      *) die "canary_path could not check $name (exit $rc)" ;;
+    esac
+  done < <(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')
+fi
 step "no secret outside the operator's token file"
 scan "" "$boot" "$work"
 scan "$work/home/.config/adc/token" "$tok" "$work"

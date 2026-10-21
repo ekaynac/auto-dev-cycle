@@ -92,7 +92,12 @@ install-check: dist build ## Install the dist build into an empty prefix, check 
 
 installed-cycle-stub: dist build ## Install the dist build into an empty prefix and run the installed cycle harness's stub cases from outside the checkout (P24; preflight until P22a lands)
 	@$(INSTALL_PREFIX) \
-	  && mkdir "$$tmp/cwd" && (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight)
+	  && mkdir "$$tmp/cwd" && (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight) \
+	  && for c in $$(cd fixtures/m1/cases && ls -d hostile-*); do \
+	    (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case "$$c") >"$$tmp/$$c.out" 2>&1 && rc=0 || rc=$$?; \
+	    if [ "$$rc" -ne 2 ] || ! grep -q "could_not_run: $$c needs project and task create" "$$tmp/$$c.out"; then \
+	      echo "installed-cycle-stub: $$c: its setup failed (exit $$rc):" >&2; tail -n 5 "$$tmp/$$c.out" >&2; exit 1; fi; \
+	    echo "installed-cycle-stub: $$c: setup checked; the run needs P22a"; done
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
