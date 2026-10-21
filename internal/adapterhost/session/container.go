@@ -22,7 +22,8 @@ import (
 // a PID namespace, is the boundary, so the client is never put under
 // bubblewrap. Remove removes the container and returns nil only once it has
 // seen it gone: the client's exit does not mean the container's has (the
-// runtime's monitor, not the client, is its parent).
+// runtime's monitor, not the client, is its parent). Each call must check
+// afresh.
 type Container struct {
 	Command []string
 	Env     []string
@@ -31,11 +32,14 @@ type Container struct {
 
 // StartContainer is Spawn's counterpart for a Container (Open calls it for
 // Config.Container): it starts c's client as the session's process. Kill (the
-// deadline among its causes) kills the client through its pidfd and starts
-// the removal; Wait returns after the client has exited, the removal has
-// returned and stderr has ended. A removal that fails, for any reason,
-// makes Wait's error ErrUnverified: the container may still run, and
-// nothing it wrote may be ingested.
+// deadline among its causes) starts an early removal, so a client no signal
+// reaches still ends with its container, and kills the client through its
+// pidfd. Wait returns after the client has exited, the early removal (if
+// any) has returned, a fresh removal has run (the early one's result is
+// never used: it may have run before the container existed; #374 L1), and
+// stderr has ended. A fresh removal that fails, for any reason, makes Wait's
+// error ErrUnverified: the container may still run, and nothing it wrote
+// may be ingested.
 func StartContainer(c *Container, deadline time.Duration) (*Process, error) {
 	if c == nil || len(c.Command) == 0 || c.Remove == nil || deadline <= 0 {
 		return nil, errors.New("adapterhost: a container needs a command, a removal and a positive deadline")
@@ -60,18 +64,26 @@ func StartContainer(c *Container, deadline time.Duration) (*Process, error) {
 		// exec's error names the client's path, never the adapter's argv or env.
 		return nil, fmt.Errorf("adapterhost: spawn: %w", err)
 	}
-	// The removal starts once, from Kill or from the waiter, and never
-	// under the caller's context: it must run whatever the session does.
-	removed := make(chan struct{})
-	var once sync.Once
-	var rmErr error
-	remove := func() {
-		once.Do(func() {
-			go func() {
-				defer close(removed)
-				rmErr = c.Remove(context.Background())
-			}()
-		})
+	// Removals never run under the caller's context: they must run whatever
+	// the session does. The early one starts at most once, and never once the
+	// final one is due.
+	var (
+		rmMu           sync.Mutex
+		early          sync.WaitGroup
+		started, final bool
+	)
+	remove := func() { // from Kill, under p.mu: it must not block
+		rmMu.Lock()
+		defer rmMu.Unlock()
+		if started || final {
+			return
+		}
+		started = true
+		early.Add(1)
+		go func() {
+			defer early.Done()
+			_ = c.Remove(context.Background())
+		}()
 	}
 	// The client's pidfd stands where bubblewrap's would (bwrapFD): Kill
 	// signals it; there is no init to watch.
@@ -90,9 +102,11 @@ func StartContainer(c *Container, deadline time.Duration) (*Process, error) {
 		p.waitErr = cmd.Wait()
 		// The removal before the drain: whatever else holds stderr (the
 		// runtime's monitor) ends only with the container.
-		remove()
-		<-removed
-		if rmErr != nil {
+		rmMu.Lock()
+		final = true
+		rmMu.Unlock()
+		early.Wait()
+		if c.Remove(context.Background()) != nil {
 			p.waitErr = ErrUnverified
 		}
 		<-drained

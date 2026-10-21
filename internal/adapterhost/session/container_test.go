@@ -129,19 +129,19 @@ func TestContainerAFailedRemovalIsUnverified(t *testing.T) {
 	}
 }
 
-// Kill, however often, and the deadline remove the container once; the
-// client is killed, and Wait returns.
+// Kill, however often, and the deadline start one early removal, and Wait
+// runs one fresh removal after the client is killed: two in all.
 func TestContainerKillAndTheDeadlineRemove(t *testing.T) {
 	rm := &removal{}
 	p := startC(t, container(t, "linger", rm), time.Hour)
 	p.Kill()
 	p.Kill()
-	if err := p.Wait(); err == nil || errors.Is(err, ErrUnverified) || p.Expired() || rm.calls.Load() != 1 {
+	if err := p.Wait(); err == nil || errors.Is(err, ErrUnverified) || p.Expired() || rm.calls.Load() != 2 {
 		t.Fatalf("killed: Wait %v, expired %v, %d removals", err, p.Expired(), rm.calls.Load())
 	}
 	rm = &removal{}
 	p = startC(t, container(t, "linger", rm), time.Millisecond)
-	if err := p.Wait(); err == nil || !p.Expired() || rm.calls.Load() != 1 {
+	if err := p.Wait(); err == nil || !p.Expired() || rm.calls.Load() != 2 {
 		t.Fatalf("deadline: Wait %v, expired %v, %d removals", err, p.Expired(), rm.calls.Load())
 	}
 }
@@ -168,7 +168,7 @@ func TestContainerRemovalPrecedesTheDrain(t *testing.T) {
 }
 
 // Open runs a Container through the session, not Command: a clean shutdown
-// removes it once; a failed removal is ErrUnverified.
+// removes it; a failed removal is ErrUnverified.
 func TestOpenRunsAContainer(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		rm := &removal{}
@@ -181,7 +181,7 @@ func TestOpenRunsAContainer(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := s.Wait()
-		if fail != errors.Is(err, ErrUnverified) || !fail && err != nil || rm.calls.Load() != 1 {
+		if fail != errors.Is(err, ErrUnverified) || !fail && err != nil || rm.calls.Load() < 1 {
 			t.Errorf("removal failing %v: Wait %v, %d removals", fail, err, rm.calls.Load())
 		}
 		wantEnd(t, s, s.Err(), KindClosed, vocab.ReasonAttemptStopped)
@@ -198,7 +198,24 @@ func TestContainerKillWithoutASignalRemoves(t *testing.T) {
 	p := startC(t, container(t, "linger", rm), time.Hour)
 	rm.do = func() { _ = p.cmd.Process.Kill() } // the runtime ends the client with its container
 	p.Kill()
-	if err := p.Wait(); err == nil || rm.calls.Load() != 1 {
+	if err := p.Wait(); err == nil || rm.calls.Load() != 2 {
 		t.Fatalf("Wait %v, %d removals", err, rm.calls.Load())
+	}
+}
+
+// Wait never reuses the Kill-time removal's result: it may have run before
+// the container existed. Here it said gone, the fresh one does not: Wait is
+// ErrUnverified (#374 L1).
+func TestContainerWaitRemovesAfresh(t *testing.T) {
+	rm := &removal{}
+	rm.do = func() {
+		if rm.calls.Load() > 1 {
+			rm.err = errors.New("still listed")
+		}
+	}
+	p := startC(t, container(t, "linger", rm), time.Hour)
+	p.Kill()
+	if err := p.Wait(); !errors.Is(err, ErrUnverified) || rm.calls.Load() != 2 {
+		t.Fatalf("Wait %v, %d removals; want ErrUnverified after a fresh one", err, rm.calls.Load())
 	}
 }

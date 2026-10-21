@@ -124,18 +124,26 @@ func (h Host) args(r Run, name string) ([]string, error) {
 	if !imgID.MatchString(r.Image.ID) || len(r.Argv) == 0 || l.Memory <= 0 || l.CPUs == "" || l.PIDs <= 0 || l.Timeout <= 0 || l.Disk <= 0 {
 		return nil, fmt.Errorf("%w: no resolved image, command or limits", ErrSpec)
 	}
+	// --timeout: conmon itself ends the run at its limit, even with no
+	// controller left to kill the client (a crash; #374 M3).
 	args := []string{"run", "--rm", "--name=" + name, "--pull=never", "--network=none", "--no-hosts", "--hostname=sandbox",
 		"--user=0:0", "--cap-drop=all", "--security-opt=no-new-privileges", "--read-only", "--read-only-tmpfs=false",
 		"--systemd=false", "--env-host=false", "--http-proxy=false", "--log-driver=none",
 		"--memory=" + strconv.FormatInt(l.Memory, 10), "--cpus=" + l.CPUs, "--pids-limit=" + strconv.Itoa(l.PIDs),
+		"--timeout=" + strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds())), 10),
 		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
 		"--env=HOME=" + homeDir, "--workdir=" + WorkspaceDir,
 		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir, "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}
 	if r.Mode == Build {
 		args = append(args, "--mount=type=bind,src="+m[2]+",dst="+GatewaySocket)
 	}
-	if r.Exchange != "" { // an interactive run: the adapter's stdio, its exchange, and where its gateway is
-		args = append(args, "--interactive", "--mount=type=bind,src="+m[3]+",dst="+ExchangeIn+",ro=true",
+	if r.Exchange != "" {
+		// An interactive run: the adapter's stdio (no detach keys: its input
+		// is the session's, whatever the bytes), the container's id in the
+		// attempt's directory (Interactive's removal is by that id, never by
+		// a name another run may hold), its exchange, and where its gateway is.
+		args = append(args, "--interactive", "--detach-keys=", "--cidfile="+cidFile(filepath.Dir(m[0])),
+			"--mount=type=bind,src="+m[3]+",dst="+ExchangeIn+",ro=true",
 			"--mount=type=bind,src="+m[4]+",dst="+ExchangeOut, "--env=ADC_GATEWAY_SOCKET="+GatewaySocket)
 	}
 	if h.mutate != nil { // tests only: the live fault injections
@@ -174,12 +182,17 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 }
 
 // within refuses an attempt that holds more than disk bytes, maxEntries
-// entries or maxDepth levels, or one that cannot be measured.
-func (a *Attempt) within(disk int64) error {
-	root, err := os.OpenRoot(a.Dir)
-	if err == nil {
-		defer root.Close()
-		var size int64
+// entries or maxDepth levels, or one that cannot be measured. also are
+// directories the run wrote besides the attempt's (an interactive run's
+// exchange out/), counted against the same bound with it.
+func (a *Attempt) within(disk int64, also ...string) error {
+	var size int64
+	var err error
+	for _, dir := range append([]string{a.Dir}, also...) {
+		var root *os.Root
+		if root, err = os.OpenRoot(dir); err != nil {
+			break
+		}
 		err = walk(root.FS(), ".", maxEntries, func(p string, d fs.DirEntry) error {
 			info, err := d.Info()
 			if err != nil {
@@ -198,6 +211,10 @@ func (a *Attempt) within(disk int64) error {
 			size += n
 			return nil
 		})
+		root.Close()
+		if err != nil {
+			break
+		}
 	}
 	if err != nil && !errors.Is(err, ErrSpec) {
 		err = fmt.Errorf("%w: the run left what cannot be measured: %w", ErrSpec, err)
