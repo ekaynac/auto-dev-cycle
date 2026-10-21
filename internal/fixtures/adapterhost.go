@@ -351,7 +351,7 @@ func runCase(ctx context.Context, host *adapterhost.Host, do func(func(*eventsto
 		return out, "", "", nil, err
 	}
 	call = types.CallID(cid)
-	out, err = host.Run(ctx, adapterhost.Spec{AnyTool: true, Lease: l.ID, LeaseRevision: 2, Attempt: att, Call: call, Prompt: []byte("fix it\n"),
+	out, err = startedRun(ctx, host, do, 2, adapterhost.Spec{AnyTool: true, Lease: l.ID, Attempt: att, Call: call, Prompt: []byte("fix it\n"),
 		Base:    types.AttemptBase{Tree: types.GitID("git:" + "cccccccccccccccccccccccccccccccccccccccc"), ContractRevision: "7"},
 		Adapter: session.Config{InProcess: inproc.New(scriptedPeer(c, &failed)), Deadline: 30 * time.Second},
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: l.Executor, Model: "fixture-model",
@@ -361,12 +361,27 @@ func runCase(ctx context.Context, host *adapterhost.Host, do func(func(*eventsto
 	return out, att, call, failed, err
 }
 
+// startedRun prepares spec's attempt, starts it on its lease, granted at
+// revision, as these fixtures' own controller does (the host never starts
+// one: I16), and runs it.
+func startedRun(ctx context.Context, host *adapterhost.Host, do func(func(*eventstore.Tx) ([]eventstore.Event, error)) error,
+	revision int64, spec adapterhost.Spec) (adapterhost.Outcome, error) {
+	p, err := host.Prepare(spec)
+	if err != nil {
+		return adapterhost.Outcome{}, err
+	}
+	if err := do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, spec.Lease, revision, spec.Attempt, spec.Base)
+	}); err != nil {
+		return adapterhost.Outcome{}, errors.Join(err, p.Discard())
+	}
+	return p.Run(ctx)
+}
+
 // attemptStep maps an attempt's end to its step: a submission is
 // empty/completed_clean, a refusal failed/<its reason>.
 func attemptStep(out adapterhost.Outcome) (Step, error) {
 	switch {
-	case out.StartRefused != nil:
-		return Step{}, out.StartRefused
 	case len(out.Refusals) > 0:
 		return Step{vocab.Failed, string(out.Refusals[0].Reason)}, nil
 	case out.Submitted != nil:

@@ -383,7 +383,7 @@ func TestReportExitCodes(t *testing.T) {
 		"submitted, then error": {nil, adapterhost.Outcome{Submitted: sub(types.OutcomeEmpty, vocab.ReasonCompletedClean)}, errors.New("cleanup"), entry.ExitOK, vocab.ReasonCompletedClean},
 		"refusal":               {nil, adapterhost.Outcome{Refusals: refusal(types.AttemptOutputRefusalReasonUnsafeOutput)}, nil, entry.ExitRefused, vocab.ReasonUnsafeOutput},
 		"stale":                 {nil, adapterhost.Outcome{Refusals: refusal(types.AttemptOutputRefusalReasonStaleAttempt)}, nil, entry.ExitStale, vocab.ReasonStaleAttempt},
-		"start refused":         {nil, adapterhost.Outcome{StartRefused: errors.New("no capability")}, nil, entry.ExitCouldNotRun, vocab.ReasonPreconditionFailed},
+		"start refused":         {nil, adapterhost.Outcome{}, errStartRefused, entry.ExitCouldNotRun, vocab.ReasonPreconditionFailed},
 		"host error":            {nil, adapterhost.Outcome{}, errors.New("bwrap"), entry.ExitCouldNotRun, vocab.ReasonExecutorIncomplete},
 		"stopped before start":  {cancelled, adapterhost.Outcome{}, context.Canceled, entry.ExitCouldNotRun, vocab.ReasonAttemptStopped},
 		"timeout":               {nil, adapterhost.Outcome{Session: timeout}, nil, entry.ExitCouldNotRun, vocab.ReasonAttemptStopped},
@@ -475,5 +475,25 @@ func TestRemoveStateWalksOnlyWhenTold(t *testing.T) {
 	}
 	if _, err := os.Lstat(dir); err == nil {
 		t.Fatal("the state is still there")
+	}
+}
+
+// Opus #326 M1: only a failed prelaunch check refuses the start. Another
+// Prepare failure (an exchange root it cannot write) is the host's,
+// returned as is: neither refused nor started.
+func TestOnlyTheProbeRefusesTheStart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.Mkdir(root, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	var started, refused bool
+	_, err := startPrepared(&adapterhost.Host{Root: root}, adapterhost.Spec{Attempt: "att_01m3250vnfeyrv67x6w0ddqr6a", Prompt: []byte("p")},
+		func() error { started = true; return nil }, func() error { refused = true; return nil })
+	if err == nil || errors.Is(err, errStartRefused) || started || refused {
+		t.Fatalf("an unwritable root: %v, started %v, refused %v", err, started, refused)
+	}
+	if r, code := report(context.Background(), adapterhost.Spec{}, adapterhost.Outcome{}, err); code != entry.ExitCouldNotRun || r.Reason != vocab.ReasonExecutorIncomplete.String() {
+		t.Errorf("the report: %d %s", code, r.Reason)
 	}
 }

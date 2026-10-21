@@ -57,7 +57,7 @@ func onlyRefusal(t *testing.T, w *world, out Outcome, name string, check types.A
 func TestEventDeclaredOutputsAreChecked(t *testing.T) {
 	w := newWorld(t)
 	excerpt := handleJSON(att, "excerpt.txt", "outside")
-	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+	out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 		Files:  map[string]string{"patch.diff": patch},
 		Links:  map[string]string{"excerpt.txt": "outside"},
 		Events: []string{`"event":"error","turn":1,"class_hint":"other","raw_excerpt":` + excerpt, usageEvent(10), `"event":"error","turn":1,"class_hint":"other","raw_excerpt":` + excerpt},
@@ -76,7 +76,7 @@ func TestEventDeclaredOutputsAreChecked(t *testing.T) {
 // The fake's error scenarios declare excerpts they never write: unreadable.
 func TestAMissingExcerptIsUnreadable(t *testing.T) {
 	w := newWorld(t)
-	out, err := w.host.Run(context.Background(), spec(fake(t, "http-5xx")))
+	out, err := w.run(context.Background(), spec(fake(t, "http-5xx")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestUnservedToolNotificationsRefuseTheRun(t *testing.T) {
 		w := newWorld(t)
 		sp := spec(fake(t, "tool"))
 		sp.Prepare.ToolPolicy.Mediated = []string{"RunTest"}
-		out, err := w.host.Run(context.Background(), sp)
+		out, err := w.run(context.Background(), sp)
 		if err != nil || !errors.Is(out.Session, ErrUnservedEvent) || out.Submitted != nil {
 			t.Fatalf("run: %v, session %v, submitted %v", err, out.Session, out.Submitted)
 		}
@@ -101,7 +101,7 @@ func TestUnservedToolNotificationsRefuseTheRun(t *testing.T) {
 	})
 	t.Run("tool.result", func(t *testing.T) {
 		w := newWorld(t)
-		out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+		out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 			Events: []string{`"event":"tool.result","turn":1,"tool":"RunTest","mediated_by_controller":true,"delivered":` + handleJSON(att, "answer", "x") + `,"bytes":1`},
 		})))
 		if err != nil || !errors.Is(out.Session, ErrUnservedEvent) || out.Submitted != nil {
@@ -124,7 +124,7 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	t.Cleanup(func() { testHook = nil })
 	sp := spec(stub(t, stubPlan{Tools: []string{"read_file", "run_command"}, Result: clean}))
 	sp.AnyTool, sp.Tools = false, EditLoopTools()
-	out, err := w.host.Run(context.Background(), sp)
+	out, err := w.run(context.Background(), sp)
 	if err != nil || !errors.Is(out.Session, ErrToolRefused) || out.Submitted != nil || prepared {
 		t.Fatalf("run: %v, session %v, submitted %v, prepared %v", err, out.Session, out.Submitted, prepared)
 	}
@@ -134,7 +134,7 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	w = newWorld(t)
 	sp = spec(stub(t, stubPlan{Tools: []string{"read_file", "list_dir", "write_file", "delete_file"}}))
 	sp.AnyTool, sp.Tools = false, EditLoopTools()
-	if out, err := w.host.Run(context.Background(), sp); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
+	if out, err := w.run(context.Background(), sp); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
 		t.Fatalf("the edit loop's own tools: %v, session %v", err, out.Session)
 	}
 	// Opus #322 L3: a refused tool never hides an unverified exit: a caller
@@ -145,7 +145,7 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 		Events: []string{`"event":"tool.result","turn":1,"tool":"run_command","mediated_by_controller":false,"delivered":null,"bytes":1`, usageEvent(10)},
 		Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 10)}))
 	sp.AnyTool, sp.Tools = false, EditLoopTools()
-	out, err = w.host.Run(context.Background(), sp)
+	out, err = w.run(context.Background(), sp)
 	waitTree = (*session.Session).Wait
 	if err != nil || !errors.Is(out.Session, ErrToolRefused) || !errors.Is(out.Session, session.ErrUnverified) {
 		t.Errorf("a refused tool over an unverified exit: %v, session %v", err, out.Session)
@@ -162,7 +162,7 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 			Events: []string{`"event":"tool.result","turn":1,"tool":"` + tc.tool + `","mediated_by_controller":false,"delivered":null,"bytes":1`, usageEvent(10)},
 			Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 10)}))
 		sp.AnyTool, sp.Tools = false, EditLoopTools()
-		out, err := w.host.Run(context.Background(), sp)
+		out, err := w.run(context.Background(), sp)
 		if err != nil || errors.Is(out.Session, ErrToolRefused) != tc.refused || (out.Submitted == nil) != tc.refused {
 			t.Errorf("%s: %v, session %v, submitted %v", name, err, out.Session, out.Submitted)
 		}
@@ -175,7 +175,7 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 		prepared = false
 		sp = spec(stub(t, stubPlan{Tools: tc.tools}))
 		sp.AnyTool, sp.Tools = false, nil
-		out, err := w.host.Run(context.Background(), sp)
+		out, err := w.run(context.Background(), sp)
 		if err != nil || errors.Is(out.Session, ErrToolRefused) != tc.refused || prepared == tc.refused {
 			t.Errorf("%s: %v, session %v, prepared %v", name, err, out.Session, prepared)
 		}
@@ -207,7 +207,7 @@ func TestInvalidPathsAreRefused(t *testing.T) {
 				}
 				t.Cleanup(func() { testHook = nil })
 			}
-			out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+			out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 				Events: []string{usageEvent(10)},
 				Result: resultJSON("patch", handleJSON(tc.attempt, "../patch.diff", patch), 10),
 			})))
@@ -233,7 +233,7 @@ func TestSizeAndUnreadableAreRefused(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
-			out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{Result: tc.result})))
+			out, err := w.run(context.Background(), spec(stub(t, stubPlan{Result: tc.result})))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -248,7 +248,7 @@ func TestSizeAndUnreadableAreRefused(t *testing.T) {
 func TestAForeignResultKeepsItsFinal(t *testing.T) {
 	w := newWorld(t)
 	other := att[:len(att)-1] + "b"
-	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+	out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 		Files:  map[string]string{"patch.diff": patch},
 		Events: []string{usageEvent(10)},
 		Result: resultJSON("patch", handleJSON(other, "patch.diff", patch), 500),
@@ -278,7 +278,7 @@ func TestNothingWritesAfterTheTreeExits(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { testHook = nil })
-	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+	out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 		Files:  map[string]string{"patch.diff": patch},
 		Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 1),
 		Late:   "patch.diff",
@@ -320,7 +320,7 @@ func TestCancellationStillFinalises(t *testing.T) {
 			if tc.at != "event:usage" {
 				plan.Result = resultJSON("patch", handleJSON(att, "patch.diff", patch), 10)
 			}
-			out, err := w.host.Run(ctx, spec(stub(t, plan)))
+			out, err := w.run(ctx, spec(stub(t, plan)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -347,7 +347,7 @@ func TestHostFaultsHaveFixedTexts(t *testing.T) {
 				return nil, fault
 			}
 			t.Cleanup(func() { stage = ingest.Stage })
-			out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
+			out, err := w.run(context.Background(), spec(fake(t, "safe-output")))
 			if !errors.Is(err, ErrIngest) || strings.Contains(err.Error(), secret) || strings.Contains(fmt.Sprint(out.Session), secret) {
 				t.Fatalf("run error %q, session %v", err, out.Session)
 			}
@@ -373,7 +373,7 @@ func TestExchangeSetupFailuresCleanUp(t *testing.T) {
 				return nil
 			}
 			t.Cleanup(func() { setupFault = nil })
-			out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{})))
+			out, err := w.run(context.Background(), spec(stub(t, stubPlan{})))
 			if !errors.Is(err, ErrExchange) || out.Result != nil {
 				t.Fatalf("run: %v", err)
 			}
@@ -414,7 +414,7 @@ func TestALongRunStillFinalises(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { testHook, finalizeTimeout = nil, FinalizeTimeout })
-	out, err := w.host.Run(ctx, spec(stub(t, stubPlan{
+	out, err := w.run(ctx, spec(stub(t, stubPlan{
 		Files:       map[string]string{"patch.diff": patch},
 		Events:      []string{usageEvent(10)},
 		HeartbeatMs: 800,
@@ -431,7 +431,7 @@ func TestALongRunStillFinalises(t *testing.T) {
 // and the result's accounting is still recorded.
 func TestABrokenShutdownRefusesTheResult(t *testing.T) {
 	w := newWorld(t)
-	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+	out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 		Files:    map[string]string{"patch.diff": patch},
 		Events:   []string{usageEvent(10)},
 		Result:   resultJSON("patch", handleJSON(att, "patch.diff", patch), 10),
@@ -453,7 +453,7 @@ func TestABrokenShutdownRefusesTheResult(t *testing.T) {
 // session failure: nothing is submitted or published, accounting is kept.
 func TestAFailedShutdownOutcomeRefusesTheResult(t *testing.T) {
 	w := newWorld(t)
-	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+	out, err := w.run(context.Background(), spec(stub(t, stubPlan{
 		Files:    map[string]string{"patch.diff": patch},
 		Events:   []string{usageEvent(10)},
 		Result:   resultJSON("patch", handleJSON(att, "patch.diff", patch), 10),
@@ -478,7 +478,7 @@ func TestAFailedDiscardIsReported(t *testing.T) {
 	}
 	w := newWorld(t)
 	stuckAfterIngestion(t, w)
-	out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
+	out, err := w.run(context.Background(), spec(fake(t, "safe-output")))
 	if !errors.Is(err, ErrCleanup) || strings.Contains(err.Error(), w.dir) || out.Submitted != nil {
 		t.Fatalf("run: %v, submitted %v", err, out.Submitted)
 	}
@@ -507,7 +507,7 @@ func stuckAfterIngestion(t *testing.T, w *world) {
 }
 
 // Astra #109 round 3: a refused output whose staging could not remove its
-// temporary file is still refused, and Host.Run reports the cleanup failure
+// temporary file is still refused, and Prepared.Run reports the cleanup failure
 // (ErrCleanup) apart from it: a digest mismatch, and a post-copy refusal.
 func TestARefusalWithACleanupFailure(t *testing.T) {
 	for name, check := range map[string]string{"digest": ingest.CheckDigest, "replaced": ingest.CheckReplaced} {
@@ -517,7 +517,7 @@ func TestARefusalWithACleanupFailure(t *testing.T) {
 				return nil, errors.Join(&ingest.Unsafe{Check: check, Detail: "refused"}, blobstore.ErrTempLeft)
 			}
 			t.Cleanup(func() { stage = ingest.Stage })
-			out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
+			out, err := w.run(context.Background(), spec(fake(t, "safe-output")))
 			if !errors.Is(err, ErrCleanup) || errors.Is(err, blobstore.ErrTempLeft) || out.Submitted != nil {
 				t.Fatalf("run: %v, submitted %v", err, out.Submitted)
 			}
@@ -543,7 +543,7 @@ func TestUsageOffItsBindingStillEndsTheAttempt(t *testing.T) {
 	w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return nil, tx.Put(ledger.BindingProjection, string(calID), bound)
 	})
-	_, err = w.host.Run(context.Background(), spec(stub(t, stubPlan{
+	_, err = w.run(context.Background(), spec(stub(t, stubPlan{
 		Files:  map[string]string{"patch.diff": patch},
 		Events: []string{usageEvent(10)},
 		Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 500),
