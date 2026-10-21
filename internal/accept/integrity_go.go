@@ -309,6 +309,7 @@ type fileMeta struct {
 // methods by receiver and asserting helpers (testing values made: the types layer).
 type pkgScan struct {
 	r         *run
+	cs        caseScan // P14d-b (integrity_cases.go)
 	pkg       *types.Package
 	info      *types.Info
 	tvals     map[types.Object]string
@@ -671,6 +672,9 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				inits = append(inits, fn.Body) // a function: its body, not its signature
 			} else if hook {
 				hooks = append(hooks, fn.Body)
+			}
+			if test && !hook && goTest(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
+				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn, fset.File(fn.Pos()), m.src)
 			}
 			switch {
 			case hook:

@@ -64,6 +64,7 @@ type pkgFacts struct {
 	bad                         map[string]string   // per file: why it is not verified
 	untyped                     map[string]string   // per package: why its real types are not read (P14e)
 	typed                       map[string]int      // "file\x00function\x00fact" the real types show (P14e)
+	cases                       map[string]caseAlts // per test, its cases per build constraint (P14d-b)
 	tree                        *tree               // the version read
 }
 
@@ -129,6 +130,8 @@ type run struct {
 
 	// a Python blob's binding verdicts (pyBindings), once in either tree (Astra #281 r6 M2)
 	pyBinds map[string][2]map[string]bool
+
+	caseWork int // the case layer's work (integrity_cases.go: maxCaseWork)
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects
@@ -330,7 +333,7 @@ func (r *run) goMod() error {
 func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
 		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
-		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, tree: t}
+		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, cases: map[string]caseAlts{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" {
@@ -396,6 +399,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, "a test skipped")
 		}
 	}
+	r.compareCases(add, b, a) // P14d-b: the tests' cases
+
 	more := func(a, b []int) bool { // on some platform: none is traded across them
 		return slices.ContainsFunc(platforms, func(pl [2]string) bool { return a[slices.Index(platforms, pl)] > b[slices.Index(platforms, pl)] })
 	}
