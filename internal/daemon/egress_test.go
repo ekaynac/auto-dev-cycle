@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -267,4 +268,79 @@ func TestEgressCaptureOutlivesItsRequest(t *testing.T) {
 func blobDigest(b []byte) string {
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// Opus #322 L1: a settlement that fails is retried by a later end: the
+// first end returns its error and leaves the call as it was; the second
+// settles it; a third settles nothing more.
+func TestEgressEndRetriesAFailedSettlement(t *testing.T) {
+	_, cfg, a, l, call := cutStore(t)
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	calls := 0
+	settleCall = func(e *egress, ctx context.Context, call types.CallID) error {
+		if calls++; calls == 1 {
+			return errors.New("the settlement failed (the test)")
+		}
+		return e.settle(ctx, call)
+	}
+	t.Cleanup(func() { settleCall = (*egress).settle })
+	effect := func() string {
+		eff, err := d.store.LoadEffect(context.Background(), modelcall.EffectOf(call))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return eff.LastObservation
+	}
+	before := effect()
+	e, err := newEgress(d, registry.Registry{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, end, err := e.open(gateway.Binding{Lease: l, Attempt: a, Call: call}, filepath.Join(shortDir(t), "gw.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := end(ctx); err == nil || effect() != before {
+		t.Fatalf("the first end: %v; the observation %q → %q", err, before, effect())
+	}
+	if _, err := end(ctx); err != nil || effect() == before {
+		t.Fatalf("the second end: %v; the observation %q → %q", err, before, effect())
+	}
+	if _, err := end(ctx); err != nil || calls != 2 {
+		t.Errorf("a third end: %v, %d settlements", err, calls)
+	}
+}
+
+// Opus #322 L2: a capture waits for the lock the purge holds: it neither
+// stores nor records while held, and does once released.
+func TestEgressCaptureWaitsForThePurge(t *testing.T) {
+	dir := stateDir(t)
+	d := restart(t, dir)
+	t.Cleanup(func() { _ = d.Close() })
+	b := gateway.Binding{Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")), Call: types.CallID(newID(t, "cal"))}
+	kept := func() int { return count(t, dir, `SELECT count(*) FROM events WHERE kind = '`+api.CaptureKept+`'`) }
+	stored := func() int {
+		bs, err := d.captures.Stored()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(bs)
+	}
+	d.capturing.Lock()
+	done := make(chan error, 1)
+	go func() { done <- captureOf(d).Keep(context.Background(), b, []byte("a body")) }()
+	time.Sleep(200 * time.Millisecond)
+	if kept() != 0 || stored() != 0 {
+		d.capturing.Unlock()
+		t.Fatal("a capture went past the purge's lock")
+	}
+	d.capturing.Unlock()
+	if err := <-done; err != nil || kept() != 1 || stored() != 1 {
+		t.Fatalf("the capture once released: %v, %d kept, %d stored", err, kept(), stored())
+	}
 }
