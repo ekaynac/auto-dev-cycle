@@ -334,3 +334,16 @@ func TestRoute(t *testing.T) {
 		t.Errorf("a review on the executor's route recorded as another model's: %v", err)
 	}
 }
+
+// P31a: a reviewer is prepared with no tool, neither its own nor mediated,
+// and a read-only workspace. The http-chat adapter never offers a reviewer
+// a tool either (TestRoute: no request carries tools), so this checks the
+// controller's own params, which an adapter that honoured them would use.
+func TestReviewerPrepare(t *testing.T) {
+	limits := types.AdapterPrepareParamsLimits{MaxTurns: MaxTurns, MaxOutputTokens: MaxOutputTokens, WallSeconds: 60}
+	p := reviewerPrepare("exe_01m4tm99haemqt8es2qfbwj8pb", "stub-reviewer-1", "/work", "a-token-of-at-least-sixteen", limits)
+	if p.Role != "reviewer" || p.Workspace.Writable || len(p.ToolPolicy.Allowed) != 0 || len(p.ToolPolicy.Mediated) != 0 ||
+		p.ToolPolicy.Allowed == nil || p.ToolPolicy.Mediated == nil {
+		t.Errorf("a reviewer's prepare params: %+v", p)
+	}
+}
