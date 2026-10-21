@@ -316,6 +316,51 @@ func TestStoreBefore333Starts(t *testing.T) {
 	startClose(t, cfg)
 }
 
+// Mythos #348 H1 (Astra #321 H2): a store main wrote before #348, holding
+// a result.recorded event but no graph_task_results, starts: the index is
+// built from the log, equal to the rows a store written with it holds, and
+// to a full replay; it starts again. Both a store with the record of built
+// projections (main's, after #347) and one from before the record.
+func TestStoreBefore348Starts(t *testing.T) {
+	for _, record := range []bool{true, false} {
+		t.Run(fmt.Sprintf("with the record %v", record), func(t *testing.T) {
+			dir := stateDir(t)
+			w := seed(t, dir, daemonProjection(t, tokens(10)))
+			fullHistory(t, w)
+			plan := plannedIn(t, w, graphProject)
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+			})
+			completePlan(t, w, w.sys, plan)
+			w.done()
+			cfg := Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}
+			if record {
+				startClose(t, cfg) // the record of built projections, graph_task_results in it
+			}
+			want := rows(t, dir, graph.TaskResultProjection)
+			if len(want) != 1 {
+				t.Fatalf("the store holds %d graph_task_results records", len(want))
+			}
+			execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+graph.TaskResultProjection+`'`)
+			if record {
+				execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '_built' AND key = '`+graph.TaskResultProjection+`'`)
+			}
+			startClose(t, cfg)
+			if got := rows(t, dir, graph.TaskResultProjection); fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("graph_task_results built %v, want %v", got, want)
+			}
+			d, err := Start(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			diffs, err := d.store.RebuildProjections(context.Background())
+			if err := errors.Join(err, d.Close()); err != nil || len(diffs) != 0 {
+				t.Fatalf("the started store is not a full replay: %+v, %v", diffs, err)
+			}
+		})
+	}
+}
+
 // Opus #341 H2: a forged record of built projections never makes a
 // projection of builtBeforeRecord one to build. One forged row in a store
 // written before the record, with capacity_reserved emptied, is refused;
@@ -519,7 +564,7 @@ func TestProjectionsRegistered(t *testing.T) {
 	for _, p := range projections {
 		names = append(names, p.Name)
 	}
-	if want := append(frozen, "lease_grants", "unit_open", "graph_task_nodes", "attempt_starts", "unit_first_attempt", "captures"); fmt.Sprint(names) != fmt.Sprint(want) {
+	if want := append(frozen, "lease_grants", "unit_open", "graph_task_nodes", "attempt_starts", "unit_first_attempt", "captures", "graph_task_results"); fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("projections are not builtBeforeRecord, then the ones added since:\n%v\n%v", names, want)
 	}
 }
