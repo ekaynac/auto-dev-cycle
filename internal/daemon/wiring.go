@@ -5,8 +5,10 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
@@ -19,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -47,12 +50,33 @@ func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Ev
 
 // systemActions are the controller's own commands, the system actor's
 // alone: the bootstrap's, the upload purge, restart recovery's steps and
-// its orphan refusal (P21a, P21b; #226 entry 81), and the model calls'
-// intent, count and reconciliation (P12a, P11b, P20; #226 entry 60). None
-// is a registered action a principal may ask for.
-var systemActions = []string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction,
+// its orphan refusal (P21a, P21b; #226 entry 81), the model calls'
+// intent, count and reconciliation (P12a, P11b, P20; #226 entry 60), and
+// the reconcile loop's actions (P22a-4). None is a registered action a
+// principal may ask for.
+var systemActions = append([]string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction,
 	recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
-	modelcall.Action, modelcall.Counted, ledger.ReconcileAction}
+	modelcall.Action, modelcall.Counted, ledger.ReconcileAction}, reconcile.Actions...)
+
+// reconcileEvery is the reconcile loop's period (P22a-4; lead decision:
+// 5 s, plus a nudge after each applied command).
+const reconcileEvery = 5 * time.Second
+
+// reconciler is adcd's reconcile loop, a pass every every (0:
+// reconcileEvery): it admits only while the admission capability is active
+// (Opus #312 L4), and evaluates the admitted task's nodes only once launch
+// is active. Obligation for P22a-5: before launch.Active(), the Env carries
+// Need (the gate's requirements) and Blobs (the receipt blobs), without
+// which graph.Evaluate refuses every evaluation (Opus #312 L5).
+func reconciler(d *Daemon, every time.Duration, logw io.Writer) *reconcile.Loop {
+	admission, _ := capability.Of("admission")
+	launch, _ := capability.Of("launch")
+	if every == 0 {
+		every = reconcileEvery
+	}
+	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: graph.Env{Authority: authority.Answers{}}}
+	return reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+}
 
 // authorizer is the one authorizer over the wired handlers: the writer's
 // Authorize hook and the request layer's logic (logics, issuers) share it.
