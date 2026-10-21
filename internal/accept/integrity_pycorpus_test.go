@@ -149,10 +149,11 @@ func measureCorpus(t *testing.T, c corpusRepo) (corpusRepoResult, []corpusFile) 
 		t.Fatal(err)
 	}
 	defer cleanup()
-	r := &run{ctx: ctx, repo: repo, base: c.commit, read: g.blob, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{}, touched: map[string]bool{}}
-	if err := r.list(); err != nil || r.files == nil {
-		t.Fatalf("%s: the base list: %v %q", c.name, err, whats(r.blocks))
+	files, links, err := listBase(ctx, repo, c.commit)
+	if err != nil || files == nil {
+		t.Fatalf("%s: the base list: %v", c.name, err)
 	}
+	r := &run{ctx: ctx, read: g.blob, files: files, links: links, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{}, touched: map[string]bool{}}
 	r.cand = maps.Clone(r.files)
 	r.baseDirs, r.candDirs = byDir(r.files), byDir(r.cand)
 	custom, _, paths, err := r.pyCustom()
