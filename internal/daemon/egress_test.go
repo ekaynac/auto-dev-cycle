@@ -22,6 +22,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
@@ -262,6 +263,37 @@ func TestEgressCaptureOutlivesItsRequest(t *testing.T) {
 	if has, _ := d.captures.Has(kept); !has {
 		t.Error("a kept capture's bytes were swept")
 	}
+}
+
+// Mythos #359 L1: a capture whose record the store does not take is
+// bounded: the record runs under a deadline (captureRecordBound), even for a
+// request whose context ended, and its failure fails the capture, so the
+// gateway refuses capture_failed and the lock is free again.
+func TestEgressCaptureRecordIsBounded(t *testing.T) {
+	d := restart(t, stateDir(t))
+	t.Cleanup(func() { _ = d.Close() })
+	var bound time.Duration
+	recordCapture = func(ctx context.Context, _ *eventstore.Store, _ identity.Principal, _ gateway.Captured) error {
+		dl, ok := ctx.Deadline()
+		if ok {
+			bound = time.Until(dl)
+		}
+		return context.DeadlineExceeded // the writer did not answer in time
+	}
+	t.Cleanup(func() { recordCapture = api.RecordCapture })
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	b := gateway.Binding{Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")), Call: types.CallID(newID(t, "cal"))}
+	if err := captureOf(d).Keep(cancelled, b, []byte("a body")); err == nil {
+		t.Fatal("a capture whose record timed out was kept")
+	}
+	if bound <= 0 || bound > captureRecordBound {
+		t.Errorf("the record's deadline: %s from now, want within %s", bound, captureRecordBound)
+	}
+	if !d.capturing.TryLock() {
+		t.Fatal("the capture lock is still held")
+	}
+	d.capturing.Unlock()
 }
 
 // blobDigest is b's blob digest.
