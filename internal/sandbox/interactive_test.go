@@ -57,7 +57,7 @@ func TestInteractiveIsStartPlusTheExchange(t *testing.T) {
 	if !slices.Equal(it.Command, want) {
 		t.Errorf("the interactive command:\n%q\nwant\n%q", it.Command, want)
 	}
-	if !slices.Contains(it.Command, "--name="+ContainerName(att)) || !slices.Contains(batch, "--timeout=60") || !slices.Equal(it.Env, h.env()) || it.Deadline != r.Limits.Timeout {
+	if !slices.Contains(it.Command, "--name="+ContainerName(att)) || !slices.Contains(batch, "--timeout=90") /* 60 s and conmonGrace */ || !slices.Equal(it.Env, h.env()) || it.Deadline != r.Limits.Timeout {
 		t.Errorf("name, environment or deadline: %q %q %s", it.Command, it.Env, it.Deadline)
 	}
 }
@@ -192,6 +192,23 @@ func TestInteractiveRemove(t *testing.T) {
 	}
 }
 
+// An attempt whose directory holds a cid file (a run of it may still exist)
+// is refused, and podman never runs (#374 Mythos M1).
+func TestInteractiveRefusesACidFile(t *testing.T) {
+	f := &fake{}
+	h := testHost(t, f)
+	att := newAttemptID(t)
+	r := testRun(t, h, Build)
+	r.Exchange = exchange(t, h, att)
+	must(t, os.WriteFile(filepath.Join(r.Attempt.Dir, "cid"), []byte(testCID+"\n"), 0o600))
+	if _, err := h.Interactive(r, att); !errors.Is(err, ErrSpec) || !strings.Contains(err.Error(), "cid file") {
+		t.Fatalf("a held cid file: %v, want ErrSpec", err)
+	}
+	if len(f.calls) != 0 {
+		t.Errorf("podman ran: %q", f.calls)
+	}
+}
+
 // What the run wrote to its exchange's out/ counts against Limits.Disk with
 // the attempt's directory: past the bound, Remove fails (#374 M1).
 func TestInteractiveRemoveBoundsTheExchange(t *testing.T) {
@@ -266,6 +283,27 @@ func TestRemoveStale(t *testing.T) {
 	}
 	if !slices.Equal(rms, []string{ContainerName(stale), batch}) {
 		t.Errorf("removals: %q", rms)
+	}
+}
+
+// One failed removal does not stop the sweep: the rest are removed, and the
+// failure is returned with them (#374 Mythos L2).
+func TestRemoveStaleGoesOnPastAFailure(t *testing.T) {
+	first, second := newAttemptID(t), newAttemptID(t)
+	failed := errors.New("rm stalled")
+	f := &fake{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch {
+		case slices.Contains(args, "rm") && slices.Contains(args, ContainerName(first)):
+			return nil, failed
+		case slices.Contains(args, "--filter=name=^adc-att_"):
+			return []byte(ContainerName(first) + "\n" + ContainerName(second) + "\n"), nil
+		}
+		return nil, nil
+	}}
+	h := testHost(t, f)
+	removed, err := h.RemoveStale(context.Background(), func(string) bool { return false })
+	if !errors.Is(err, failed) || !slices.Equal(removed, []string{second}) {
+		t.Fatalf("removed %q, %v; want the second removed and the first's failure", removed, err)
 	}
 }
 

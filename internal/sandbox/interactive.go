@@ -60,7 +60,10 @@ func cidFile(attemptDir string) string { return filepath.Join(attemptDir, "cid")
 
 // Interactive checks r, an interactive build run of attempt, and returns
 // its command; nothing runs. The attempt is unsafe from now until Remove
-// succeeds.
+// succeeds. An attempt whose directory holds a cid file is refused: a run of
+// it may still exist, and this run's Remove would remove that container
+// (#374 Mythos M1). Its caller tears the attempt down only once Remove has
+// succeeded: the cid file is the removal's handle.
 func (h Host) Interactive(r Run, attempt string) (Interactive, error) {
 	if r.Exchange == "" || ids.Check(attempt, "att") != nil || filepath.Base(r.Exchange) != "exchange-"+attempt {
 		return Interactive{}, fmt.Errorf("%w: an interactive run needs its attempt's exchange", ErrSpec)
@@ -69,6 +72,9 @@ func (h Host) Interactive(r Run, attempt string) (Interactive, error) {
 	args, err := h.args(r, name)
 	if err != nil {
 		return Interactive{}, err
+	}
+	if _, err := os.Lstat(cidFile(r.Attempt.Dir)); !errors.Is(err, fs.ErrNotExist) {
+		return Interactive{}, fmt.Errorf("%w: the attempt's directory holds a cid file: a run of it may still exist", ErrSpec)
 	}
 	global, err := h.global()
 	if err != nil {
@@ -137,15 +143,20 @@ var batchName = regexp.MustCompile(`^adc-[0-9a-f]{24}$`)
 // every batch run's container (none survives a restart) and every
 // interactive container whose attempt keep does not hold (a crashed
 // controller leaves both running, under conmon), and returns the attempts
-// it removed. It fails unless each is then listed no more.
+// it removed. Each container gets its own removeTimeout, and a failure does
+// not stop the sweep: it returns every failure, joined, with the attempts
+// it did remove.
 func (h Host) RemoveStale(ctx context.Context, keep func(attempt string) bool) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removeTimeout)
-	defer cancel()
+	ctx = context.WithoutCancel(ctx)
 	var removed []string
+	var errs []error
 	for _, filter := range []string{"name=^" + containerPrefix + "att_", "name=^" + containerPrefix + "[0-9a-f]{24}$"} {
-		names, err := h.listed(ctx, filter)
+		lctx, cancel := context.WithTimeout(ctx, removeTimeout)
+		names, err := h.listed(lctx, filter)
+		cancel()
 		if err != nil {
-			return removed, err
+			errs = append(errs, err)
+			continue
 		}
 		for _, n := range names {
 			attempt := strings.TrimPrefix(n, containerPrefix)
@@ -153,16 +164,20 @@ func (h Host) RemoveStale(ctx context.Context, keep func(attempt string) bool) (
 			if !interactive && !batchName.MatchString(n) || interactive && keep(attempt) {
 				continue
 			}
-			if _, err := h.podman(ctx, "rm", "--force", "--ignore", "--time=0", n); err != nil {
-				return removed, err
+			cctx, cancel := context.WithTimeout(ctx, removeTimeout)
+			_, err := h.podman(cctx, "rm", "--force", "--ignore", "--time=0", n)
+			if err == nil {
+				err = h.gone(cctx, "name=^"+n+"$")
 			}
-			if err := h.gone(ctx, "name=^"+n+"$"); err != nil {
-				return removed, err
+			cancel()
+			if err != nil {
+				errs = append(errs, err)
+				continue
 			}
 			if interactive {
 				removed = append(removed, attempt)
 			}
 		}
 	}
-	return removed, nil
+	return removed, errors.Join(errs...)
 }

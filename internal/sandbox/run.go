@@ -36,6 +36,10 @@ type Limits struct {
 	Disk    int64         // bytes the attempt may hold once the run ends
 }
 
+// conmonGrace is how long after a run's Limits.Timeout conmon ends it on
+// its own: the controller's deadline always fires first.
+const conmonGrace = 30 * time.Second
+
 // Run is one container: its image, mode, attempt, gateway and command.
 type Run struct {
 	Image   Image
@@ -124,13 +128,15 @@ func (h Host) args(r Run, name string) ([]string, error) {
 	if !imgID.MatchString(r.Image.ID) || len(r.Argv) == 0 || l.Memory <= 0 || l.CPUs == "" || l.PIDs <= 0 || l.Timeout <= 0 || l.Disk <= 0 {
 		return nil, fmt.Errorf("%w: no resolved image, command or limits", ErrSpec)
 	}
-	// --timeout: conmon itself ends the run at its limit, even with no
-	// controller left to kill the client (a crash; #374 M3).
+	// --timeout: conmon itself ends the run, even with no controller left
+	// to kill the client (a crash; #374 M3). It is that backstop, not the
+	// deadline: the controller's (the session's, Start's) comes first, by
+	// conmonGrace (#374 Mythos L1).
 	args := []string{"run", "--rm", "--name=" + name, "--pull=never", "--network=none", "--no-hosts", "--hostname=sandbox",
 		"--user=0:0", "--cap-drop=all", "--security-opt=no-new-privileges", "--read-only", "--read-only-tmpfs=false",
 		"--systemd=false", "--env-host=false", "--http-proxy=false", "--log-driver=none",
 		"--memory=" + strconv.FormatInt(l.Memory, 10), "--cpus=" + l.CPUs, "--pids-limit=" + strconv.Itoa(l.PIDs),
-		"--timeout=" + strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds())), 10),
+		"--timeout=" + strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds()))+int64(conmonGrace/time.Second), 10),
 		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
 		"--env=HOME=" + homeDir, "--workdir=" + WorkspaceDir,
 		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir, "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}

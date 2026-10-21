@@ -124,8 +124,8 @@ func TestContainerAFailedRemovalIsUnverified(t *testing.T) {
 	rm := &removal{err: errors.New("still listed")}
 	p := startC(t, container(t, "echo", rm), time.Minute)
 	p.Stdin().Close()
-	if err := p.Wait(); !errors.Is(err, ErrUnverified) || rm.calls.Load() != 1 {
-		t.Fatalf("Wait %v (%d removals), want ErrUnverified", err, rm.calls.Load())
+	if err := p.Wait(); !errors.Is(err, ErrUnverified) || !errors.Is(err, rm.err) || rm.calls.Load() != 1 {
+		t.Fatalf("Wait %v (%d removals), want ErrUnverified with its cause", err, rm.calls.Load())
 	}
 }
 

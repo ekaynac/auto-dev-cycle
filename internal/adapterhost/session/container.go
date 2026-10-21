@@ -38,8 +38,9 @@ type Container struct {
 // any) has returned, a fresh removal has run (the early one's result is
 // never used: it may have run before the container existed; #374 L1), and
 // stderr has ended. A fresh removal that fails, for any reason, makes Wait's
-// error ErrUnverified: the container may still run, and nothing it wrote
-// may be ingested.
+// error ErrUnverified, joined with the removal's own error: the container
+// may still run (or left more than its bound), and nothing it wrote may be
+// ingested.
 func StartContainer(c *Container, deadline time.Duration) (*Process, error) {
 	if c == nil || len(c.Command) == 0 || c.Remove == nil || deadline <= 0 {
 		return nil, errors.New("adapterhost: a container needs a command, a removal and a positive deadline")
@@ -106,8 +107,8 @@ func StartContainer(c *Container, deadline time.Duration) (*Process, error) {
 		final = true
 		rmMu.Unlock()
 		early.Wait()
-		if c.Remove(context.Background()) != nil {
-			p.waitErr = ErrUnverified
+		if err := c.Remove(context.Background()); err != nil {
+			p.waitErr = errors.Join(ErrUnverified, err) // the cause kept: a bound breach is not a live tree
 		}
 		<-drained
 		p.mu.Lock()
