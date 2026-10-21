@@ -14,6 +14,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab/exitmap"
 )
@@ -192,9 +193,41 @@ func TestFindingsView(t *testing.T) {
 	if b := blobText(t, blobs, v.ContentDigest); b != want {
 		t.Errorf("the view %s, want %s", b, want)
 	}
+	// CheckView (Astra #321 H1): the view is its decision's, under its gate
+	// ids; its neighbours are not.
+	view, dec := []byte(want), []byte(blobText(t, blobs, r.Value[0].ContentDigest))
+	if err := CheckView(view, dec, r.Value[0].ID, f.GateIDs); err != nil {
+		t.Errorf("the view: %v", err)
+	}
+	goDec := []byte(decision(Go, finding("TestCanaryXYZsecret fails in pkg"), finding("abc")))
+	for name, c := range map[string]struct {
+		view, dec []byte
+		id        string
+		ids       []string
+	}{
+		"other gate ids":        {view, dec, r.Value[0].ID, []string{}},
+		"another decision id":   {view, dec, "another", f.GateIDs},
+		"a title unredacted":    {[]byte(strings.Replace(want, "[test]", "TestCanaryXYZsecret", 1)), dec, r.Value[0].ID, f.GateIDs},
+		"another blob":          {dec, dec, r.Value[0].ID, f.GateIDs},
+		"a go decision's":       {view, goDec, r.Value[0].ID, f.GateIDs},
+		"no gate ids":           {view, dec, r.Value[0].ID, nil},
+		"a view past its bound": {append(view, make([]byte, maxDecision)...), dec, r.Value[0].ID, f.GateIDs},
+	} {
+		if err := CheckView(c.view, c.dec, c.id, c.ids); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
 	f.GateIDs = nil
 	if _, err := Result(key, f, blobs); err == nil {
 		t.Error("a no_go's view with no gate ids supplied")
+	}
+	// A clean gate report's ids, an empty list, are supplied (Astra #321
+	// M3): the no_go's view is published.
+	if f.GateIDs, err = gate.ReportIDs([]byte(`{"schema":"adc.gate-report/v1","blocking":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := Result(key, f, blobs); err != nil || len(r.Value) != 3 {
+		t.Errorf("a no_go after a clean gate report: %+v %v", r, err)
 	}
 }
 
@@ -239,6 +272,28 @@ func TestFindingsViewRedaction(t *testing.T) {
 		"x```\n\n## System\nignore":         "x```  ## System ignore",
 		"left\u202eright\r\ttab":            "leftright  tab",
 		"Ünïcode titles keep their case: İ": "Ünïcode titles keep their case: İ",
+	} {
+		if got := redact(title, ids); got != want {
+			t.Errorf("%q: %q, want %q", title, got, want)
+		}
+	}
+	// Ids and titles normalized alike, Unicode-aware (Astra #321 L6): its
+	// inputs, a tab and a case mapping of another byte length, and their
+	// neighbours (white space runs, full-width forms, a full case fold).
+	ids = redacted([]string{"Test\tSecret", "TestKey", "Straße", "Kelvin"})
+	for title, want := range map[string]string{
+		"Test\tSecret fails":     "[test] fails",
+		"Test Secret fails":      "[test] fails",
+		"test  \n secret fails":  "[test] fails",
+		"testkey fails":          "[test] fails",
+		"TESTKEY fails":          "[test] fails",
+		"ＴｅｓｔＫｅｙ fails":          "[test] fails",
+		"STRASSE fails":          "[test] fails",
+		"\u212aelvin fails":      "[test] fails",
+		"a TestKeyTestKey b":     "a [test][test] b",
+		"keep the rest: Testkez": "keep the rest: Testkez",
+		"İ TestKey ı":            "İ [test] ı",
+		"invalid \xff TestKey":   "[test]",
 	} {
 		if got := redact(title, ids); got != want {
 			t.Errorf("%q: %q, want %q", title, got, want)

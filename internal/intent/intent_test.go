@@ -3,8 +3,12 @@
 package intent
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -74,9 +78,11 @@ func in(t *testing.T, s *store, inputs ...graph.RefRecord) In {
 	return In{Call: call(), Context: ctx, Bytes: bytes, Records: s.records()}
 }
 
-// records are s's Records, under the one acceptance blob.
+// records are s's Records, under the one acceptance blob, every
+// declassification candidate verified (verifier's own rows are the
+// fixtures').
 func (s *store) records() Records {
-	return Records{Recorded: graph.Recorded{Resolve: s.resolve, Reviewed: s.reviewed}, Acceptance: []types.Digest{digest(acceptance)}, loaded: true}
+	return Records{resolve: s.resolve, reviewed: s.reviewed, acceptance: []types.Digest{digest(acceptance)}, safe: func(graph.RefRecord) (bool, error) { return true, nil }}
 }
 
 // roles are both intents, by role.
@@ -128,12 +134,12 @@ func TestIntentAcceptance(t *testing.T) {
 	}
 	for role, intent := range roles {
 		x := in(t, clean, tree)
-		x.Records.Resolve = nil
+		x.Records.resolve = nil
 		if _, err := intent(x); !errors.Is(err, ErrAncestryUnresolved) {
 			t.Errorf("no resolver, %s: %v", role, err)
 		}
 		x = in(t, clean, tree)
-		x.Records.Acceptance = nil
+		x.Records.acceptance = nil
 		if _, err := intent(x); !errors.Is(err, ErrAncestryUnresolved) {
 			t.Errorf("the task's acceptance not read, %s: %v", role, err)
 		}
@@ -384,10 +390,10 @@ func TestIntentCheck(t *testing.T) {
 		"a builder's, a clean tree":           {recorded("builder", []graph.RefRecord{tree}, nil, nil), "builder", s.records(), true},
 		"another consumer's, a clean tree":    {recorded("planner", []graph.RefRecord{tree}, nil, nil), "planner", s.records(), false},
 		"no records":                          {recorded("reviewer", one, nil, nil), "reviewer", Records{}, false},
-		"the acceptance not read":             {recorded("reviewer", one, nil, nil), "reviewer", Records{Recorded: s.records().Recorded, loaded: true}, false},
+		"the acceptance not read":             {recorded("reviewer", one, nil, nil), "reviewer", Records{resolve: s.resolve, reviewed: s.reviewed, safe: s.records().safe}, false},
 		"a builder's, stated as a reviewer's": {recorded("reviewer", one, nil, nil), "builder", s.records(), false},
 		"a reviewer's, stated as a builder's": {recorded("builder", []graph.RefRecord{tree}, nil, nil), "reviewer", s.records(), false},
-		"records not Load's":                  {recorded("reviewer", one, nil, nil), "reviewer", Records{Recorded: s.records().Recorded, Acceptance: s.records().Acceptance}, false},
+		"records not Load's":                  {recorded("reviewer", one, nil, nil), "reviewer", Records{resolve: s.resolve, reviewed: s.reviewed, acceptance: s.records().acceptance}, false},
 	} {
 		if err := Check(c.recs, c.role, c.mi); (err == nil) != c.ok {
 			t.Errorf("%s: %v", name, err)
@@ -395,10 +401,86 @@ func TestIntentCheck(t *testing.T) {
 	}
 	// An intent is built from Load's records only (Opus #321 L4).
 	built := in(t, s, tree)
-	built.Records.loaded = false
+	built.Records.safe = nil
 	for role, intent := range roles {
 		if _, err := intent(built); !errors.Is(err, ErrAcceptanceInput) {
 			t.Errorf("%s from records not Load's: %v", role, err)
 		}
+	}
+}
+
+// TestRecordsImmutable (Astra #321 M4): Records have no exported field, so
+// no caller replaces their resolver, acceptance or reviewed digests, nor
+// constructs them with any; Acceptance is a copy.
+func TestRecordsImmutable(t *testing.T) {
+	rt := reflect.TypeFor[Records]()
+	for i := range rt.NumField() {
+		if f := rt.Field(i); f.IsExported() {
+			t.Errorf("Records exports %s", f.Name)
+		}
+	}
+	r := newStore().records()
+	r.Acceptance()[0] = digest("1")
+	if r.Acceptance()[0] != digest(acceptance) {
+		t.Error("Acceptance is Records' own slice")
+	}
+}
+
+// TestDeclassificationVerified (Astra #321 H1): a candidate its check does
+// not verify is walked as any other input, so one derived from acceptance
+// refuses; a check that fails refuses.
+func TestDeclassificationVerified(t *testing.T) {
+	accepted := "sha256:" + strings.Repeat(acceptance, 64)
+	report := rec("report-1", "1", types.NodeKindGate, accepted)
+	report.Sanitised = true
+	view := rec("view-1", "2", types.NodeKindReview, accepted)
+	view.BuilderSafe = true
+	s := newStore(report, view)
+	for role, input := range map[string]graph.RefRecord{"reviewer": report, "builder": view} {
+		x := in(t, s, input)
+		if _, err := roles[role](x); err != nil {
+			t.Errorf("%s, verified: %v", role, err)
+		}
+		x.Records.safe = func(graph.RefRecord) (bool, error) { return false, nil }
+		if _, err := roles[role](x); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s, not verified: %v", role, err)
+		}
+		x.Records.safe = func(graph.RefRecord) (bool, error) { return true, errors.New("blob not read") }
+		if _, err := roles[role](x); err == nil {
+			t.Errorf("%s, the check failing: accepted", role)
+		}
+	}
+}
+
+// blobMap is a blob store by digest, its content whatever a test put.
+type blobMap map[string][]byte
+
+func (m blobMap) Has(d string) (bool, error) { _, ok := m[d]; return ok, nil }
+
+func (m blobMap) Open(d string) (io.ReadCloser, error) {
+	b, ok := m[d]
+	if !ok {
+		return nil, errors.New("no blob")
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+// TestReadBlob (Astra #321 H1): a declassified output's bytes are its
+// digest's content, within maxSafeBytes, or no safe output.
+func TestReadBlob(t *testing.T) {
+	sum := func(b []byte) types.Digest { return types.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256(b))) }
+	good, big := []byte("a report"), bytes.Repeat([]byte("x"), maxSafeBytes+1)
+	at := bytes.Repeat([]byte("x"), maxSafeBytes)
+	blobs := blobMap{string(sum(good)): good, string(sum(big)): big, string(sum(at)): at, string(digest("1")): good}
+	for name, c := range map[string]struct {
+		d  types.Digest
+		ok bool
+	}{"its content": {sum(good), true}, "at the bound": {sum(at), true}, "past the bound": {sum(big), false}, "another digest's content": {digest("1"), false}} {
+		if _, ok, err := readBlob(blobs, c.d); err != nil || ok != c.ok {
+			t.Errorf("%s: %v %v", name, ok, err)
+		}
+	}
+	if _, _, err := readBlob(blobs, digest("2")); err == nil {
+		t.Error("a missing blob read")
 	}
 }

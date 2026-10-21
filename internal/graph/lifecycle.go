@@ -68,6 +68,9 @@ func recordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs
 	if err == nil {
 		err = Check(r.Result)
 	}
+	if ok, _ := GateShape(r.Result.Value); err == nil && rec.Recorded.Node.Kind == types.NodeKindGate && r.Result.Kind == types.ResultKindGateResult && !ok {
+		err = fmt.Errorf("graph: a gate's result %s holds more than its receipt and its report (Astra #321 H1)", r.Result.ID)
+	}
 	if err != nil {
 		return nil, err
 	}

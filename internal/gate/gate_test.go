@@ -636,6 +636,26 @@ func TestGateLineage(t *testing.T) {
 		if got, err := ReportIDs(report); err != nil || len(got) < 2 || !slices.Equal(got, ids) {
 			t.Errorf("%s: the report's ids %q, want %q: %v", name, got, ids, err)
 		}
+		// The report is a gate report's bytes exactly (Astra #321 H1); its
+		// neighbours are not.
+		if err := CheckReport(report); err != nil {
+			t.Errorf("%s: the report: %v", name, err)
+		}
+		for what, b := range map[string][]byte{
+			"another key":     append([]byte(`{"raw":"x",`), report[1:]...),
+			"trailing bytes":  append(slices.Clone(report), ' '),
+			"the raw results": []byte(stream["failing.json"]),
+			"spaced":          append([]byte("{ "), report[1:]...),
+		} {
+			if err := CheckReport(b); !errors.Is(err, ErrSpec) {
+				t.Errorf("%s: %s: %v", name, what, err)
+			}
+		}
+	}
+	// A clean report's ids are an empty list, not nil (Astra #321 M3: nil
+	// is "not supplied" to the findings view).
+	if got, err := ReportIDs([]byte(`{"schema":"adc.gate-report/v1","blocking":[]}`)); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("a clean report's ids: %#v, %v", got, err)
 	}
 	if _, err := ReportIDs([]byte(`{"schema":"adc.review-report/v1","blocking":[{"package":"p"}]}`)); !errors.Is(err, ErrSpec) {
 		t.Errorf("another schema's ids: %v", err)

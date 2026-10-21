@@ -12,6 +12,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
@@ -93,7 +94,7 @@ func TestIntentLoad(t *testing.T) {
 	}
 	build := func(role func(intent.In) (types.ManifestIntent, error), task types.TaskID, r types.Ref) error {
 		return g.s.View(t.Context(), func(tx *eventstore.Tx) error {
-			recs, err := intent.Load(tx, task)
+			recs, err := intent.Load(tx, g.blobs, task)
 			if err != nil {
 				return err
 			}
@@ -154,7 +155,7 @@ func TestIntentLoad(t *testing.T) {
 		return mi
 	}
 	check := func(task types.TaskID, mi types.ManifestIntent) error {
-		return g.s.View(t.Context(), func(tx *eventstore.Tx) error { return intent.CheckRecorded(tx, task, mi) })
+		return g.s.View(t.Context(), func(tx *eventstore.Tx) error { return intent.CheckRecorded(tx, g.blobs, task, mi) })
 	}
 	if err := check(gTask, recorded(builder, "builder", clean)); err != nil {
 		t.Errorf("a recorded intent of a clean tree: %v", err)
@@ -247,7 +248,7 @@ func TestIntentViewRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = g.s.View(t.Context(), func(tx *eventstore.Tx) error {
-		recs, err := intent.Load(tx, gTask)
+		recs, err := intent.Load(tx, g.blobs, gTask)
 		if err != nil {
 			return err
 		}
@@ -261,5 +262,120 @@ func TestIntentViewRounds(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("the repair builder's intent of round 2's view: %v", err)
+	}
+}
+
+// TestIntentSafeOutputs (Astra #321 H1, with its inputs): declassification
+// is granted to a verified safe output only. Every ref below derives from
+// the task's acceptance (alias-1). A gate's report, its bytes a gate
+// report's, is a reviewer's input; the gate's raw results recorded in the
+// report's place are not, nor is a gate result carrying them beside the
+// report (refused when recorded). A no_go's findings view as review.Result
+// published it is a builder's input; an acceptance-derived blob recorded
+// as a review's view is not.
+func TestIntentSafeOutputs(t *testing.T) {
+	g, done, err := openGraph(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	accepted := types.Digest("sha256:" + strings.Repeat("e", 64))
+	put := func(b []byte) types.Digest {
+		t.Helper()
+		d, err := g.blobs.Put(bytes.NewReader(b), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return types.Digest(d)
+	}
+	refOf := func(typ types.RefType, id string, d types.Digest, lineage ...string) types.Ref {
+		t.Helper()
+		r, err := knowledge.Seal(types.Ref{Type: typ, ID: id, Scope: types.RefScope{Project: ptrTo(gProject)},
+			Lineage: append([]string{}, lineage...), Restrictions: []types.Restriction{}, ContentDigest: d})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	alias := refOf(types.RefTypeBlob, "alias-1", accepted)
+	if _, _, err := g.complete(types.NodeKindPlan, json.RawMessage(`{"n":"alias"}`), []types.InputSpec{}, map[string]graph.Resolved{}, types.ResultKindPlan, []types.Ref{alias}, nil); err != nil {
+		t.Fatal(err)
+	}
+	report := []byte(`{"schema":"adc.gate-report/v1","elapsed_ms":5,"tree":"t","outcome":"found","reason":"completed_with_findings","detail":"",` +
+		`"tests":2,"blocking":[{"package":"pkg/billing","name":"TestHiddenSecretKey","outcome":"fail"}],"truncated":0,"charge_links":[]}`)
+	if err := gate.CheckReport(report); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("--- FAIL: TestHiddenSecretKey\n    hidden_test.go:12: want 42\n")
+	reportRef := refOf(types.RefTypeBlob, string(put(report)), put(report), "alias-1")
+	rawRef := refOf(types.RefTypeBlob, string(put(raw)), put(raw), "alias-1")
+	gateWith := func(n int, value ...types.Ref) error {
+		rcpt, conclusions, err := g.gateReceipt(treeA, demandA, nil)
+		if err != nil {
+			return err
+		}
+		_, _, err = g.complete(types.NodeKindGate, json.RawMessage(`{"demand":"`+string(demandA)+`","n":`+string(rune('0'+n))+`}`), on("plan", g.plan, types.ResultKindPlan),
+			map[string]graph.Resolved{"plan": {Result: g.planRes}}, types.ResultKindGateResult, append([]types.Ref{rcpt}, value...), &conclusions)
+		return err
+	}
+	if err := errors.Join(gateWith(1, reportRef), gateWith(2, rawRef)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateWith(3, reportRef, rawRef); err == nil {
+		t.Error("a gate result carrying the raw results beside its report recorded")
+	}
+	// The findings views: review.Result's, and a forgery.
+	dec, _ := json.Marshal(map[string]any{"decision": review.NoGo, "summary": "s",
+		"findings": []map[string]string{{"severity": "high", "title": "TestHiddenSecretKey fails on refunds", "detail": "d"}}})
+	r, err := review.Result(types.ComputationKey{Key: types.Digest("sha256:" + strings.Repeat("0", 64))}, review.Facts{Submitted: true, Decision: put(dec), Project: gProject,
+		CandidateRound: 1, Inputs: []string{reportRef.ID}, GateIDs: []string{"pkg/billing", "TestHiddenSecretKey"}}, g.blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision2 := refOf(types.RefTypeBlob, string(put(append(dec, ' '))), put(append(dec, ' ')), "alias-1")
+	forged := refOf(types.RefTypeView, string(put(raw))+"-view", put(raw), decision2.ID)
+	for i, value := range [][]types.Ref{r.Value, {decision2, forged}} {
+		candidate, res, err := g.complete(types.NodeKindBuild, json.RawMessage(`{"round":`+string(rune('1'+i))+`}`), []types.InputSpec{}, map[string]graph.Resolved{},
+			types.ResultKindPatch, []types.Ref{}, nil)
+		if err == nil {
+			_, _, err = g.complete(types.NodeKindReview, soleReviewer, []types.InputSpec{{Name: "patch",
+				Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: candidate, ResultKind: types.ResultKindPatch}}}},
+				map[string]graph.Resolved{"patch": {Result: res}}, types.ResultKindReview, value, nil)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := json.Marshal(authority.TaskRecord{Task: types.Task{ID: gTask, Project: gProject, Acceptance: []types.AcceptanceBlob{{Name: "hidden/test.py", Digest: accepted,
+		Class: types.AcceptanceBlobClassRestricted}}}, State: authority.TaskReady})
+	if err == nil {
+		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, tx.Put(authority.TaskProjection, string(gTask), b)
+		})
+	}
+	call, cerr := intentOf()
+	if err = errors.Join(err, cerr); err != nil {
+		t.Fatal(err)
+	}
+	build := func(role func(intent.In) (types.ManifestIntent, error), r types.Ref) error {
+		return g.s.View(t.Context(), func(tx *eventstore.Tx) error {
+			recs, err := intent.Load(tx, g.blobs, gTask)
+			if err == nil {
+				_, err = role(intent.In{Call: call, Context: graph.Rendered{Included: []types.Ref{r}}, Bytes: map[types.Digest]int64{r.IdentityDigest: 10}, Records: recs})
+			}
+			return err
+		})
+	}
+	if err := build(intent.Reviewer, reportRef); err != nil {
+		t.Errorf("the gate's report, a reviewer's input: %v", err)
+	}
+	if err := build(intent.Reviewer, rawRef); !errors.Is(err, intent.ErrAcceptanceInput) {
+		t.Errorf("the gate's raw results in its report's place, a reviewer's input: %v", err)
+	}
+	if err := build(intent.Builder, r.Value[1]); err != nil {
+		t.Errorf("review.Result's findings view, a builder's input: %v", err)
+	}
+	if err := build(intent.Builder, forged); !errors.Is(err, intent.ErrAcceptanceInput) {
+		t.Errorf("an acceptance-derived blob recorded as a review's view, a builder's input: %v", err)
 	}
 }

@@ -107,23 +107,110 @@ func TestRecords(t *testing.T) {
 	}
 }
 
-// TestRecordsDeclassified (22a-6L; #226 entries 91(3), 94(2)): a gate
-// node's gate_result refs are Sanitised, a review node's view ref is
-// BuilderSafe, and nothing else is either: a view another node recorded,
-// a review's decision, a tree.
+// TestRecordsDeclassified (22a-6L; #226 entries 91(3), 94(2); Astra #321
+// H1): the receipt and blob of a gate node's gate_result holding exactly
+// those two are Sanitised candidates, a review node's view ref is a
+// BuilderSafe one, and nothing else is either: a gate_result's report
+// alone, the refs of one carrying a third attachment (recorded around the
+// fold, which refuses it), a view another node recorded, a review's
+// decision, a tree.
 func TestRecordsDeclassified(t *testing.T) {
 	g := openStore(t)
 	sealed := func(typ types.RefType, id, digest string) types.Ref { return sealedRef(t, typ, id, digest) }
-	g.forgedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeBlob, "gate-report", "1")}, nil)
+	g.forgedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeReceipt, "gate-receipt", "6"), sealed(types.RefTypeBlob, "gate-report", "1")}, nil)
+	g.forgedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeBlob, "lone-report", "7")}, nil)
+	g.forgedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeReceipt, "x-receipt", "8"), sealed(types.RefTypeBlob, "x-report", "9"),
+		sealed(types.RefTypeBlob, "raw-results", "a")}, nil)
 	g.completedWith(types.NodeKindReview, types.ResultKindReview, []types.Ref{sealed(types.RefTypeBlob, "decision", "2"), sealed(types.RefTypeView, "view", "3")})
 	g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{sealed(types.RefTypeView, "other-view", "4"), sealed(types.RefTypeBlob, "tree", "5")})
 	rs, err := g.records(tskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[string][2]bool{"gate-report": {true, false}, "view": {false, true}, "decision": {}, "other-view": {}, "tree": {}} {
+	for id, want := range map[string][2]bool{"gate-receipt": {true, false}, "gate-report": {true, false}, "view": {false, true}, "lone-report": {}, "x-receipt": {}, "x-report": {},
+		"raw-results": {}, "decision": {}, "other-view": {}, "tree": {}} {
 		if rec, ok, _ := rs.Resolve(id); !ok || rec.Sanitised != want[0] || rec.BuilderSafe != want[1] {
 			t.Errorf("%s: %+v %v, want sanitised %v, builder-safe %v", id, rec, ok, want[0], want[1])
+		}
+	}
+	// The fold (Astra #321 H1's input): a gate's result carrying an
+	// attachment beside its receipt and report is refused.
+	gate, stored := g.completedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeBlob, "report-2", "b")})
+	for name, c := range map[string]struct {
+		value []types.Ref
+		ok    bool
+	}{
+		"its report alone":              {[]types.Ref{sealed(types.RefTypeBlob, "report-2", "b")}, true},
+		"a second blob beside it":       {[]types.Ref{sealed(types.RefTypeBlob, "report-2", "b"), sealed(types.RefTypeBlob, "raw-results", "a")}, false},
+		"a view beside it":              {[]types.Ref{sealed(types.RefTypeBlob, "report-2", "b"), sealed(types.RefTypeView, "view-2", "c")}, false},
+		"an attachment of another type": {[]types.Ref{sealed(types.RefTypeFinding, "finding-2", "d")}, false},
+	} {
+		r := stored
+		r.ID, r.Value = "res_01m3250v9xft08ssr4ygq6g2nr", c.value
+		err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			_, err := recordResult(tx, types.ResultRecorded{Node: gate, Result: r}, g.blobs)
+			return err
+		})
+		if (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// TestRecordsResultBound (Astra #321 M5): Records lists at most
+// maxTaskResults of the task's results, at its exact bound, refusing past
+// it before reading any; other tasks' results, whose keys sort just before
+// and after the task's, are not counted.
+func TestRecordsResultBound(t *testing.T) {
+	g := openStore(t)
+	for _, d := range []string{"1", "2"} {
+		g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{sealedRef(t, types.RefTypeBlob, "r"+d, d)})
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		var err error
+		for _, other := range []string{"tsk_01m3250v9xft08ssr4ygq6g2nn", "tsk_01m3250v9xft08ssr4ygq6g2nq", string(tskID) + "0"} {
+			for _, r := range []string{"res_a", "res_b", "res_c"} {
+				err = errors.Join(err, tx.Put(TaskResultProjection, other+"/"+r, json.RawMessage(`true`)))
+			}
+		}
+		return nil, err
+	})
+	n := 0
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		keys, err := tx.Keys(TaskResultProjection, string(tskID)+"/")
+		n = len(keys)
+		return err
+	}); err != nil || n < 2 {
+		t.Fatal(n, err)
+	}
+	defer func(n int) { maxTaskResults = n }(maxTaskResults)
+	for bound, ok := range map[int]bool{n: true, n - 1: false} {
+		maxTaskResults = bound
+		if _, err := g.records(tskID); (err == nil) != ok {
+			t.Errorf("%d results under the bound %d: %v", n, bound, err)
+		}
+	}
+}
+
+// TestKeysAtMost (Astra #321 M5): the keys of a prefix's range, at most n.
+func TestKeysAtMost(t *testing.T) {
+	g := openStore(t)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		var err error
+		for _, k := range []string{"a.", "a/1", "a/2", "a/3", "a0", "b/1"} {
+			err = errors.Join(err, tx.Put(TaskResultProjection, k, json.RawMessage(`true`)))
+		}
+		return nil, err
+	})
+	for n, want := range map[int]string{0: "", 2: "a/1 a/2", 3: "a/1 a/2 a/3", 9: "a/1 a/2 a/3"} {
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			keys, err := tx.KeysAtMost(TaskResultProjection, "a/", n)
+			if got := strings.Join(keys, " "); got != want {
+				t.Errorf("at most %d: %q, want %q", n, got, want)
+			}
+			return err
+		}); err != nil {
+			t.Error(err)
 		}
 	}
 }

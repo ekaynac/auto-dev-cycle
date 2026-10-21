@@ -289,6 +289,42 @@ func (t *Tx) Size(projection, key string) (int64, bool, error) {
 	return n, true, nil
 }
 
+// KeysAtMost lists the projection's keys that start with prefix, a
+// non-empty one, sorted, at most n of them: it reads the prefix's key range
+// only (key >= prefix and below the least string after every one that
+// starts with it, by the primary key's order), never the projection's
+// other keys, and stops at n (Astra #321 M5).
+func (t *Tx) KeysAtMost(projection, prefix string, n int) ([]string, error) {
+	if err := checkProjection(projection, prefix); err != nil || n < 0 {
+		return nil, errors.Join(err, fmt.Errorf("eventstore: keys at most %d", n))
+	}
+	q, args := `SELECT key FROM `+t.table()+` WHERE projection = ? AND key >= ?`, []any{projection, prefix}
+	end := []byte(prefix)
+	for len(end) > 0 && end[len(end)-1] == 0xff {
+		end = end[:len(end)-1]
+	}
+	if len(end) > 0 {
+		end[len(end)-1]++
+		q, args = q+` AND key < ?`, append(args, string(end))
+	}
+	rows, err := t.tx.QueryContext(t.ctx, q+` ORDER BY key LIMIT ?`, append(args, n)...)
+	if err != nil {
+		return nil, t.io(err)
+	}
+	defer rows.Close()
+	keys := []string{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, t.io(err)
+		}
+		if strings.HasPrefix(k, prefix) { // bytes, as Go compares them
+			keys = append(keys, k)
+		}
+	}
+	return keys, t.io(rows.Err())
+}
+
 // Put sets the projection record under key to value (stored canonical).
 func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 	if t.readOnly {

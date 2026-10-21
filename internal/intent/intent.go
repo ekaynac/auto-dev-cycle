@@ -33,35 +33,50 @@
 //     nor, under whatever id, one whose content a review's result holds.
 //     Each round renders its own claim.
 //   - Declassification is the record's, never the caller's (#226 entries
-//     91(3), 94(2); 22a-6L): a reviewer's input whose record is Sanitised
-//     (a gate's receipt or report), and a builder's whose record is
-//     BuilderSafe (a review's findings view), is checked itself against
-//     the acceptance blobs, and its ancestry is not walked; any other
-//     consumer walks it. A lineage id that is an acceptance digest refuses
-//     before it is resolved.
+//     91(3), 94(2); 22a-6L), and granted only to a verified safe output
+//     (Astra #321 H1): a reviewer's input whose record is a Sanitised
+//     candidate (a gate's gate_result holding exactly its receipt and a
+//     blob) whose report blob is a gate report's bytes exactly
+//     (gate.CheckReport), and a builder's whose record is a BuilderSafe
+//     candidate (a review's view) whose bytes are the findings view
+//     review.Result publishes of the no_go decision its lineage names,
+//     recorded by a review, with the ids of the gate reports that
+//     decision's lineage holds (review.CheckView), each blob read and its
+//     digest checked, is checked itself against the acceptance blobs, and
+//     its ancestry is not walked. A candidate that fails is walked as any
+//     other input; any other consumer walks it. A lineage id that is an
+//     acceptance digest refuses before it is resolved.
 //   - Check re-reads a recorded intent the same way: the fold-side I18
 //     check (#226 entry 91(1)). The consumer's role is never the intent's
 //     own word (Opus #321 H1): CheckRecorded derives it from the intent's
 //     attempt's node (a build's builder, a review's reviewer), refuses an
 //     intent of another task, with no attempt, or stating another role,
 //     and walks under the derived role.
-//   - Records are Load's only (Opus #321 L4): Records built otherwise, a
-//     caller's resolver declassifying what it likes, are refused.
+//   - Records are Load's only, and immutable (Opus #321 L4, Astra #321
+//     M4): their resolver, acceptance and reviewed digests are private,
+//     read through methods that return copies; Records built otherwise
+//     (the zero value) are refused.
 //   - Check is the I18 check only (Opus #321 L6): it does not compare an
 //     intent's Included with the node's rendered context, so a restricted
 //     artifact that is not acceptance is the renderer's (graph.Context).
 package intent
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
+	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
+	"github.com/ekaynac/auto-dev-cycle/internal/review"
 )
 
 var (
@@ -81,23 +96,153 @@ var (
 // The walk's bounds, per intent (var: tests lower them).
 var maxRecords, maxEdges, maxIDBytes = 10_000, 100_000, 4 << 20
 
+// maxSafeBytes bounds a declassified output's blob verify reads: a gate
+// report, a findings view or its decision.
+const maxSafeBytes = 1 << 20
+
 // Records are the authoritative records an intent is checked against: the
-// task's ref records and its acceptance blobs' digests (Load).
+// task's ref records, its acceptance blobs' digests and the digests a
+// review's result holds (Load), and the check that a declassification
+// candidate is the safe output it claims to be. All private and never
+// changed after Load (Astra #321 M4): read through Resolve, Acceptance and
+// Reviewed, each a copy.
 type Records struct {
-	graph.Recorded
-	Acceptance []types.Digest // nil: not read
-	loaded     bool           // set by Load only
+	resolve    graph.RefRecords
+	reviewed   map[types.Digest]bool
+	acceptance []types.Digest // nil: not read
+	safe       func(graph.RefRecord) (bool, error)
 }
 
 // Load is task's Records in tx: graph.Records (with the controller's extra
-// refs) and the acceptance its own record holds.
-func Load(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Records, error) {
+// refs), the acceptance its own record holds, and blobs, which hold the
+// declassified outputs verify reads.
+func Load(tx *eventstore.Tx, blobs receipt.Blobs, task types.TaskID, extra ...types.Ref) (Records, error) {
 	rec, err := graph.Records(tx, task, extra...)
 	if err != nil {
 		return Records{}, err
 	}
+	if blobs == nil {
+		return Records{}, errors.New("intent: no blobs to verify declassified outputs")
+	}
 	acc, err := authority.TaskAcceptance(tx, task)
-	return Records{Recorded: rec, Acceptance: append([]types.Digest{}, acc...), loaded: true}, err
+	if err != nil {
+		return Records{}, err
+	}
+	reviewed := map[types.Digest]bool{}
+	for d, ok := range rec.Reviewed {
+		reviewed[d] = ok
+	}
+	return Records{resolve: rec.Resolve, reviewed: reviewed, acceptance: append([]types.Digest{}, acc...), safe: verifier(blobs, rec.Resolve)}, nil
+}
+
+// loaded is whether r are Load's.
+func (r Records) loaded() bool { return r.resolve != nil && r.acceptance != nil && r.safe != nil }
+
+// Resolve is id's record, its declassifications the verified ones only.
+func (r Records) Resolve(id string) (graph.RefRecord, bool, error) {
+	if !r.loaded() {
+		return graph.RefRecord{}, false, fmt.Errorf("%w: the records are not Load's", ErrAncestryUnresolved)
+	}
+	rec, ok, err := r.resolve(id)
+	if err != nil || !ok {
+		return rec, ok, err
+	}
+	if rec.Sanitised || rec.BuilderSafe {
+		safe, err := r.safe(rec)
+		if err != nil {
+			return rec, false, err
+		}
+		rec.Sanitised, rec.BuilderSafe = rec.Sanitised && safe, rec.BuilderSafe && safe
+	}
+	return rec, true, nil
+}
+
+// Acceptance is a copy of the task's acceptance blobs' digests (nil: not
+// read).
+func (r Records) Acceptance() []types.Digest { return slices.Clone(r.acceptance) }
+
+// Reviewed is whether a review's result holds content d.
+func (r Records) Reviewed(d types.Digest) bool { return r.reviewed[d] }
+
+// verifier is the check that a declassification candidate is its safe
+// output (Astra #321 H1), reading blobs: a Sanitised receipt, which the
+// fold read when its result was recorded; a Sanitised blob whose bytes are
+// a gate report's (gate.CheckReport); a BuilderSafe view whose bytes are
+// the findings view of the no_go decision its one lineage entry names, a
+// blob a review recorded, redacted of the ids of the gate reports that
+// decision's lineage holds (review.CheckView). Each blob's digest is
+// checked. False: not that output (it is walked); an error: a blob not
+// read.
+func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecord) (bool, error) {
+	report := func(rec graph.RefRecord) ([]byte, bool, error) {
+		b, ok, err := readBlob(blobs, rec.ContentDigest)
+		if err != nil || !ok || gate.CheckReport(b) != nil {
+			return nil, false, err
+		}
+		return b, true, nil
+	}
+	return func(rec graph.RefRecord) (bool, error) {
+		switch {
+		case rec.Sanitised && rec.Type == types.RefTypeReceipt:
+			return true, nil
+		case rec.Sanitised && rec.Type == types.RefTypeBlob:
+			_, ok, err := report(rec)
+			return ok, err
+		case !rec.BuilderSafe || rec.Type != types.RefTypeView || rec.Producer != types.NodeKindReview || len(rec.Lineage) != 1:
+			return false, nil
+		}
+		dec, ok, err := resolve(rec.Lineage[0])
+		if err != nil || !ok || dec.ID != rec.Lineage[0] || dec.Producer != types.NodeKindReview || dec.Type != types.RefTypeBlob || dec.BuilderSafe || dec.Sanitised {
+			return false, err
+		}
+		gateIDs := []string{}
+		for _, p := range dec.Lineage {
+			pr, ok, err := resolve(p)
+			if err != nil {
+				return false, err
+			}
+			if !ok || !pr.Sanitised || pr.Type != types.RefTypeBlob {
+				continue
+			}
+			b, ok, err := report(pr)
+			if err != nil || !ok {
+				return false, err
+			}
+			ids, err := gate.ReportIDs(b)
+			if err != nil {
+				return false, nil
+			}
+			for _, id := range ids {
+				if !slices.Contains(gateIDs, id) {
+					gateIDs = append(gateIDs, id)
+				}
+			}
+		}
+		view, ok, err := readBlob(blobs, rec.ContentDigest)
+		if err != nil || !ok {
+			return false, err
+		}
+		decision, ok, err := readBlob(blobs, dec.ContentDigest)
+		if err != nil || !ok {
+			return false, err
+		}
+		return review.CheckView(view, decision, dec.ID, gateIDs) == nil, nil
+	}
+}
+
+// readBlob is blob d's bytes, false when they are over maxSafeBytes or
+// are not d's content.
+func readBlob(blobs receipt.Blobs, d types.Digest) ([]byte, bool, error) {
+	rc, err := blobs.Open(string(d))
+	if err != nil {
+		return nil, false, err
+	}
+	b, err := io.ReadAll(io.LimitReader(rc, maxSafeBytes+1))
+	if err = errors.Join(err, rc.Close()); err != nil {
+		return nil, false, err
+	}
+	sum := sha256.Sum256(b)
+	return b, len(b) <= maxSafeBytes && bytes.Equal([]byte(d), fmt.Appendf(nil, "sha256:%x", sum)), nil
 }
 
 // In is what an intent is built from: the call's record (id, call,
@@ -119,13 +264,8 @@ func Builder(in In) (types.ManifestIntent, error) { return build(in, "builder", 
 func Reviewer(in In) (types.ManifestIntent, error) { return build(in, "reviewer", "review input") }
 
 func build(in In, role, purpose string) (types.ManifestIntent, error) {
-	switch {
-	case !in.Records.loaded:
+	if !in.Records.loaded() {
 		return types.ManifestIntent{}, fmt.Errorf("%w: the records are not Load's", ErrAncestryUnresolved)
-	case in.Records.Resolve == nil:
-		return types.ManifestIntent{}, fmt.Errorf("%w: no resolver", ErrAncestryUnresolved)
-	case in.Records.Acceptance == nil:
-		return types.ManifestIntent{}, fmt.Errorf("%w: the task's acceptance was not read", ErrAncestryUnresolved)
 	}
 	all := slices.Clone(in.Context.Included)
 	for _, o := range in.Context.Omitted {
@@ -155,7 +295,7 @@ func walkAll(r Records, role string, refs []types.Ref) error {
 		if err != nil {
 			return err
 		}
-		if role == "reviewer" && (rec.Producer == types.NodeKindReview || r.Reviewed[rec.ContentDigest]) {
+		if role == "reviewer" && (rec.Producer == types.NodeKindReview || r.reviewed[rec.ContentDigest]) {
 			return fmt.Errorf("%w: %s", ErrNotFresh, ref.ID)
 		}
 	}
@@ -168,7 +308,7 @@ func walkAll(r Records, role string, refs []types.Ref) error {
 // intent stating another role is refused.
 func Check(r Records, role string, mi types.ManifestIntent) error {
 	switch {
-	case !r.loaded || r.Resolve == nil || r.Acceptance == nil:
+	case !r.loaded():
 		return fmt.Errorf("%w: no records", ErrAncestryUnresolved)
 	case role != "builder" && role != "reviewer":
 		return fmt.Errorf("%w: %q is no builder or reviewer", ErrConsumer, role)
@@ -185,15 +325,15 @@ func Check(r Records, role string, mi types.ManifestIntent) error {
 	return walkAll(r, role, refs)
 }
 
-// CheckRecorded is Check against task's records in tx (Load), under the
-// role of the intent's attempt's node (consumer): what an intent's fold
-// calls.
-func CheckRecorded(tx *eventstore.Tx, task types.TaskID, mi types.ManifestIntent, extra ...types.Ref) error {
+// CheckRecorded is Check against task's records in tx (Load, verifying
+// declassified outputs in blobs), under the role of the intent's attempt's
+// node (consumer): what an intent's fold calls.
+func CheckRecorded(tx *eventstore.Tx, blobs receipt.Blobs, task types.TaskID, mi types.ManifestIntent, extra ...types.Ref) error {
 	role, err := consumer(tx, task, mi)
 	if err != nil {
 		return err
 	}
-	r, err := Load(tx, task, extra...)
+	r, err := Load(tx, blobs, task, extra...)
 	if err != nil {
 		return err
 	}
@@ -235,17 +375,18 @@ func consumer(tx *eventstore.Tx, task types.TaskID, mi types.ManifestIntent) (st
 type walk struct {
 	role              string
 	records           graph.RefRecords
-	hidden            map[string]bool            // acceptance digests
-	walked            map[string]bool            // ids scheduled: queued or resolved, each counted once
-	shallow           map[string]bool            // inputs declassified, so not expanded: expanded when reached as an ancestor
-	resolved          map[string]graph.RefRecord // ids resolved and expanded
-	n, edges, idBytes int                        // n: the ids scheduled
-	peak              int                        // the queue's longest
+	safe              func(graph.RefRecord) (bool, error) // a declassification candidate verified
+	hidden            map[string]bool                     // acceptance digests
+	walked            map[string]bool                     // ids scheduled: queued or resolved, each counted once
+	shallow           map[string]bool                     // inputs declassified, so not expanded: expanded when reached as an ancestor
+	resolved          map[string]graph.RefRecord          // ids resolved and expanded
+	n, edges, idBytes int                                 // n: the ids scheduled
+	peak              int                                 // the queue's longest
 }
 
 func newWalk(r Records, role string) *walk {
-	w := &walk{role: role, records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
-	for _, d := range r.Acceptance {
+	w := &walk{role: role, records: r.resolve, safe: r.safe, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
+	for _, d := range r.acceptance {
 		w.hidden[string(d)] = true
 	}
 	return w
@@ -273,8 +414,14 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 		return rec, nil
 	}
 	if w.role == "reviewer" && rec.Sanitised || w.role == "builder" && rec.BuilderSafe {
-		w.shallow[r.ID] = true
-		return rec, nil // declassified for this consumer: its own identity checked, its ancestry not walked
+		safe, err := w.safe(rec)
+		if err != nil {
+			return rec, err
+		}
+		if safe {
+			w.shallow[r.ID] = true
+			return rec, nil // declassified for this consumer, verified: its own identity checked, its ancestry not walked
+		}
 	}
 	queue, err := w.enqueue(r.ID, nil, rec.Lineage)
 	for err == nil && len(queue) > 0 {

@@ -14,23 +14,46 @@ import (
 )
 
 // RefRecord is a ref's authoritative record (I18, P16a): its identity (id
-// and content digest), its complete lineage, and the kind of the node
-// whose result holds it ("" for one the controller rendered from its
-// authority, an answer's approval). Sanitised and BuilderSafe are the
-// controller's declassifications on the record (#226 entries 91(3),
-// 94(2)), set only here, by what recorded the ref: Sanitised for a gate
-// node's gate_result (gate.Result's receipt and report: test ids and
-// outcomes, never failure text), which a reviewer may take whatever its
-// ancestry; BuilderSafe for a review node's view (review.Result's findings
-// view: severities and titles), which a builder may take whatever its
-// ancestry. Each is honoured by its one consumer only (intent).
+// and content digest), its type, its complete lineage, and the kind of
+// the node whose result holds it ("" for one the controller rendered from
+// its authority, an answer's approval). Sanitised and BuilderSafe are
+// declassification candidates (#226 entries 91(3), 94(2)), set only here,
+// by what recorded the ref and its result's shape: Sanitised for the two
+// refs of a gate node's gate_result that holds exactly its receipt and a
+// blob (gate.Result's receipt and report: test ids and outcomes, never
+// failure text), which a reviewer may take whatever its ancestry;
+// BuilderSafe for a review node's view (review.Result's findings view:
+// severities and titles), which a builder may take whatever its ancestry.
+// A candidate grants nothing alone: its one consumer (intent) honours it
+// only once the bytes are verified to be that output (Astra #321 H1).
 type RefRecord struct {
 	ID            string
+	Type          types.RefType
 	ContentDigest types.Digest
 	Lineage       []string
 	Producer      types.NodeKind
 	Sanitised     bool
 	BuilderSafe   bool
+}
+
+// GateShape is whether value is what a gate node's gate_result may hold:
+// at most its receipt and at most its report (a blob), in either order,
+// nothing else (Astra #321 H1: an attachment beside them is refused when
+// it is recorded); full when it holds both, the one shape Records makes a
+// Sanitised candidate.
+func GateShape(value []types.Ref) (ok, full bool) {
+	receipts, blobs := 0, 0
+	for _, r := range value {
+		switch r.Type {
+		case types.RefTypeReceipt:
+			receipts++
+		case types.RefTypeBlob:
+			blobs++
+		default:
+			return false, false
+		}
+	}
+	return receipts <= 1 && blobs <= 1, receipts == 1 && blobs == 1
 }
 
 // RefRecords resolves a ref id to its record; ok false when the id is
@@ -60,6 +83,12 @@ var maxTaskRefs, maxTaskLineage, maxTaskIDBytes = 100_000, 1_000_000, 64 << 20
 // same way (Opus #321 L5).
 var maxResultBytes, maxResultsBytes, maxNodeBytes = 4 << 20, 256 << 20, 4 << 20
 
+// maxTaskResults bounds the results Records lists (Astra #321 M5): it
+// reads the task's index range only, at most one key past the bound, and
+// refuses past it before reading any result. A var, so a test can lower
+// it.
+var maxTaskResults = 100_000
+
 // Records is task's Recorded, from the event store: every ref a recorded
 // result of the task holds, with its producer's kind, and the extra refs
 // the controller rendered from its authority (Context's approvals). An id
@@ -69,7 +98,7 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 	byID, ambiguous, reviewed := map[string]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
 	n, lineage, idBytes := 0, 0, 0
 	var read int64
-	add := func(r types.Ref, producer types.NodeKind, kind types.ResultKind) error {
+	add := func(r types.Ref, producer types.NodeKind, sanitised, safe bool) error {
 		n, lineage, idBytes = n+1, lineage+len(r.Lineage), idBytes+len(r.ID)
 		for _, p := range r.Lineage {
 			idBytes += len(p)
@@ -77,10 +106,9 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		if n > maxTaskRefs || lineage > maxTaskLineage || idBytes > maxTaskIDBytes {
 			return fmt.Errorf("graph: task %s holds over %d refs, %d lineage entries or %d bytes of ids", task, maxTaskRefs, maxTaskLineage, maxTaskIDBytes)
 		}
-		rec := RefRecord{ID: r.ID, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Producer: producer,
-			Sanitised:   producer == types.NodeKindGate && kind == types.ResultKindGateResult,
-			BuilderSafe: producer == types.NodeKindReview && kind == types.ResultKindReview && r.Type == types.RefTypeView}
-		if prior, ok := byID[r.ID]; ok && (prior.ContentDigest != rec.ContentDigest || !slices.Equal(prior.Lineage, rec.Lineage) || prior.Producer != rec.Producer ||
+		rec := RefRecord{ID: r.ID, Type: r.Type, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Producer: producer,
+			Sanitised: sanitised, BuilderSafe: safe}
+		if prior, ok := byID[r.ID]; ok && (prior.Type != rec.Type || prior.ContentDigest != rec.ContentDigest || !slices.Equal(prior.Lineage, rec.Lineage) || prior.Producer != rec.Producer ||
 			prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe) {
 			ambiguous[r.ID] = true
 		}
@@ -91,9 +119,12 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		return nil
 	}
 	prefix := string(task) + "/"
-	keys, err := tx.Keys(TaskResultProjection, prefix)
-	if err != nil {
+	keys, err := tx.KeysAtMost(TaskResultProjection, prefix, maxTaskResults+1)
+	switch {
+	case err != nil:
 		return Recorded{}, err
+	case len(keys) > maxTaskResults:
+		return Recorded{}, fmt.Errorf("graph: task %s holds over %d results", task, maxTaskResults)
 	}
 	for _, k := range keys {
 		id := strings.TrimPrefix(k, prefix)
@@ -121,19 +152,24 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		if node.Recorded.Task != task {
 			return Recorded{}, fmt.Errorf("graph: result %s is indexed under task %s, its node under %s", id, task, node.Recorded.Task)
 		}
+		kind := node.Recorded.Node.Kind
+		_, gate := GateShape(rr.Result.Value)
+		gate = gate && kind == types.NodeKindGate && rr.Result.Kind == types.ResultKindGateResult
 		for _, r := range rr.Result.Value {
-			if err := add(r, node.Recorded.Node.Kind, rr.Result.Kind); err != nil {
+			safe := kind == types.NodeKindReview && rr.Result.Kind == types.ResultKindReview && r.Type == types.RefTypeView
+			if err := add(r, kind, gate, safe); err != nil {
 				return Recorded{}, err
 			}
 		}
 	}
 	for _, r := range extra {
-		if err := add(r, "", ""); err != nil {
+		if err := add(r, "", false, false); err != nil {
 			return Recorded{}, err
 		}
 	}
 	return Recorded{Resolve: func(id string) (RefRecord, bool, error) {
 		rec, ok := byID[id]
+		rec.Lineage = slices.Clone(rec.Lineage)
 		return rec, ok && !ambiguous[id], nil
 	}, Reviewed: reviewed}, nil
 }

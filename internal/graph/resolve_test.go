@@ -276,8 +276,10 @@ func TestResolve(t *testing.T) {
 	forged := g.blob(other)
 	g.conclusions[forged] = g.conclusions[good] // the result's conclusions are the receipt's document
 	bare, _ := g.gated("")
-	twice, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult,
-		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, good), g.sealed(types.RefTypeReceipt, rcpB, g.receiptBlob(treeSubject(treeB, demandA), nil))})
+	// Forged: the fold refuses a gate's result of two receipts (Astra #321
+	// H1); resolution refuses one recorded all the same.
+	twice, _ := g.forgedWith(types.NodeKindGate, types.ResultKindGateResult,
+		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, good), g.sealed(types.RefTypeReceipt, rcpB, g.receiptBlob(treeSubject(treeB, demandA), nil))}, nil)
 	misnamed, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{g.sealed(types.RefTypeReceipt, rcpB, good)})
 	// A derived receipt held by a result whose conclusions are not its.
 	unlike := g.receiptBlob(treeSubject(treeA, demandA), nil)

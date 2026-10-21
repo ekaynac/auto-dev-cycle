@@ -26,12 +26,15 @@
 //     entry 94(2), the operator's decision; 22a-6L): each finding's
 //     severity and title only, every gate id of at least minRedacted
 //     bytes (Facts.GateIDs, which a no_go requires; its "/" segments, its
-//     words, matched folded) in a title replaced by "[test]", and control
-//     and format characters dropped; the view names its decision and
-//     round, so each round's view is its own ref; it is a view
-//     ref whose lineage is the decision's (truthful): graph.Records marks
-//     it BuilderSafe, so a repair builder takes it where the decision,
-//     derived from the declassified gate report, would refuse its intent.
+//     words; ids and titles normalized alike, Unicode-aware: normalize) in
+//     a title replaced by "[test]", and control and format characters
+//     dropped; the view names its decision and round, so each round's
+//     view is its own ref; it is a view ref whose lineage is the
+//     decision's (truthful): graph.Records marks it a BuilderSafe
+//     candidate, and intent honours it only when its bytes are this view
+//     of that decision (CheckView), so a repair builder takes it where the
+//     decision, derived from the declassified gate report, would refuse
+//     its intent.
 //   - D55: the report records the elapsed time, the charge links (the
 //     reviewer's model call ids), the roster, the verdict, each finding's
 //     severity and title (cut to maxTitle bytes), and the reviewed
@@ -59,6 +62,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab/exitmap"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -237,30 +242,10 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 	return r, graph.Check(r)
 }
 
-// view publishes d's builder-safe findings view, derived from the decision
-// ref decision. Its bytes name the decision and the candidate's round
-// (Opus #321 H2): a view's id is its digest, so two rounds' views of the
-// same titles are two refs, each of its own lineage, never one ambiguous
-// id. Each title is redacted (redact).
+// view publishes d's builder-safe findings view (ViewBytes), derived from
+// the decision ref decision.
 func view(f Facts, d Decision, decision string, blobs Blobs) (types.Ref, error) {
-	if f.GateIDs == nil {
-		return types.Ref{}, errors.New("review: no gate ids supplied for the findings view (an empty list: none)")
-	}
-	ids := redacted(f.GateIDs)
-	type finding struct {
-		Severity string `json:"severity"`
-		Title    string `json:"title"`
-	}
-	findings := []finding{}
-	for _, x := range d.Findings {
-		findings = append(findings, finding{x.Severity, redact(x.Title, ids)})
-	}
-	b, err := json.Marshal(struct {
-		Schema   string    `json:"schema"`
-		Decision string    `json:"decision"`
-		Round    int64     `json:"candidate_round"`
-		Findings []finding `json:"findings"`
-	}{viewSchema, decision, f.CandidateRound, findings})
+	b, err := ViewBytes(d, decision, f.CandidateRound, f.GateIDs)
 	if err != nil {
 		return types.Ref{}, err
 	}
@@ -272,16 +257,72 @@ func view(f Facts, d Decision, decision string, blobs Blobs) (types.Ref, error) 
 		Lineage: []string{decision}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest(vd)})
 }
 
-// redacted are the marks a view's titles lose, folded (fold), the longest
-// first (no mark redacted inside another's), each at least minRedacted
-// bytes (Opus #321 L2): every gate id, its report's ellipsis cut off, each
-// of its "/" segments, and each of these with its underscores as spaces
-// (a test name's words).
+type viewFinding struct {
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+}
+
+type viewRecord struct {
+	Schema   string        `json:"schema"`
+	Decision string        `json:"decision"`
+	Round    int64         `json:"candidate_round"`
+	Findings []viewFinding `json:"findings"`
+}
+
+// ViewBytes are the findings view's bytes of decision d, recorded under
+// the ref id decision, at the candidate's round, its titles redacted of
+// gateIDs (redact; nil: not supplied, refused; empty: none). The bytes
+// name the decision and the round (Opus #321 H2): a view's id is its
+// digest, so two rounds' views of the same titles are two refs, each of
+// its own lineage, never one ambiguous id.
+func ViewBytes(d Decision, decision string, round int64, gateIDs []string) ([]byte, error) {
+	if gateIDs == nil {
+		return nil, errors.New("review: no gate ids supplied for the findings view (an empty list: none)")
+	}
+	ids := redacted(gateIDs)
+	findings := []viewFinding{}
+	for _, x := range d.Findings {
+		findings = append(findings, viewFinding{x.Severity, redact(x.Title, ids)})
+	}
+	return json.Marshal(viewRecord{viewSchema, decision, round, findings})
+}
+
+// CheckView is whether view is the findings view review.Result published
+// from the no_go decision whose bytes are dec, recorded under the ref id
+// decision, with gateIDs (Astra #321 H1): the bytes ViewBytes gives of
+// them at the round view names, exactly.
+func CheckView(view, dec []byte, decision string, gateIDs []string) error {
+	var v viewRecord
+	if len(view) > maxDecision {
+		return fmt.Errorf("review: a findings view of over %d bytes", maxDecision)
+	}
+	if err := json.Unmarshal(view, &v); err != nil {
+		return fmt.Errorf("review: not a findings view: %w", err)
+	}
+	d, err := Parse(dec)
+	switch {
+	case err != nil:
+		return err
+	case d.Decision != NoGo:
+		return errors.New("review: a findings view of no no_go decision")
+	}
+	want, err := ViewBytes(d, decision, v.Round, gateIDs)
+	if err == nil && !bytes.Equal(want, view) {
+		err = errors.New("review: the findings view is not its decision's")
+	}
+	return err
+}
+
+// redacted are the marks a view's titles lose, normalized (normalize), the
+// longest first (no mark redacted inside another's), each at least
+// minRedacted bytes (Opus #321 L2): every gate id, its report's ellipsis
+// cut off, each of its "/" segments, and each of these with its
+// underscores as spaces (a test name's words).
 func redacted(gateIDs []string) []string {
 	var ids []string
 	add := func(id string) {
 		for _, v := range []string{id, strings.ReplaceAll(id, "_", " ")} {
-			if v = fold(v); len(v) >= minRedacted && !slices.Contains(ids, v) {
+			if v, _ = normalize(v); len(v) >= minRedacted && !slices.Contains(ids, v) {
 				ids = append(ids, v)
 			}
 		}
@@ -297,55 +338,89 @@ func redacted(gateIDs []string) []string {
 	return ids
 }
 
-// fold is s as titles are matched: lower case (lower), with no Unicode
-// format character (a zero-width space splits no id).
-func fold(s string) string {
-	return lower(strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Cf, r) {
-			return -1
-		}
-		return r
-	}, s))
-}
-
-// lower is s in lower case, each rune kept at its byte length (a rune
-// whose lower case is another length is kept), so lower(s)'s byte offsets
-// are s's.
-func lower(s string) string {
-	return strings.Map(func(r rune) rune {
-		if l := unicode.ToLower(r); utf8.RuneLen(l) == utf8.RuneLen(r) {
-			return l
-		}
-		return r
-	}, s)
-}
-
-// redact is title for the view: every control and format character a
-// space or gone (no newline, fence break or bidi override reaches the
-// repair builder's renderer: Opus #321 L3), then every mark of ids
-// (redacted) replaced by "[test]", matched in one pass over the title
-// folded.
-func redact(title string, ids []string) string {
-	t := strings.Map(func(r rune) rune {
+// normalize is s as ids and titles are both matched, the one function for
+// both (Astra #321 L6): each rune in its compatibility decomposition
+// (NFKD: a full-width or ligature form is its letters), its combining
+// marks dropped, case-folded in full (Unicode: a fold that changes the
+// byte length is kept, "ß" is "ss"); a format character dropped (a
+// zero-width space splits no id); each run of white space and control
+// characters one space. at[i] is the byte offset in s of the rune that
+// normalize's byte i came from.
+func normalize(s string) (n string, at []int) {
+	var b strings.Builder
+	space := false
+	for o, r := range s {
 		switch {
 		case unicode.Is(unicode.Cf, r):
-			return -1
-		case unicode.IsControl(r):
-			return ' '
+			continue
+		case unicode.IsSpace(r) || unicode.IsControl(r):
+			if !space {
+				b.WriteByte(' ')
+				at = append(at, o)
+			}
+			space = true
+			continue
 		}
-		return r
-	}, title)
-	low := lower(t)
-	var out strings.Builder
-	for i := 0; i < len(low); {
-		j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(low[i:], id) })
+		space = false
+		for _, q := range norm.NFKD.String(string(r)) {
+			if unicode.Is(unicode.Mn, q) || unicode.Is(unicode.Cf, q) {
+				continue
+			}
+			f := cases.Fold().String(string(q))
+			b.WriteString(f)
+			for range len(f) {
+				at = append(at, o)
+			}
+		}
+	}
+	return b.String(), at
+}
+
+// redact is title for the view: every mark of ids (redacted) found in the
+// title normalized (normalize) and each rune of the title it covers
+// replaced, as one "[test]" a match; every other control character a
+// space and format character gone (no newline, fence break or bidi
+// override reaches the repair builder's renderer: Opus #321 L3). A title
+// that is not valid UTF-8, which cannot be normalized, is redacted whole
+// (fail closed).
+func redact(title string, ids []string) string {
+	if !utf8.ValidString(title) {
+		return "[test]"
+	}
+	n, at := normalize(title)
+	covered, starts := map[int]bool{}, map[int]bool{}
+	for i := 0; i < len(n); {
+		j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(n[i:], id) })
 		if j < 0 {
-			out.WriteByte(t[i])
 			i++
 			continue
 		}
-		out.WriteString("[test]")
+		first, last := at[i], at[i+len(ids[j])-1]
+		starts[first] = true
+		for o := first; o <= last; {
+			covered[o] = true
+			_, w := utf8.DecodeRuneInString(title[o:])
+			o += w
+		}
 		i += len(ids[j])
+	}
+	var out strings.Builder
+	prev := false // the last rune written was covered
+	for o, r := range title {
+		switch {
+		case covered[o]:
+			if !prev || starts[o] {
+				out.WriteString("[test]")
+			}
+			prev = true
+		case unicode.Is(unicode.Cf, r):
+		case unicode.IsControl(r):
+			out.WriteByte(' ')
+			prev = false
+		default:
+			out.WriteRune(r)
+			prev = false
+		}
 	}
 	return out.String()
 }
