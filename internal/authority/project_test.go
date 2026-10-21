@@ -157,6 +157,18 @@ func TestProjectCreate(t *testing.T) {
 	if got, err := eventstore.ContentDigest(r.Profile); err != nil || got != dg {
 		t.Fatalf("the stored profile's digest %s: %v", got, err)
 	}
+	// The adopted profile as launch reads it (P22a-5c-w); none for a
+	// project never created.
+	b.view(func(tx *eventstore.Tx) error {
+		got, ok, err := authority.ProjectProfile(tx, p.ID)
+		if err != nil || !ok || got.Repo != p.Repo || got.ID != p.ID {
+			t.Errorf("the adopted profile: %+v, %v, %v", got, ok, err)
+		}
+		if _, ok, err := authority.ProjectProfile(tx, "prj_01m3250vkwffc979nzjw0g2sa9"); err != nil || ok {
+			t.Errorf("an unknown project's profile: %v, %v", ok, err)
+		}
+		return nil
+	})
 	h := b.head()
 	repeat := b.createCmd(b.op, "k", raw)
 	repeat.Expect = version(0)

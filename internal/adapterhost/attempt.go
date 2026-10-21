@@ -32,7 +32,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
-	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // Size bounds (09 "Size bounds"): M0 constants until profile values
@@ -75,14 +74,13 @@ type Host struct {
 	Root  string // the directory each attempt's exchange root is made in
 }
 
-// Spec is one attempt to run under a granted lease.
+// Spec is one attempt to run: started by its caller, never by the host.
 type Spec struct {
-	Lease         types.LeaseID
-	LeaseRevision int64           // the granted lease's projection revision
-	Attempt       types.AttemptID // a fresh id: the unit's first attempt, token 1
-	Base          types.AttemptBase
-	Call          types.CallID
-	Adapter       session.Config
+	Lease   types.LeaseID
+	Attempt types.AttemptID // started on Lease, its unit's current attempt
+	Base    types.AttemptBase
+	Call    types.CallID
+	Adapter session.Config
 	// Prepare is prepare's params; attempt, fencing token, exchange and
 	// inputs are the host's.
 	Prepare types.AdapterPrepareParams
@@ -98,10 +96,6 @@ type Spec struct {
 
 // Outcome is what an attempt left.
 type Outcome struct {
-	// StartRefused: the prelaunch check failed (wrapping
-	// ingest.ErrUnsupported), lease.start_refused{precondition_failed} was
-	// recorded, no attempt exists and nothing was launched.
-	StartRefused error
 	// Result is the run's result as the adapter returned it; nil when the
 	// session ended without one.
 	Result *types.AdapterRunResult
@@ -131,15 +125,11 @@ var (
 	// fenceAttempt and waitTree are lease.FenceAttempt and Session.Wait.
 	fenceAttempt = lease.FenceAttempt
 	waitTree     = (*session.Session).Wait
-	// decideStart decides the start command (startAttempt).
-	decideStart = startAttempt
 )
 
-func startAttempt(tx *eventstore.Tx, spec Spec) (eventstore.Decision, error) {
-	return applies(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.StartAttempt(tx, spec.Lease, spec.LeaseRevision, spec.Attempt, spec.Base)
-	})(tx)
-}
+// ErrNotStarted: the prepared attempt is not one its caller started: not
+// running on the spec's lease as its unit's current attempt.
+var ErrNotStarted = errors.New("adapterhost: the attempt is not started on its lease (the host never starts one)")
 
 func hook(stage string) {
 	if testHook != nil {
@@ -147,29 +137,57 @@ func hook(stage string) {
 	}
 }
 
-// Run runs spec's attempt to its end. An error is the host's (the stores,
-// the exchange root, a spawn, an ingestion fault), with a fixed text; the
-// adapter's failures are in the Outcome.
-func (h *Host) Run(ctx context.Context, spec Spec) (out Outcome, err error) {
+// Prepared is an attempt's exchange, made and checked before its start.
+type Prepared struct {
+	h    *Host
+	spec Spec
+	x    *exchange
+}
+
+// Prepare makes spec's exchange and runs the prelaunch check on it, before
+// any start (I16): the caller starts the attempt only once it passes
+// (dispatch.Launch in adcd), and refuses the start otherwise. A failed
+// check wraps ingest.ErrUnsupported; nothing is recorded and the exchange
+// is gone.
+func (h *Host) Prepare(spec Spec) (*Prepared, error) {
 	x, err := newExchange(h.Root, spec.Attempt, spec.Prompt)
 	if err != nil {
-		return Outcome{}, err
+		return nil, err
 	}
-	defer func() { err = errors.Join(err, x.remove()) }()
 	if perr := probe(x.outDir); perr != nil {
-		_, err := h.command(ctx, spec.Attempt, "start_refused", applies(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.ChangeLease(tx, spec.Lease, spec.LeaseRevision,
-				lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}, nil)
-		}))
-		return Outcome{StartRefused: perr}, err
+		return nil, errors.Join(perr, x.remove())
 	}
-	// Only an applied start launches: any other disposition is an error.
-	if _, err := h.command(ctx, spec.Attempt, "start", func(tx *eventstore.Tx) (eventstore.Decision, error) {
-		return decideStart(tx, spec)
+	return &Prepared{h: h, spec: spec, x: x}, nil
+}
+
+// Discard removes an exchange its caller will not run (a refused start).
+func (p *Prepared) Discard() error { return p.x.remove() }
+
+// Run runs the prepared attempt, which its caller started, to its end, and
+// removes the exchange. The host never starts an attempt: one that is not
+// running on the spec's lease as its unit's current attempt is refused
+// (ErrNotStarted), nothing launched. Its fencing token is the attempt's. An
+// error is the host's (the stores, the exchange root, a spawn, an
+// ingestion fault), with a fixed text; the adapter's failures are in the
+// Outcome.
+func (p *Prepared) Run(ctx context.Context) (out Outcome, err error) {
+	defer func() { err = errors.Join(err, p.x.remove()) }()
+	var a types.Attempt
+	var current types.AttemptID
+	var started, ok bool
+	if err := p.h.Store.View(ctx, func(tx *eventstore.Tx) (err error) {
+		a, _, ok, err = lease.AttemptOf(tx, p.spec.Attempt)
+		if err == nil && ok {
+			current, started, err = lease.CurrentAttempt(tx, a.Unit)
+		}
+		return err
 	}); err != nil {
 		return Outcome{}, err
 	}
-	r := &attemptRun{h: h, spec: spec, token: 1, x: x} // lease.StartAttempt mints token 1
+	if !ok || !started || current != p.spec.Attempt || a.Status != types.AttemptStatusRunning || a.Lease != p.spec.Lease {
+		return Outcome{}, ErrNotStarted
+	}
+	r := &attemptRun{h: p.h, spec: p.spec, token: a.FencingToken, x: p.x}
 	return r.run(ctx)
 }
 

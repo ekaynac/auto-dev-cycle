@@ -383,7 +383,7 @@ func TestReportExitCodes(t *testing.T) {
 		"submitted, then error": {nil, adapterhost.Outcome{Submitted: sub(types.OutcomeEmpty, vocab.ReasonCompletedClean)}, errors.New("cleanup"), entry.ExitOK, vocab.ReasonCompletedClean},
 		"refusal":               {nil, adapterhost.Outcome{Refusals: refusal(types.AttemptOutputRefusalReasonUnsafeOutput)}, nil, entry.ExitRefused, vocab.ReasonUnsafeOutput},
 		"stale":                 {nil, adapterhost.Outcome{Refusals: refusal(types.AttemptOutputRefusalReasonStaleAttempt)}, nil, entry.ExitStale, vocab.ReasonStaleAttempt},
-		"start refused":         {nil, adapterhost.Outcome{StartRefused: errors.New("no capability")}, nil, entry.ExitCouldNotRun, vocab.ReasonPreconditionFailed},
+		"start refused":         {nil, adapterhost.Outcome{}, errStartRefused, entry.ExitCouldNotRun, vocab.ReasonPreconditionFailed},
 		"host error":            {nil, adapterhost.Outcome{}, errors.New("bwrap"), entry.ExitCouldNotRun, vocab.ReasonExecutorIncomplete},
 		"stopped before start":  {cancelled, adapterhost.Outcome{}, context.Canceled, entry.ExitCouldNotRun, vocab.ReasonAttemptStopped},
 		"timeout":               {nil, adapterhost.Outcome{Session: timeout}, nil, entry.ExitCouldNotRun, vocab.ReasonAttemptStopped},

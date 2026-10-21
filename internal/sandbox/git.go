@@ -210,6 +210,17 @@ func (r Repo) snapshot() (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// Origin is the URL the clone's origin remote names, read from its own
+// config file alone (no include, no other file): a caller checks it against
+// the URL it meant to clone before using the clone.
+func (r Repo) Origin(ctx context.Context) (string, error) {
+	out, err := git(ctx, r.Dir, nil, "config", "--file", filepath.Join(r.Dir, ".git", "config"), "--no-includes", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return "", fmt.Errorf("%w: the clone names no origin", ErrGit)
+	}
+	return strings.TrimSuffix(string(out), "\n"), nil
+}
+
 // Git is a hardened git on the controller's repository with tree (a
 // CopyTree copy) as its work tree, refused if the repository's config or
 // info/ changed since Clone. diff, show and log never run a diff driver;

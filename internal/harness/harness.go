@@ -236,25 +236,29 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 		Footprint:    types.LeaseFootprint{ContextTokens: 1000, ExpectedTurns: 5}, Deadline: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 		PlacementChecks: types.LeasePlacementChecks{DataFloor: ok, Destinations: ok, Capability: ok, Independence: ok,
 			PaidAuthority: ok, Budget: ok, FallbackScope: ok}}
+	submit := func(step func(*eventstore.Tx) ([]eventstore.Event, error)) error {
+		cmd, err := ids.New("cmd")
+		if err != nil {
+			return err
+		}
+		_, err = s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: idv["act"], Action: "harness.lease", IdempotencyKey: cmd, Input: []byte(`{}`)},
+			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+				evs, err := step(tx)
+				return evs, json.RawMessage(`{}`), err
+			}))
+		return err
+	}
 	for _, step := range []func(*eventstore.Tx) ([]eventstore.Event, error){
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) },
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, reg.Holds)
 		},
 	} {
-		cmd, err := ids.New("cmd")
-		if err != nil {
-			return spec, out, err
-		}
-		if _, err := s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: idv["act"], Action: "harness.lease", IdempotencyKey: cmd, Input: []byte(`{}`)},
-			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-				evs, err := step(tx)
-				return evs, json.RawMessage(`{}`), err
-			})); err != nil {
+		if err := submit(step); err != nil {
 			return spec, out, err
 		}
 	}
-	spec = adapterhost.Spec{AnyTool: true, Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: types.CallID(idv["cal"]), Prompt: prompt, Bounds: b,
+	spec = adapterhost.Spec{AnyTool: true, Lease: l.ID, Attempt: types.AttemptID(idv["att"]), Call: types.CallID(idv["cal"]), Prompt: prompt, Bounds: b,
 		Base: types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
 		Adapter: session.Config{Command: command, Env: append(env, "TMPDIR="+tmp),
 			Deadline: sessionDeadline(b)},
@@ -263,9 +267,29 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 			Limits:     types.AdapterPrepareParamsLimits{MaxTurns: 8, MaxOutputTokens: 8000, WallSeconds: max(1, int64(b.Result/time.Second))},
 			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: []string{"Edit"}, Mediated: []string{}}}}
 	host := &adapterhost.Host{Store: s, Blobs: blobs, Actor: idv["act"], Root: root}
-	out, err = host.Run(ctx, spec)
+	// The harness is its own controller: it starts the attempt once the
+	// host's prelaunch check passes, and refuses the start otherwise (the
+	// host never starts one: I16).
+	p, perr := host.Prepare(spec)
+	if perr != nil {
+		err = submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, l.ID, 2, lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}, nil)
+		})
+		return spec, out, errors.Join(fmt.Errorf("%w: %w", errStartRefused, perr), err)
+	}
+	if err := submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, l.ID, 2, spec.Attempt, spec.Base)
+	}); err != nil {
+		return spec, out, errors.Join(err, p.Discard())
+	}
+	out, err = p.Run(ctx)
 	return spec, out, err
 }
+
+// errStartRefused: the host's prelaunch check failed, and the harness
+// refused the start: lease.start_refused{precondition_failed}, nothing
+// launched.
+var errStartRefused = errors.New("harness: the start was refused")
 
 // sessionDeadline is the session's deadline, the backstop behind the
 // waits' bounds: their sum and some slack.
@@ -320,10 +344,10 @@ func report(ctx context.Context, spec adapterhost.Spec, out adapterhost.Outcome,
 		return r, entry.ExitOK
 	case ctx.Err() != nil:
 		return cnr(stopped, "the harness was stopped")
+	case errors.Is(err, errStartRefused):
+		return cnr(vocab.ReasonPreconditionFailed, "the host's prelaunch capability check failed")
 	case err != nil:
 		return cnr(vocab.ReasonExecutorIncomplete, "the harness could not run or finalise the attempt")
-	case out.StartRefused != nil:
-		return cnr(vocab.ReasonPreconditionFailed, "the host's prelaunch capability check failed")
 	case len(out.Refusals) > 0:
 		r.Outcome, r.Reason, r.Detail = types.OutcomeFailed, string(out.Refusals[0].Reason), "an output of the attempt was refused"
 		if out.Refusals[0].Reason == types.AttemptOutputRefusalReasonStaleAttempt {

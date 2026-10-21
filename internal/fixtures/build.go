@@ -140,7 +140,7 @@ func creditExhausted(ctx context.Context, dir string, edit bool) (steps []Step, 
 	var failed error
 	baseTree := types.GitID("git:" + strings.Repeat("c", 40))
 	host := &adapterhost.Host{Store: s, Blobs: blobs, Actor: actor, Root: root}
-	out, err := host.Run(ctx, adapterhost.Spec{AnyTool: true, Lease: l.ID, LeaseRevision: 2, Attempt: att, Call: types.CallID(cid), Prompt: []byte("implement total\n"),
+	out, err := startedRun(ctx, host, do, 2, adapterhost.Spec{AnyTool: true, Lease: l.ID, Attempt: att, Call: types.CallID(cid), Prompt: []byte("implement total\n"),
 		Base:    types.AttemptBase{Tree: baseTree, ContractRevision: "7"},
 		Adapter: session.Config{InProcess: inproc.New(creditPeer(edit, &failed)), Deadline: 30 * time.Second},
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: l.Executor, Model: "fixture-model",

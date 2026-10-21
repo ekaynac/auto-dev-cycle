@@ -107,7 +107,7 @@ func TestAdmissionFailsClosed(t *testing.T) {
 				}
 				stuckAfterIngestion(t, w)
 			}
-			out, err := w.host.Run(ctx, spec(stub(t, p)))
+			out, err := w.run(ctx, spec(stub(t, p)))
 			if tc.stuck != errors.Is(err, ErrCleanup) {
 				t.Fatalf("run: %v", err)
 			}
