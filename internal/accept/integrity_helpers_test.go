@@ -65,6 +65,18 @@ func viaLib(t *testing.T) {
 
 func TestViaLib(t *testing.T) { viaLib(t) }
 
+func outer(t *testing.T) {
+	inner(t)
+}
+
+func inner(t *testing.T) {
+	if Add(4, 0) != 4 {
+		t.Fatal("inner")
+	}
+}
+
+func TestOuter(t *testing.T) { outer(t) }
+
 type env struct{}
 
 func (env) check(t *testing.T) {
@@ -136,6 +148,7 @@ func TestIntegrityHelpers(t *testing.T) {
 		// main counts an asserting helper of a package file as one: so does this
 		"an assertion replaced by a package file's asserting helper (clean)": {edit("\tif Add(3, 0) != 3 {\n\t\tt.Fatal(\"via\")\n\t}\n", "\tlibCheck(t)\n"), ""},
 		"an unused helper weakened (L1, clean)":                              {edit("\t\tt.Fatal(\"unused\")\n", "\t\t_ = t\n"), ""},
+		"a helper inlined into its caller and deleted (clean)":               {map[string]string{"pkg/helpers_test.go": strings.NewReplacer("\tinner(t)\n", "\tif Add(4, 0) != 4 {\n\t\tt.Fatal(\"inner\")\n\t}\n", "func inner(t *testing.T) {\n\tif Add(4, 0) != 4 {\n\t\tt.Fatal(\"inner\")\n\t}\n}\n", "").Replace(helpersBase)}, ""},
 		"an unused helper deleted (clean)":                                   {edit("func spare(t *testing.T) {\n\tif Add(1, 1) != 2 {\n\t\tt.Fatal(\"spare\")\n\t}\n}\n", ""), ""},
 		"a !race variant's helper weakened":                                  {map[string]string{"pkg/norace_h_test.go": raceNeedX("!race", 0)}, "pkg:pkg.needX " + weakened + " (1 → 0)"}, // the weakest declaration's count
 	} {
@@ -146,6 +159,12 @@ func TestIntegrityHelpers(t *testing.T) {
 		case c.block == "" && (!v.Accepted() || len(v.Warnings) > 0):
 			t.Errorf("%s: blocks %q, warnings %q, want accepted clean", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	// A test is main's to compare: its assertion removed (not made dead) is
+	// main's block only (Opus #369 L2).
+	v := f.guarded(t, map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n", "\t_ = Add(1, 2)\n", 1)})
+	if !finds(v.Blocks, "pkg:pkg.TestAdd fewer assertions in a test") || finds(v.Blocks, "made dead") || finds(v.Blocks, weakened) {
+		t.Errorf("a test's assertion removed: %q", whats(v.Blocks))
 	}
 }
 
@@ -200,15 +219,19 @@ func TestIntegrityHelpersSaturate(t *testing.T) {
 		fmt.Fprintf(&b, "\nfunc c%d(t *testing.T) {\n%s}\n", i, strings.Repeat(fmt.Sprintf("\tc%d(t)\n", i+1), 16))
 	}
 	b.WriteString("\nfunc bcheck(t *testing.T) {\n\tif Add(2, 3) != 5 {\n\t\tt.Fatal(\"b\")\n\t}\n}\n\nfunc top(t *testing.T) {\n\tc1(t)\n\tbcheck(t)\n}\n\nfunc TestTop(t *testing.T) { top(t) }\n")
+	// top2 is within the bound at the base (257) and past it at the head.
+	b.WriteString("\nfunc top2(t *testing.T) {\n\tc2(t)\n\tbcheck(t)\n}\n\nfunc TestTop2(t *testing.T) { top2(t) }\n")
 	base := b.String()
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		write(t, src, map[string]string{"pkg/sat_test.go": base})
 		plain(t, src, "add", "--all")
 	})
-	v := f.guarded(t, map[string]string{"pkg/sat_test.go": strings.Replace(base, "\tc1(t)\n\tbcheck(t)\n", "\tc1(t)\n", 1)})
-	if !finds(v.Blocks, "pkg:pkg.top unverifiable: test helpers' totals past the guard's bound") {
-		t.Errorf("a saturated total: %q", whats(v.Blocks))
+	v := f.guarded(t, map[string]string{"pkg/sat_test.go": strings.NewReplacer("\tc1(t)\n\tbcheck(t)\n", "\tc1(t)\n", "\tc2(t)\n\tbcheck(t)\n", "\tc1(t)\n").Replace(base)})
+	for _, k := range []string{"top", "top2"} {
+		if !finds(v.Blocks, "pkg:pkg."+k+" unverifiable: test helpers' totals past the guard's bound") {
+			t.Errorf("a saturated total, %s: %q", k, whats(v.Blocks))
+		}
 	}
 
 	// Opus's input, the default bound: c16 asserts once, each c_i calls
@@ -235,6 +258,18 @@ func TestIntegrityHelpersSaturate(t *testing.T) {
 	v = f.guarded(t, map[string]string{"pkg/sat_test.go": strings.Replace(opus, "\tbcheck(t)\n}\n\nfunc TestTop", "}\n\nfunc TestTop", 1)})
 	if !finds(v.Blocks, "pkg:pkg.top unverifiable: test helpers' totals past the guard's bound") || finds(v.Blocks, "weakened") {
 		t.Errorf("Opus's overflow: %q", whats(v.Blocks))
+	}
+	// Both versions past 2⁶³: c1 8 times (2⁶³) and bcheck, bcheck removed.
+	// Unsaturated, both wrapped below the bound and read as a weakening.
+	wrap := opus[:strings.Index(opus, "func top(")] + "func top(t *testing.T) {\n" + strings.Repeat("\tc1(t)\n", 8) + "\tbcheck(t)\n}\n\nfunc TestTop(t *testing.T) { top(t) }\n"
+	f = newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/sat_test.go": wrap})
+		plain(t, src, "add", "--all")
+	})
+	v = f.guarded(t, map[string]string{"pkg/sat_test.go": strings.Replace(wrap, "\tbcheck(t)\n}\n\nfunc TestTop", "}\n\nfunc TestTop", 1)})
+	if !finds(v.Blocks, "pkg:pkg.top unverifiable: test helpers' totals past the guard's bound") || finds(v.Blocks, "weakened") {
+		t.Errorf("a wrapping total: %q", whats(v.Blocks))
 	}
 }
 
