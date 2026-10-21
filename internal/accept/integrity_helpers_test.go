@@ -91,6 +91,22 @@ func five(t *testing.T) {
 
 func TestFive(t *testing.T) { five(t) }
 
+func four(t *testing.T) {
+	if Add(4, 1) != 5 {
+		t.Fatal("4+1")
+	}
+	if Add(4, 2) != 6 {
+		t.Fatal("4+2")
+	}
+	if Add(4, 3) != 7 {
+		t.Fatal("4+3")
+	}
+}
+
+func TestFour(t *testing.T) { four(t) }
+
+func TestOther(t *testing.T) { four(t) }
+
 type env struct{}
 
 func (env) check(t *testing.T) {
@@ -180,10 +196,14 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a race variant of a test made dead":  {map[string]string{"pkg/race_r_test.go": strings.Replace(raceTestR("race"), "\tif Add(1, 2) != 3 {", "\tif false {", 1)}, "pkg:pkg.TestR a test's assertions made dead (1 → 0 live)"},
 		// Opus #369 r2 M1: a test's helper inlined weaker and deleted, or no
 		// longer called, blocks by the test's total; inlined whole is clean.
-		"a test's helper inlined weaker and deleted":                {testFive(fives[0], true), "pkg:pkg.TestFive a test's assertions weakened, a helper it called removed (3 → 1)"},
-		"a test's helper inlined weaker, kept, no longer called":    {testFive(fives[0], false), "pkg:pkg.TestFive a test's assertions weakened, a helper it called removed (3 → 1)"},
+		"a test's helper inlined weaker and deleted":                {testFive(fives[0], true), "pkg:pkg.TestFive a test's assertions weakened, its callees changed (3 → 1)"},
+		"a test's helper inlined weaker, kept, no longer called":    {testFive(fives[0], false), "pkg:pkg.TestFive a test's assertions weakened, its callees changed (3 → 1)"},
 		"a test's helper inlined whole and deleted (clean)":         {testFive(strings.Join(fives, ""), true), ""},
 		"a test's helper inlined with one more and deleted (clean)": {testFive(strings.Join(fives, "")+one, true), ""},
+		// Opus #369 r3 M2: a test's call replaced by fewer inline assertions,
+		// the helper still reached (TestOther): blocks; inlined whole is clean.
+		"a test's helper call inlined weaker, still reached elsewhere":        {edit("func TestFour(t *testing.T) { four(t) }\n", "func TestFour(t *testing.T) {\n\tif Add(4, 1) != 5 {\n\t\tt.Fatal(\"4+1\")\n\t}\n}\n"), "pkg:pkg.TestFour a test's assertions weakened, its callees changed (3 → 1)"},
+		"a test's helper call inlined whole, still reached elsewhere (clean)": {edit("func TestFour(t *testing.T) { four(t) }\n", "func TestFour(t *testing.T) {\n\tif Add(4, 1) != 5 {\n\t\tt.Fatal(\"4+1\")\n\t}\n\tif Add(4, 2) != 6 {\n\t\tt.Fatal(\"4+2\")\n\t}\n\tif Add(4, 3) != 7 {\n\t\tt.Fatal(\"4+3\")\n\t}\n}\n"), ""},
 	} {
 		v := f.guarded(t, c.files)
 		switch {

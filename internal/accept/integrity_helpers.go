@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"maps"
 	"slices"
 )
 
@@ -38,8 +39,8 @@ import (
 //     (Opus #369 L1). A test itself is main's to compare (Opus #369 L2):
 //     here it blocks only when an assertion of its own body is made dead
 //     (any declaration's: the weakest live count, the most dead; Opus #369
-//     r2 H1), or when a helper with assertions it called is removed or no
-//     longer reached and its total fell (a weaker body inlined; r2 M1).
+//     r2 H1), or when its set of callees among the test files' functions
+//     changed and its total fell (a weaker body inlined; r2 M1, r3 M2).
 //   - A function with assertions at the base that the head no longer
 //     declares blocks when its name is still used in the directory's test
 //     files ("a helper with assertions removed while still used").
@@ -227,22 +228,10 @@ func reached(fa pkgFacts) map[string]bool {
 // compareHelpers blocks a function of the test files a test reaches whose
 // assertions the head weakened, or removed while its name is still used;
 // a test whose own assertions the head made dead, or whose total fell
-// with a helper it called removed or no longer reached.
+// with its set of callees changed.
 func compareHelpers(add func(*[]Block, string, string), blocks *[]Block, b, a pkgFacts) {
 	bt := totals(b, nil)
-	at, live, aLive := totals(a, bt), reached(b), reached(a)
-	// lost: a declaration of k called a helper with assertions that the
-	// head removed, or that no test reaches at the head (Opus #369 r2 M1).
-	lost := func(k string) bool {
-		for _, st := range b.helpers[k] {
-			for _, c := range st.calls {
-				if _, ok := b.helpers[c]; ok && bt[c] > 0 && !aLive[c] {
-					return true
-				}
-			}
-		}
-		return false
-	}
+	at, live := totals(a, bt), reached(b)
 	for _, k := range keys(b.helpers) {
 		bh := b.helpers[k][0]
 		switch ah, ok := a.helpers[k]; {
@@ -253,11 +242,11 @@ func compareHelpers(add func(*[]Block, string, string), blocks *[]Block, b, a pk
 			switch {
 			case ad > bd && al < bl: // its own live assertions fewer, its dead ones more (its calls are main's)
 				add(blocks, k, fmt.Sprintf("a test's assertions made dead (%d → %d live)", bl, al))
-			case !lost(k):
+			case maps.Equal(callees(b, b.helpers[k]), callees(a, ah)): // Opus #369 r2 M1, r3 M2
 			case bt[k] > maxHelperTotal || at[k] > maxHelperTotal:
 				add(blocks, k, "unverifiable: test helpers' totals past the guard's bound")
 			case at[k] < bt[k]:
-				add(blocks, k, fmt.Sprintf("a test's assertions weakened, a helper it called removed (%d → %d)", bt[k], at[k]))
+				add(blocks, k, fmt.Sprintf("a test's assertions weakened, its callees changed (%d → %d)", bt[k], at[k]))
 			}
 		case bh.test:
 		case bt[k] > maxHelperTotal || ok && at[k] > maxHelperTotal:
@@ -268,6 +257,19 @@ func compareHelpers(add func(*[]Block, string, string), blocks *[]Block, b, a pk
 			add(blocks, k, "a helper with assertions removed while still used")
 		}
 	}
+}
+
+// callees is the functions of the test files sts's declarations call.
+func callees(fa pkgFacts, sts []fnStat) map[string]bool {
+	set := map[string]bool{}
+	for _, st := range sts {
+		for _, c := range st.calls {
+			if _, ok := fa.helpers[c]; ok {
+				set[c] = true
+			}
+		}
+	}
+	return set
 }
 
 // liveDead is a test's own live assertions, its weakest declaration's,
