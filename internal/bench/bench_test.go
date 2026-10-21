@@ -73,6 +73,7 @@ func worked(t *testing.T) (Task, map[string]types.AttemptID) {
 			measure(t, c2, a["b1x"], "delta", 0, 500, 50, 0, "gateway_count"),
 			measure(t, c4, a["r"], "delta", 0, 2000, 10, 0, "gateway_count"),
 		},
+		Calls: []Call{{ID: c1, Attempt: a["b1"]}, {ID: c2, Attempt: a["b1x"]}, {ID: c3, Attempt: a["b2"], Liability: 900}, {ID: c4, Attempt: a["r"]}},
 		Interventions: []Intervention{{Stage: "build", Kind: RailRaise}, {Stage: "review", Kind: Answer}, {Stage: "build", Kind: Rescue},
 			{Stage: "rebase", Kind: Rescue},   // counted apart: no rebase stage
 			{Stage: "merge", Kind: Approval}}, // merge: interventions only
@@ -83,6 +84,20 @@ func worked(t *testing.T) (Task, map[string]types.AttemptID) {
 func cached(m types.UsageMeasurement) types.UsageMeasurement {
 	m.Tokens.CacheRead, m.Tokens.CacheWrite = 300, 40
 	return m
+}
+
+// many adds to tk Astra's 2,049 uncertain calls on attempt a: 2,048 of in
+// tokens and micros reported USD, and one of at most 2,048 of each, so that
+// a sum of M = 2^53-1 wraps to zero at 2^64.
+func many(t *testing.T, tk *Task, a types.AttemptID, in, micros int64) {
+	for i := range 2049 {
+		c := types.CallID(id(t, "cal"))
+		if i == 2048 {
+			in, micros = min(in, 2048), min(micros, 2048)
+		}
+		tk.Calls = append(tk.Calls, Call{ID: c, Attempt: a})
+		tk.Usage = append(tk.Usage, measure(t, c, a, "delta", 0, in, 0, micros, "adapter_report"))
+	}
 }
 
 func TestRecord(t *testing.T) {
@@ -268,7 +283,50 @@ func TestRecordRefuses(t *testing.T) {
 			x := types.AttemptID(id(t, "att"))
 			*ts = append(*ts, Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
 				Nodes: []Node{{Stage: "build", Executor: builder, Claimed: at(1), Attempts: []types.AttemptID{x}}},
-				Usage: []types.UsageMeasurement{gw((*ts)[0].Usage[0].Call, x)}})
+				Usage: []types.UsageMeasurement{gw((*ts)[0].Usage[0].Call, x)}, Calls: []Call{{ID: (*ts)[0].Usage[0].Call, Attempt: x}}})
+		}},
+		// The review of #313 by Astra (docs/reviews/2026-10-21-pr313-astra.md).
+		{"H1: a zero-token final, no liability", "no positive liability", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
+			c := types.CallID(id(t, "cal"))
+			(*ts)[0].Calls = append((*ts)[0].Calls, Call{ID: c, Attempt: a["r"]})
+			(*ts)[0].Usage = append((*ts)[0].Usage, measure(t, c, a["r"], "final", 0, 0, 0, 0, "adapter_report"))
+		}},
+		{"H2: a crashed attempt's call, no liability", "no positive liability", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
+			(*ts)[0].Calls = append((*ts)[0].Calls, Call{ID: types.CallID(id(t, "cal")), Attempt: a["r"]})
+		}},
+		{"H2: a measured call not bound", "no bound call", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Calls = (*ts)[0].Calls[1:]
+		}},
+		{"H2: a call bound twice", "bound twice", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Calls = append((*ts)[0].Calls, (*ts)[0].Calls[0])
+		}},
+		{"H2: a bound call of no node's attempt", "no node's", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Calls = append((*ts)[0].Calls, Call{ID: types.CallID(id(t, "cal")), Attempt: types.AttemptID(id(t, "att"))})
+		}},
+		{"H2: a negative liability", "negative liability", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Calls[2].Liability = -1
+		}},
+		{"H3: an unsettled 1 EUR-micro delta", "cannot be compared", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
+			c := types.CallID(id(t, "cal"))
+			m := measure(t, c, a["r"], "delta", 0, 5000, 500, 1, "adapter_report")
+			m.Cost.Currency = "EUR"
+			(*ts)[0].Calls = append((*ts)[0].Calls, Call{ID: c, Attempt: a["r"]})
+			(*ts)[0].Usage = append((*ts)[0].Usage, m)
+		}},
+		{"H4: 2,049 calls whose money sums past the maximum", "sum past", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
+			many(t, &(*ts)[0], a["r"], 1, maxSum)
+		}},
+		{"H4: 2,049 calls whose tokens sum past the maximum", "sum past", func(m *Meta, ts *[]Task, a map[string]types.AttemptID) {
+			m.Prices[reviewer] = types.RegistryPrice{OutputUsdMicrosPerMtok: 10_000_000}
+			many(t, &(*ts)[0], a["r"], maxSum, 1)
+		}},
+		{"M5: a priced executor no route declares", "no route's", func(m *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			x := types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pb")
+			m.Prices[x] = m.Prices[builder]
+			(*ts)[0].Nodes[0].Executor = x
+		}},
+		{"M5: a route declared twice, conflicting", "conflicting", func(m *Meta, _ *[]Task, _ map[string]types.AttemptID) {
+			m.Routes = append(m.Routes, types.BenchmarkRoute{Executor: builder, Role: "reviewer", Family: "stub-builder"})
 		}},
 		{"a run its schema refuses", "the run", func(m *Meta, _ *[]Task, _ map[string]types.AttemptID) { m.Arch = "linux_arm64" }},
 	} {
@@ -287,24 +345,36 @@ func TestRecordRefuses(t *testing.T) {
 // count; one whose reported cost is lower is raised to that price.
 func TestRecordStanding(t *testing.T) {
 	for _, row := range []struct {
-		name   string
-		usage  func(types.CallID, types.AttemptID) []types.UsageMeasurement
-		in     int64
-		micros int64
+		name      string
+		usage     func(types.CallID, types.AttemptID) []types.UsageMeasurement
+		in        int64
+		micros    int64
+		liability int64
 	}{
 		{"only the gateway's count", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "delta", 0, 5000, 500, 0, "gateway_count")}
-		}, 5000, 10_000},
+		}, 5000, 10_000, 0},
 		{"a zero final under the count", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 0, 0, 0, "adapter_report"), measure(t, c, a, "delta", 0, 5000, 500, 0, "gateway_count")}
-		}, 5000, 10_000},
+		}, 5000, 10_000, 0},
 		{"a delta reported below its price", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "delta", 0, 700, 70, 100, "adapter_report")}
-		}, 700, 1400},
+		}, 700, 1400, 0},
+		// Astra's H1: a zero-token final takes its reservation-backed liability.
+		{"a zero-token final at its liability", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 0, 0, 0, "adapter_report")}
+		}, 0, 4000, 4000},
+		// Astra's H2: a crashed attempt's call, unmeasured, at its liability.
+		{"an unmeasured call at its liability", func(types.CallID, types.AttemptID) []types.UsageMeasurement { return nil }, 0, 5000, 5000},
+		// A liability above the price wins.
+		{"a liability above its price", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return []types.UsageMeasurement{measure(t, c, a, "delta", 0, 700, 70, 100, "adapter_report")}
+		}, 700, 3000, 3000},
 	} {
 		a := types.AttemptID(id(t, "att"))
+		c := types.CallID(id(t, "cal"))
 		tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
-			Nodes: []Node{{Stage: "review", Executor: reviewer, Claimed: at(1), Attempts: []types.AttemptID{a}}}, Usage: row.usage(types.CallID(id(t, "cal")), a)}
+			Nodes: []Node{{Stage: "review", Executor: reviewer, Claimed: at(1), Attempts: []types.AttemptID{a}}}, Usage: row.usage(c, a), Calls: []Call{{ID: c, Attempt: a, Liability: row.liability}}}
 		run, err := Record(meta(), []Task{tk})
 		if err != nil {
 			t.Fatalf("%s: %v", row.name, err)
@@ -326,7 +396,7 @@ func TestRecordBasis(t *testing.T) {
 	count := measure(t, c, a, "delta", 0, 1000, 100, 0, "gateway_count")
 	for _, usage := range [][]types.UsageMeasurement{{final, count}, {count, final}} {
 		tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
-			Nodes: []Node{{Stage: "build", Executor: builder, Claimed: at(1), Attempts: []types.AttemptID{a}}}, Usage: usage}
+			Nodes: []Node{{Stage: "build", Executor: builder, Claimed: at(1), Attempts: []types.AttemptID{a}}}, Usage: usage, Calls: []Call{{ID: c, Attempt: a}}}
 		run, err := Record(meta(), []Task{tk})
 		if err != nil {
 			t.Fatal(err)
@@ -352,6 +422,7 @@ func TestCompare(t *testing.T) {
 	tk.Nodes[3].Done = at(320) // gate's shrinks: no delta
 	c := types.CallID(id(t, "cal"))
 	tk.Usage = append(tk.Usage, measure(t, c, a["r"], "final", 0, 10, 1, 7, "adapter_report"), measure(t, c, a["r"], "delta", 0, 10, 1, 0, "gateway_count"))
+	tk.Calls = append(tk.Calls, Call{ID: c, Attempt: a["r"]})
 	tk.Closed, tk.Hold = time.Time{}, "budget_rail"
 	other := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail"}
 	cur, err := Record(meta(), []Task{tk, other})
@@ -391,7 +462,8 @@ func TestCompareMetrics(t *testing.T) {
 	}
 	x := types.AttemptID(id(t, "att"))
 	tk.Nodes = append(tk.Nodes, Node{Stage: "build", Round: 3, Executor: builder, Claimed: at(500), Attempts: []types.AttemptID{x}})
-	tk.Usage = append(tk.Usage, measure(t, types.CallID(id(t, "cal")), x, "delta", 0, 100, 10, 300, "adapter_report"))
+	cx := types.CallID(id(t, "cal"))
+	tk.Usage, tk.Calls = append(tk.Usage, measure(t, cx, x, "delta", 0, 100, 10, 300, "adapter_report")), append(tk.Calls, Call{ID: cx, Attempt: x})
 	tk.Interventions = append(tk.Interventions, Intervention{Stage: "review", Kind: Answer}, Intervention{Kind: Rescue})
 	cur, err := Record(meta(), []Task{tk})
 	if err != nil {

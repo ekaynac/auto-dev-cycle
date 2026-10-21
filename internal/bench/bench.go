@@ -20,20 +20,30 @@
 //   - Each call belongs to one stage, then its standing is
 //     ledger.StandingOf over the stage's reports: only a settled call is
 //     charged; its tokens are the standing's figure, the gateway's count
-//     included. An unsettled call is outstanding at the larger of its
-//     reported cost and its tokens at the route's registry price
-//     (ledger.PriceMicros), never as zero nor as settled. A call's basis is
-//     its adapter and provider reports' (the gateway's only when it has no
-//     other), never the first report's.
+//     included. An unsettled call is outstanding at the largest of its
+//     reported USD cost, its tokens at the route's registry price
+//     (ledger.PriceMicros) and its reservation-backed liability, never as
+//     zero nor as settled; one in another currency with a reported amount
+//     is refused (no conversion), and one whose amount is zero is refused.
+//     A call's basis is its adapter and provider reports' (the gateway's
+//     only when it has no other), never the first report's.
+//   - The calls are the ledger's bound-call inventory (Task.Calls), not the
+//     measurements: every measured call must be bound, and a bound call
+//     with no measurement is outstanding at its liability (cash, USD), or
+//     refused when it has none.
+//   - Each sum is checked against the contract's maximum (2^53-1) before
+//     it is added; a sum past it is refused.
 //   - It refuses rather than guesses: an empty run; a task, attempt or call
 //     twice in the run; a task without an approval time, closed and held,
 //     neither, closed without an outcome and reason, closed before its
 //     approval, or held at an unknown hold; a node with an unknown stage, no
 //     claimed time, done before it was claimed, or attempts on no route's
-//     executor; an attempt of two nodes; a measurement whose attempt is no
-//     node's; a call of two stages or executors, in two currencies or two
-//     bases; an intervention of an unknown kind, or not a rescue and at an
-//     unknown stage; a route without a price; and a run its schema refuses
+//     executor; an attempt of two nodes; a bound call of no node's attempt,
+//     bound twice or with a negative liability; a measurement whose attempt
+//     is no node's or whose call is unbound; a call of two stages or
+//     executors, in two currencies or two bases; an intervention of an
+//     unknown kind, or not a rescue and at an unknown stage; a route without
+//     a price, or declared twice differently; and a run its schema refuses
 //     (a settled call in no currency among them).
 //   - It records and never gates: Compare reports the metrics that grew.
 package bench
@@ -102,7 +112,30 @@ type Task struct {
 	Hold          string
 	Nodes         []Node
 	Usage         []types.UsageMeasurement
+	Calls         []Call
 	Interventions []Intervention
+}
+
+// Call is one bound call of the task, from the ledger's inventory: the
+// attempt it is attributed to and its reservation-backed liability in USD
+// micros (capacity.LiabilitiesOf's share; zero when the ledger holds none).
+type Call struct {
+	ID        types.CallID
+	Attempt   types.AttemptID
+	Liability int64
+}
+
+// maxSum is the contract's maximum integer (2^53-1).
+const maxSum = 1<<53 - 1
+
+// add adds v to *dst, refusing first a negative v or a sum past maxSum.
+func add(err *error, dst *int64, v int64) {
+	if *err == nil && (v < 0 || v > maxSum-*dst) {
+		*err = fmt.Errorf("a sum past %d", maxSum)
+	}
+	if *err == nil {
+		*dst += v
+	}
 }
 
 // Meta is a run's provenance, with each route's registry price
@@ -123,10 +156,14 @@ func Record(m Meta, tasks []Task) (types.BenchmarkRun, error) {
 	if len(tasks) == 0 {
 		return types.BenchmarkRun{}, errors.New("bench: no tasks")
 	}
+	route := map[types.ExecutorID]types.BenchmarkRoute{}
 	for _, r := range m.Routes {
-		if _, ok := m.Prices[r.Executor]; !ok {
+		if q, ok := route[r.Executor]; ok && q != r {
+			return types.BenchmarkRun{}, fmt.Errorf("bench: route %s declared twice, conflicting", r.Executor)
+		} else if _, ok := m.Prices[r.Executor]; !ok {
 			return types.BenchmarkRun{}, fmt.Errorf("bench: route %s has no price", r.Executor)
 		}
+		route[r.Executor] = r
 	}
 	reg, err := vocab.Load()
 	if err != nil {
@@ -136,7 +173,7 @@ func Record(m Meta, tasks []Task) (types.BenchmarkRun, error) {
 		BuildCommit: m.Commit, SchemaSet: m.SchemaSet, Routes: slices.Clone(m.Routes), Fixtures: slices.Clone(m.Fixtures), Tasks: []types.BenchmarkTask{}}
 	seen := map[string]bool{}
 	for _, t := range tasks {
-		bt, err := task(m, reg, t)
+		bt, err := task(m, route, reg, t)
 		if err == nil {
 			err = once(seen, t)
 		}
@@ -163,8 +200,8 @@ func once(seen map[string]bool, t Task) error {
 			ids["attempt "+string(a)] = true
 		}
 	}
-	for _, u := range t.Usage {
-		ids["call "+string(u.Call)] = true
+	for _, c := range t.Calls {
+		ids["call "+string(c.ID)] = true
 	}
 	for _, k := range slices.Sorted(maps.Keys(ids)) {
 		if seen[k] {
@@ -175,7 +212,7 @@ func once(seen map[string]bool, t Task) error {
 	return nil
 }
 
-func task(m Meta, reg *vocab.Registry, t Task) (types.BenchmarkTask, error) {
+func task(m Meta, route map[types.ExecutorID]types.BenchmarkRoute, reg *vocab.Registry, t Task) (types.BenchmarkTask, error) {
 	bt := types.BenchmarkTask{Task: t.ID, Stages: []types.BenchmarkStage{}}
 	switch {
 	case t.Approved.IsZero():
@@ -214,7 +251,7 @@ func task(m Meta, reg *vocab.Registry, t Task) (types.BenchmarkTask, error) {
 			return bt, fmt.Errorf("a %s node with no claimed time", n.Stage)
 		} else if !n.Done.IsZero() && n.Done.Before(n.Claimed) {
 			return bt, fmt.Errorf("a %s node done before it was claimed", n.Stage)
-		} else if _, ok := m.Prices[n.Executor]; len(n.Attempts) > 0 && !ok {
+		} else if _, ok := route[n.Executor]; len(n.Attempts) > 0 && !ok {
 			return bt, fmt.Errorf("a %s node on executor %q, which is no route's", n.Stage, n.Executor)
 		}
 		for _, a := range n.Attempts {
@@ -224,20 +261,36 @@ func task(m Meta, reg *vocab.Registry, t Task) (types.BenchmarkTask, error) {
 			nodeOf[a] = i
 		}
 	}
-	// Each call to one stage and executor first, then per stage.
-	callNode := map[types.CallID]int{}
+	// Each bound call to its attempt's node, then each measurement to its
+	// call's stage and executor, then per stage.
+	callNode, liability := map[types.CallID]int{}, map[types.CallID]int64{}
+	bound := map[types.BenchmarkStageStage][]types.CallID{}
+	for _, c := range t.Calls {
+		i, ok := nodeOf[c.Attempt]
+		if !ok {
+			return bt, fmt.Errorf("bound call %s of attempt %s, which is no node's", c.ID, c.Attempt)
+		} else if _, dup := callNode[c.ID]; dup {
+			return bt, fmt.Errorf("call %s bound twice", c.ID)
+		} else if c.Liability < 0 {
+			return bt, fmt.Errorf("call %s with a negative liability", c.ID)
+		}
+		callNode[c.ID], liability[c.ID] = i, c.Liability
+		bound[t.Nodes[i].Stage] = append(bound[t.Nodes[i].Stage], c.ID)
+	}
 	usage := map[types.BenchmarkStageStage][]types.UsageMeasurement{}
 	for _, u := range t.Usage {
 		i, ok := nodeOf[u.Attempt]
 		if !ok {
 			return bt, fmt.Errorf("measurement %s of attempt %s, which is no node's", u.ID, u.Attempt)
 		}
-		if j, ok := callNode[u.Call]; ok && t.Nodes[j].Stage != t.Nodes[i].Stage {
+		j, ok := callNode[u.Call]
+		if !ok {
+			return bt, fmt.Errorf("measurement %s of call %s, which is no bound call", u.ID, u.Call)
+		} else if t.Nodes[j].Stage != t.Nodes[i].Stage {
 			return bt, fmt.Errorf("call %s in two stages, %s and %s", u.Call, t.Nodes[j].Stage, t.Nodes[i].Stage)
-		} else if ok && t.Nodes[j].Executor != t.Nodes[i].Executor {
+		} else if t.Nodes[j].Executor != t.Nodes[i].Executor {
 			return bt, fmt.Errorf("call %s on two executors", u.Call)
 		}
-		callNode[u.Call] = i
 		usage[t.Nodes[i].Stage] = append(usage[t.Nodes[i].Stage], u)
 	}
 	price := map[types.CallID]types.RegistryPrice{}
@@ -245,7 +298,7 @@ func task(m Meta, reg *vocab.Registry, t Task) (types.BenchmarkTask, error) {
 		price[c] = m.Prices[t.Nodes[i].Executor]
 	}
 	for _, s := range Stages {
-		st, used, err := stage(s, t, usage[s], price)
+		st, used, err := stage(s, t, usage[s], bound[s], liability, price)
 		if err != nil {
 			return bt, err
 		} else if used {
@@ -256,19 +309,19 @@ func task(m Meta, reg *vocab.Registry, t Task) (types.BenchmarkTask, error) {
 }
 
 // stage is stage s's metrics, and whether the task has any of it.
-func stage(s types.BenchmarkStageStage, t Task, usage []types.UsageMeasurement, price map[types.CallID]types.RegistryPrice) (types.BenchmarkStage, bool, error) {
+func stage(s types.BenchmarkStageStage, t Task, usage []types.UsageMeasurement, bound []types.CallID, liability map[types.CallID]int64, price map[types.CallID]types.RegistryPrice) (types.BenchmarkStage, bool, error) {
 	st := types.BenchmarkStage{Stage: s, Sources: []types.BenchmarkStageSourcesItem{}, Charge: []types.BenchmarkAmount{}, Outstanding: []types.BenchmarkAmount{}}
-	rounds, used := map[int]bool{}, false
+	rounds, used, err := map[int]bool{}, false, error(nil)
 	for _, n := range t.Nodes {
 		if n.Stage != s {
 			continue
 		}
 		used, rounds[n.Round] = true, true
-		st.Attempts += int64(len(n.Attempts))
+		add(&err, &st.Attempts, int64(len(n.Attempts)))
 		if n.Done.IsZero() {
 			st.Unfinished++
 		} else {
-			st.WallMs += n.Done.Sub(n.Claimed).Milliseconds()
+			add(&err, &st.WallMs, n.Done.Sub(n.Claimed).Milliseconds())
 		}
 	}
 	st.Rounds = int64(len(rounds))
@@ -285,44 +338,61 @@ func stage(s types.BenchmarkStageStage, t Task, usage []types.UsageMeasurement, 
 			st.Interventions.RailRaises++
 		}
 	}
-	if len(usage) == 0 {
-		return st, used, nil
+	if err != nil || len(bound) == 0 {
+		return st, used, err
 	}
-	calls, err := ledger.Reconcile(usage)
-	if err != nil {
-		return st, false, err
+	calls := map[types.CallID]ledger.Call{}
+	if len(usage) > 0 {
+		if calls, err = ledger.Reconcile(usage); err != nil {
+			return st, false, err
+		}
 	}
 	reports, sources := map[types.CallID][]types.UsageMeasurement{}, map[types.BenchmarkStageSourcesItem]bool{}
 	for _, u := range usage {
 		reports[u.Call], sources[types.BenchmarkStageSourcesItem(u.SourceOfTruth)] = append(reports[u.Call], u), true
 	}
-	st.Sources = slices.Sorted(maps.Keys(sources))
+	st.Sources = append(st.Sources, slices.Sorted(maps.Keys(sources))...)
 	settled, outstanding := map[[2]string]*types.BenchmarkAmount{}, map[[2]string]*types.BenchmarkAmount{}
-	for _, id := range slices.Sorted(maps.Keys(calls)) {
-		basis, err := basisOf(reports[id])
-		if err != nil {
-			return st, false, fmt.Errorf("call %s: %w", id, err)
-		}
-		standing := ledger.StandingOf(reports[id], id)
-		f := *standing.Usage
-		st.Tokens.In, st.Tokens.Out = st.Tokens.In+f.In, st.Tokens.Out+f.Out
-		st.Tokens.CacheRead, st.Tokens.CacheWrite = st.Tokens.CacheRead+f.CacheRead, st.Tokens.CacheWrite+f.CacheWrite
-		into, micros, currency := settled, calls[id].Usage.CostMicros, calls[id].Currency
-		if !standing.Settled {
-			into = outstanding
-			priced, err := ledger.PriceMicros(f, price[id])
-			if err != nil {
+	for _, id := range slices.Sorted(slices.Values(bound)) {
+		into, owed, basis, micros, currency := outstanding, true, types.BenchmarkAmountBasis("cash"), liability[id], "USD"
+		if _, measured := calls[id]; measured {
+			if basis, err = basisOf(reports[id]); err != nil {
 				return st, false, fmt.Errorf("call %s: %w", id, err)
 			}
-			if currency == "" || currency == "USD" || micros == 0 {
-				micros, currency = max(micros, priced), "USD"
+			standing := ledger.StandingOf(reports[id], id)
+			f := *standing.Usage
+			add(&err, &st.Tokens.In, f.In)
+			add(&err, &st.Tokens.Out, f.Out)
+			add(&err, &st.Tokens.CacheRead, f.CacheRead)
+			add(&err, &st.Tokens.CacheWrite, f.CacheWrite)
+			reported := calls[id].Usage.CostMicros
+			if standing.Settled {
+				into, owed, micros, currency = settled, false, reported, calls[id].Currency
+			} else {
+				priced, perr := ledger.PriceMicros(f, price[id])
+				if perr != nil {
+					return st, false, fmt.Errorf("call %s: %w", id, perr)
+				}
+				if c := calls[id].Currency; c != "" && c != "USD" && reported != 0 {
+					return st, false, fmt.Errorf("call %s: an unsettled %s amount, which cannot be compared with its USD valuation", id, c)
+				} else if c == "" || c == "USD" {
+					micros = max(micros, reported)
+				}
+				micros = max(micros, priced)
 			}
+		}
+		if owed && micros <= 0 {
+			return st, false, fmt.Errorf("call %s: unsettled, with no positive liability", id)
 		}
 		k := [2]string{string(basis), currency}
 		if into[k] == nil {
 			into[k] = &types.BenchmarkAmount{Basis: basis, Currency: currency}
 		}
-		into[k].AmountMicros, into[k].Calls = into[k].AmountMicros+micros, into[k].Calls+1
+		add(&err, &into[k].AmountMicros, micros)
+		add(&err, &into[k].Calls, 1)
+		if err != nil {
+			return st, false, fmt.Errorf("stage %s: %w", s, err)
+		}
 	}
 	st.Charge, st.Outstanding = amounts(settled), amounts(outstanding)
 	return st, true, nil

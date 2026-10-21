@@ -19,10 +19,11 @@ MUTS = [
     ("an unknown stage accepted", B, 'if !slices.Contains(Stages, n.Stage) {', 'if false {'),
     ("done before claimed accepted", B, '} else if !n.Done.IsZero() && n.Done.Before(n.Claimed) {', '} else if false {'),
     ("closed before approval accepted", B, 'case !t.Closed.IsZero() && t.Closed.Before(t.Approved):', 'case false:'),
-    ("an unsettled call settled", B, '\t\tif !standing.Settled {\n\t\t\tinto = outstanding', '\t\tif false {\n\t\t\tinto = outstanding'),
+    ("an unsettled call settled", B, '\t\t\tif standing.Settled {\n\t\t\t\tinto, owed', '\t\t\tif true {\n\t\t\t\tinto, owed'),
     ("an unfinished node counted", B, '\t\tif n.Done.IsZero() {\n\t\t\tst.Unfinished++', '\t\tif false {\n\t\t\tst.Unfinished++'),
     ("rounds as nodes", B, 'used, rounds[n.Round] = true, true', 'used, rounds[len(rounds)] = true, true'),
-    ("cache tokens dropped", B, 'st.Tokens.CacheRead, st.Tokens.CacheWrite = st.Tokens.CacheRead+f.CacheRead, st.Tokens.CacheWrite+f.CacheWrite', 'st.Tokens.CacheRead, st.Tokens.CacheWrite = 0, 0'),
+    ("cache reads dropped", B, 'add(&err, &st.Tokens.CacheRead, f.CacheRead)', ''),
+    ("cache writes dropped", B, 'add(&err, &st.Tokens.CacheWrite, f.CacheWrite)', ''),
     ("rescues as interventions", B, 'if iv.Stage != s || iv.Kind == Rescue {', 'if iv.Stage != s {'),
     ("rescues not counted", B, 'bt.Rescues += b2i(iv.Kind == Rescue)', 'bt.Rescues += 0'),
     ("a hold dropped", B, '\t\th := t.Hold\n\t\tbt.Hold = &h', '\t\th := t.Hold\n\t\t_ = h'),
@@ -32,14 +33,14 @@ MUTS = [
     ("a task gone unreported", C, '\t\tif !seen[t.Task] {', '\t\tif false {'),
     ("wall time growth unreported", C, 'if p.WallMs != nil && t.WallMs != nil && *t.WallMs > *p.WallMs {', 'if false {'),
     # The review of #313 (docs/reviews/2026-10-20-pr313-opus.md): H1.
-    ("settled by Uncertain, not the standing", B, 'if !standing.Settled {', 'if calls[id].Uncertain {'),
+    ("settled by Uncertain, not the standing", B, 'if standing.Settled {', 'if !calls[id].Uncertain {'),
     ("tokens without the gateway's count", B, 'f := *standing.Usage', 'f := calls[id].Usage'),
-    ("an unsettled call not priced", B, 'micros, currency = max(micros, priced), "USD"', 'currency = cmp.Or(currency, "USD")'),
-    ("a reported cost below the price kept", B, 'micros, currency = max(micros, priced), "USD"', 'micros, currency = cmp.Or(micros, priced), "USD"'),
+    ("an unsettled call not priced", B, 'micros = max(micros, priced)', ''),
+    ("a reported cost below the price kept", B, 'micros = max(micros, priced)', 'micros = cmp.Or(micros, priced)'),
     ("an empty currency in the schema", S, '"pattern": "^[A-Z]{3}$"', '"pattern": "^([A-Z]{3})?$"'),
     # M1.
-    ("a call in two stages accepted", B, 'ok && t.Nodes[j].Stage != t.Nodes[i].Stage {', 'false {'),
-    ("a call on two executors accepted", B, '} else if ok && t.Nodes[j].Executor != t.Nodes[i].Executor {', '} else if false {'),
+    ("a call in two stages accepted", B, '} else if t.Nodes[j].Stage != t.Nodes[i].Stage {', '} else if false {'),
+    ("a call on two executors accepted", B, '} else if t.Nodes[j].Executor != t.Nodes[i].Executor {', '} else if false {'),
     # M2.
     ("an empty run accepted", B, 'if len(tasks) == 0 {', 'if false {'),
     ("ids twice in the run accepted", B, '\t\tif seen[k] {', '\t\tif false {'),
@@ -73,6 +74,27 @@ MUTS = [
     ("a cell not escaped", C, 'return strings.ReplaceAll(s, "|", `\\|`)', 'return s'),
     ("the path with a slash", C, 'strings.ReplaceAll(run.Arch, "/", "-")', 'run.Arch'),
     ("unfinished not summarised", C, 'seconds(s.WallMs), s.Unfinished,', 'seconds(s.WallMs), int64(0),'),
+    # The review of #313 by Astra (docs/reviews/2026-10-21-pr313-astra.md).
+    # H1.
+    ("an unsettled call at zero accepted", B, 'if owed && micros <= 0 {', 'if false {'),
+    ("the liability ignored", B, 'liability[id], "USD"', 'int64(0), "USD"'),
+    # H2.
+    ("unmeasured bound calls dropped", B, 'for _, id := range slices.Sorted(slices.Values(bound)) {', 'for _, id := range slices.Sorted(maps.Keys(calls)) {'),
+    ("a stage of unmeasured calls dropped", B, 'if err != nil || len(bound) == 0 {', 'if err != nil || len(usage) == 0 {'),
+    ("an unbound measurement accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("measurement %s of call %s', '\t\tif false {\n\t\t\treturn bt, fmt.Errorf("measurement %s of call %s'),
+    ("a bound call of no node's attempt accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("bound call', '\t\tif false {\n\t\t\treturn bt, fmt.Errorf("bound call'),
+    ("a call bound twice accepted", B, '} else if _, dup := callNode[c.ID]; dup {', '} else if false {'),
+    ("a negative liability accepted", B, '} else if c.Liability < 0 {', '} else if false {'),
+    ("no sources as null", B, 'st.Sources = append(st.Sources, slices.Sorted(maps.Keys(sources))...)', 'st.Sources = slices.Sorted(maps.Keys(sources))'),
+    # H3.
+    ("an unsettled non-USD amount kept", B, 'c != "" && c != "USD" && reported != 0 {', 'false {'),
+    # H4.
+    ("a sum unchecked", B, 'v > maxSum-*dst', 'false'),
+    ("tokens added unchecked", B, 'add(&err, &st.Tokens.In, f.In)', 'st.Tokens.In += f.In'),
+    ("money added unchecked", B, 'add(&err, &into[k].AmountMicros, micros)', 'into[k].AmountMicros += micros'),
+    # M5.
+    ("a price for a route", B, '} else if _, ok := route[n.Executor]; len', '} else if _, ok := m.Prices[n.Executor]; len'),
+    ("a conflicting route accepted", B, 'ok && q != r {', 'false {'),
 ]
 
 
