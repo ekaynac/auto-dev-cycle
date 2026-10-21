@@ -160,7 +160,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	} else if err != nil {
 		return s, err
 	}
-	nodes, err := graph.Nodes(tx)
+	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
 	for _, n := range nodes {
 		if err != nil {
 			break
