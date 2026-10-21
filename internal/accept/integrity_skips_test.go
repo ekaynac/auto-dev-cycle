@@ -123,6 +123,8 @@ func runSkipped(t *testing.T) {
 
 func needDeref(t *testing.T) { (*t).Skip("x") }
 
+func inspect(t *testing.T) { _ = t.Skip }
+
 type TT = testing.T
 
 type TBA = testing.TB
@@ -205,6 +207,18 @@ func raceSkip(tag, body string) string {
 	return "//go:build " + tag + "\n\npackage pkg\n\nimport \"testing\"\n\nfunc requireX(t *testing.T) {" + body + "}\n"
 }
 
+// aliasesBase is the base's generic aliases (Astra #350 H1): Ptr[testing.T],
+// Ptr[TT], a generic alias of a generic alias, and a chain of 64.
+func aliasesBase() string {
+	var b strings.Builder
+	b.WriteString("package pkg\n\nimport \"testing\"\n\ntype Ptr[P any] = *P\n\ntype Box[Q any] = Ptr[Q]\n\ntype A0 = testing.T\n")
+	for i := 1; i <= 64; i++ {
+		fmt.Fprintf(&b, "\ntype A%d = A%d\n", i, i-1)
+	}
+	b.WriteString("\nfunc needGeneric(t Ptr[testing.T]) { t.Skip(\"x\") }\n\nfunc needGenericTT(t Ptr[TT]) { t.Skip(\"x\") }\n\nfunc needNested(t Box[testing.T]) { t.Skip(\"x\") }\n\nfunc needChain(t *A64) { t.Skip(\"x\") }\n")
+	return b.String()
+}
+
 // TestIntegritySkips (P14d-a1; Astra #255 H6, Opus #255 M5, the reviews of
 // #292 and #315): a skip added through an existing helper that skips its
 // own testing parameter directly, by any use, blocks, a later assignment
@@ -214,7 +228,7 @@ func raceSkip(tag, body string) string {
 func TestIntegritySkips(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"pkg/skips_test.go": skipsBase, "pkg/race_skip_test.go": raceSkip("race", ` t.Skip("race") `),
+		write(t, src, map[string]string{"pkg/skips_test.go": skipsBase, "pkg/aliases_test.go": aliasesBase(), "pkg/race_skip_test.go": raceSkip("race", ` t.Skip("race") `),
 			"pkg/norace_skip_test.go": raceSkip("!race", "")})
 		plain(t, src, "add", "--all")
 	})
@@ -248,7 +262,15 @@ func TestIntegritySkips(t *testing.T) {
 		"a type alias of testing.TB (M1)":     {in("\tneedAliasTB(t)\n"), skipped},
 		"a parenthesized type (M1)":           {in("\tneedParen(t)\n"), skipped},
 		"a pointer to a parenthesized type":   {in("\tneedStarParen(t)\n"), skipped},
-		"an alias of a pointer alias":         {in("\tneedPtrAlias(t)\n"), skipped},
+		"a generic alias (Astra H1)":          {in("\tneedGeneric(t)\n"), skipped}, // Astra #350 H1
+		"a generic alias of an alias":         {in("\tneedGenericTT(t)\n"), skipped},
+		"a generic alias, nested":             {in("\tneedNested(t)\n"), skipped},
+		"a chain of 64 aliases (Astra H1)":    {in("\tneedChain(t)\n"), skipped},
+		"an alias cycle: unverifiable":        {map[string]string{"pkg/cycle_test.go": "package pkg\n\nimport \"testing\"\n\ntype C1 = C2\n\ntype C2 = C1\n\nfunc needCycle(t *C1) { _ = t }\n\nvar _ = testing.Short\n"}, "unverifiable"}, // the types layer's too: TestIntegritySkipsAliases has the skip layer's own
+		// Astra #350 M2, stated (a false block): selecting a skip method
+		// without calling it makes a helper skipping.
+		"a selected, uncalled Skip (M2)": {in("\tinspect(t)\n"), skipped},
+		"an alias of a pointer alias":    {in("\tneedPtrAlias(t)\n"), skipped},
 		// Opus #350 M2, stated (a false block): a helper skipping through a
 		// copy, rewritten to skip its parameter directly, blocks its callers.
 		"a2 helper rewritten to direct (M2)":  {map[string]string{"pkg/skips_test.go": strings.Replace(skipsBase, "\tu := t\n\tu.Skip(\"x\")\n", "\tt.Skip(\"x\")\n", 1)}, "TestViaCopy a test skipped"},
@@ -355,11 +377,74 @@ func TestIntegritySkipsCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &pkgScan{r: &run{ctx: ctx}, pkg: pkg, info: info, tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{}}
 	d := f.Decls[1].(*ast.FuncDecl)
-	if found, err := s.skipsDirectly(d); !found || err != nil {
+	params, _ := s.testingParams(d)
+	if found, err := s.skipsDirectly(d, params); !found || err != nil {
 		t.Fatalf("a live context: %v %v", found, err)
 	}
 	cancel()
-	if found, err := s.skipsDirectly(d); found || err != context.Canceled {
+	if found, err := s.skipsDirectly(d, params); found || err != context.Canceled {
 		t.Errorf("a cancelled context: %v %v", found, err)
+	}
+}
+
+// TestIntegritySkipsAliases (Astra #350 H1): a parameter's type through the
+// package's aliases, resolved to its end and charged: a generic one
+// substituted; an alias not resolved (a cycle, arguments that do not
+// match, the bound) is a reason (the package's tests unverifiable), never
+// "not testing".
+func TestIntegritySkipsAliases(t *testing.T) {
+	scan := func(src string) (*pkgScan, map[string]*ast.FuncDecl) {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "p.go", "package p\n\nimport \"testing\"\n\nvar _ = testing.Short\n"+src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Types: map[ast.Expr]types.TypeAndValue{}}
+		pkg, _ := (&types.Config{Error: func(error) {}}).Check("p", fset, []*ast.File{f}, info) // type errors kept: the scan reads on
+		s := &pkgScan{r: &run{ctx: context.Background()}, pkg: pkg, info: info, tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{}}
+		decls := map[string]*ast.FuncDecl{}
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				decls[d.Name.Name] = d
+			case *ast.GenDecl:
+				for _, sp := range d.Specs {
+					if ts, ok := sp.(*ast.TypeSpec); ok && ts.Assign.IsValid() && info.Defs[ts.Name] != nil {
+						s.aliases[info.Defs[ts.Name]] = ts.Type
+					}
+				}
+			}
+		}
+		return s, decls
+	}
+	for name, c := range map[string]struct {
+		src     string
+		testing bool
+		why     string
+	}{
+		"a generic alias":        {"type Ptr[P any] = *P\n\nfunc f(t Ptr[testing.T]) {}\n", true, ""},
+		"another type argument":  {"type Ptr[P any] = *P\n\nfunc f(t Ptr[int]) {}\n", false, ""},
+		"a cycle":                {"type C1 = C2\n\ntype C2 = C1\n\nfunc f(t *C1) {}\n", false, "a cycle: C"},
+		"a generic cycle":        {"type X[P any] = Y[P]\n\ntype Y[P any] = X[P]\n\nfunc f(t X[testing.T]) {}\n", false, "not resolved"},
+		"arguments not matching": {"type Ptr[P any] = *P\n\nfunc f(t Ptr[testing.T, int]) {}\n", false, "Ptr's arguments"},
+	} {
+		s, decls := scan(c.src)
+		params, why := s.testingParams(decls["f"])
+		if (len(params) > 0) != c.testing || c.why == "" && why != "" || c.why != "" && !strings.Contains(why, c.why) {
+			t.Errorf("%s: %d testing parameters, why %q", name, len(params), why)
+		}
+	}
+	// Through skipFacts: the reason is the package's (skipBad), its tests unverifiable.
+	s, decls := scan("type C1 = C2\n\ntype C2 = C1\n\nfunc f(t *C1) {}\n")
+	s.same, s.skipping = map[string][]*ast.FuncDecl{"f": {decls["f"]}}, map[*ast.FuncDecl]bool{}
+	if err := s.skipFacts(); err != nil || !strings.Contains(s.skipBad, "not resolved (a cycle") {
+		t.Errorf("a cycle through skipFacts: %v, skipBad %q", err, s.skipBad)
+	}
+	old := maxSkipWork
+	t.Cleanup(func() { maxSkipWork = old })
+	maxSkipWork = 10 // the bound, mid-chain
+	s, decls = scan("type A0 = testing.T\n\ntype A1 = A0\n\ntype A2 = A1\n\ntype A3 = A2\n\ntype A4 = A3\n\ntype A5 = A4\n\ntype A6 = A5\n\ntype A7 = A6\n\ntype A8 = A7\n\ntype A9 = A8\n\ntype A10 = A9\n\ntype A11 = A10\n\nfunc f(t *A11) {}\n")
+	if params, why := s.testingParams(decls["f"]); len(params) != 0 || why != "skipping helpers past the guard's bound" || s.skipBad != why {
+		t.Errorf("a chain past the bound: %d testing parameters, why %q, skipBad %q", len(params), why, s.skipBad)
 	}
 }

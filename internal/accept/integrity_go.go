@@ -320,7 +320,7 @@ type pkgScan struct {
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr // an alias's right-hand side
 	skipping  map[*ast.FuncDecl]bool    // P14d-a1 (integrity_skips.go)
-	exhausted bool                      // the skip layer's bound was reached
+	skipBad   string                    // why the skip layer's facts are unknown (its bound; a type not resolved): its tests unverifiable
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -689,8 +689,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
 						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons, max(old.uses, st.uses)}
 					}
-					if fa.tests[k] = st; s.exhausted {
-						fa.bad[m.path] = "skipping helpers past the guard's bound"
+					if fa.tests[k] = st; s.skipBad != "" {
+						fa.bad[m.path] = s.skipBad
 					}
 				}
 				continue

@@ -58,18 +58,25 @@ func (s *pkgScan) skipUse(id *ast.Ident) bool {
 
 // skipFacts reads, once and charged, the body of each declaration with a
 // testing parameter: one that skips directly makes every declaration of its
-// name skipping. Past the bound it stops (exhausted); a done context is the
-// run's error.
+// name skipping. Past the bound it stops; a parameter's type it cannot
+// resolve makes the package's facts unknown (skipBad: its tests
+// unverifiable, never "not testing"); a done context is the run's error.
 func (s *pkgScan) skipFacts() error {
 	for _, ds := range s.same {
 		for _, d := range ds {
-			if d.Body == nil || s.skipping[d] || len(s.testingParams(d)) == 0 {
+			if d.Body == nil || s.skipping[d] {
 				continue
-			} else if s.r.skipWork += int(d.Body.End() - d.Body.Pos()); s.r.skipWork > maxSkipWork {
-				s.exhausted = true
+			}
+			params, why := s.testingParams(d)
+			if why != "" {
+				s.skipBad = why
+				return nil
+			} else if len(params) == 0 {
+				continue
+			} else if !s.skipCharge(int(d.Body.End() - d.Body.Pos())) {
 				return nil
 			}
-			skips, err := s.skipsDirectly(d)
+			skips, err := s.skipsDirectly(d, params)
 			if err != nil {
 				return err
 			} else if skips {
@@ -82,24 +89,26 @@ func (s *pkgScan) skipFacts() error {
 	return nil
 }
 
+// skipCharge charges n to the skip layer's bound; past it, the package's
+// tests are unverifiable.
+func (s *pkgScan) skipCharge(n int) bool {
+	if s.r.skipWork += n; s.r.skipWork > maxSkipWork {
+		s.skipBad = "skipping helpers past the guard's bound"
+		return false
+	}
+	return true
+}
+
 // testingParams is d's parameters declared of a testing type (*testing.T,
-// B, F or TB), by the declaration's syntax: through parentheses, a pointer
-// and the scan's own type aliases (type TT = testing.T), as mentions reads
-// them (Opus #350 M1).
-func (s *pkgScan) testingParams(d *ast.FuncDecl) map[types.Object]bool {
-	params := map[types.Object]bool{}
+// B, F or TB), by the declaration's syntax; why, if one's type is not
+// resolved.
+func (s *pkgScan) testingParams(d *ast.FuncDecl) (params map[types.Object]bool, why string) {
+	params = map[types.Object]bool{}
 	for _, fl := range d.Type.Params.List {
-		t := ast.Unparen(fl.Type)
-		for range 8 { // a bound: an alias of a pointer of an alias…
-			if st, ok := t.(*ast.StarExpr); ok {
-				t = ast.Unparen(st.X)
-			} else if a := s.alias(t); a != nil {
-				t = ast.Unparen(a)
-			} else {
-				break
-			}
-		}
-		if slices.Contains(testTypes[:4], s.qual(t)) {
+		q, why := s.testingType(fl.Type)
+		if why != "" {
+			return nil, why
+		} else if q != "" {
 			for _, id := range fl.Names {
 				if o := s.info.Defs[id]; o != nil {
 					params[o] = true
@@ -107,15 +116,84 @@ func (s *pkgScan) testingParams(d *ast.FuncDecl) map[types.Object]bool {
 			}
 		}
 	}
-	return params
+	return params, ""
+}
+
+// binding is a generic alias's type parameter bound to its argument, read
+// in the bindings of the instantiation (env).
+type binding struct {
+	arg ast.Expr
+	env map[types.Object]binding
+}
+
+// testingType is the testing type ("testing.T", B, F or TB) t names,
+// through parentheses, pointers and the package's own type aliases
+// resolved to their end (Opus #350 M1, Astra #350 H1): a generic alias
+// instantiated (type Ptr[P any] = *P; Ptr[testing.T]) with its arguments
+// substituted by position. Each step is charged to the skip bound. why is
+// set, never "not testing", when an alias is not resolved: a cycle, the
+// bound, or an instantiation whose arguments do not match.
+func (s *pkgScan) testingType(t ast.Expr) (q, why string) {
+	env, seen := map[types.Object]binding{}, map[[2]any]bool{}
+	for {
+		if !s.skipCharge(1) {
+			return "", s.skipBad
+		}
+		t = ast.Unparen(t)
+		if st, ok := t.(*ast.StarExpr); ok {
+			t = st.X
+			continue
+		}
+		if id, ok := t.(*ast.Ident); ok {
+			if b, ok := env[s.info.Uses[id]]; ok { // a type parameter of the alias being read
+				t, env = b.arg, b.env
+				continue
+			}
+		}
+		f, args := fn(t)
+		o := s.info.Uses[ident(f)]
+		if id := ident(f); o == nil && id != nil && s.pkg != nil { // a type error left it unrecorded: by name, in the package
+			o = s.pkg.Scope().Lookup(id.Name)
+		}
+		rhs := s.aliases[o]
+		if o == nil || rhs == nil {
+			if q := s.qual(t); slices.Contains(testTypes[:4], q) {
+				return q, ""
+			}
+			return "", ""
+		}
+		key := [2]any{o, nil}
+		if len(args) > 0 {
+			key[1] = args[0]
+		}
+		if seen[key] {
+			return "", "unverifiable: a testing parameter's type alias not resolved (a cycle: " + o.Name() + ")"
+		}
+		seen[key] = true
+		a, _ := o.Type().(*types.Alias)
+		if n := 0; a != nil {
+			n = a.TypeParams().Len()
+			if n != len(args) {
+				return "", "unverifiable: a testing parameter's type alias not resolved (" + o.Name() + "'s arguments)"
+			}
+			inner := map[types.Object]binding{}
+			for i := range n {
+				inner[a.TypeParams().At(i).Obj()] = binding{args[i], env}
+			}
+			t, env = rhs, inner
+		} else if len(args) > 0 {
+			return "", "unverifiable: a testing parameter's type alias not resolved (" + o.Name() + ")"
+		} else {
+			t, env = rhs, map[types.Object]binding{}
+		}
+	}
 }
 
 // skipsDirectly: d's body calls Skip, SkipNow or Skipf on one of d's own
 // parameters declared of a testing type. The reading checks the run's
 // context every skipCheckEvery nodes.
-func (s *pkgScan) skipsDirectly(d *ast.FuncDecl) (found bool, err error) {
+func (s *pkgScan) skipsDirectly(d *ast.FuncDecl, params map[types.Object]bool) (found bool, err error) {
 	skipReads.Add(1)
-	params := s.testingParams(d)
 	nodes := 0
 	ast.Inspect(d.Body, func(n ast.Node) bool {
 		if found || err != nil {
