@@ -36,7 +36,10 @@ import (
 //   - Only functions a test (Test, Fuzz, Example) reaches through calls
 //     and references (a named t.Run callback) at the base are compared
 //     (Opus #369 L1). A test itself is main's to compare (Opus #369 L2):
-//     here only an assertion of its own body made dead blocks.
+//     here it blocks only when an assertion of its own body is made dead
+//     (any declaration's: the weakest live count, the most dead; Opus #369
+//     r2 H1), or when a helper with assertions it called is removed or no
+//     longer reached and its total fell (a weaker body inlined; r2 M1).
 //   - A function with assertions at the base that the head no longer
 //     declares blocks when its name is still used in the directory's test
 //     files ("a helper with assertions removed while still used").
@@ -223,17 +226,38 @@ func reached(fa pkgFacts) map[string]bool {
 
 // compareHelpers blocks a function of the test files a test reaches whose
 // assertions the head weakened, or removed while its name is still used;
-// a test whose own assertions the head made dead.
+// a test whose own assertions the head made dead, or whose total fell
+// with a helper it called removed or no longer reached.
 func compareHelpers(add func(*[]Block, string, string), blocks *[]Block, b, a pkgFacts) {
 	bt := totals(b, nil)
-	at, live := totals(a, bt), reached(b)
+	at, live, aLive := totals(a, bt), reached(b), reached(a)
+	// lost: a declaration of k called a helper with assertions that the
+	// head removed, or that no test reaches at the head (Opus #369 r2 M1).
+	lost := func(k string) bool {
+		for _, st := range b.helpers[k] {
+			for _, c := range st.calls {
+				if _, ok := b.helpers[c]; ok && bt[c] > 0 && !aLive[c] {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	for _, k := range keys(b.helpers) {
 		bh := b.helpers[k][0]
 		switch ah, ok := a.helpers[k]; {
 		case !live[k]:
-		case bh.test && ok: // its own live assertions fewer, its dead ones more (its calls are main's)
-			if ah[0].dead > bh.dead && ah[0].own < bh.own {
-				add(blocks, k, fmt.Sprintf("a test's assertions made dead (%d → %d live)", bh.own, ah[0].own))
+		case bh.test && ok:
+			bl, bd := liveDead(b.helpers[k])
+			al, ad := liveDead(ah)
+			switch {
+			case ad > bd && al < bl: // its own live assertions fewer, its dead ones more (its calls are main's)
+				add(blocks, k, fmt.Sprintf("a test's assertions made dead (%d → %d live)", bl, al))
+			case !lost(k):
+			case bt[k] > maxHelperTotal || at[k] > maxHelperTotal:
+				add(blocks, k, "unverifiable: test helpers' totals past the guard's bound")
+			case at[k] < bt[k]:
+				add(blocks, k, fmt.Sprintf("a test's assertions weakened, a helper it called removed (%d → %d)", bt[k], at[k]))
 			}
 		case bh.test:
 		case bt[k] > maxHelperTotal || ok && at[k] > maxHelperTotal:
@@ -244,4 +268,15 @@ func compareHelpers(add func(*[]Block, string, string), blocks *[]Block, b, a pk
 			add(blocks, k, "a helper with assertions removed while still used")
 		}
 	}
+}
+
+// liveDead is a test's own live assertions, its weakest declaration's,
+// and its dead ones, its most's: every declaration (race, !race) is
+// compared (Opus #369 r2 H1).
+func liveDead(sts []fnStat) (live, dead int) {
+	live = sts[0].own
+	for _, st := range sts {
+		live, dead = min(live, st.own), max(dead, st.dead)
+	}
+	return live, dead
 }

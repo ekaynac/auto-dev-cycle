@@ -77,6 +77,20 @@ func inner(t *testing.T) {
 
 func TestOuter(t *testing.T) { outer(t) }
 
+func five(t *testing.T) {
+	if Add(5, 0) != 5 {
+		t.Fatal("five")
+	}
+	if Add(5, 1) != 6 {
+		t.Fatal("six")
+	}
+	if Add(5, 2) != 7 {
+		t.Fatal("seven")
+	}
+}
+
+func TestFive(t *testing.T) { five(t) }
+
 type env struct{}
 
 func (env) check(t *testing.T) {
@@ -113,7 +127,7 @@ func libCheck(t testing.TB) {
 func TestIntegrityHelpers(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/race_h_test.go": raceNeedX("race", 2), "pkg/norace_h_test.go": raceNeedX("!race", 1)})
+		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/race_h_test.go": raceNeedX("race", 2), "pkg/norace_h_test.go": raceNeedX("!race", 1), "pkg/race_r_test.go": raceTestR("race"), "pkg/norace_r_test.go": raceTestR("!race")})
 		plain(t, src, "add", "--all")
 	})
 	edit := func(old, new string) map[string]string {
@@ -121,6 +135,16 @@ func TestIntegrityHelpers(t *testing.T) {
 			t.Fatalf("no %q in the base", old)
 		}
 		return map[string]string{"pkg/helpers_test.go": strings.Replace(helpersBase, old, new, 1)}
+	}
+	// testFive inlines body into TestFive in place of five's call; del
+	// deletes five too.
+	fives := []string{"\tif Add(5, 0) != 5 {\n\t\tt.Fatal(\"five\")\n\t}\n", "\tif Add(5, 1) != 6 {\n\t\tt.Fatal(\"six\")\n\t}\n", "\tif Add(5, 2) != 7 {\n\t\tt.Fatal(\"seven\")\n\t}\n"}
+	testFive := func(body string, del bool) map[string]string {
+		r := []string{"func TestFive(t *testing.T) { five(t) }\n", "func TestFive(t *testing.T) {\n" + body + "}\n"}
+		if del {
+			r = append(r, "func five(t *testing.T) {\n"+strings.Join(fives, "")+"}\n", "")
+		}
+		return map[string]string{"pkg/helpers_test.go": strings.NewReplacer(r...).Replace(helpersBase)}
 	}
 	one := "\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n"
 	weakened := "a helper's assertions weakened"
@@ -151,6 +175,15 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a helper inlined into its caller and deleted (clean)":               {map[string]string{"pkg/helpers_test.go": strings.NewReplacer("\tinner(t)\n", "\tif Add(4, 0) != 4 {\n\t\tt.Fatal(\"inner\")\n\t}\n", "func inner(t *testing.T) {\n\tif Add(4, 0) != 4 {\n\t\tt.Fatal(\"inner\")\n\t}\n}\n", "").Replace(helpersBase)}, ""},
 		"an unused helper deleted (clean)":                                   {edit("func spare(t *testing.T) {\n\tif Add(1, 1) != 2 {\n\t\tt.Fatal(\"spare\")\n\t}\n}\n", ""), ""},
 		"a !race variant's helper weakened":                                  {map[string]string{"pkg/norace_h_test.go": raceNeedX("!race", 0)}, "pkg:pkg.needX " + weakened + " (1 → 0)"}, // the weakest declaration's count
+		// Opus #369 r2 H1: either variant of a test made dead blocks.
+		"a !race variant of a test made dead": {map[string]string{"pkg/norace_r_test.go": strings.Replace(raceTestR("!race"), "\tif Add(1, 2) != 3 {", "\tif false {", 1)}, "pkg:pkg.TestR a test's assertions made dead (1 → 0 live)"},
+		"a race variant of a test made dead":  {map[string]string{"pkg/race_r_test.go": strings.Replace(raceTestR("race"), "\tif Add(1, 2) != 3 {", "\tif false {", 1)}, "pkg:pkg.TestR a test's assertions made dead (1 → 0 live)"},
+		// Opus #369 r2 M1: a test's helper inlined weaker and deleted, or no
+		// longer called, blocks by the test's total; inlined whole is clean.
+		"a test's helper inlined weaker and deleted":                {testFive(fives[0], true), "pkg:pkg.TestFive a test's assertions weakened, a helper it called removed (3 → 1)"},
+		"a test's helper inlined weaker, kept, no longer called":    {testFive(fives[0], false), "pkg:pkg.TestFive a test's assertions weakened, a helper it called removed (3 → 1)"},
+		"a test's helper inlined whole and deleted (clean)":         {testFive(strings.Join(fives, ""), true), ""},
+		"a test's helper inlined with one more and deleted (clean)": {testFive(strings.Join(fives, "")+one, true), ""},
 	} {
 		v := f.guarded(t, c.files)
 		switch {
@@ -206,6 +239,11 @@ func raceNeedX(tag string, n int) string {
 	return b.String()
 }
 
+// raceTestR is TestR's variant for build tag tag, with one assertion.
+func raceTestR(tag string) string {
+	return "//go:build " + tag + "\n\npackage pkg\n\nimport \"testing\"\n\nfunc TestR(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"r\")\n\t}\n}\n"
+}
+
 // TestIntegrityHelpersSaturate (Opus #369 H1): duplicated calls multiply a
 // total; past maxHelperTotal the helper is unverifiable, never compared
 // (an overflow would read a weakening as a gain).
@@ -232,6 +270,12 @@ func TestIntegrityHelpersSaturate(t *testing.T) {
 		if !finds(v.Blocks, "pkg:pkg."+k+" unverifiable: test helpers' totals past the guard's bound") {
 			t.Errorf("a saturated total, %s: %q", k, whats(v.Blocks))
 		}
+	}
+	// A test whose saturated helper is removed (Opus #369 r2 M1's rule) is
+	// unverifiable, not compared.
+	v = f.guarded(t, map[string]string{"pkg/sat_test.go": strings.Replace(base, "func top(t *testing.T) {\n\tc1(t)\n\tbcheck(t)\n}\n\nfunc TestTop(t *testing.T) { top(t) }\n", "func TestTop(t *testing.T) { bcheck(t) }\n", 1)})
+	if !finds(v.Blocks, "pkg:pkg.TestTop unverifiable: test helpers' totals past the guard's bound") || finds(v.Blocks, "pkg:pkg.TestTop a test's") {
+		t.Errorf("a test's saturated helper removed: %q", whats(v.Blocks))
 	}
 
 	// Opus's input, the default bound: c16 asserts once, each c_i calls
