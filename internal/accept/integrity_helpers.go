@@ -20,7 +20,8 @@ import (
 //     branch a constant condition never takes (markDead's: if, for,
 //     switch) removed, and the calls count counted as one taken out; each
 //     call to a function of the test files then adds that function's
-//     total (a call within a cycle of calls adds nothing). The calls are
+//     total (a call within a cycle of calls adds nothing), and any other
+//     call count counted adds one, as main counts it. The calls are
 //     every call to such a function, read from the syntax, never from
 //     main's asserting fixed point, whose depth depends on map order (Opus
 //     #369 H2). A body extracted into a new helper it calls keeps its
@@ -50,14 +51,14 @@ var maxHelperTotal = 1 << 40
 
 // fnStat is one declaration's assertions on one platform: its own (count's,
 // less dead ones and the calls count counted as one), dead (count's under
-// branches never taken), the functions it calls (their keys, once a call)
-// and refers to, and the name a use of it spells (a method's, without its
-// receiver).
+// branches never taken), the functions it calls (their keys, once a call),
+// the calls count counted (ones) and the functions it refers to, and the
+// name a use of it spells (a method's, without its receiver).
 type fnStat struct {
-	own, dead   int
-	calls, refs []string
-	plat, short string
-	test        bool
+	own, dead         int
+	calls, ones, refs []string
+	plat, short       string
+	test              bool
 }
 
 // helperFacts records d, a declaration of a test file, on platform plat:
@@ -67,8 +68,8 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 		s.cs.dead = map[ast.Node]bool{}
 	}
 	key := func(c *ast.FuncDecl) string { return plat + " " + dir + ":" + name + "." + declKey(c) }
-	dead, counted := 0, 0
-	var calls, refs []string
+	dead := 0
+	var calls, ones, refs []string
 	if !s.over() {
 		ast.Inspect(d, func(n ast.Node) bool {
 			switch {
@@ -92,7 +93,9 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 			case *ast.CallExpr:
 				if c := s.callee(x); c != nil {
 					calls = append(calls, key(c))
-					counted += b2i(s.asserting[c] && s.assertion(x)) // count's one for it
+					if s.asserting[c] && s.assertion(x) { // count's one for it
+						ones = append(ones, key(c))
+					}
 				}
 			}
 			return true
@@ -106,7 +109,7 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 	}
 	if fn, ok := d.(*ast.FuncDecl); ok && fn.Body != nil {
 		test := fn.Recv == nil && goTest(fn.Name.Name)
-		fa.helpers[key(fn)] = append(fa.helpers[key(fn)], fnStat{asserts - dead - counted, dead, calls, refs, plat, fn.Name.Name, test})
+		fa.helpers[key(fn)] = append(fa.helpers[key(fn)], fnStat{asserts - dead - len(ones), dead, calls, ones, refs, plat, fn.Name.Name, test})
 	}
 }
 
@@ -134,6 +137,11 @@ func totals(fa pkgFacts, base map[string]int) map[string]int {
 					add = b
 				}
 				t = min(t+add, maxHelperTotal+1)
+			}
+			for _, c := range st.ones { // another package file's helper: main's one
+				if _, ok := fa.helpers[c]; !ok {
+					t = min(t+1, maxHelperTotal+1)
+				}
 			}
 			if n < 0 || t < n {
 				n = t

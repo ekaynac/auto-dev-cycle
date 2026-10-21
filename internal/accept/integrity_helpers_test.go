@@ -57,6 +57,14 @@ func leaf(t *testing.T) {
 
 func TestMid(t *testing.T) { mid(t) }
 
+func viaLib(t *testing.T) {
+	if Add(3, 0) != 3 {
+		t.Fatal("via")
+	}
+}
+
+func TestViaLib(t *testing.T) { viaLib(t) }
+
 type env struct{}
 
 func (env) check(t *testing.T) {
@@ -73,6 +81,18 @@ func TestDirect(t *testing.T) {
 }
 `
 
+// libFile is a package file with an asserting helper.
+const libFile = `package pkg
+
+import "testing"
+
+func libCheck(t testing.TB) {
+	if Add(1, 1) != 2 {
+		t.Fatal("lib")
+	}
+}
+`
+
 // TestIntegrityHelpers (P14d-w, #226 entry 122): a function of the test
 // files whose own assertions the head weakens blocks, through a named
 // t.Run callback or a direct call alike; an assertion under a branch a
@@ -81,7 +101,7 @@ func TestDirect(t *testing.T) {
 func TestIntegrityHelpers(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"pkg/helpers_test.go": helpersBase, "pkg/race_h_test.go": raceNeedX("race", 2), "pkg/norace_h_test.go": raceNeedX("!race", 1)})
+		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/race_h_test.go": raceNeedX("race", 2), "pkg/norace_h_test.go": raceNeedX("!race", 1)})
 		plain(t, src, "add", "--all")
 	})
 	edit := func(old, new string) map[string]string {
@@ -112,10 +132,12 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a body extracted into a new helper (clean)": {edit("func checkTwo(t *testing.T) {\n", "func checkTwo(t *testing.T) { checkTwoAt(t) }\n\nfunc checkTwoAt(t *testing.T) {\n"), ""},
 		"extracted, then weakened":                   {edit("func checkTwo(t *testing.T) {\n"+one, "func checkTwo(t *testing.T) { checkTwoAt(t) }\n\nfunc checkTwoAt(t *testing.T) {\n"), "pkg:pkg.checkTwo " + weakened + " (2 → 1)"},
 		// Opus #369 M1: a caller's lost assertion, a callee's gain: blocks.
-		"a caller loses, a callee gains (M1)":   {map[string]string{"pkg/helpers_test.go": strings.NewReplacer("\tif Add(1, 0) != 1 {\n\t\tt.Fatal(\"mid\")\n\t}\n", "", "func leaf(t *testing.T) {\n", "func leaf(t *testing.T) {\n\tif Add(2, 0) != 2 {\n\t\tt.Fatal(\"more\")\n\t}\n").Replace(helpersBase)}, "pkg:pkg.mid " + weakened + " (2 → 1)"},
-		"an unused helper weakened (L1, clean)": {edit("\t\tt.Fatal(\"unused\")\n", "\t\t_ = t\n"), ""},
-		"an unused helper deleted (clean)":      {edit("func spare(t *testing.T) {\n\tif Add(1, 1) != 2 {\n\t\tt.Fatal(\"spare\")\n\t}\n}\n", ""), ""},
-		"a !race variant's helper weakened":     {map[string]string{"pkg/norace_h_test.go": raceNeedX("!race", 0)}, "pkg:pkg.needX " + weakened + " (1 → 0)"}, // the weakest declaration's count
+		"a caller loses, a callee gains (M1)": {map[string]string{"pkg/helpers_test.go": strings.NewReplacer("\tif Add(1, 0) != 1 {\n\t\tt.Fatal(\"mid\")\n\t}\n", "", "func leaf(t *testing.T) {\n", "func leaf(t *testing.T) {\n\tif Add(2, 0) != 2 {\n\t\tt.Fatal(\"more\")\n\t}\n").Replace(helpersBase)}, "pkg:pkg.mid " + weakened + " (2 → 1)"},
+		// main counts an asserting helper of a package file as one: so does this
+		"an assertion replaced by a package file's asserting helper (clean)": {edit("\tif Add(3, 0) != 3 {\n\t\tt.Fatal(\"via\")\n\t}\n", "\tlibCheck(t)\n"), ""},
+		"an unused helper weakened (L1, clean)":                              {edit("\t\tt.Fatal(\"unused\")\n", "\t\t_ = t\n"), ""},
+		"an unused helper deleted (clean)":                                   {edit("func spare(t *testing.T) {\n\tif Add(1, 1) != 2 {\n\t\tt.Fatal(\"spare\")\n\t}\n}\n", ""), ""},
+		"a !race variant's helper weakened":                                  {map[string]string{"pkg/norace_h_test.go": raceNeedX("!race", 0)}, "pkg:pkg.needX " + weakened + " (1 → 0)"}, // the weakest declaration's count
 	} {
 		v := f.guarded(t, c.files)
 		switch {
