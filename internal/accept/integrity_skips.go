@@ -63,8 +63,15 @@ func (s *pkgScan) skipUse(id *ast.Ident) bool {
 	if len(s.skipping) == 0 { // none in the package (or not yet read): no lookup
 		return false
 	}
-	o, ok := s.info.Uses[id].(*types.Func)
-	return ok && s.skipping[s.decls[o.Origin()]]
+	o := s.info.Uses[id]
+	if f, ok := o.(*types.Func); ok {
+		return s.skipping[s.decls[f.Origin()]]
+	}
+	// Unbound in this import-free pass (h[time.Time]{}.need: the receiver's
+	// type is not resolved), or bound to an invalid type: by name, any
+	// skipping helper's (Astra #356 H1; a false block, stated, when the name
+	// is another's).
+	return (o == nil && s.info.Defs[id] == nil || o != nil && o.Type() == types.Typ[types.Invalid]) && s.skipNames[id.Name]
 }
 
 // skipFacts reads, once and charged, the body of each declaration with a
@@ -78,7 +85,9 @@ func (s *pkgScan) skipFacts() error {
 				continue
 			}
 			params := s.testingParams(d)
-			if s.skipBad != "" {
+			if s.skipErr != nil {
+				return s.skipErr
+			} else if s.skipBad != "" {
 				return nil
 			} else if len(params) == 0 {
 				continue
@@ -90,12 +99,21 @@ func (s *pkgScan) skipFacts() error {
 				return err
 			} else if skips {
 				for _, e := range ds {
-					s.skipping[e] = true
+					s.skipping[e], s.skipNames[e.Name.Name] = true, true
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// skipStep counts a classification step, and checks the run's context
+// every skipCheckEvery: false once it is done (skipErr, the run's error).
+func (s *pkgScan) skipStep() bool {
+	if s.skipSteps++; s.skipErr == nil && s.skipSteps%skipCheckEvery == 1 {
+		s.skipErr = s.r.ctx.Err()
+	}
+	return s.skipErr == nil
 }
 
 // skipCharge charges n to the skip layer's bound; past it, the package's
@@ -115,7 +133,9 @@ func (s *pkgScan) skipCharge(n int) bool {
 func (s *pkgScan) testingParams(d *ast.FuncDecl) map[types.Object]bool {
 	params := map[types.Object]bool{}
 	for _, fl := range d.Type.Params.List {
-		if s.possiblyTesting(fl.Type) {
+		if !s.skipCharge(len(fl.Names)) || !s.skipStep() { // each name charged before it is read (Astra #356 M2)
+			return nil
+		} else if s.possiblyTesting(fl.Type) {
 			for _, id := range fl.Names {
 				if o := s.info.Defs[id]; o != nil {
 					params[o] = true
@@ -134,8 +154,8 @@ func (s *pkgScan) testingParams(d *ast.FuncDecl) map[types.Object]bool {
 // (memoized per alias for the scan, charged once; a cycle is possibly
 // testing); anything else is possibly testing. Each call is charged one.
 func (s *pkgScan) possiblyTesting(t ast.Expr) bool {
-	if !s.skipCharge(1) {
-		return false // the bound: skipBad makes the package's tests unverifiable
+	if !s.skipCharge(1) || !s.skipStep() {
+		return false // the bound (skipBad) or a done context (skipErr): the package's facts unknown
 	}
 	t = ast.Unparen(t)
 	if st, ok := t.(*ast.StarExpr); ok {

@@ -323,6 +323,9 @@ type pkgScan struct {
 	skipping  map[*ast.FuncDecl]bool    // P14d-a1 (integrity_skips.go)
 	aliasMemo map[types.Object]int8     // possiblyTesting's memo per alias: 1 testing, 2 not, 3 being followed
 	skipBad   string                    // why the skip layer's facts are unknown (its bound): its tests unverifiable
+	skipNames map[string]bool           // the skipping helpers' names: an unbound use counts (Astra #356 H1)
+	skipErr   error                     // a done context, seen in the signatures' classification
+	skipSteps int                       // classification steps, for the context's check
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -572,7 +575,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
-		skipping: map[*ast.FuncDecl]bool{}, aliasMemo: map[types.Object]int8{}}
+		skipping: map[*ast.FuncDecl]bool{}, aliasMemo: map[types.Object]int8{}, skipNames: map[string]bool{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)

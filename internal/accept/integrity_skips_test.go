@@ -25,9 +25,18 @@ import (
 	"encoding/xml"
 	"strings"
 	"testing"
+	"time"
 )
 
 func requireDocker(t *testing.T) { t.Skip("unavailable") }
+
+type hg[P any] struct{}
+
+func (hg[P]) needG(t *testing.T) { t.Skip("unavailable") }
+
+func (hg[P]) otherG(t *testing.T) { _ = t }
+
+var _ = time.Second
 
 type h struct{}
 
@@ -278,6 +287,9 @@ func TestIntegritySkips(t *testing.T) {
 		"a type parameter's Skip":             {in("\tneedTypeParam(t)\n"), skipped},
 		"Wrap[Wrap[int]] (#354 M3)":           {in("\tordinary(nil)\n"), ""}, // Astra #354 M3: clean
 		"a defined type's Skip":               {in("\tuseRes(res{})\n"), ""},
+		"an unbound method use (#356 H1)":     {in("\thg[time.Time]{}.needG(t)\n"), skipped}, // Astra #356 H1: by name
+		"an unbound non-skipping use":         {in("\thg[time.Time]{}.otherG(t)\n"), ""},
+		"a local named as a skipping helper":  {in("\tneedG := 1\n\t_ = needG\n"), ""},                                                                                                                                                     // a definition is bound: no fallback
 		"an alias cycle: unverifiable":        {map[string]string{"pkg/cycle_test.go": "package pkg\n\nimport \"testing\"\n\ntype C1 = C2\n\ntype C2 = C1\n\nfunc needCycle(t *C1) { _ = t }\n\nvar _ = testing.Short\n"}, "unverifiable"}, // the types layer's; the skip layer's classes a cycle possibly testing (TestIntegritySkipsAliases)
 		// Astra #350 M2, stated (a false block): selecting a skip method
 		// without calling it makes a helper skipping.
@@ -551,5 +563,60 @@ func TestIntegritySkipsWide(t *testing.T) {
 	t.Logf("work: n %d, 4n %d", small, large)
 	if large > 5*small {
 		t.Errorf("4n's work %d against n's %d: not linear", large, small)
+	}
+}
+
+// TestIntegritySkipsSignatures (Astra #356 M2): a signature's names are
+// charged before they are read, 8,000 in one group counted; a chain of
+// 100,000 aliases is stopped by a done context, its error the scan's.
+func TestIntegritySkipsSignatures(t *testing.T) {
+	parse := func(ctx context.Context, src string) (*pkgScan, *ast.FuncDecl) {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "p.go", "package p\n\nimport \"testing\"\n\nvar _ = testing.Short\n"+src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
+		pkg, _ := (&types.Config{Error: func(error) {}}).Check("p", fset, []*ast.File{f}, info)
+		s := &pkgScan{r: &run{ctx: ctx}, pkg: pkg, info: info, tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{},
+			aliasMemo: map[types.Object]int8{}, skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, same: map[string][]*ast.FuncDecl{}}
+		var fd *ast.FuncDecl
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				fd = d
+				s.same[d.Name.Name] = []*ast.FuncDecl{d}
+			case *ast.GenDecl:
+				for _, sp := range d.Specs {
+					if ts, ok := sp.(*ast.TypeSpec); ok && ts.Assign.IsValid() && info.Defs[ts.Name] != nil {
+						s.aliases[info.Defs[ts.Name]] = ts.Type
+					}
+				}
+			}
+		}
+		return s, fd
+	}
+	var names strings.Builder
+	for i := range 8000 {
+		fmt.Fprintf(&names, "p%d, ", i)
+	}
+	s, d := parse(context.Background(), "func ordinary("+strings.TrimSuffix(names.String(), ", ")+" *testing.T) {}\n")
+	before := skipCharged.Load()
+	if err := s.skipFacts(); err != nil || skipCharged.Load()-before < 8000 {
+		t.Errorf("8,000 names in one group: %v, %d charged", err, skipCharged.Load()-before)
+	}
+	_ = d
+	var chain strings.Builder
+	chain.WriteString("type A0 = int\n")
+	for i := 1; i <= 100_000; i++ {
+		fmt.Fprintf(&chain, "type A%d = A%d\n", i, i-1)
+	}
+	chain.WriteString("func ordinary(x A100000) { _ = x }\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	s, _ = parse(ctx, chain.String())
+	cancel()
+	before = skipCharged.Load()
+	if err := s.skipFacts(); err != context.Canceled || skipCharged.Load()-before > 1000 {
+		t.Errorf("100,000 aliases, a done context: %v, %d charged", err, skipCharged.Load()-before)
 	}
 }
