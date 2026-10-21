@@ -78,6 +78,8 @@ type Reconciler struct {
 	Queries map[types.Slug]Query // by destination: the routes whose usage can be queried
 	Now     func() time.Time     // nil: time.Now
 	Clock   *Clock               // the Recorder's: ages this process's floors monotonically (#226 entry 77)
+	// Principal is the system actor's principal (Recorder.Principal).
+	Principal eventstore.Principal
 
 	mu      sync.Mutex
 	running map[types.CallID]chan struct{} // closed when the call's runner ends
@@ -271,7 +273,7 @@ func (r *Reconciler) reconciled(ctx context.Context, m types.ModelCall, u Usage,
 		return false, err
 	}
 	recorded := false
-	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Reconciled, IdempotencyKey: id, Input: ev.Payload},
+	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Reconciled, IdempotencyKey: id, Input: ev.Payload, Principal: r.Principal},
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			ms, err := ledger.Measurements(tx, m.Call)
 			last, next := latestOf(ms)

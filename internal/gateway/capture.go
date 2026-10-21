@@ -31,14 +31,16 @@ type Capture interface {
 type Captured struct {
 	Lease     types.LeaseID
 	Attempt   types.AttemptID
+	Call      types.CallID
 	Digest    string
 	Class     string
 	ExpiresAt time.Time
 }
 
-// BlobCapture keeps each body as a restricted blob in the controller's
-// store, and hands its record to Record, which an exit run's driver keeps
-// (with the purge evidence) in the exit record.
+// BlobCapture keeps each body as a restricted blob in Blobs (adcd's
+// capture store, a blob store of its own), and hands its record to Record:
+// adcd records it (blob.capture_kept) and purges it at its expiry, which an
+// exit run's record lists.
 type BlobCapture struct {
 	Blobs  *blobstore.Store
 	Now    func() time.Time
@@ -53,6 +55,6 @@ func (c BlobCapture) Keep(ctx context.Context, b Binding, body []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.Record(ctx, Captured{Lease: b.Lease, Attempt: b.Attempt, Digest: digest, Class: ClassRestricted,
+	return c.Record(ctx, Captured{Lease: b.Lease, Attempt: b.Attempt, Call: b.Call, Digest: digest, Class: ClassRestricted,
 		ExpiresAt: c.Now().Add(CaptureTTL).UTC()})
 }

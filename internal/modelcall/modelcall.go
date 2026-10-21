@@ -357,6 +357,9 @@ type Recorder struct {
 	Store *eventstore.Store
 	Actor string // the controller's system actor
 	Clock *Clock // the Reconciler's: notes each floor committed (nil: none)
+	// Principal is the system actor's principal, which adcd's writer
+	// rechecks (identity.Recheck); nil in a store with no Identify hook.
+	Principal eventstore.Principal
 }
 
 var (
@@ -381,7 +384,7 @@ func (r Recorder) Intend(ctx context.Context, b gateway.Binding, destination typ
 	if err != nil {
 		return err
 	}
-	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Action, IdempotencyKey: id, Input: input},
+	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Action, IdempotencyKey: id, Input: input, Principal: r.Principal},
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := Intend(tx, b, destination)
 			return evs, json.RawMessage(`{}`), err
@@ -418,7 +421,7 @@ func (r Recorder) Count(ctx context.Context, b gateway.Binding, sequence int64, 
 		return err
 	}
 	committed := r.Clock.noting(b.Call, sequence, n.Observed)
-	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Counted, IdempotencyKey: id, Input: ev.Payload},
+	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Counted, IdempotencyKey: id, Input: ev.Payload, Principal: r.Principal},
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return []eventstore.Event{ev}, json.RawMessage(`{}`), sends(tx, b.Call, sequence)
 		}))

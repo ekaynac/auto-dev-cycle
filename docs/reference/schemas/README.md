@@ -62,6 +62,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/claim.json`](records-claim.md) | Claim |
 | [`records/computation-key.json`](records-computation-key.md) | ComputationKey |
 | [`records/effect-event.json`](records-effect-event.md) | EffectEvent |
+| [`records/egress-capture.json`](records-egress-capture.md) | EgressCapture |
 | [`records/evidence-node-params.json`](records-evidence-node-params.md) | EvidenceNodeParams |
 | [`records/failure-signature.json`](records-failure-signature.md) | FailureSignature |
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
