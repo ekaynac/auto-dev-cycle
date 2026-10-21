@@ -608,9 +608,9 @@ func TestIntegritySkipsSignatures(t *testing.T) {
 	_ = d
 	// A context done once the group's reading starts stops it inside the
 	// group (Astra #356 r2): at most one check's interval of its names.
-	s, _ = parse(errAfter{context.Background(), new(int)}, "func ordinary("+strings.TrimSuffix(names.String(), ", ")+" *testing.T) {}\n")
-	if err := s.skipFacts(); err != context.Canceled || s.skipSteps > 2*skipCheckEvery {
-		t.Errorf("8,000 names, a context done in the group: %v after %d steps", err, s.skipSteps)
+	s, d = parse(errAfter{context.Background(), new(int)}, "func ordinary("+strings.TrimSuffix(names.String(), ", ")+" *testing.T) {}\n")
+	if params := s.testingParams(d); len(params) != 0 || s.skipErr != context.Canceled || s.skipSteps > 2*skipCheckEvery {
+		t.Errorf("8,000 names, a context done in the group: %d names looked up and kept, %v after %d steps", len(params), s.skipErr, s.skipSteps)
 	}
 	var chain strings.Builder
 	chain.WriteString("type A0 = int\n")
