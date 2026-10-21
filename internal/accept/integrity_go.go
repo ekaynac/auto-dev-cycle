@@ -320,6 +320,9 @@ type pkgScan struct {
 	mentioned map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr // an alias's right-hand side
+	skipping  map[*ast.FuncDecl]bool    // P14d-a1 (integrity_skips.go)
+	aliasMemo map[types.Object]int8     // possiblyTesting's memo per alias: 1 testing, 2 not, 3 being followed
+	skipBad   string                    // why the skip layer's facts are unknown (its bound): its tests unverifiable
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -428,6 +431,7 @@ func (s *pkgScan) mentions(n ast.Node) (found bool) {
 type counts struct {
 	asserts, skips, forged, reflect int
 	refs                            []string
+	uses                            int // skipping helpers used (P14d-a1)
 }
 
 func (s *pkgScan) count(n ast.Node) (c counts) {
@@ -448,6 +452,7 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			if b, ok := s.info.Uses[x].(*types.Builtin); ok && sensitive(b.Name()) > 0 {
 				c.refs = append(c.refs, b.Name())
 			}
+			c.uses += b2i(s.skipUse(x))
 		case *ast.BasicLit: // a 0x16 spelled in a string or rune literal
 			c.forged += b2i(x.Kind != token.INT && slices.ContainsFunc(spelled, func(m string) bool { return strings.Contains(x.Value, m) }))
 		case *ast.AssignStmt:
@@ -566,7 +571,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	}
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
+		skipping: map[*ast.FuncDecl]bool{}, aliasMemo: map[types.Object]int8{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
@@ -622,6 +628,9 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				}
 			}
 		}
+	}
+	if err := s.skipFacts(); err != nil {
+		return err
 	}
 	var inits, hooks []ast.Node
 	for _, f := range files {
@@ -681,11 +690,13 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
 			case test && goTest(fname):
 				if m.on[pi] > 0 {
-					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons}
+					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons, c.uses}
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
-						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons}
+						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons, max(old.uses, st.uses)}
 					}
-					fa.tests[k] = st
+					if fa.tests[k] = st; s.skipBad != "" {
+						fa.bad[m.path] = s.skipBad
+					}
 				}
 				continue
 			}
