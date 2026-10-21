@@ -146,6 +146,59 @@ test("the usage query and the log: what was served, how, and each query", async 
   assert.equal((await fetch(`${off.base}/usage/${offID}`)).status, 404);
 });
 
+// until waits for cond, an event the stub logs or answers, for at most 60 s, and fails at the bound (Opus #366 L3).
+async function until(cond, what) {
+  for (const end = Date.now() + 60_000; !(await cond()); await new Promise((r) => setTimeout(r, 20))) {
+    if (Date.now() > end) assert.fail(`not within 60 s: ${what}`);
+  }
+}
+
+test("the usage query by call: the gateway's X-Adc-Call, a cut request counted once released (#226 entry 121)", async (t) => {
+  const s = await serve(t, { name: "by-call", calls: {
+    b: { persistent: { say: "x", usage: { prompt_tokens: 7, completion_tokens: 3 } } },
+    held: { persistent: { say: "held", barrier: "x3", usage: { prompt_tokens: 11, completion_tokens: 5 } } } } });
+  const as = (call) => ({ headers: { "content-type": "application/json", "x-adc-call": call } });
+  const send = (model, call, signal) => fetch(`${s.base}/chat/completions`, { method: "POST", ...as(call), signal: signal ?? AbortSignal.timeout(60_000),
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) });
+  const usage = async (call) => {
+    const r = await fetch(`${s.base}/usage?call=${encodeURIComponent(call)}`, { signal: AbortSignal.timeout(60_000) });
+    return r.status === 200 ? r.json() : r.status;
+  };
+  for (const call of ["cal_1", "cal_1", "cal_2"]) assert.equal((await send("b", call)).status, 200);
+  assert.equal((await chat(s, "b")).status, 200, "a request with no call is in no call's usage");
+  // The gateway is killed mid-request: the client goes, the stub holds the reply at its barrier.
+  const cut = new AbortController();
+  const held = send("held", "cal_1", cut.signal).catch(() => "cut");
+  await until(() => s.log().some((e) => e.kind === "barrier"), "the stub holds the request at its barrier");
+  cut.abort();
+  assert.equal(await held, "cut");
+  assert.deepEqual(await usage("cal_1"), { call: "cal_1", requests: 3, pending: 1, usage: { prompt_tokens: 14, completion_tokens: 6 } }, "held: not complete");
+  writeFileSync(join(s.dir, "x3.release"), "");
+  await until(async () => (await usage("cal_1")).pending === 0, "the released request ends");
+  const done = { call: "cal_1", requests: 3, pending: 0, usage: { prompt_tokens: 25, completion_tokens: 11 } };
+  assert.deepEqual(await usage("cal_1"), done, "released: the cut request counted");
+  assert.deepEqual(await usage("cal_1"), done, "counted once");
+  assert.deepEqual(await usage("cal_2"), { call: "cal_2", requests: 1, pending: 0, usage: { prompt_tokens: 7, completion_tokens: 3 } });
+  assert.equal(await usage("cal_9"), 404);
+  // Opus #366 M1: a request whose headers came and whose body has not is the call's, pending, never complete.
+  const body = JSON.stringify({ model: "b", messages: [{ role: "user", content: "hi" }] });
+  const slow = request(`${s.base}/chat/completions`, { method: "POST", ...as("cal_1") });
+  const answered = new Promise((resolve, reject) => slow.on("response", (r) => { r.resume(); r.on("end", () => resolve(r.statusCode)); }).on("error", reject));
+  slow.flushHeaders();
+  slow.write(body.slice(0, 10));
+  await until(async () => (await usage("cal_1")).requests === 4, "the unfinished request joins its call");
+  assert.deepEqual(await usage("cal_1"), { ...done, requests: 4, pending: 1 }, "a body still read: not complete");
+  slow.end(body.slice(10));
+  assert.equal(await answered, 200);
+  await until(async () => (await usage("cal_1")).pending === 0, "the finished request ends");
+  assert.deepEqual(await usage("cal_1"), { call: "cal_1", requests: 4, pending: 0, usage: { prompt_tokens: 32, completion_tokens: 14 } });
+  const req = s.log().filter((e) => e.kind === "request").map((e) => e.adc_call);
+  assert.deepEqual(req, ["cal_1", "cal_1", "cal_2", null, "cal_1", "cal_1"]);
+  const off = await serve(t, { name: "off", usage_query: false, calls: { b: { persistent: { say: "x" } } } });
+  await fetch(`${off.base}/chat/completions`, { method: "POST", ...as("cal_1"), body: JSON.stringify({ model: "b", messages: [] }) });
+  assert.equal((await fetch(`${off.base}/usage?call=cal_1`)).status, 404, "no usage query: no call's usage");
+});
+
 test("faults: a status, a stall before the headers, a trickle byte by byte, a partial body reset", async (t) => {
   const s = await serve(t, { name: "faults", calls: {
     status: { persistent: { body: { error: { message: "no" } }, status: 400 } },

@@ -643,6 +643,47 @@ func TestAPerDestinationInjector(t *testing.T) {
 	}
 }
 
+// F (#226 entry 121; Opus #366 L1, L2): every request sent carries the
+// binding's call, once, and no other header of the gateway's; neither the
+// adapter's headers nor an injector set, override or double it, whatever
+// the case of the key the injector writes.
+func TestEveryRequestCarriesItsCall(t *testing.T) {
+	for name, inject := range map[string]func(http.Header){
+		"a canonical key":  func(h http.Header) { h.Set(CallHeader, "cal_injector") },
+		"a lower-case key": func(h http.Header) { h["x-adc-call"] = []string{"cal_injector"} },
+		"keys in three cases": func(h http.Header) {
+			h["x-adc-call"], h["X-ADC-CALL"], h[CallHeader] = []string{"a"}, []string{"b"}, []string{"c"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			up := newUpstream(t, nil)
+			g, token := rig(t, up, func(c *Config) {
+				c.Inject = map[types.Slug]Injector{"stub": func(h http.Header, cred Credential) { Bearer(h, cred); inject(h) }}
+			})
+			for range 2 {
+				if w := call(g, token, "/chat/completions", good, map[string]string{CallHeader: "cal_forged"}); w.Code != http.StatusOK {
+					t.Fatalf("%d %s", w.Code, w.Body)
+				}
+			}
+			got := up.got()
+			for i, s := range got {
+				var adc []string // every header of the gateway's, by its prefix
+				for k, vs := range s.header {
+					if strings.HasPrefix(strings.ToLower(k), "x-adc-") {
+						adc = append(adc, k+": "+strings.Join(vs, ", "))
+					}
+				}
+				if len(adc) != 1 || adc[0] != CallHeader+": "+string(callID) {
+					t.Errorf("request %d carried %q", i, adc)
+				}
+			}
+			if len(got) != 2 {
+				t.Fatalf("upstream saw %d requests", len(got))
+			}
+		})
+	}
+}
+
 // Launch readiness, and a credential gone between launch and call.
 func TestHoldsAndAMissingCredential(t *testing.T) {
 	up := newUpstream(t, nil)

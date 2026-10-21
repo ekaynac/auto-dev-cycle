@@ -137,6 +137,60 @@ func TestUSDTaskRail(t *testing.T) {
 	}
 }
 
+// Row 10's production part (#226 entries 60, 78, 121): no route has a usage
+// Query, so an unsettled call's effect stays uncertain and its liability
+// counts against per_day_usd. A hostile zero final leaves the call
+// unsettled; its lease settles it as a 4,000-micro liability; its end
+// (Reconciler.Ended, no Query) records it uncertain, then still_uncertain
+// (the route has no query), never completed. The next lease the same day
+// is refused at the day rail. The contrast: a route whose query answers the
+// gateway's own count (300 in, 200 out, 1,100 micros) completes the call,
+// and the next lease is placed.
+func TestUSDAnUnqueriedCallStaysALiability(t *testing.T) {
+	for name, c := range map[string]struct {
+		queries map[types.Slug]modelcall.Query
+		want    string
+	}{
+		"no Query":                       {nil, modelcall.ObservedNoQuery},
+		"a Query of the gateway's count": {map[types.Slug]modelcall.Query{"stub": answers{In: 300, Out: 200}}, modelcall.ObservedQueried},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg, gs := stub(t, nil)
+			e := open(t, gs)
+			perTask, perDay := noCap, int64(2*reservedMicros-1)
+			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
+			id, a, call := e.liveCall(d, e.nodeIn(task))
+			e.hostileZeroFinal(call, a, id)
+			e.settle(id, a)
+			rc := &modelcall.Reconciler{Store: e.s, Actor: string(actor), Queries: c.queries,
+				Now: func() time.Time { return time.Now().Add(modelcall.FloorGrace + time.Minute) }}
+			ended, err := rc.Ended(context.Background(), call)
+			again, aerr := rc.Reconcile(context.Background(), call)
+			if err = errors.Join(err, aerr); err != nil || ended.LastObservation != c.want || again.LastObservation != c.want {
+				t.Fatalf("the call's end: %+v, again %+v, %v; want %s", ended, again, err, c.want)
+			}
+			_, err = e.match(d, card(e.nodeIn(task)), builder)
+			if c.queries != nil {
+				if ended.State != eventstore.EffectCompleted || err != nil {
+					t.Fatalf("an answered call is %s; the next lease: %v", ended.State, err)
+				}
+				return
+			}
+			if ended.State != eventstore.EffectUncertain || again.State != eventstore.EffectUncertain {
+				t.Fatalf("an unqueried call is %s, then %s; want uncertain", ended.State, again.State)
+			}
+			refusedOn(t, err, graph.RailDayUSD)
+		})
+	}
+}
+
+// answers is a usage Query that answers u for every call.
+type answers modelcall.Usage
+
+func (u answers) Usage(context.Context, types.ModelCall) (modelcall.Usage, bool, error) {
+	return modelcall.Usage(u), true, nil
+}
+
 // U2, the day rail: another task's lease of the project granted the same
 // UTC day counts against per_day_usd; one granted the day before does not
 // (a liability stays on its lease's day).

@@ -39,7 +39,15 @@
 // A scenario with any other key, or a reply without exactly one form, is
 // refused at start. GET /v1/usage/{request_id} answers the usage a reply
 // reported (404 for an unknown id, and for every id when "usage_query" is
-// false). The log is JSONL: each request (its whole body), each usage served
+// false). GET /v1/usage?call=ID answers a call's usage (#226 entry 121): the
+// gateway stamps each request with its call (X-Adc-Call); the answer is
+// {call, requests, pending, usage}: the sum over the call's requests whose
+// usage was set, each once (a request held at a barrier counts once
+// released), and how many are still being served with none yet (pending: an
+// answer is complete only at 0). A chat request joins its call as its headers
+// arrive, before its body is read (Opus #366 M1). 404 for a call with no
+// request, and for every call when "usage_query" is false. The log is JSONL:
+// each request (its whole body, and its call), each usage served
 // ("delivered": "body", or "cut" when the body was cut before it), each
 // barrier, and each usage query with its status. It holds at most maxLog
 // bytes: past that, a request is refused with a 500 and one "log_full" entry
@@ -126,6 +134,8 @@ export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = 
   check(scenario);
   const calls = new Map(); // model -> calls served
   const usages = new Map(); // request id -> usage
+  const byCall = new Map(); // X-Adc-Call -> its requests: {id}, the id set once the body is read
+  const inflight = new Set(); // the requests of a call still being served (their body's read and a barrier's included)
   let served = 0, logged = 0, full = false, closed = false;
   const record = (entry) => {
     if (!log) return true;
@@ -144,6 +154,13 @@ export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = 
     res.end(JSON.stringify(doc));
   };
   const server = createServer(async (req, res) => {
+    // A chat request with a call joins it now, from its headers, before its body is read: pending until it ends.
+    const adcCall = req.headers["x-adc-call"];
+    const serving = req.method === "POST" && req.url === "/v1/chat/completions" && typeof adcCall === "string" ? { id: null } : null;
+    if (serving) {
+      byCall.set(adcCall, [...(byCall.get(adcCall) ?? []), serving]);
+      inflight.add(serving);
+    }
     try {
       const query = req.method === "GET" && /^\/v1\/usage\/([^/]+)$/.exec(req.url ?? "");
       if (query) {
@@ -152,14 +169,30 @@ export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = 
         record({ kind: "usage_query", request_id: id, status: u ? 200 : 404 });
         return u ? send(res, 200, { request_id: id, usage: u }) : send(res, 404, { error: { message: "no such request" } });
       }
+      const byCallQuery = req.method === "GET" && /^\/v1\/usage\?call=([^&]+)$/.exec(req.url ?? "");
+      if (byCallQuery) {
+        const call = decodeURIComponent(byCallQuery[1]);
+        const requests = scenario.usage_query === false ? undefined : byCall.get(call);
+        record({ kind: "usage_query", call, status: requests ? 200 : 404 });
+        if (!requests) return send(res, 404, { error: { message: "no such call" } });
+        const usage = { prompt_tokens: 0, completion_tokens: 0 };
+        let pending = 0;
+        for (const q of requests) {
+          const u = q.id === null ? undefined : usages.get(q.id);
+          if (u) for (const k of Object.keys(usage)) usage[k] += u[k];
+          else if (inflight.has(q)) pending++;
+        }
+        return send(res, 200, { call, requests: requests.length, pending, usage });
+      }
       if (req.method !== "POST" || req.url !== "/v1/chat/completions") return send(res, 404, { error: { message: "not found" } });
       const doc = await read(req);
       const id = `req-${++served}`;
+      if (serving) serving.id = id;
       const script = scenario.calls[doc.model];
       const n = calls.get(doc.model) ?? 0;
       calls.set(doc.model, n + 1);
       const turn = (doc.messages ?? []).filter((m) => m?.role === "assistant").length;
-      if (!record({ kind: "request", request_id: id, model: doc.model, call: n, turn, body: doc })) {
+      if (!record({ kind: "request", request_id: id, model: doc.model, call: n, turn, adc_call: adcCall ?? null, body: doc })) {
         return send(res, 500, { error: { message: `scenario ${scenario.name}: the log is full` } });
       }
       const r = script?.persistent ?? script?.replies?.[n] ?? script?.turns?.[turn];
@@ -200,6 +233,8 @@ export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = 
       if (b.usage) record({ kind: "usage", request_id: id, usage: b.usage, delivered: "body" });
     } catch (err) {
       if (!res.headersSent) send(res, err.status ?? 400, { error: { message: String(err.message ?? err) } });
+    } finally {
+      inflight.delete(serving);
     }
   });
   const port = /^(.*):(\d+)$/.exec(listen);
