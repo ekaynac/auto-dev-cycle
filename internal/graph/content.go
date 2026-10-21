@@ -85,9 +85,11 @@ func CommitEvidence(tx *eventstore.Tx, node types.NodeID, r types.Result, attemp
 	return r, commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt, Isolation: isolation}, env)
 }
 
-// CommitAttempt is Commit for r, the result attempt recorded: the fold
-// binds it to the attempt (AttemptResultProjection), which must be started
-// on node's unit and have recorded no other.
+// CommitAttempt is Commit for r, the result attempt recorded: the one way
+// a node an attempt still runs records its result (Astra #316 H1). The
+// fold binds the result to the attempt (AttemptResultProjection), which
+// must be started on node's unit, have submitted its result, and have
+// recorded no other.
 func CommitAttempt(tx *eventstore.Tx, node types.NodeID, r types.Result, attempt types.AttemptID, env Env) error {
 	return commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt}, env)
 }
