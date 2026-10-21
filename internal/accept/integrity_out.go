@@ -637,7 +637,9 @@ func (r *run) outModule() {
 	}
 	var mods [2]string
 	for i, blob := range []string{r.files["go.mod"], r.cand["go.mod"]} {
-		if b, why, err := r.file(blob); blob != "" && why == "" && err == nil {
+		if blob == "" { // absent: nothing to read
+			continue
+		} else if b, why, err := r.file(blob); why == "" && err == nil {
 			mods[i] = modfile.ModulePath(b)
 		}
 	}
