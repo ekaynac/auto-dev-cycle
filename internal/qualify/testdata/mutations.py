@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# The reviewer qualification harness's mutations (P31a; Opus #306; Astra #306): each is
+# The reviewer qualification harness's mutations (P31a; Opus #306 and its re-check; Astra #306): each is
 # applied alone to a clean copy of the repository, and
 # `go test ./internal/qualify/ ./internal/review/` must fail on it (KILLED).
 # Run from the repository root (needs go, git, node, bwrap and the adapters
@@ -23,15 +23,17 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 Q, R, W, P, V = 'internal/qualify/qualify.go', 'internal/qualify/route.go', 'internal/qualify/workspace.go', 'internal/review/prompt.go', 'internal/review/review.go'
+S = 'fixtures/m1/review-qualification/suite.json'
 MUTS = [
     # Check: the record, the latest run, the digests.
     ("another route's record counts", Q, 'if rec.Route == route {', 'if true {'),
     # The latest two runs, of different seeds (#226 entry 110).
     ("the earliest runs judged, not the latest", Q, 'return b.at.Compare(a.at)', 'return a.at.Compare(b.at)'),
-    ("only the latest run judged", Q, 'if i > 1 && !r.at.Equal(runs[0].at) {', 'if i > 0 && !r.at.Equal(runs[0].at) {'),
-    ("a third run at the latest time not judged", Q, 'if i > 1 && !r.at.Equal(runs[0].at) {', 'if i > 1 {'),
+    ("only the latest run judged", Q, 'if i > 1 && !r.at.Equal(runs[1].at) {', 'if i > 0 && !r.at.Equal(runs[0].at) {'),
+    ("a third run at the latest time not judged", Q, 'if i > 1 && !r.at.Equal(runs[1].at) {', 'if i > 1 {'),
+    ("a tie at the second-latest time not judged (r2 L1)", Q, 'if i > 1 && !r.at.Equal(runs[1].at) {', 'if i > 1 && !r.at.Equal(runs[0].at) {'),
     ("one passing run enough", Q, 'return fmt.Errorf("%w: one run of the route', 'return nil\n\t\t_ = fmt.Errorf("%w: one run of the route'),
-    ("two records of one seed count as two", Q, 'if runs[0].rec.Seed == runs[1].rec.Seed {', 'if false {'),
+    ("two records of one seed count as two", Q, 'if other, ok := seeds[r.rec.Seed]; ok {', 'if other, ok := seeds[r.rec.Seed]; ok && false {'),
     ("no record passes", Q, '\tif len(runs) == 0 {\n\t\treturn fmt.Errorf("%w: no record of the route", ErrUnqualified)', '\tif len(runs) == 0 {\n\t\treturn nil'),
     ("another prompt accepted", Q, 'case rec.PromptDigest != review.PromptDigest:', 'case false:'),
     ("another adapter accepted", Q, 'case rec.AdapterDigest != s.Adapter:', 'case false:'),
@@ -103,6 +105,26 @@ MUTS = [
     ("visible overlay skipped", W, 'if v := filepath.Join(s.taskDir(c), "visible"); exists(v) {', 'if v := filepath.Join(s.taskDir(c), "visible"); false && exists(v) {'),
     ("another prompt sent", R, 'Call: call, Prompt: prompt,', 'Call: call, Prompt: []byte("Review the change."),'),
     ("decision mapping swapped", R, '\tcase types.OutcomeEmpty:\n\t\to.Decision = review.Go', '\tcase types.OutcomeEmpty:\n\t\to.Decision = review.NoGo'),
+    # Opus #306 r2 H1: one defect and one control per task.
+    ("the suite unbalanced again", S, '"id": "defect-sku-package-test-weakened",\n      "task": "go-mini-refactor-1",', '"id": "defect-sku-package-test-weakened",\n      "task": "go-mini-failing-then-green-1",'),
+    # Opus #306 r2 M1: the run's cursor.
+    ("a case out of the seed's order admitted", Q, 'case run.st.order[seq].ID != c.ID:', 'case false:'),
+    ("the cursor never moves", Q, '\t\trun.st.cursor++\n', '\n'),
+    ("Record completes a run not ended", Q, 'if run.st.cursor != len(run.st.order) {', 'if false {'),
+    ("a case reviewed twice recorded", Q, 'case len(done) != 1:', 'case len(done) == 0:'),
+    ("an outcome not the run's logged one recorded", Q, ' || *o.evidence != done[0]:', ':'),
+    ("another case's prompt sent", R, 'if digest(prompt) != c.PromptDigest {', 'if false {'),
+    ("the seq not the cursor's", R, 'Seq: int64(seq), PromptDigest: digest(spec.Prompt),', 'Seq: int64(seq) * 0, PromptDigest: digest(spec.Prompt),'),
+    ("the review not logged in the run", R, '\trun.log(c.ID, *o.evidence)\n', '\n'),
+    # Opus #306 r2 M2: the incomplete record.
+    ("an incomplete record judged", Q, 'if !rec.Complete { // a run', 'if false { // a run'),
+    ("Begin overwrites a record", Q, 'os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW', 'os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW'),
+    ("Record never completes the record", Q, 'rec.Complete, rec.NoGoOnDefects, rec.GoOnControls, rec.Qualified = true,', 'rec.Complete, rec.NoGoOnDefects, rec.GoOnControls, rec.Qualified = false,'),
+    # Opus #306 r2 L2: ran_at in the evidence.
+    ("the evidence's ran_at unchecked", Q, 'case ev.RanAt != rec.RanAt:', 'case false:'),
+    ("the evidence's ran_at not the run's", R, 'RanAt: types.Time(run.At.Format(time.RFC3339)), Seq:', 'RanAt: types.Time(run.At.Add(time.Second).Format(time.RFC3339)), Seq:'),
+    # Opus #306 r2 L3: the adapter command.
+    ("an adapter outside the root run", R, 'len(cmd) != 2 || cmd[1] != filepath.Join(run.st.root, AdapterEntry)', 'len(cmd) != 2'),
 ]
 
 

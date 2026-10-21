@@ -14,13 +14,13 @@ A reviewer route is qualified when, on this suite, it returns **no_go on all fou
 
 ## The cases
 
-All eight cases apply cleanly and pass the visible gate (`go test ./...`), so the gate alone tells nothing apart.
+All eight cases apply cleanly and pass the visible gate (`go test ./...`), so the gate alone tells nothing apart. Each task has exactly one planted defect and one clean control (Opus #306 r2 H1; `TestSuite` counts them), so the requirement alone tells nothing apart either.
 
 | Case | Task | Expect | Kind |
 |---|---|---|---|
 | `defect-transfer-keeps-destination-price` | `go-mini-feature-1` | no_go | a wrong result: the destination keeps its own price |
 | `defect-lowstock-negative-threshold-panics` | `go-mini-bugfix-1` | no_go | an unchecked input that panics: a negative threshold |
-| `defect-formatcents-test-weakened` | `go-mini-failing-then-green-1` | no_go | a deleted assertion, against "do not change any test" |
+| `defect-sku-package-test-weakened` | `go-mini-refactor-1` | no_go | a deleted assertion: the `"Ü-1"` case of `TestAddRejectsBadInput`, against "behaviour-preserving" |
 | `defect-formatcents-loses-sign-below-one-unit` | `go-mini-failing-then-green-1` | no_go | an arithmetic edge: -50 renders as "0.50" |
 | `control-transfer` | `go-mini-feature-1` | go | `Transfer`, validating, then changing the maps directly |
 | `control-lowstock` | `go-mini-bugfix-1` | go | `<` in place of `<=` |
@@ -36,12 +36,13 @@ A reviewer sees only `review.Prompt`: the task's requirement, the candidate's di
 ## Runs
 
 - **CI:** `TestRoute` runs the suite through the real http-chat adapter and gateway (`qualify.Route`), against a scripted upstream, in each run's seeded order:
-  - a discriminating script's one run does not qualify the route, and its second run, under another seed, does;
+  - a discriminating script's run is incomplete until `Record`; its one run does not qualify the route, and its second run, under another seed, does;
   - an all-go script and an all-no_go script do not ("under the bar");
   - the provider is sent exactly each case's prompt, in the seed's order;
   - each outcome's evidence is its run's, its prompt's and its route's;
   - the all-no_go run's defect reports and the all-go run's control reports, together, cannot be recorded as one run;
-  - malformed answers are misses.
+  - malformed answers are misses;
+  - `Review` refuses a case out of the seed's order, a case reviewed again, another case's prompt, a run `Begin` did not start, and an adapter command other than `qualify.AdapterEntry` under the suite's root.
 
   CI cannot qualify a model.
 - **Live (the lead, on the controller host):** see `internal/qualify/live_test.go`:
@@ -51,10 +52,15 @@ A reviewer sees only `review.Prompt`: the task's requirement, the candidate's di
   ADC_CREDENTIAL_<REF>=… go test -tags qualify -run TestQualifyLive -timeout 2h ./internal/qualify/
   ```
 
-  It writes `records/<date>-<executor>-<run id prefix>.json` and its reports, for a PR of their own. The cases run in the order the run's random seed decides; the record keeps the seed. A route needs two passing live runs, each with its own seed, so the run is made twice; it logs `Check`'s answer, and fails only when its own run is under the bar (that record is committed all the same).
+  It renders every prompt, then `Suite.Begin` writes `records/<time>-<executor>.json`, **incomplete**, before the first review: an aborted run leaves that record, and it fails qualification. The cases run in the order the run's random seed decides, and the record keeps the seed. Each case's id, expectation and decision are logged only after `Record` completes the record and writes its reports. A route needs two passing live runs, each with its own seed, so the run is made twice; it logs `Check`'s answer, and fails only when its own run is under the bar (that record is committed all the same). Every record, incomplete ones included, goes into the records PR; deleting one is for that PR's review to catch.
 
-Any change here (a case, a patch, a probe, `suite.json`) changes the suite's digest. So does any change to a case's rendered prompt (its task's requirement or base, the template), which fails `TestPromptWithholds` until `suite.json` pins the new digest. A change to the http-chat adapter's runtime closure (its source, the contract package it imports, the generated validators, the workspace's manifests or lockfile) or to the reviewer's limits changes the adapter digest. In each case every record goes stale, and two new live runs are needed. Only the latest two runs of a route count: one passing run is not enough, two records of one seed are one run, and a failing run committed after passing ones unqualifies the route until two more pass.
+Any change here (a case, a patch, a probe, `suite.json`) changes the suite's digest. So does any change to a case's rendered prompt (its task's requirement or base, the template), which fails `TestPromptWithholds` until `suite.json` pins the new digest. A change to the http-chat adapter's runtime closure (its source, the contract package it imports, the generated validators, the workspace's manifests or lockfile) or to the reviewer's limits changes the adapter digest. In each case every record goes stale, and two new live runs are needed. Only the latest two runs of a route count, with every run at either one's time: one passing run is not enough, two records of one seed are one run, an incomplete record fails, and a failing run committed after passing ones unqualifies the route until two more pass.
 
-**Residual (stated).** Each case runs once per run, and the bar assumes the reviewer's decisions are independent and identically distributed across cases. Under that assumption, a reviewer whose decisions ignore the case can pass the bar with a small chance per run: at most about 2.3% when it says no_go 61% of the time (Opus #306 M3). An order-dependent policy, one that ignores the prompt and answers by the request's place in the run, is outside that assumption (Astra #306 M5). The seeded order bounds it: answering no_go to the first four requests passes with probability 1/70 per run, and the best case-ignoring policy of any kind (no_go on exactly five requests) passes with 1/14, about 7.1%. Qualification takes two passing runs with different seeds, and each run's order is fresh. So a case-ignoring reviewer of any kind, stateful across runs included, qualifies with at most (1/14)² = 1/196, about 0.5%: this is the worst case. Under the i.i.d. assumption the figure is about 0.05%. The latest-two rule covers a failing run once it is committed, not a run that never is. The evidence is not signed: a hand-edited record whose evidence is made consistent is a forgery for the record's review to catch.
+**Residual (stated).** Each case runs once per run. For a reviewer that never reads the diff:
+- **reading the requirement only, stateful** (it remembers the run's requests): at most **1/8 per run, 1/64 (about 1.6%) over the latest two runs**, the worst case. This is an exhaustive count over all 8! orders (`TestBlindReviewers`). The sequence of tasks says nothing of which of a task's two requests is its defect, so no stateful rule does better.
+- **reading the requirement only, stateless** (no_go with a probability per task): at most about 2.3% per run (0.61 on every task, found numerically), and about 0.05% over two runs. This is the i.i.d. figure, which assumes independent, identically distributed decisions (Opus #306 M3).
+- **reading nothing, answering by the request's place in the run:** at most 1/14 per run, and 1/196 over two runs (Astra #306 M5).
+
+Re-running until two passes in a row qualifies the 1/8 reviewer after about 72 runs on average, unless every run's record is committed. The evidence is not signed: a hand-edited record whose evidence is made consistent is a forgery for the record's review to catch. The node binary and the route's Go half (gateway, adapter host, `review.Parse`/`Result`) are outside the adapter digest.
 
 **Mutations.** `internal/qualify/testdata/mutations.py` runs each mutation of the harness alone on a clean copy of the repository and reports it killed or survived (`python3 internal/qualify/testdata/mutations.py`, from the repository root).

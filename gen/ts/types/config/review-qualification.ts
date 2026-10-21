@@ -7,10 +7,14 @@
 export type QualificationRunID = string;
 
 /**
- * One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the run's id and order seed, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest and the evidence of its execution, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest two records (by ran_at), of different seeds, each have the current route, prompt, adapter and suite digests, every case's evidence binds its report to its run, its route and its prompt, every report agrees with its record, and each score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
+ * One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the run's id and order seed, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest and the evidence of its execution, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest two records (by ran_at), of different seeds, and every other record at their times, are each complete and have the current route, prompt, adapter and suite digests, every case's evidence binds its report to its run, its route and its prompt, every report agrees with its record, and each score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
  */
 export interface ReviewQualification {
   schema: "adc.review-qualification/v1";
+  /**
+   * false from before the run's first review until the run ends (internal/qualify.Suite.Begin, then Record): an aborted run leaves an incomplete record, which fails qualification (Opus #306 r2 M2). An incomplete record has no cases and is not qualified.
+   */
+  complete: boolean;
   /**
    * The run's id, random, shared by every case's evidence (Astra #306 H1).
    */
@@ -37,10 +41,10 @@ export interface ReviewQualification {
    */
   ran_at: string;
   /**
-   * @minItems 1
+   * @minItems 0
    * @maxItems 64
    */
-  cases: [QualifiedCase, ...QualifiedCase[]];
+  cases: QualifiedCase[];
   no_go_on_defects: number;
   go_on_controls: number;
   qualified: boolean;
@@ -87,13 +91,17 @@ export interface QualifiedCase {
   evidence: QualifiedEvidence;
 }
 /**
- * What internal/qualify.Route.Review observed running the case (Astra #306 H1): the run, the case's place in its order, the digest of the prompt it sent, the registry's route it sent it on, the adapter and suite the run was on, and the model call its report charges. Check requires each to be the record's and the case's.
+ * What internal/qualify.Route.Review observed running the case (Astra #306 H1): the run and its start, the case's place in its order, the digest of the prompt it sent, the registry's route it sent it on, the adapter and suite the run was on, and the model call its report charges. Check requires each to be the record's and the case's.
  *
  * This interface was referenced by `ReviewQualification`'s JSON-Schema
  * via the `definition` "QualifiedEvidence".
  */
 export interface QualifiedEvidence {
   run_id: QualificationRunID;
+  /**
+   * RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).
+   */
+  ran_at: string;
   /**
    * The case's place in the run's order, from 0.
    */

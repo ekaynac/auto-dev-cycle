@@ -46,17 +46,34 @@ type Route struct {
 	Bounds   adapterhost.Bounds
 }
 
-// Review runs one review of prompt, the seq-th case of run: its decision
+// Review runs one review of case c's prompt in run: its decision
 // (review.Go, review.NoGo, or "" when the reviewer returned none, or one
 // review.Parse refuses), its D55 report (review.Report, through
 // review.Result) and the evidence of the execution (Astra #306 H1): run's
-// id and adapter and suite, seq, the digest of the prompt the adapter
-// host was given, the route of the registry executor the review ran on,
-// and the review's model call.
-func (r Route) Review(ctx context.Context, run Run, seq int, prompt []byte) (o Outcome, err error) {
+// id, start, adapter and suite, the case's place in the run's order (from
+// the run's cursor), the digest of the prompt the adapter host was given,
+// the route of the registry executor the review ran on, and the review's
+// model call. It refuses a case that is not the run's next in its seed's
+// order, a prompt that is not the case's (Opus #306 r2 M1), and an
+// adapter command other than the http-chat adapter under the suite's root,
+// which AdapterDigest binds (r2 L3).
+func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o Outcome, err error) {
 	e, ok := r.Registry.Executor(r.Executor)
 	if !ok || e.Role != types.RegistryExecutorRoleReviewer {
 		return o, fmt.Errorf("qualify: %s is not a reviewer of the registry", r.Executor)
+	}
+	if run == nil || run.st == nil {
+		return o, errors.New("qualify: not a run Begin started")
+	}
+	if cmd := r.Adapter.Command; len(cmd) != 2 || cmd[1] != filepath.Join(run.st.root, AdapterEntry) {
+		return o, fmt.Errorf("qualify: the adapter command %q is not %s under %s, which AdapterDigest binds", cmd, AdapterEntry, run.st.root)
+	}
+	if digest(prompt) != c.PromptDigest {
+		return o, fmt.Errorf("qualify: case %s: the prompt is not the case's", c.ID)
+	}
+	seq, err := run.take(c)
+	if err != nil {
+		return o, err
 	}
 	dir, err := os.MkdirTemp("", "adc-qualify-")
 	if err != nil {
@@ -179,8 +196,9 @@ func (r Route) Review(ctx context.Context, run Run, seq int, prompt []byte) (o O
 	case types.OutcomeFound:
 		o.Decision = review.NoGo
 	}
-	o.evidence = &types.QualifiedEvidence{RunID: run.ID, Seq: int64(seq), PromptDigest: digest(spec.Prompt), Route: RouteOf(e), AdapterDigest: run.Adapter,
-		SuiteDigest: run.Suite, Call: call}
+	o.evidence = &types.QualifiedEvidence{RunID: run.ID, RanAt: types.Time(run.At.Format(time.RFC3339)), Seq: int64(seq), PromptDigest: digest(spec.Prompt),
+		Route: RouteOf(e), AdapterDigest: run.Adapter, SuiteDigest: run.Suite, Call: call}
+	run.log(c.ID, *o.evidence)
 	return o, nil
 }
 

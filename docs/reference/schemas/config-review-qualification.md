@@ -4,13 +4,14 @@
 
 `schemas/config/review-qualification.json`
 
-One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the run's id and order seed, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest and the evidence of its execution, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest two records (by ran_at), of different seeds, each have the current route, prompt, adapter and suite digests, every case's evidence binds its report to its run, its route and its prompt, every report agrees with its record, and each score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
+One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the run's id and order seed, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest and the evidence of its execution, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest two records (by ran_at), of different seeds, and every other record at their times, are each complete and have the current route, prompt, adapter and suite digests, every case's evidence binds its report to its run, its route and its prompt, every report agrees with its record, and each score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
 
 ## Fields of the document
 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `schema` | yes | `adc.review-qualification/v1` |  |
+| `complete` | yes | boolean | false from before the run's first review until the run ends (internal/qualify.Suite.Begin, then Record): an aborted run leaves an incomplete record, which fails qualification (Opus #306 r2 M2). An incomplete record has no cases and is not qualified. |
 | `run_id` | yes | [QualificationRunID](#qualificationrunid) | The run's id, random, shared by every case's evidence (Astra #306 H1). |
 | `seed` | yes | string (pattern `^[0-9a-f]{64}$`) | The run's random seed: the cases ran in internal/qualify.Suite.Order(seed) (Astra #306 M5). |
 | `route` | yes | [QualifiedRoute](#qualifiedroute) |  |
@@ -18,7 +19,7 @@ One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-p
 | `adapter_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.AdapterDigest: the http-chat adapter's runtime closure (its source and package.json, the contract package's source and package.json, the generated validators and formats it loads, the workspace's manifests and lockfile) and the reviewer's limits (Opus #306 M6; Astra #306 M3): any change makes the record stale. |
 | `suite_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.Suite's digest: suite.json (each case's rendered prompt digest included), every case's patch and every sealed file. |
 | `ran_at` | yes | [Time](common-defs.md#time) |  |
-| `cases` | yes | array of [QualifiedCase](#qualifiedcase) (minItems `1`, maxItems `64`) |  |
+| `cases` | yes | array of [QualifiedCase](#qualifiedcase) (minItems `0`, maxItems `64`) |  |
 | `no_go_on_defects` | yes | integer (minimum `0`, maximum `64`) |  |
 | `go_on_controls` | yes | integer (minimum `0`, maximum `64`) |  |
 | `qualified` | yes | boolean |  |
@@ -65,13 +66,14 @@ Type: string (pattern `^[0-9a-f]{32}$`)
 
 ### QualifiedEvidence
 
-What internal/qualify.Route.Review observed running the case (Astra #306 H1): the run, the case's place in its order, the digest of the prompt it sent, the registry's route it sent it on, the adapter and suite the run was on, and the model call its report charges. Check requires each to be the record's and the case's.
+What internal/qualify.Route.Review observed running the case (Astra #306 H1): the run and its start, the case's place in its order, the digest of the prompt it sent, the registry's route it sent it on, the adapter and suite the run was on, and the model call its report charges. Check requires each to be the record's and the case's.
 
 #### Fields of QualifiedEvidence
 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `run_id` | yes | [QualificationRunID](#qualificationrunid) |  |
+| `ran_at` | yes | [Time](common-defs.md#time) | The run's start, as its record's ran_at (Opus #306 r2 L2). |
 | `seq` | yes | integer (minimum `0`, maximum `63`) | The case's place in the run's order, from 0. |
 | `prompt_digest` | yes | [Digest](common-defs.md#digest) | The digest of the prompt the adapter host was given. |
 | `route` | yes | [QualifiedRoute](#qualifiedroute) |  |

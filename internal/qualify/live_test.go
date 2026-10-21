@@ -72,28 +72,42 @@ func TestQualifyLive(t *testing.T) {
 		Adapter: session.Config{Command: []string{node, filepath.Join(adapters, "http-chat", "src", "main.ts")},
 			Env: append([]string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir()}, testguard.HomeEnv(t)...), Deadline: 15 * time.Minute}}
 	ctx := context.Background()
-	run := s.NewRun(RouteOf(e), time.Now()) // one id and one seed for every case; the cases run in the seed's order (Astra #306 H1, M5)
-	out := map[string]Outcome{}
-	for seq, c := range s.Order(run.Seed) {
-		p, err := s.Prompt(ctx, c, gobin, t.TempDir(), env)
-		if err != nil {
+	prompts := map[string][]byte{}
+	for _, c := range s.Cases { // every prompt before the run begins
+		if prompts[c.ID], err = s.Prompt(ctx, c, gobin, t.TempDir(), env); err != nil {
 			t.Fatal(err)
 		}
-		o, err := r.Review(ctx, run, seq, p)
-		if err != nil {
-			t.Fatalf("%s: %v", c.ID, err)
-		}
-		out[c.ID] = o
-		t.Logf("%d %s: expect %s, decided %q", seq, c.ID, c.Expect, o.Decision)
 	}
 	dir := os.Getenv("ADC_QUALIFY_OUT")
 	if dir == "" {
 		dir = filepath.Join(s.Root, Dir, "records")
 	}
-	name := run.At.Format("2006-01-02") + "-" + strings.ReplaceAll(string(e.ID), "_", "-") + "-" + run.ID[:8]
-	rec, err := s.Record(dir, name, run, out)
+	// Begin writes the run's incomplete record before the first review: an
+	// aborted run leaves it, and it fails qualification (Opus #306 r2 M2).
+	// One id and one seed for every case; the cases run in the seed's
+	// order (Astra #306 H1, M5).
+	at := time.Now().UTC()
+	name := at.Format("2006-01-02T150405Z") + "-" + strings.ReplaceAll(string(e.ID), "_", "-")
+	run, err := s.Begin(dir, name, RouteOf(e), at)
 	if err != nil {
 		t.Fatal(err)
+	}
+	t.Logf("%s: run %s begun; its record stays incomplete unless the run ends", name, run.ID)
+	out := map[string]Outcome{}
+	for seq, c := range s.Order(run.Seed) {
+		o, err := r.Review(ctx, run, c, prompts[c.ID])
+		if err != nil {
+			t.Fatalf("review %d: %v", seq, err)
+		}
+		out[c.ID] = o
+		t.Logf("review %d of %d done", seq+1, len(s.Cases)) // no case id, expectation or decision until the record is complete
+	}
+	rec, err := s.Record(run, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rec.Cases {
+		t.Logf("%d %s: expect %s, decided %s", c.Evidence.Seq, c.ID, c.Expect, c.Decision)
 	}
 	t.Logf("%s: %d of %d defects no_go, %d go; qualified %v", name, rec.NoGoOnDefects, s.Pass.NoGo, rec.GoOnControls, rec.Qualified)
 	// The route qualifies on its latest two runs, of different seeds

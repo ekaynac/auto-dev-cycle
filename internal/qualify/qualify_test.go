@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
@@ -62,6 +63,20 @@ func TestSuite(t *testing.T) {
 	if defects != 4 || controls != 4 || s.Pass.NoGo != 4 || s.Pass.Go != 3 {
 		t.Errorf("%d defects, %d controls, bar %+v; want 4, 4 and 4 no_go, 3 go (P31)", defects, controls, s.Pass)
 	}
+	perTask := map[string][2]int{} // Opus #306 r2 H1: one defect and one control per task
+	for _, c := range s.Cases {
+		n := perTask[c.Task]
+		n[b2i(c.Expect == review.Go)]++
+		perTask[c.Task] = n
+	}
+	if len(perTask) != 4 {
+		t.Errorf("the cases cover %d tasks, want 4", len(perTask))
+	}
+	for task, n := range perTask {
+		if n != [2]int{1, 1} {
+			t.Errorf("%s has %d defects and %d controls; want one of each, or the requirement alone tells them apart", task, n[0], n[1])
+		}
+	}
 	for name, c := range map[string]struct {
 		decided map[string]string
 		ok      bool
@@ -69,7 +84,7 @@ func TestSuite(t *testing.T) {
 		"every case right":    {all(s, ""), true},
 		"one control missed":  {with(all(s, ""), "control-sku-package", review.NoGo), true},
 		"two controls missed": {with(with(all(s, ""), "control-sku-package", review.NoGo), "control-lowstock", ""), false},
-		"one defect passed":   {with(all(s, ""), "defect-formatcents-test-weakened", review.Go), false},
+		"one defect passed":   {with(all(s, ""), "defect-sku-package-test-weakened", review.Go), false},
 		"one defect a miss":   {with(all(s, ""), "defect-transfer-keeps-destination-price", ""), false},
 		"every case go":       {all(s, review.Go), false},
 		"every case no_go":    {all(s, review.NoGo), false}, // Opus #306 L1
@@ -78,6 +93,75 @@ func TestSuite(t *testing.T) {
 			t.Errorf("%s: qualified %v", name, ok)
 		}
 	}
+}
+
+// TestBlindReviewers is the exhaustive count behind the residuals (Astra
+// #306 M5; Opus #306 r2 H1), over all 8! orders of the suite's cases:
+//   - a reviewer that reads only the requirement (the task) and the
+//     request's place among its task's requests, deciding each by any
+//     rule: the best of the 4^4 rules passes the bar in 1/8 of the
+//     orders. A stateful reviewer that conditions on the whole sequence
+//     does no better: the sequence of tasks says nothing of which of a
+//     task's two requests is its defect;
+//   - a reviewer that reads nothing, answering by the request's place in
+//     the run: the best of the 2^8 answer sets passes in 1/14.
+func TestBlindReviewers(t *testing.T) {
+	s := suite(t)
+	n := len(s.Cases)
+	tasks, defect := map[string]int{}, make([]bool, n)
+	task := make([]int, n)
+	for i, c := range s.Cases {
+		if _, ok := tasks[c.Task]; !ok {
+			tasks[c.Task] = len(tasks)
+		}
+		task[i], defect[i] = tasks[c.Task], c.Expect == review.NoGo
+	}
+	passes := func(noGo func(seq, c int, nth int) bool, perm []int) bool {
+		var seen [8]int
+		missed := 0
+		for seq, c := range perm {
+			ng := noGo(seq, c, seen[task[c]])
+			seen[task[c]]++
+			if defect[c] && !ng {
+				return false
+			}
+			missed += b2i(!defect[c] && ng)
+		}
+		return n-s.Pass.NoGo-missed >= s.Pass.Go
+	}
+	orders := permutations(n)
+	best := func(rules int, noGo func(rule, seq, c, nth int) bool) int {
+		top := 0
+		for rule := range rules {
+			k := 0
+			for _, perm := range orders {
+				k += b2i(passes(func(seq, c, nth int) bool { return noGo(rule, seq, c, nth) }, perm))
+			}
+			top = max(top, k)
+		}
+		return top
+	}
+	byRequirement := best(1<<(2*len(tasks)), func(rule, _, c, nth int) bool { return rule>>(2*task[c]+nth)&1 == 1 })
+	byPlace := best(1<<n, func(rule, seq, _, _ int) bool { return rule>>seq&1 == 1 })
+	if len(orders) != 40320 || byRequirement*8 != len(orders) || byPlace*14 != len(orders) {
+		t.Errorf("of %d orders, the best requirement-only rule passes %d (want 1/8), the best place-only rule %d (want 1/14): update the residuals",
+			len(orders), byRequirement, byPlace)
+	}
+}
+
+// permutations is every order of 0..n-1.
+func permutations(n int) [][]int {
+	if n == 0 {
+		return [][]int{{}}
+	}
+	var out [][]int
+	for _, p := range permutations(n - 1) {
+		for i := 0; i <= len(p); i++ {
+			q := append(append(append(make([]int, 0, n), p[:i]...), n-1), p[i:]...)
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // all is every case decided as expected, or each as d when d is set.
@@ -396,7 +480,7 @@ func TestAdapterClosure(t *testing.T) {
 		}
 		return "" // node: built-ins and registry packages, which the lockfile pins
 	}
-	seen, queue := map[string]bool{}, []string{"adapters/http-chat/src/main.ts"}
+	seen, queue := map[string]bool{}, []string{AdapterEntry} // the command Route.Review runs
 	for len(queue) > 0 {
 		f := queue[0]
 		queue = queue[1:]
@@ -451,21 +535,42 @@ func restore(t *testing.T, p string, old []byte) {
 var route = types.QualifiedRoute{Executor: "exe_01m4tm99haemr8ajyf09v4ytzb", Family: "stub-reviewer", Adapter: "http-chat", Model: "stub-reviewer-1",
 	Destination: "stub", Endpoint: "http://127.0.0.1:18080/v1"}
 
-// outcomes is every case's outcome in run x as decided, as Route.Review
-// returns it: its review report (review.Report), with the route's
-// reviewer as its roster and a call of its own, and its evidence (the
-// run, the case's place in its order and prompt, the call).
-func outcomes(t *testing.T, s Suite, x Run, decided map[string]string) map[string]Outcome {
+// finish reviews the rest of run x's cases, from its cursor, as decided,
+// as Route.Review would: the run admits each in turn (take) and keeps its
+// evidence (log); its outcome has its review report (review.Report), with
+// the route's reviewer as its roster and a call of its own. out holds the
+// cases reviewed already.
+func finish(t *testing.T, s Suite, x *Run, decided map[string]string, out map[string]Outcome) map[string]Outcome {
 	t.Helper()
-	out := map[string]Outcome{}
-	for seq, c := range s.Order(x.Seed) {
+	for _, c := range s.Order(x.Seed)[x.st.cursor:] {
+		seq, err := x.take(c)
+		if err != nil {
+			t.Fatal(err)
+		}
 		call := newCall(t)
 		o := outcome(t, decided[c.ID], call, x.Route)
-		o.evidence = &types.QualifiedEvidence{RunID: x.ID, Seq: int64(seq), PromptDigest: c.PromptDigest, Route: x.Route, AdapterDigest: x.Adapter,
-			SuiteDigest: x.Suite, Call: call}
+		o.evidence = &types.QualifiedEvidence{RunID: x.ID, RanAt: types.Time(x.At.Format(time.RFC3339)), Seq: int64(seq), PromptDigest: c.PromptDigest,
+			Route: x.Route, AdapterDigest: x.Adapter, SuiteDigest: x.Suite, Call: call}
+		x.log(c.ID, *o.evidence)
 		out[c.ID] = o
 	}
 	return out
+}
+
+// outcomes is every case of run x reviewed, as decided.
+func outcomes(t *testing.T, s Suite, x *Run, decided map[string]string) map[string]Outcome {
+	t.Helper()
+	return finish(t, s, x, decided, map[string]Outcome{})
+}
+
+// begin is s.Begin, which must not fail.
+func begin(t *testing.T, s Suite, dir, name string, r types.QualifiedRoute, at time.Time) *Run {
+	t.Helper()
+	x, err := s.Begin(dir, name, r, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x
 }
 
 func newCall(t *testing.T) types.CallID {
@@ -510,8 +615,8 @@ func TestCheck(t *testing.T) {
 		t.Errorf("no record: %v", err)
 	}
 	record := func(dir, name string, r types.QualifiedRoute, when time.Time, decided map[string]string) {
-		x := s.NewRun(r, when)
-		if _, err := s.Record(dir, name, x, outcomes(t, s, x, decided)); err != nil {
+		x := begin(t, s, dir, name, r, when)
+		if _, err := s.Record(x, outcomes(t, s, x, decided)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -599,7 +704,7 @@ func TestCheck(t *testing.T) {
 		"a stale case prompt": {all(s, ""), route, func(d string) {
 			edit(d, func(r *types.ReviewQualification) { r.Cases[2].PromptDigest = digest([]byte("x")) })
 		}, "not the suite's"},
-		"a lying verdict": {with(all(s, ""), "defect-formatcents-test-weakened", review.Go), route, func(d string) {
+		"a lying verdict": {with(all(s, ""), "defect-sku-package-test-weakened", review.Go), route, func(d string) {
 			edit(d, func(r *types.ReviewQualification) { r.Qualified = true })
 		}, "counts are not"},
 		"an expect flipped (L4)": {all(s, ""), route, func(d string) { edit(d, func(r *types.ReviewQualification) { r.Cases[4].Expect = "no_go" }) }, "not the suite's"},
@@ -722,6 +827,20 @@ func TestCheck(t *testing.T) {
 				os.WriteFile(filepath.Join(d, fmt.Sprintf("x%04d", i)), nil, 0o644)
 			}
 		}, "past its bounds"},
+		// Opus r2 M2: a run begun and never ended is the latest, and fails.
+		"an incomplete latest run (r2 M2)": {all(s, ""), route, func(d string) { begin(t, s, d, "aborted", route, at.Add(time.Hour)) }, "aborted.json (a latest run): an incomplete run"},
+		"a record marked complete, without its cases": {all(s, ""), route, func(d string) {
+			begin(t, s, d, "aborted", route, at.Add(time.Hour))
+			p := filepath.Join(d, "aborted.json")
+			b, _ := os.ReadFile(p)
+			os.WriteFile(p, bytes.Replace(b, []byte(`"complete": false`), []byte(`"complete": true`), 1), 0o644)
+		}, "aborted.json (a latest run): its reports are not a directory"},
+		// Opus r2 L2: a passing record's ran_at moved past a newer failing
+		// run, its evidence unchanged.
+		"ran_at moved (r2 L2)": {all(s, ""), route, func(d string) {
+			record(d, "newer", route, at.Add(time.Hour), all(s, review.Go))
+			edit(d, func(r *types.ReviewQualification) { r.RanAt = types.Time(at.Add(2 * time.Hour).Format(time.RFC3339)) })
+		}, "run.json (a latest run): case defect-transfer-keeps-destination-price's run started at another time"},
 	} {
 		dir := fresh(c.decided)
 		if c.change != nil {
@@ -749,38 +868,75 @@ func TestCheck(t *testing.T) {
 	if err := Check(goes, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "ran in another run") {
 		t.Errorf("two runs' reports as one record: %v", err)
 	}
-	// Record makes no evidence: old reports without it, another run's
-	// outcomes, and outcomes on another route are refused, and nothing is
-	// written.
-	x := s.NewRun(route, at)
-	bare := outcomes(t, s, x, all(s, ""))
-	for id, o := range bare {
-		bare[id] = Outcome{Decision: o.Decision, Report: o.Report}
-	}
-	elsewhere := s.NewRun(other, at)
-	for name, c := range map[string]struct {
-		x   Run
+	// Record makes no evidence, and completes only a run that reviewed every
+	// case once, each outcome the one the run logged (Astra H1; Opus r2
+	// M1). It refuses, and writes nothing but leaves the run's record
+	// incomplete.
+	type refusal struct {
+		x   *Run
 		out map[string]Outcome
 		why string
-	}{
-		"reports without evidence": {x, bare, "has no outcome of a run"},
-		"another run's outcomes":   {x, outcomes(t, s, s.NewRun(route, at), all(s, "")), "ran in another run"},
-		"outcomes on another route": {x, func() map[string]Outcome {
-			out := outcomes(t, s, elsewhere, all(s, ""))
+	}
+	rows := map[string]func(dir string) refusal{
+		"a run Begin did not start": func(string) refusal {
+			return refusal{&Run{ID: strings.Repeat("0", 32)}, map[string]Outcome{}, "not a run Begin started"}
+		},
+		"reports without evidence": func(dir string) refusal {
+			x := begin(t, s, dir, "run", route, at)
+			out := outcomes(t, s, x, all(s, ""))
 			for id, o := range out {
-				o.evidence.RunID = x.ID
-				out[id] = o
+				out[id] = Outcome{Decision: o.Decision, Report: o.Report}
 			}
-			return out
-		}(), "ran on another route"},
-	} {
+			return refusal{x, out, "has no outcome of the run"}
+		},
+		"another run's outcomes": func(dir string) refusal {
+			x := begin(t, s, dir, "run", route, at)
+			outcomes(t, s, x, all(s, ""))
+			return refusal{x, outcomes(t, s, begin(t, s, t.TempDir(), "other", route, at), all(s, "")), "has no outcome of the run"}
+		},
+		"a run not ended": func(dir string) refusal {
+			return refusal{begin(t, s, dir, "run", route, at), outcomes(t, s, begin(t, s, t.TempDir(), "other", route, at), all(s, "")), "reviewed 0 of its 8 cases"}
+		},
+		"a review that never ended": func(dir string) refusal { // admitted, then its adapter failed: no outcome
+			x := begin(t, s, dir, "run", route, at)
+			if _, err := x.take(s.Order(x.Seed)[0]); err != nil {
+				t.Fatal(err)
+			}
+			return refusal{x, finish(t, s, x, all(s, ""), map[string]Outcome{}), "was reviewed 0 times"}
+		},
+		"a case reviewed twice (r2 M1)": func(dir string) refusal {
+			x := begin(t, s, dir, "run", route, at)
+			out := outcomes(t, s, x, all(s, ""))
+			again := *out[first].evidence
+			again.Call = newCall(t)
+			x.log(first, again)
+			return refusal{x, out, "was reviewed 2 times"}
+		},
+		"outcomes on another route": func(dir string) refusal {
+			x := begin(t, s, dir, "run", route, at)
+			out := outcomes(t, s, x, all(s, ""))
+			for id, o := range out { // as the run logged them: Record's own check of the evidence refuses
+				o.evidence.Route = other
+				x.st.done[id] = []types.QualifiedEvidence{*o.evidence}
+			}
+			return refusal{x, out, "ran on another route"}
+		},
+	}
+	for name, mk := range rows {
 		dir := t.TempDir()
-		if _, err := s.Record(dir, "run", c.x, c.out); err == nil || !strings.Contains(err.Error(), c.why) {
+		c := mk(dir)
+		if _, err := s.Record(c.x, c.out); err == nil || !strings.Contains(err.Error(), c.why) {
 			t.Errorf("%s: recorded (%v), want refused (%s)", name, err, c.why)
 		}
-		if entries, _ := os.ReadDir(dir); len(entries) > 0 {
-			t.Errorf("%s: Record wrote %d entries", name, len(entries))
+		entries, _ := os.ReadDir(dir)
+		if c.x.st != nil && (len(entries) != 1 || entries[0].Name() != "run.json" || load(dir).Complete) || c.x.st == nil && len(entries) > 0 {
+			t.Errorf("%s: Record wrote %d entries, or completed the record", name, len(entries))
 		}
+	}
+	taken := t.TempDir()
+	begin(t, s, taken, "run", route, at)
+	if _, err := s.Begin(taken, "run", route, at); err == nil || !errors.Is(err, os.ErrExist) {
+		t.Errorf("Begin over an existing record: %v, want refused", err)
 	}
 	// Opus M3 and the lead's #226 entry 110: the latest two runs, of
 	// different seeds, must both pass.
@@ -820,18 +976,44 @@ func TestCheck(t *testing.T) {
 	if err := Check(ties, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "r.json (a latest run)") {
 		t.Errorf("a third run at the latest time failing: %v", err)
 	}
+	// Opus r2 L1: and every run at the second-latest time, whatever the
+	// names.
+	for _, names := range [][3]string{{"z-latest", "b-pass", "c-fail"}, {"z-latest", "c-pass", "b-fail"}} {
+		dir := t.TempDir()
+		record(dir, names[0], route, at.Add(time.Hour), all(s, ""))
+		record(dir, names[1], route, at, all(s, ""))
+		record(dir, names[2], route, at, all(s, review.Go))
+		if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), names[2]+".json (a latest run)") {
+			t.Errorf("a failing run at the second-latest time, beside a passing one (%v): %v", names, err)
+		}
+	}
 	// Two passing records of one seed are one run, not two.
 	same := t.TempDir()
-	x1 := s.NewRun(route, at)
-	x2 := x1
-	x2.ID, x2.At = s.NewRun(route, at).ID, at.Add(time.Hour)
-	for name, x := range map[string]Run{"one": x1, "two": x2} {
-		if _, err := s.Record(same, name, x, outcomes(t, s, x, all(s, ""))); err != nil {
-			t.Fatal(err)
-		}
+	x1 := begin(t, s, same, "one", route, at)
+	if _, err := s.Record(x1, outcomes(t, s, x1, all(s, ""))); err != nil {
+		t.Fatal(err)
+	}
+	x2 := begin(t, s, same, "two", route, at.Add(time.Hour))
+	x2.Seed, x2.st.order = x1.Seed, s.Order(x1.Seed)
+	if _, err := s.Record(x2, outcomes(t, s, x2, all(s, ""))); err != nil {
+		t.Fatal(err)
 	}
 	if err := Check(same, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "share a seed") {
 		t.Errorf("two runs of one seed: %v, want unqualified", err)
+	}
+	ties = t.TempDir() // and at the second-latest time, a copy of the latest run's seed
+	x3 := begin(t, s, ties, "c", route, at.Add(time.Hour))
+	if _, err := s.Record(x3, outcomes(t, s, x3, all(s, ""))); err != nil {
+		t.Fatal(err)
+	}
+	record(ties, "a", route, at, all(s, ""))
+	x4 := begin(t, s, ties, "b", route, at)
+	x4.Seed, x4.st.order = x3.Seed, s.Order(x3.Seed)
+	if _, err := s.Record(x4, outcomes(t, s, x4, all(s, ""))); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(ties, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "c.json and b.json share a seed") {
+		t.Errorf("a judged run of the latest run's seed: %v, want unqualified", err)
 	}
 	// The suite or the adapter changed after the run: the record and its
 	// evidence agree with each other, not with the current digests.
@@ -870,9 +1052,17 @@ func TestOrder(t *testing.T) {
 	if len(firsts) < len(s.Cases)/2 {
 		t.Errorf("64 seeds put only %d cases first: the order does not follow the seed", len(firsts))
 	}
-	a, b := s.NewRun(route, time.Now()), s.NewRun(route, time.Now())
-	if a.ID == b.ID || a.Seed == b.Seed || len(a.ID) != 32 || len(a.Seed) != 64 {
-		t.Errorf("two runs %+v and %+v: not random ids and seeds", a, b)
+	dir := t.TempDir()
+	a, b := begin(t, s, dir, "a", route, time.Now()), begin(t, s, dir, "b", route, time.Now())
+	if a.ID == b.ID || a.Seed == b.Seed || len(a.ID) != 32 || len(a.Seed) != 64 || !slices.Equal(idsOf(a.st.order), idsOf(s.Order(a.Seed))) {
+		t.Errorf("two runs %+v and %+v: not random ids and seeds, or not in their seed's order", a, b)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "a.json")) // Begin's record: incomplete, and a record (Opus #306 r2 M2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := contract.Decode[types.ReviewQualification]("config/review-qualification", raw); err != nil || rec.Complete || rec.Qualified || len(rec.Cases) != 0 || rec.Seed != a.Seed {
+		t.Errorf("Begin's record %+v, %v", rec, err)
 	}
 }
 

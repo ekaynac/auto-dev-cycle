@@ -22,12 +22,12 @@
       "prompt_digest": "sha256:dd75e6bd34ef91cfb6be3f800e400a0a3925c096d9665d488dbcaa204283589a"
     },
     {
-      "id": "defect-formatcents-test-weakened",
-      "task": "go-mini-failing-then-green-1",
+      "id": "defect-sku-package-test-weakened",
+      "task": "go-mini-refactor-1",
       "expect": "no_go",
-      "defect": "a deleted assertion: The fix is right, but the 100000 case is deleted from TestFormatCentsPositive; the task says not to change any test.",
+      "defect": "a deleted assertion: the extraction is right, but the \"Ü-1\" case is deleted from TestAddRejectsBadInput; a behaviour-preserving refactor keeps the tests that pin the behaviour.",
       "probe": "TestQualProbeTestsUnchanged",
-      "prompt_digest": "sha256:904b0beb420e6736d21d806123e087df53ba7bba7be8c7271a95d3eb817fcd8a"
+      "prompt_digest": "sha256:728c800d4f1efb24cf4f7d2661428c72a1de827dc947c75e87bdd7c6356318c2"
     },
     {
       "id": "defect-formatcents-loses-sign-below-one-unit",

@@ -10,39 +10,47 @@
 // (AdapterDigest) and the suite. P22a's activation of the review
 // capability calls Check (the I-inventory's obligation P22a-6).
 //
-// Decisions (the lead, 2026-10-20 and #226 entry 110, Opus #306 and
-// Astra #306):
+// Decisions (the lead, 2026-10-20 and #226 entry 110, Opus #306 and its
+// re-check, Astra #306):
 //   - Check fails closed: no record of the route, a record that is not
-//     one, a stale route, prompt, adapter or suite digest, a report missing,
-//     not its digest, or not agreeing with its case (its decision, its
-//     roster, its charge links), a case's evidence not binding its report
-//     to the record's run, route and adapter, the case's prompt and the
-//     run's order, and a score under the bar each leave the route
-//     unqualified. The score is recomputed from the cases; the record's
-//     own counts and verdict must agree with it.
-//   - Each case's evidence is Route.Review's: the run's id, the case's
-//     place in the run's order, the digest of the prompt it sent, the
-//     registry's route it sent it on, the run's adapter and suite, and
+//     one, an incomplete record, a stale route, prompt, adapter or suite
+//     digest, a report missing, not its digest, or not agreeing with its
+//     case (its decision, its roster, its charge links), a case's evidence
+//     not binding its report to the record's run, start, route and
+//     adapter, the case's prompt and the run's order, and a score under
+//     the bar each leave the route unqualified. The score is recomputed
+//     from the cases; the record's own counts and verdict must agree.
+//   - A run starts with Begin, which writes its record, incomplete, before
+//     the first review; Record completes it. An aborted run leaves its
+//     incomplete record, and an incomplete latest record fails (Opus #306
+//     r2 M2). Deleting a record is for the review of the PR that commits
+//     the records to catch.
+//   - Route.Review admits each case once, in the order the run's random
+//     seed decides (the run's cursor, shared by every copy of the run),
+//     with the case's own prompt; Record completes only a run whose every
+//     case was reviewed exactly once (Opus #306 r2 M1).
+//   - Each case's evidence is Route.Review's: the run's id and start, the
+//     case's place in the run's order, the digest of the prompt it sent,
+//     the registry's route it sent it on, the run's adapter and suite, and
 //     the model call its report charges. Record takes it from the outcome
-//     and never makes it: an outcome Route.Review did not produce, or one
-//     of another run, route or prompt, is refused (Astra #306 H1).
+//     and the run's own log, and never makes it (Astra #306 H1).
 //   - Only the latest two runs of a route count (by ran_at; the lead,
 //     #226 entry 110): both must pass, and their seeds must differ (two
 //     records of one seed are one run). One passing run is not enough,
 //     and a failing run after passing ones takes the qualification away
-//     until two more pass. Every run at the latest time is judged.
+//     until two more pass. Every run at the latest two's times is judged
+//     (Opus #306 r2 L1).
 //   - A record and a report are each read as a regular file, never
 //     through a link, within a byte bound checked before reading, and a
 //     records directory holds at most maxRecords records: past a bound,
 //     the route is unqualified (Astra #306 M4).
-//   - A run's cases run in an order its random seed decides, recorded
-//     (Astra #306 M5). The bar's chance figure assumes decisions that are
-//     independent and identically distributed across cases; a reviewer
-//     that ignores the case and answers by the request's place in the run
-//     is outside it. Under the seeded order, no_go to the first four
-//     requests passes with probability 1/70 per run, and no_go to exactly
-//     five, the best such policy, with 1/14; over the latest two runs, of
-//     fresh orders, with at most 1/196 (about 0.5%), the worst case.
+//   - The suite holds one planted defect and one clean control per task
+//     (Opus #306 r2 H1), and a run's cases run in its seed's order (Astra
+//     #306 M5). A reviewer that never reads the diff passes the bar with
+//     at most 1/8 per run, by the requirement alone (TestBlindReviewers,
+//     exhaustively), or 1/64 over the latest two runs: the worst case. By
+//     the request's place in the run alone, 1/14 per run. Deciding each
+//     request independently, about 2.3% per run.
 //   - The run goes through the real http-chat adapter and gateway
 //     (Route.Review, adapterhost.Host.Run); a live run is the lead's,
 //     committed as a record. CI runs the harness against a scripted
@@ -53,6 +61,9 @@
 //   - Any change to the http-chat adapter's runtime closure or to the
 //     reviewer's limits makes every record stale (a false block accepted:
 //     the adapter's system message and decision schema need no export).
+//     Review runs that adapter only (AdapterEntry under the suite's root);
+//     node itself, and the route's Go half (the gateway, the adapter host,
+//     review.Parse and Result), are outside AdapterDigest (r2 L3).
 package qualify
 
 import (
@@ -72,6 +83,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -101,6 +113,10 @@ const (
 	maxEntries     = 4096    // entries of a records directory: each record's file and reports directory, and more
 	maxRecordBytes = 1 << 20 // bytes of a record
 )
+
+// AdapterEntry is the http-chat adapter's entry point, from the repository
+// root: the one adapter command Route.Review runs (Opus #306 r2 L3).
+const AdapterEntry = "adapters/http-chat/src/main.ts"
 
 // adapterPaths are what AdapterDigest covers, from the repository root: the
 // http-chat adapter's local runtime closure (Astra #306 M3). Its source
@@ -283,9 +299,11 @@ func RouteOf(e types.RegistryExecutor) types.QualifiedRoute {
 	return types.QualifiedRoute{Executor: e.ID, Family: e.Family, Adapter: e.Adapter, Model: e.Model, Destination: e.Destination.ID, Endpoint: e.Destination.Endpoint}
 }
 
-// Run is one run of the suite on a route (Astra #306 H1, M5): a random id
-// every case's evidence carries, a random seed that orders its cases, its
-// time, and the route, adapter and suite it runs on.
+// Run is one run of the suite on a route (Astra #306 H1, M5; Opus #306 r2
+// M1, M2): a random id every case's evidence carries, a random seed that
+// orders its cases, its start, and the route, adapter and suite it runs
+// on. Only Begin makes one, and its cursor, shared by every copy, admits
+// each case once, in the seed's order.
 type Run struct {
 	ID      types.QualificationRunID
 	Seed    string
@@ -293,14 +311,76 @@ type Run struct {
 	Route   types.QualifiedRoute
 	Adapter types.Digest
 	Suite   types.Digest
+	st      *runState
 }
 
-// NewRun is a new run of s on route, at at.
-func (s Suite) NewRun(route types.QualifiedRoute, at time.Time) Run {
+type runState struct {
+	mu        sync.Mutex
+	root      string // the suite's root: the http-chat adapter Review runs is under it
+	dir, name string // the record Begin wrote
+	order     []Case
+	cursor    int                                  // the next case's place in order
+	done      map[string][]types.QualifiedEvidence // each case's reviews
+}
+
+// Begin starts a run of s on route, at at: before any review, it writes
+// the run's record dir/name.json, incomplete, so that a run that never
+// ends leaves a record that fails qualification (Opus #306 r2 M2). It
+// never overwrites a record.
+func (s Suite) Begin(dir, name string, route types.QualifiedRoute, at time.Time) (*Run, error) {
 	id, seed := make([]byte, 16), make([]byte, 32)
 	_, _ = rand.Read(id) // crypto/rand.Read never fails
 	_, _ = rand.Read(seed)
-	return Run{ID: hex.EncodeToString(id), Seed: hex.EncodeToString(seed), At: at.UTC(), Route: route, Adapter: s.Adapter, Suite: s.Digest}
+	run := &Run{ID: hex.EncodeToString(id), Seed: hex.EncodeToString(seed), At: at.UTC().Truncate(time.Second), Route: route, Adapter: s.Adapter, Suite: s.Digest}
+	run.st = &runState{root: s.Root, dir: dir, name: name, order: s.Order(run.Seed), done: map[string][]types.QualifiedEvidence{}}
+	b, err := json.MarshalIndent(run.record(), "", "  ")
+	if err == nil {
+		err = os.MkdirAll(dir, 0o755)
+	}
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, name+".json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	_, err = f.Write(append(b, '\n'))
+	return run, errors.Join(err, f.Close())
+}
+
+// record is the run's record before its cases: incomplete.
+func (run *Run) record() types.ReviewQualification {
+	return types.ReviewQualification{Schema: recordSchema, RunID: run.ID, Seed: run.Seed, Route: run.Route, PromptDigest: review.PromptDigest, AdapterDigest: run.Adapter,
+		SuiteDigest: run.Suite, RanAt: types.Time(run.At.Format(time.RFC3339)), Cases: []types.QualifiedCase{}}
+}
+
+// take admits case c as the run's next review, and is its place in the
+// run's order. It refuses a run Begin did not start, and a case that is
+// not the next in the seed's order, one already reviewed included (Opus
+// #306 r2 M1). An admitted case is never admitted again, whether or not
+// its review ends.
+func (run *Run) take(c Case) (int, error) {
+	if run == nil || run.st == nil {
+		return 0, errors.New("qualify: not a run Begin started")
+	}
+	run.st.mu.Lock()
+	defer run.st.mu.Unlock()
+	switch seq := run.st.cursor; {
+	case seq >= len(run.st.order):
+		return 0, fmt.Errorf("qualify: case %s: the run has reviewed every case", c.ID)
+	case run.st.order[seq].ID != c.ID:
+		return 0, fmt.Errorf("qualify: case %s is not the run's next: %s is", c.ID, run.st.order[seq].ID)
+	default:
+		run.st.cursor++
+		return seq, nil
+	}
+}
+
+// log keeps the evidence of a review the run admitted.
+func (run *Run) log(id string, ev types.QualifiedEvidence) {
+	run.st.mu.Lock()
+	defer run.st.mu.Unlock()
+	run.st.done[id] = append(run.st.done[id], ev)
 }
 
 // Order is the suite's cases in the order a run with seed runs them, by
@@ -325,29 +405,41 @@ type Outcome struct {
 	evidence *types.QualifiedEvidence
 }
 
-// Record is the record of the suite's run, with each case's outcome; it
-// writes each report beside it, under dir/<name>/. Every outcome must be
-// one Route.Review returned in run, for its case's prompt, on run's route,
-// with run's adapter and suite the current ones; Record refuses any other
-// and writes nothing (Astra #306 H1).
-func (s Suite) Record(dir, name string, run Run, out map[string]Outcome) (types.ReviewQualification, error) {
-	rec := types.ReviewQualification{Schema: recordSchema, RunID: run.ID, Seed: run.Seed, Route: run.Route, PromptDigest: review.PromptDigest, AdapterDigest: run.Adapter,
-		SuiteDigest: run.Suite, RanAt: types.Time(run.At.UTC().Format(time.RFC3339)), Cases: []types.QualifiedCase{}}
+// Record completes run's record with each case's outcome, and writes each
+// report beside it, under <dir>/<name>/. It refuses, and writes nothing,
+// unless the run has reviewed every case, each exactly once (Opus #306 r2
+// M1), and every outcome is the one Route.Review returned in run for its
+// case, on run's route, with run's adapter and suite the current ones
+// (Astra #306 H1).
+func (s Suite) Record(run *Run, out map[string]Outcome) (types.ReviewQualification, error) {
+	if run == nil || run.st == nil {
+		return types.ReviewQualification{}, errors.New("qualify: not a run Begin started")
+	}
+	rec := run.record()
+	run.st.mu.Lock()
+	defer run.st.mu.Unlock()
+	if run.st.cursor != len(run.st.order) {
+		return rec, fmt.Errorf("qualify: the run has reviewed %d of its %d cases", run.st.cursor, len(run.st.order))
+	}
 	decided := map[string]string{}
 	for _, c := range s.Cases {
 		o, ok := out[c.ID]
-		if !ok || len(o.Report) == 0 || o.evidence == nil {
-			return rec, fmt.Errorf("qualify: case %s has no outcome of a run", c.ID)
+		switch done := run.st.done[c.ID]; {
+		case len(done) != 1:
+			return rec, fmt.Errorf("qualify: case %s was reviewed %d times in the run", c.ID, len(done))
+		case !ok || len(o.Report) == 0 || o.evidence == nil || *o.evidence != done[0]:
+			return rec, fmt.Errorf("qualify: case %s has no outcome of the run", c.ID)
 		}
 		decided[c.ID] = o.Decision
 		rec.Cases = append(rec.Cases, types.QualifiedCase{ID: c.ID, Expect: types.QualifiedCaseExpect(c.Expect), PromptDigest: c.PromptDigest,
 			Decision: types.QualifiedCaseDecision(cmp.Or(o.Decision, "none")), ReportDigest: digest(o.Report), Evidence: *o.evidence})
 	}
 	noGo, goes, ok := s.Score(decided)
-	rec.NoGoOnDefects, rec.GoOnControls, rec.Qualified = int64(noGo), int64(goes), ok
+	rec.Complete, rec.NoGoOnDefects, rec.GoOnControls, rec.Qualified = true, int64(noGo), int64(goes), ok
 	if err := s.verify(rec, func(id string) ([]byte, error) { return out[id].Report, nil }); err != nil {
 		return rec, fmt.Errorf("qualify: the outcomes are not the run's: %w", err)
 	}
+	dir, name := run.st.dir, run.st.name
 	if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
 		return rec, err
 	}
@@ -368,9 +460,9 @@ var ErrUnqualified = errors.New("qualify: the reviewer route is not qualified")
 
 // Check is nil when the latest two records (by ran_at) of route under dir,
 // of different seeds, each qualify it for the suite s, the current prompt
-// and the current adapter; otherwise ErrUnqualified, with the reason. A
-// record that is not one, or a records directory past its bounds, fails
-// the whole check.
+// and the current adapter, and so does every other record at either's
+// time; otherwise ErrUnqualified, with the reason. A record that is not
+// one, or a records directory past its bounds, fails the whole check.
 func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	names, err := recordNames(dir)
 	switch {
@@ -406,22 +498,25 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	if len(runs) == 0 {
 		return fmt.Errorf("%w: no record of the route", ErrUnqualified)
 	}
-	// The latest first (names break ties). The latest two are judged, and
-	// every run at the latest time (Opus #306 M3; #226 entry 110).
+	// The latest first. The latest two are judged, and every run at either
+	// one's time, so that no tie is decided by a name (Opus #306 M3, r2
+	// L1; #226 entry 110); no two of them may share a seed.
 	slices.SortStableFunc(runs, func(a, b run) int { return b.at.Compare(a.at) })
+	seeds := map[string]string{}
 	for i, r := range runs {
-		if i > 1 && !r.at.Equal(runs[0].at) {
+		if i > 1 && !r.at.Equal(runs[1].at) {
 			break
 		}
 		if err := check(r.path, r.rec, s); err != nil {
 			return fmt.Errorf("%w: %s (a latest run): %v", ErrUnqualified, filepath.Base(r.path), err)
 		}
+		if other, ok := seeds[r.rec.Seed]; ok {
+			return fmt.Errorf("%w: %s and %s share a seed: they are one run, not two", ErrUnqualified, other, filepath.Base(r.path))
+		}
+		seeds[r.rec.Seed] = filepath.Base(r.path)
 	}
 	if len(runs) < 2 {
 		return fmt.Errorf("%w: one run of the route: qualification takes its latest two runs, of different seeds, passing", ErrUnqualified)
-	}
-	if runs[0].rec.Seed == runs[1].rec.Seed {
-		return fmt.Errorf("%w: %s and %s share a seed: they are one run, not two", ErrUnqualified, filepath.Base(runs[0].path), filepath.Base(runs[1].path))
 	}
 	return nil
 }
@@ -479,6 +574,9 @@ func readRegular(p string, limit int64) ([]byte, error) {
 // check is whether the record at p, with its reports beside it, qualifies
 // for s.
 func check(p string, rec types.ReviewQualification, s Suite) error {
+	if !rec.Complete { // a run that has not ended, or never will (Opus #306 r2 M2)
+		return errors.New("an incomplete run: it was aborted, or has not ended")
+	}
 	reports := strings.TrimSuffix(p, ".json")
 	if fi, err := os.Lstat(reports); err != nil || !fi.IsDir() {
 		return errors.New("its reports are not a directory")
@@ -497,8 +595,8 @@ func check(p string, rec types.ReviewQualification, s Suite) error {
 // verify is whether rec is a run of s on the current prompt and adapter:
 // its cases the suite's, each report (from report) its digest, a report
 // agreeing with its case, each case's evidence binding it to the record's
-// run, route, adapter and suite, the case's prompt and the run's order,
-// and the counts the cases'.
+// run, start, route, adapter and suite, the case's prompt and the run's
+// order, and the counts the cases'.
 func (s Suite) verify(rec types.ReviewQualification, report func(id string) ([]byte, error)) error {
 	switch {
 	case rec.PromptDigest != review.PromptDigest:
@@ -525,6 +623,8 @@ func (s Suite) verify(rec types.ReviewQualification, report func(id string) ([]b
 		switch { // the case's execution is this run's, on this route, of this prompt (Astra #306 H1)
 		case ev.RunID != rec.RunID:
 			return fmt.Errorf("case %s ran in another run", c.ID)
+		case ev.RanAt != rec.RanAt: // Opus #306 r2 L2
+			return fmt.Errorf("case %s's run started at another time", c.ID)
 		case ev.Route != rec.Route:
 			return fmt.Errorf("case %s ran on another route", c.ID)
 		case ev.PromptDigest != c.PromptDigest:

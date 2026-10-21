@@ -143,10 +143,14 @@ func TestRoute(t *testing.T) {
 	for _, c := range s.Cases {
 		byPrompt[string(prompts[c.ID])] = c
 	}
-	// run is one run of the suite, in its seed's order: the upstream answers
-	// the prompt it was sent, not the loop's case (Opus #306 M5).
-	run := func(reply func(c Case) string) (Run, map[string]Outcome) {
-		x := s.NewRun(qr, time.Now())
+	// run is one run of the suite, begun in dir, in its seed's order: the
+	// upstream answers the prompt it was sent, not the loop's case (Opus
+	// #306 M5).
+	run := func(dir, name string, reply func(c Case) string) (*Run, map[string]Outcome) {
+		x, err := s.Begin(dir, name, qr, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
 		out := map[string]Outcome{}
 		for seq, c := range s.Order(x.Seed) {
 			var got string
@@ -159,7 +163,7 @@ func TestRoute(t *testing.T) {
 				return "an unknown prompt"
 			}
 			up.mu.Unlock()
-			o, err := r.Review(ctx, x, seq, prompts[c.ID])
+			o, err := r.Review(ctx, x, c, prompts[c.ID])
 			if err != nil {
 				t.Fatalf("%s: %v", c.ID, err)
 			}
@@ -171,9 +175,9 @@ func TestRoute(t *testing.T) {
 			if rep, err := review.ReadReport(o.Report); err != nil || rep.Decision != o.Decision {
 				t.Errorf("%s: the report %s, %v", c.ID, o.Report, err)
 			}
-			// Astra #306 H1: the evidence is the execution's.
-			if ev := o.evidence; ev == nil || ev.RunID != x.ID || ev.Seq != int64(seq) || ev.PromptDigest != c.PromptDigest || ev.Route != qr ||
-				ev.AdapterDigest != s.Adapter || ev.SuiteDigest != s.Digest {
+			// Astra #306 H1; Opus #306 r2 M1, L2: the evidence is the execution's.
+			if ev := o.evidence; ev == nil || ev.RunID != x.ID || ev.RanAt != types.Time(x.At.Format(time.RFC3339)) || ev.Seq != int64(seq) ||
+				ev.PromptDigest != c.PromptDigest || ev.Route != qr || ev.AdapterDigest != s.Adapter || ev.SuiteDigest != s.Digest {
 				t.Errorf("%s: the evidence %+v", c.ID, ev)
 			}
 			out[c.ID] = o
@@ -188,11 +192,14 @@ func TestRoute(t *testing.T) {
 		return m
 	}
 	records := t.TempDir()
-	goodRun, good := run(func(c Case) string { return decision(c.Expect) })
+	goodRun, good := run(records, "good", func(c Case) string { return decision(c.Expect) })
 	if noGo, goes, ok := s.Score(decided(good)); !ok || noGo != 4 || goes != 4 {
 		t.Errorf("the discriminating reviewer: %d no_go, %d go, qualified %v", noGo, goes, ok)
 	}
-	if _, err := s.Record(records, "good", goodRun, good); err != nil {
+	if err := Check(records, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "an incomplete run") {
+		t.Errorf("a run every case of which is reviewed, before Record: %v, want unqualified (Opus #306 r2 M2)", err)
+	}
+	if _, err := s.Record(goodRun, good); err != nil {
 		t.Fatal(err)
 	}
 	if err := Check(records, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "one run of the route") {
@@ -217,30 +224,30 @@ func TestRoute(t *testing.T) {
 		t.Errorf("%d requests for %d cases", n, len(s.Cases))
 	}
 	up.mu.Unlock()
-	againRun, again := run(func(c Case) string { return decision(c.Expect) }) // a second run, its own seed: the route qualifies
-	if _, err := s.Record(records, "good-again", againRun, again); err != nil {
+	againRun, again := run(records, "good-again", func(c Case) string { return decision(c.Expect) }) // a second run, its own seed: the route qualifies
+	if _, err := s.Record(againRun, again); err != nil {
 		t.Fatal(err)
 	}
 	if err := Check(records, qr, s); err != nil {
 		t.Errorf("the discriminating reviewer's two records: %v", err)
 	}
 	lax := t.TempDir()
-	goRun, allGo := run(func(Case) string { return decision(review.Go) })
+	goRun, allGo := run(lax, "all-go", func(Case) string { return decision(review.Go) })
 	if noGo, _, ok := s.Score(decided(allGo)); ok || noGo != 0 {
 		t.Errorf("the all-go reviewer: %d no_go, qualified %v", noGo, ok)
 	}
-	if rec, err := s.Record(lax, "all-go", goRun, allGo); err != nil || rec.Qualified {
+	if rec, err := s.Record(goRun, allGo); err != nil || rec.Qualified {
 		t.Fatalf("%+v, %v", rec, err)
 	}
 	if err := Check(lax, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "under the bar") {
 		t.Errorf("the all-go reviewer's record: %v", err)
 	}
 	noGos := t.TempDir() // Opus #306 L1: a reviewer that always says no_go
-	noGoRun, allNoGo := run(func(Case) string { return decision(review.NoGo) })
+	noGoRun, allNoGo := run(noGos, "all-no-go", func(Case) string { return decision(review.NoGo) })
 	if noGo, goes, ok := s.Score(decided(allNoGo)); ok || noGo != 4 || goes != 0 {
 		t.Errorf("the all-no_go reviewer: %d no_go, %d go, qualified %v", noGo, goes, ok)
 	}
-	if _, err := s.Record(noGos, "all-no-go", noGoRun, allNoGo); err != nil {
+	if _, err := s.Record(noGoRun, allNoGo); err != nil {
 		t.Fatal(err)
 	}
 	if err := Check(noGos, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "under the bar: 4 of 4 defects no_go, 0 go") {
@@ -256,15 +263,49 @@ func TestRoute(t *testing.T) {
 			mixed[c.ID] = allNoGo[c.ID]
 		}
 	}
-	for name, x := range map[string]Run{"the all-go run": goRun, "the all-no_go run": noGoRun, "a new run": s.NewRun(qr, time.Now())} {
-		if _, err := s.Record(t.TempDir(), "mixed", x, mixed); err == nil || !strings.Contains(err.Error(), "ran in another run") {
-			t.Errorf("two runs' reports recorded as %s: %v", name, err)
+	fresh, err := s.Begin(t.TempDir(), "mixed", qr, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		x   *Run
+		why string
+	}{"the all-go run": {goRun, "has no outcome of the run"}, "the all-no_go run": {noGoRun, "has no outcome of the run"}, "a new run": {fresh, "reviewed 0 of its 8 cases"}} {
+		if _, err := s.Record(c.x, mixed); err == nil || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("two runs' reports recorded as %s: %v, want %q", name, err, c.why)
 		}
 	}
-	_, garbled := run(func(Case) string { return "not a decision" })
+	garbledRun, garbled := run(t.TempDir(), "garbled", func(Case) string { return "not a decision" })
 	for id, o := range garbled {
 		if o.Decision != "" {
 			t.Errorf("%s: a malformed answer decided %q", id, o.Decision)
+		}
+	}
+	// Opus #306 r2 M1, its two probe drivers and their neighbours: Review
+	// admits each case once, in the seed's order, with its own prompt.
+	before := len(up.seen)
+	probe, err := s.Begin(t.TempDir(), "probe", qr, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := s.Order(probe.Seed)
+	other := r
+	other.Adapter.Command = []string{r.Adapter.Command[0], filepath.Join(t.TempDir(), "main.ts")}
+	for name, c := range map[string]struct {
+		r      Route
+		x      *Run
+		c      Case
+		prompt []byte
+		why    string
+	}{
+		"the suite's order, not the seed's (driver 1)": {r, probe, order[1], prompts[order[1].ID], "is not the run's next"},
+		"another case's prompt":                        {r, probe, order[0], prompts[order[1].ID], "the prompt is not the case's"},
+		"a run Begin did not start":                    {r, &Run{ID: probe.ID, Seed: probe.Seed}, order[0], prompts[order[0].ID], "not a run Begin started"},
+		"an adapter outside the root (r2 L3)":          {other, probe, order[0], prompts[order[0].ID], "is not adapters/http-chat/src/main.ts"},
+		"a case of an ended run":                       {r, garbledRun, order[0], prompts[order[0].ID], "has reviewed every case"},
+	} {
+		if _, err := c.r.Review(ctx, c.x, c.c, c.prompt); err == nil || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("%s: %v, want %q", name, err, c.why)
 		}
 	}
 	// Astra #306 H1: the evidence's route is the executor's the review ran
@@ -272,15 +313,24 @@ func TestRoute(t *testing.T) {
 	// refused by Record.
 	claimed := qr
 	claimed.Model = "another-model"
-	x := s.NewRun(claimed, time.Now())
+	x, err := s.Begin(t.TempDir(), "claimed", claimed, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	c := s.Order(x.Seed)[0]
-	o, err := r.Review(ctx, x, 0, prompts[c.ID])
+	o, err := r.Review(ctx, x, c, prompts[c.ID])
 	if err != nil || o.evidence == nil || o.evidence.Route != qr {
 		t.Fatalf("a review in a run claimed for another model: %+v, %v", o.evidence, err)
 	}
-	out := outcomes(t, s, x, all(s, ""))
-	out[c.ID] = o
-	if _, err := s.Record(t.TempDir(), "claimed", x, out); err == nil || !strings.Contains(err.Error(), "ran on another route") {
+	// Opus #306 r2 M1, driver 2: the best of three answers for one case.
+	if _, err := r.Review(ctx, x, c, prompts[c.ID]); err == nil || !strings.Contains(err.Error(), "is not the run's next") {
+		t.Errorf("a case reviewed again: %v", err)
+	}
+	if n := len(up.seen) - before; n != 1 {
+		t.Errorf("%d requests upstream since the probe rows; want 1, the claimed run's review: a refused review sends none", n)
+	}
+	out := finish(t, s, x, all(s, ""), map[string]Outcome{c.ID: o})
+	if _, err := s.Record(x, out); err == nil || !strings.Contains(err.Error(), "ran on another route") {
 		t.Errorf("a review on the executor's route recorded as another model's: %v", err)
 	}
 }
