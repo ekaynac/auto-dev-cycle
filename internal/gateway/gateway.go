@@ -51,6 +51,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -106,8 +107,10 @@ type Gateway struct {
 	cfg      Config
 	client   *http.Client
 	mu       sync.Mutex
-	bound    map[[32]byte]Binding // by the token's hash
-	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
+	bound    map[[32]byte]Binding          // by the token's hash
+	inflight map[[32]byte]map[*flight]bool // each token's requests in flight (serve.go)
+	ops      map[[32]byte]*sync.WaitGroup  // each token's side effects admitted (admit), which Unbind waits for
+	intended map[[32]byte]bool             // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
 	// seq numbers every request's count, across calls, so a call's are distinct however often it is bound. A
 	// restart resets it, but no call sends again after one: its effect is then uncertain, and Intend refuses it.
@@ -120,7 +123,7 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil || cfg.Counts == nil {
 		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets, the intents and the counts")
 	}
-	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
+	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, inflight: map[[32]byte]map[*flight]bool{}, ops: map[[32]byte]*sync.WaitGroup{}, intended: map[[32]byte]bool{},
 		observed: map[types.AttemptID]Observed{}}, nil
 }
 
@@ -158,20 +161,37 @@ func (g *Gateway) Bind(b Binding) (string, error) {
 	return token, nil
 }
 
-// Unbind ends token's binding and returns what was observed for its
-// attempt.
+// Unbind ends token's binding, cancels its requests in flight, and returns
+// what was observed for its attempt. It is idempotent: a token unbound
+// already, or never bound, gives Observed{} (serve.go).
+//
+// It blocks until the side effects its token's requests were admitted to
+// before it (a capture, an intent, a floor's commit) have ended; a floor's
+// commit is never cancelled. So it is never called from a Capture, Intents
+// or Counts implementation, nor while holding a lock one of them takes (a
+// store transaction, the attempt end's own mutex): it would deadlock
+// (Opus #308 r2 L2).
 func (g *Gateway) Unbind(token string) Observed {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	key := sha256.Sum256([]byte(token))
-	b, ok := g.bound[key]
-	if !ok {
-		return Observed{}
+	for f := range g.inflight[key] {
+		f.cancel()
 	}
-	o := g.observed[b.Attempt]
-	delete(g.bound, key)
-	delete(g.observed, b.Attempt)
-	delete(g.intended, key)
+	delete(g.inflight, key)
+	ops := g.ops[key]
+	delete(g.ops, key)
+	b, ok := g.bound[key]
+	var o Observed
+	if ok {
+		o = g.observed[b.Attempt]
+		delete(g.bound, key)
+		delete(g.observed, b.Attempt)
+		delete(g.intended, key)
+	}
+	g.mu.Unlock()
+	if ops != nil { // the side effects admitted before it end before it returns (Astra #308 2)
+		ops.Wait()
+	}
 	return o
 }
 
@@ -205,30 +225,37 @@ type refusal struct {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The outbound request keeps this deadline, set before its floor is submitted: the upstream exchange ends within
-	// RequestDeadline of the floor's commit (modelcall.Clock). The floor's own commit and a blocked downstream write
-	// are not bounded by it (#226 entry 78).
+	// RequestDeadline of the floor's commit (modelcall.Clock). The floor's own commit is not bounded by it; a blocked
+	// downstream write is, by its own deadline (serve.go, #226 entry 78).
 	ctx, cancel := context.WithTimeout(r.Context(), RequestDeadline)
 	defer cancel()
 	r = r.WithContext(ctx)
-	b, ok := g.binding(r)
-	if !ok {
-		refuse(w, &refusal{http.StatusUnauthorized, "unbound"})
-		return
-	}
-	resp, s, no := g.forward(r, b)
+	rc := http.NewResponseController(w)
+	arm(rc)                              // a writer that cannot take a deadline aborts here, before anything is written (Astra #308 3)
+	_ = rc.SetWriteDeadline(time.Time{}) // none armed while the request is read and forwarded: each write arms its own (Opus #308 r2 M1)
+	defer arm(rc)                        // the response's end (its last chunk) has a fresh deadline, however long the count took (Astra #308 1)
+	f := &flight{cancel}
+	b, no := g.enter(r, f)
 	if no != nil {
-		refuse(w, no)
+		refuse(w, rc, no)
 		return
 	}
-	defer resp.Body.Close()
+	release := sync.OnceFunc(func() { g.leave(r, f) })
+	defer release()
+	resp, s, no := g.forward(r, b, f)
+	if no != nil {
+		refuse(w, rc, no)
+		return
+	}
 	if ct, ok := contentType(resp.Header.Get("Content-Type")); ok {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	out := &redacting{w: flushing{w}, secret: []byte(s.cred.Reveal())}
+	out := &redacting{w: flushing{w, rc}, secret: []byte(s.cred.Reveal())}
 	var t tally
 	_, err := io.Copy(out, io.TeeReader(resp.Body, &t))
-	err = errors.Join(err, out.Close())
+	err = errors.Join(err, out.Close(), resp.Body.Close())
+	release() // the upstream exchange is over: the count's commit holds no slot (Opus #308 L4)
 	if out.hit {
 		g.observe(b.Attempt, 0, RouteEchoed)
 	}
@@ -371,22 +398,11 @@ func tokenKey(r *http.Request) ([32]byte, bool) {
 	return sha256.Sum256([]byte(token)), ok && token != ""
 }
 
-func (g *Gateway) binding(r *http.Request) (Binding, bool) {
-	key, ok := tokenKey(r)
-	if !ok {
-		return Binding{}, false
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	b, ok := g.bound[key]
-	return b, ok
-}
-
 // forward checks r against b's lease and sends it, returning the response
 // and the credential it injected, or refuses it with nothing sent. The
 // lease is checked before the body is read, so only a running attempt can
 // make the gateway buffer one.
-func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, *refusal) {
+func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response, sending, *refusal) {
 	ctx, none := r.Context(), sending{}
 	if r.Method != http.MethodPost {
 		return nil, none, &refusal{http.StatusMethodNotAllowed, "method"}
@@ -406,7 +422,8 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, 
 	// intent or not, when it is admitted. The residual: all requests already
 	// admitted before a stop, including those whose body is read after it,
 	// may still send (a first one is refused by the Recorder's own check);
-	// P22a bounds them (#226 entry 57), and their late usage is accepted
+	// MaxInFlight bounds them per token, and Unbind cancels them (serve.go,
+	// #226 entry 57), and their late usage is accepted
 	// (#226 entry 59).
 	a, current, ok, err := g.cfg.Attempts.Attempt(ctx, b.Attempt)
 	switch {
@@ -446,23 +463,42 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, 
 		g.observe(b.Attempt, 0, RouteInBody)
 		return nil, none, &refusal{http.StatusForbidden, RouteInBody}
 	}
-	if g.cfg.Capture != nil {
-		if g.cfg.Capture.Keep(ctx, b, out) != nil {
-			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
+	// Unbound meanwhile: nothing captured (Opus #322 L4); Unbind waits for it (Astra #308 2).
+	ok, err = g.effect(r, f, func() error {
+		if g.cfg.Capture == nil {
+			return nil
 		}
+		return g.cfg.Capture.Keep(ctx, b, out)
+	})
+	switch {
+	case !ok:
+		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
+	case err != nil:
+		return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 	}
-	if err := g.intend(r, b, e.Destination.ID); err != nil {
+	ok, err = g.effect(r, f, func() error { return g.intend(r, b, e.Destination.ID) }) // unbound meanwhile: no intent (Opus #308 M2)
+	switch {
+	case !ok:
+		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
+	case err != nil:
 		return nil, none, &refusal{http.StatusServiceUnavailable, "intent_unrecorded"}
 	}
 	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, dialAddr(target)), http.MethodPost, target.String(), bytes.NewReader(out))
 	if err != nil {
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
-	g.mu.Lock()
-	s := sending{cred, g.seq, len(out)}
-	g.seq++
-	g.mu.Unlock()
-	if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l)) != nil {
+	var s sending
+	ok, err = g.effect(r, f, func() error { // unbound meanwhile: no floor (Opus #308 M2)
+		g.mu.Lock()
+		s = sending{cred, g.seq, len(out)}
+		g.seq++
+		g.mu.Unlock()
+		return g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l))
+	})
+	if !ok {
+		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
+	}
+	if err != nil {
 		g.observe(b.Attempt, 0, RouteUncounted)
 		return nil, none, &refusal{http.StatusServiceUnavailable, RouteUncounted}
 	}
@@ -542,21 +578,19 @@ func (g *Gateway) observe(a types.AttemptID, status int, route string) {
 // cannot forge it.
 const RefusalHeader = "Adc-Gateway-Refusal"
 
-func refuse(w http.ResponseWriter, no *refusal) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set(RefusalHeader, no.code)
+// refuse writes no, whole and at once, and closes the connection: an unread
+// body is never drained first, with or without Expect: 100-continue, and
+// never read after (Astra #308 4).
+func refuse(w http.ResponseWriter, rc *http.ResponseController, no *refusal) {
+	arm(rc) // its own deadline, however long the request took to refuse (Opus #308 r2 M1)
+	body := fmt.Sprintf(`{"error":{"type":"gateway_refused","code":%q}}`, no.code)
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set(RefusalHeader, no.code)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	h.Set("Connection", "close")
 	w.WriteHeader(no.status)
-	_, _ = fmt.Fprintf(w, `{"error":{"type":"gateway_refused","code":%q}}`, no.code)
-}
-
-// flushing flushes after every write, so a streamed response reaches the
-// adapter as it arrives.
-type flushing struct{ w http.ResponseWriter }
-
-func (f flushing) Write(p []byte) (int, error) {
-	n, err := f.w.Write(p)
-	if fl, ok := f.w.(http.Flusher); ok {
-		fl.Flush()
-	}
-	return n, err
+	_, _ = io.WriteString(w, body)
+	_ = rc.Flush()
+	_ = rc.SetReadDeadline(time.Now()) // not supported off a connection (a recorder): nothing to read there
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
@@ -98,7 +99,7 @@ func send(t *testing.T, g *gateway.Gateway, token string) {
 	req := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(asked))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-	if g.ServeHTTP(rec, req); rec.Code != http.StatusOK {
+	if g.ServeHTTP(deadlined{rec}, req); rec.Code != http.StatusOK {
 		t.Errorf("the gateway answered %d %s", rec.Code, rec.Body)
 	}
 }
@@ -273,3 +274,9 @@ func TestACallSettlesOnlyWhenEveryRequestIsCounted(t *testing.T) {
 		w.replays()
 	})
 }
+
+// deadlined is a recorder that takes write deadlines, as the gateway's
+// socket connection does: the gateway never writes without one (Opus #308 L5).
+type deadlined struct{ *httptest.ResponseRecorder }
+
+func (deadlined) SetWriteDeadline(time.Time) error { return nil }

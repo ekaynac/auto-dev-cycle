@@ -77,7 +77,7 @@ func TestHostileModelSwitch(t *testing.T) {
 		r := httptest.NewRequest(http.MethodPost, target, strings.NewReader(leased))
 		r.Header.Set("Authorization", "Bearer "+token)
 		w := httptest.NewRecorder()
-		g.ServeHTTP(w, r)
+		g.ServeHTTP(deadlined{w}, r)
 		if n := len(elsewhere.got()); w.Code != want[destF].status || n != 0 {
 			t.Errorf("%s: %d %s, %d requests to another origin", target, w.Code, w.Body, n)
 		}
