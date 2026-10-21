@@ -217,3 +217,47 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds(), Tasks: authority.Tasks{}}.Project, // the folds check the recorded answers (M1 P6), the deferred surfaces (I15) and the claims' tasks (I22)
 	)
 }
+
+// builtBeforeRecord are the projections a store started before the record
+// of built projections existed (eventstore.BuildProjections) is taken to
+// have built, whatever its record says. The list is frozen at #341's base
+// (b29be8a): every projection projector folded there, lease_grants aside,
+// which main folds from #328 on, so a store started before #328 lacks it.
+// A projection added since (lease_grants, then #333's unit_open and
+// graph_task_nodes, and every later one) goes into projections only: a
+// store that never built it builds it from the log. Never extend this list.
+var builtBeforeRecord = []string{
+	identity.ActorProjection, identity.TokenProjection, identity.BootstrapProjection,
+	authority.GrantProjection, authority.GrantIDProjection, authority.GrantLineageProjection, authority.GrantCommandProjection,
+	authority.SeatProjection, authority.ProposalProjection, authority.PendingProjection, authority.NoteProjection,
+	authority.ProjectProjection, authority.TaskProjection, authority.OwedProjection,
+	lease.LeaseProjection, lease.AttemptProjection, lease.UnitProjection, lease.StopProjection,
+	lease.TargetProjection, lease.RestoreProjection, lease.CycleProjection, lease.RefusalProjection,
+	capacity.ReservedProjection, capacity.GrantedProjection, capacity.LiabilityProjection, capacity.LiableProjection,
+	ledger.UsageProjection, ledger.MeasurementProjection, ledger.BindingProjection, ledger.LeaseBindingProjection,
+	modelcall.FloorProjection,
+	graph.NodeProjection, graph.ClaimProjection, graph.KeyProjection, graph.ReuseProjection, graph.RenewalProjection,
+	graph.SuccessorProjection, graph.TaskProjection, graph.ResultProjection, graph.GenProjection, graph.HoldProjection,
+	graph.RetryProjection, graph.EffectProjection, graph.ObservedProjection, graph.AttemptResultProjection,
+	graph.AttemptProjection, graph.GenerationProjection, graph.RequirementProjection, graph.PreemptedProjection,
+}
+
+// addedSinceRecord are the projections projector folds that
+// builtBeforeRecord does not hold, in the order they were added. A new
+// projection is appended here, at version 1 in projections.
+var addedSinceRecord = []string{
+	lease.GrantProjection,                          // #328
+	lease.OpenProjection, graph.TaskNodeProjection, // #333
+}
+
+// projections are the projections projector folds, each at its fold's
+// version: Start builds from the log any of them a store has never built
+// (#226 entry 107). They are builtBeforeRecord, then addedSinceRecord. One
+// missing here is never built at start, only compared, as before.
+var projections = func() []eventstore.Projection {
+	var out []eventstore.Projection
+	for _, name := range slices.Concat(builtBeforeRecord, addedSinceRecord) {
+		out = append(out, eventstore.Projection{Name: name, Version: 1})
+	}
+	return out
+}()

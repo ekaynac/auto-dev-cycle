@@ -61,23 +61,35 @@ func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error
 }
 
 func (s *Store) rebuild(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, error) {
+	if err := s.replayFresh(ctx, tx); err != nil {
+		return nil, err
+	}
+	return compareLive(ctx, tx)
+}
+
+// replayFresh verifies the chain and replays it into a fresh scratch table,
+// in tx.
+func (s *Store) replayFresh(ctx context.Context, tx *sql.Tx) error {
 	// The chain is verified inside this transaction, so the log replayed is
 	// exactly the log verified (03 rule 3).
 	if _, err := s.verify(ctx, tx, nil); err != nil {
-		return nil, err
+		return err
 	}
 	// A fresh scratch table; one left by a failed rollback is dropped first.
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+rebuildProjections); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE proj_rebuild (
 		projection TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (projection, key)) WITHOUT ROWID`); err != nil {
-		return nil, err
+		return err
 	}
-	if err := s.replay(ctx, tx); err != nil {
-		return nil, err
-	}
-	live, err := projections(ctx, tx, `SELECT projection, key, value FROM `+liveProjections)
+	return s.replay(ctx, tx)
+}
+
+// compareLive compares the live projections, the store's record of the
+// projections it built aside (build.go), with the scratch table.
+func compareLive(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, error) {
+	live, err := projections(ctx, tx, `SELECT projection, key, value FROM `+liveProjections+` WHERE projection <> '`+builtRecord+`'`)
 	if err != nil {
 		return nil, err
 	}

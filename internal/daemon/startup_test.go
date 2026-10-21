@@ -7,9 +7,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,6 +24,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -182,6 +188,303 @@ func TestProjectionDriftRefused(t *testing.T) {
 				t.Fatal("a refused start appended to the log")
 			}
 		})
+	}
+}
+
+// rows are the closed store's records of projection, by key.
+func rows(t *testing.T, dir, projection string) map[string]string {
+	t.Helper()
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, eventstore.DBFile)}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r, err := db.Query(`SELECT key, value FROM proj_kv WHERE projection = ?`, projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	out := map[string]string{}
+	for r.Next() {
+		var k, v string
+		if err := r.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		out[k] = v
+	}
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// startClose starts the daemon on cfg, checks that its projections are a
+// full replay of the log, and closes it.
+func startClose(t *testing.T, cfg Config) {
+	t.Helper()
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("the start was refused: %v", err)
+	}
+	diffs, err := d.store.RebuildProjections(context.Background())
+	if err := errors.Join(err, d.Close()); err != nil || len(diffs) != 0 {
+		t.Fatalf("the started store is not a full replay: %+v, %v", diffs, err)
+	}
+}
+
+// #226 entry 107: a store main wrote before #328, holding a granted lease
+// but no lease_grants, starts: lease_grants is built from the log, equal
+// to a full replay, and every projection is recorded as built. It starts
+// again.
+func TestStoreBeforeLeaseGrantsStarts(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	want := rows(t, dir, lease.GrantProjection)
+	if len(want) == 0 {
+		t.Fatal("the granted lease left no lease_grants record")
+	}
+	execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+lease.GrantProjection+`'`)
+	if len(rows(t, dir, "_built")) != 0 {
+		t.Fatal("a store written before the record holds one")
+	}
+	startClose(t, cfg)
+	if got := rows(t, dir, lease.GrantProjection); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("lease_grants built %v, want %v", got, want)
+	}
+	if got := rows(t, dir, "_built"); len(got) != len(projections) || got[lease.GrantProjection] != `{"version":1}` {
+		t.Fatalf("the record of built projections: %v", got)
+	}
+	startClose(t, cfg)
+}
+
+// A projection the store built, emptied since, is refused, never built
+// again: lease_grants, built at a first start, and capacity_reserved, which
+// a store written before the record is taken to have built.
+func TestEmptiedProjectionRefused(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	startClose(t, cfg)
+	for _, projection := range []string{lease.GrantProjection, capacity.ReservedProjection} {
+		t.Run(projection, func(t *testing.T) {
+			sub, cfg := leaseStore(t)
+			if projection == lease.GrantProjection {
+				sub = dir
+				cfg.StateDir = dir
+			}
+			execSQL(t, sub, `DELETE FROM proj_kv WHERE projection = '`+projection+`'`)
+			for range 2 {
+				refused(t, sub, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "differ from a replay")
+			}
+			if len(rows(t, sub, projection)) != 0 {
+				t.Fatal("a refused start built the projection")
+			}
+		})
+	}
+}
+
+// A damaged projection is refused even when the store lacks lease_grants,
+// and the refused start keeps nothing: lease_grants is not built, nothing
+// is recorded.
+func TestDamagedStoreBeforeLeaseGrantsRefused(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+lease.GrantProjection+`'`,
+		`UPDATE proj_kv SET value = json_set(value, '$.forged', 1) WHERE projection = '`+lease.LeaseProjection+`'`)
+	refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "differ from a replay")
+	if len(rows(t, dir, lease.GrantProjection)) != 0 || len(rows(t, dir, "_built")) != 0 {
+		t.Fatal("a refused start kept a build or its record")
+	}
+}
+
+// #226 entry 107 on #333: a store main wrote before #333, holding a node and
+// an unended lease but no unit_open, graph_task_nodes or lease_grants,
+// starts: each is built from the log, equal to the rows a store written
+// with them holds, and to a full replay. Main refuses that store.
+func TestStoreBefore333Starts(t *testing.T) {
+	dir, cfg := graphStore(t)
+	added := []string{lease.GrantProjection, lease.OpenProjection, graph.TaskNodeProjection}
+	want := map[string]map[string]string{}
+	for _, name := range added {
+		if want[name] = rows(t, dir, name); len(want[name]) == 0 {
+			t.Fatalf("the store holds no %s record", name)
+		}
+		execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+name+`'`)
+	}
+	startClose(t, cfg)
+	for _, name := range added {
+		if got := rows(t, dir, name); fmt.Sprint(got) != fmt.Sprint(want[name]) {
+			t.Errorf("%s built %v, want %v", name, got, want[name])
+		}
+	}
+	startClose(t, cfg)
+}
+
+// Opus #341 H2: a forged record of built projections never makes a
+// projection of builtBeforeRecord one to build. One forged row in a store
+// written before the record, with capacity_reserved emptied, is refused;
+// so is a store holding a lease granted before capacity was wired, every
+// projection but identity's emptied, actors recorded: the build would
+// write capacity_granted for a lease capacity never admitted, and
+// capacity's history check would pass from then on. Nothing is kept.
+func TestForgedRecordBuildsNoAssumedProjection(t *testing.T) {
+	t.Run("one forged row", func(t *testing.T) {
+		dir, cfg := leaseStore(t)
+		execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+capacity.ReservedProjection+`'`,
+			`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', '`+lease.GrantProjection+`', '{"version":1}')`)
+		refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "differ from a replay")
+		if len(rows(t, dir, capacity.ReservedProjection)) != 0 || len(rows(t, dir, "_built")) != 1 {
+			t.Fatal("a refused start kept a build or its record")
+		}
+	})
+	t.Run("granted before capacity", func(t *testing.T) {
+		dir := stateDir(t)
+		w := seed(t, dir, leasesOnly)
+		w.grantedLease(types.ActorID(newID(t, "act")), 4)
+		w.done()
+		execSQL(t, dir, `DELETE FROM proj_kv WHERE projection NOT IN ('`+identity.ActorProjection+`', '`+identity.TokenProjection+`', '`+identity.BootstrapProjection+`')`,
+			`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', '`+identity.ActorProjection+`', '{"version":1}')`)
+		refused(t, dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "differ from a replay")
+		if len(rows(t, dir, capacity.GrantedProjection)) != 0 || len(rows(t, dir, lease.LeaseProjection)) != 0 {
+			t.Fatal("a refused start built a projection")
+		}
+	})
+}
+
+// A record of built projections that names a projection this build does not
+// fold is a difference (Opus #341 L1). One that records a later version
+// than this build folds (a later build wrote the store, L2), or that does
+// not decode (L3, L4), is store_unreadable, never read as absent.
+func TestBuildRecordRefused(t *testing.T) {
+	for name, c := range map[string]struct {
+		stmt   string
+		reason vocab.Reason
+		detail string
+	}{
+		"unknown":     {`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'zzz', '{"version":1}')`, vocab.ReasonAmbiguousState, "differ from a replay"},
+		"later":       {`UPDATE proj_kv SET value = '{"version":99}' WHERE projection = '_built' AND key = 'leases'`, vocab.ReasonStoreUnreadable, "record of built projections"},
+		"undecodable": {`UPDATE proj_kv SET value = 'x' WHERE projection = '_built' AND key = 'leases'`, vocab.ReasonStoreUnreadable, "record of built projections"},
+		"bad name":    {`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'Bad Name', '{"version":1}')`, vocab.ReasonStoreUnreadable, "record of built projections"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, cfg := leaseStore(t)
+			startClose(t, cfg)
+			execSQL(t, dir, c.stmt)
+			before := rows(t, dir, "_built")
+			refused(t, dir, cfg, vocab.CouldNotRun, c.reason, c.detail)
+			if fmt.Sprint(rows(t, dir, "_built")) != fmt.Sprint(before) {
+				t.Fatal("a refused start rewrote the record")
+			}
+		})
+	}
+}
+
+// declaredProjections are the projection names the code declares: every
+// string constant named *Projection outside tests and the test guard's
+// fakes, which projector does not compose.
+func declaredProjections(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	root := filepath.Join("..")
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && path == filepath.Join(root, "testguard") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range f.Decls {
+			g, ok := decl.(*ast.GenDecl)
+			if !ok || g.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range g.Specs {
+				v := spec.(*ast.ValueSpec)
+				for i, n := range v.Names {
+					if !strings.HasSuffix(n.Name, "Projection") || i >= len(v.Values) {
+						continue
+					}
+					if lit, ok := v.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						name, err := strconv.Unquote(lit.Value)
+						if err != nil {
+							return err
+						}
+						out[name] = f.Name.Name + "." + n.Name
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// projections registers exactly the projections the code declares, whether
+// or not a history writes them (Opus #341 M1), and every projection a full
+// history leaves a record in. builtBeforeRecord is frozen at #341's base;
+// projections are those, then the ones added since (#328, #333).
+func TestProjectionsRegistered(t *testing.T) {
+	registered := map[string]bool{}
+	for _, p := range projections {
+		registered[p.Name] = true
+	}
+	declared := declaredProjections(t)
+	if len(declared) < 50 {
+		t.Fatalf("%d projections declared: the scan missed some", len(declared))
+	}
+	for name, decl := range declared {
+		if !registered[name] {
+			t.Errorf("projection %s (%s) is not registered", name, decl)
+		}
+	}
+	for name := range registered {
+		if _, ok := declared[name]; !ok {
+			t.Errorf("registered projection %s is not declared", name)
+		}
+	}
+	dir, _ := graphStore(t)
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, eventstore.DBFile)}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	r, err := db.Query(`SELECT DISTINCT projection FROM proj_kv`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for r.Next() {
+		var name string
+		if err := r.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		if !registered[name] {
+			t.Errorf("projection %s is not registered", name)
+		}
+	}
+	frozen := []string{"actors", "tokens", "identity_bootstrap", "grants", "grant_ids", "grant_lineage", "grant_commands", "seat",
+		"proposals", "proposals_pending", "notes", "projects", "tasks", "owed_inputs", "leases", "attempts", "unit_attempts",
+		"attempt_stops", "lease_targets", "lease_restores", "lease_restore_cycles", "attempt_refusals", "capacity_reserved",
+		"capacity_granted", "capacity_liabilities", "capacity_liable_calls", "usage_measurements", "usage_measurement_ids",
+		"model_calls", "model_call_leases", "model_call_floors", "graph_nodes", "graph_claims", "graph_keys", "graph_reuses",
+		"graph_renewals", "graph_successors", "graph_tasks", "graph_results", "graph_gens", "graph_holds", "graph_retries",
+		"graph_effects", "graph_observed", "graph_attempt_results", "graph_attempts", "graph_generations", "graph_requirements",
+		"graph_preempted"}
+	if fmt.Sprint(builtBeforeRecord) != fmt.Sprint(frozen) {
+		t.Fatalf("builtBeforeRecord changed:\n%v\n%v", builtBeforeRecord, frozen)
+	}
+	var names []string
+	for _, p := range projections {
+		names = append(names, p.Name)
+	}
+	if want := append(frozen, "lease_grants", "unit_open", "graph_task_nodes"); fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("projections are not builtBeforeRecord, then the ones added since:\n%v\n%v", names, want)
 	}
 }
 
