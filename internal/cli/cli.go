@@ -47,6 +47,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 2 && args[0] == "dev" && args[1] == "verify-log" {
 		return verifyLog(ctx, args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "dev" && args[1] == "capabilities" {
+		return devCapabilities(args[2:], stdout, stderr)
+	}
 	if len(args) >= 1 && args[0] == "events" {
 		return events(ctx, args[1:], stdout, stderr, c)
 	}
@@ -89,7 +92,7 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 func run(ctx context.Context, name, action string, args []string, stdout, stderr io.Writer, c Client) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	expect := fs.String("expect", "", "the exact revision inspected: a version (0: the object does not exist yet) or a sha256: digest (required)")
-	reason := fs.String("reason", "", "why (required)")
+	reason := fs.String("reason", "", "why (required); task cancel also records it in its scope, whose own reason, if given, must equal it")
 	scope := fs.String("scope", "{}", "the action's parameters, a JSON object")
 	key := fs.String("idempotency-key", "", "repeat a command safely with the same key (default: a new key)")
 	asJSON := fs.Bool("json", false, "print the response as one JSON document")
@@ -167,6 +170,38 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			return usage("--attach: %v", err)
 		}
 		*scope = string(b)
+	}
+	// task.cancel records its reason in its scope, since the envelope's is
+	// not recorded with commands yet (#147): --reason fills a scope that
+	// names none (Opus #298 L5). The scope is read strictly first, so a
+	// duplicate key, literal or escaped, is refused rather than resolved by
+	// the re-encoding (Astra #314 M1); a scope reason that differs from
+	// --reason is refused, never silently preferred (L2).
+	if action == "task.cancel" {
+		doc, err := contract.ReadStrict([]byte(*scope))
+		if err != nil {
+			return usage("--scope: %v", err)
+		}
+		if o, ok := doc.(map[string]any); ok {
+			switch r, named := o["reason"]; {
+			case named && r != *reason:
+				return usage("--reason %q and the scope's reason differ: give one, or the same", *reason)
+			case !named:
+				var raw map[string]json.RawMessage
+				b, err := json.Marshal(*reason)
+				if err == nil {
+					err = json.Unmarshal([]byte(*scope), &raw)
+				}
+				if err == nil {
+					raw["reason"] = b
+					b, err = json.Marshal(raw)
+				}
+				if err != nil {
+					return usage("--reason: %v", err)
+				}
+				*scope = string(b)
+			}
+		}
 	}
 	req := types.CommandRequest{IdempotencyKey: *key, Expected: expected, Scope: json.RawMessage(*scope), Reason: *reason}
 	// The bytes validated are the bytes sent.

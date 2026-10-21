@@ -160,7 +160,7 @@ func TestReadResponses(t *testing.T) {
 	wait := map[string]any{"input": "candidate", "producer": "nod_01m3250vkwffc979nzjw0g2sf9", "owed_input": nil}
 	nodeCard := map[string]any{"id": "nod_01m3250vkwffc979nzjw0g2sf9", "kind": "gate", "round": 1, "state": "held", "holds": []any{badge}, "waiting": []any{wait}}
 	card := map[string]any{"type": "placed", "id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": prjID, "title": "fix the parser", "column": "verifying",
-		"admitted": true, "approval": "in_force", "created_at": "2026-10-07T00:00:00Z", "nodes": []any{nodeCard}}
+		"admitted": true, "cancelled": false, "approval": "in_force", "created_at": "2026-10-07T00:00:00Z", "nodes": []any{nodeCard}}
 	unplaced := map[string]any{"type": "unplaced", "id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": nil, "reason": "task_unrecorded"}
 	for _, c := range []struct {
 		schema string

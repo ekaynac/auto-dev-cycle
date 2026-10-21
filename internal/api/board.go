@@ -8,7 +8,9 @@ package api
 //
 // Decisions:
 //   - A Ready task's column is its approval's: ready while its spec's
-//     approval is in force, else awaiting_approval (none, or revoked).
+//     approval is in force, else awaiting_approval (none, or revoked). A
+//     cancelled task (authority.TaskCancelledState) is done, with the
+//     cancelled badge; with nodes it is unplaced, as it was never admitted.
 //   - An admitted task's (authority.TaskAdmitted, written by P22a) column
 //     is its current (unsuperseded) nodes': running while a plan or build
 //     node is claimed or held; else verifying while an accept, gate or
@@ -119,7 +121,7 @@ var board = Resource{
 		_, _, project, err := boardTask(tx, id)
 		return project, err
 	},
-	Fields: []string{"type", "id", "project", "title", "column", "admitted", "approval", "created_at", "nodes", "reason"},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "approval", "created_at", "nodes", "reason"},
 }
 
 // boardTask is task id's record (recorded: it exists and reads as one)
@@ -168,8 +170,11 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 		c.Approval = types.BoardPlacedCardApproval(a.Status)
 	}
 	switch {
-	case t.State == authority.TaskReady && len(nodes) > 0:
+	case (t.State == authority.TaskReady || t.State == authority.TaskCancelledState) && len(nodes) > 0:
 		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonNodesBeforeAdmission)
+	case t.State == authority.TaskCancelledState:
+		c.Column, c.Cancelled = types.BoardPlacedCardColumnDone, true
+		return types.BoardCard{Variant: c}
 	case t.State == authority.TaskReady && c.Approval == types.BoardPlacedCardApprovalInForce:
 		c.Column = types.BoardPlacedCardColumnReady
 		return types.BoardCard{Variant: c}

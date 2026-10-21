@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/task-cancel.json",
+  "title": "TaskCancelScope",
+  "description": "The scope of task.cancel (backlog #226 entry 23): the task to cancel and why. The operator cancels any task still in Ready; a supervisor only a Ready task it created with no approval in force; an admitted task keeps the hold and revoke path. A cancelled task leaves the Ready bound and is never admitted; cancelling it again changes nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task", "reason"],
+  "properties": {
+    "task": {"$ref": "../../common/defs.json#/$defs/TaskID"},
+    "reason": {"$ref": "#/$defs/CancelReason"}
+  },
+  "$defs": {
+    "CancelReason": {"description": "Why the task is cancelled: free text, recorded on the event.", "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "[^\\t\\n\\f\\r ]"}
+  }
+}

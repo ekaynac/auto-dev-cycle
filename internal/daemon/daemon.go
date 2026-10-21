@@ -71,8 +71,9 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	}
 	reg, err := vocab.Load()
 	kinds, kerr := eventKinds()
-	if err = errors.Join(err, kerr); err != nil {
-		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary or the event kinds cannot be loaded", err)
+	effects, eerr := effectKinds()
+	if err = errors.Join(err, kerr, eerr); err != nil {
+		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary, the event kinds or the effect kinds cannot be loaded", err)
 	}
 	acquire := eventstore.AcquireLock
 	if offline {
@@ -108,7 +109,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 		clock = time.Now
 	}
 	az := authorizer(reg)
-	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline, Now: clock,
+	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Effects: effects, Blobs: blobs, Existing: offline, Now: clock,
 		Hooks: hooks(az, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
@@ -208,7 +209,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		return err
 	}
-	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), log: logw,
+	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated})
 	if err == nil && tc != nil {
 		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {

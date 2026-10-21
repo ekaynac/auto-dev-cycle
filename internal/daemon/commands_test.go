@@ -213,7 +213,7 @@ func TestCommandsEndToEnd(t *testing.T) {
 	if refusedAs(t, response(t, out), vocab.Failed, vocab.ReasonSeatUnavailable); code != entry.ExitRefused {
 		t.Fatalf("operator take: %d", code)
 	}
-	code, out, _ = c.adc(op, "task", "create", "--expect", "0", "--reason", "r", "--json")
+	code, out, _ = c.adc(op, "task", "request-review", "--expect", "0", "--reason", "r", "--json")
 	if refusedAs(t, response(t, out), vocab.CouldNotRun, vocab.ReasonActionDeferred); code != entry.ExitCouldNotRun {
 		t.Fatalf("unwired: %d", code)
 	}
@@ -443,19 +443,20 @@ func TestCommandsBusy(t *testing.T) {
 	}
 }
 
-// Every wired handler has its logic, and nothing else does.
+// Every wired handler has its logic, issuer or request, and nothing else
+// does.
 func TestEveryHandlerHasLogic(t *testing.T) {
 	reg, err := vocab.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ls, is := logics(authorizer(reg)), issuers(authorizer(reg))
+	ls, is, rs := logics(authorizer(reg)), issuers(authorizer(reg)), requests(authorizer(reg), nil)
 	for action := range handlers() {
-		if (ls[action] == nil) == (is[action] == nil) {
-			t.Errorf("%s has a handler and not exactly one of a logic and an issuer", action)
+		if b2i(ls[action] != nil)+b2i(is[action] != nil)+b2i(rs[action] != nil) != 1 {
+			t.Errorf("%s has a handler and not exactly one of a logic, an issuer and a request", action)
 		}
 	}
-	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || is[authority.TokenIssueAction] == nil || is[authority.TokenReplaceAction] == nil || ls[authority.TokenRevokeAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
+	if len(ls)+len(is)+len(rs) != len(handlers()) || rs[authority.TaskCreateAction] == nil || is[authority.EnrolAction] == nil || is[authority.TokenIssueAction] == nil || is[authority.TokenReplaceAction] == nil || ls[authority.TokenRevokeAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
 		ls[authority.GrantCreateAction] == nil || ls[authority.GrantRevokeAction] == nil || ls[authority.GrantExtendAction] == nil {
 		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}

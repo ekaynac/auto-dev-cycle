@@ -17,13 +17,17 @@ export interface BoardPlacedCard {
   project: string;
   title: string;
   /**
-   * awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive.
+   * awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge).
    */
-  column: "awaiting_approval" | "ready" | "running" | "verifying" | "done_candidate";
+  column: "awaiting_approval" | "ready" | "running" | "verifying" | "done_candidate" | "done";
   /**
    * The admitted badge: the task holds admitted WIP, held or not.
    */
   admitted: boolean;
+  /**
+   * The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done.
+   */
+  cancelled: boolean;
   /**
    * Its spec's approval: none, in force, or revoked.
    */
