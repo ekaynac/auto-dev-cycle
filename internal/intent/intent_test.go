@@ -3,8 +3,12 @@
 package intent
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -74,9 +78,11 @@ func in(t *testing.T, s *store, inputs ...graph.RefRecord) In {
 	return In{Call: call(), Context: ctx, Bytes: bytes, Records: s.records()}
 }
 
-// records are s's Records, under the one acceptance blob.
+// records are s's Records, under the one acceptance blob, every
+// declassification candidate verified (verifier's own rows are the
+// fixtures').
 func (s *store) records() Records {
-	return Records{Recorded: graph.Recorded{Resolve: s.resolve, Reviewed: s.reviewed}, Acceptance: []types.Digest{digest(acceptance)}}
+	return Records{resolve: s.resolve, reviewed: s.reviewed, acceptance: []types.Digest{digest(acceptance)}, safe: func(graph.RefRecord) (bool, error) { return true, nil }}
 }
 
 // roles are both intents, by role.
@@ -106,10 +112,10 @@ func TestIntentAcceptance(t *testing.T) {
 		input graph.RefRecord
 		want  error
 	}{
-		"the input is an acceptance blob":              {newStore(hiddenInput), hiddenInput, ErrAcceptanceInput},
-		"a parent is one, with no record (unresolved)": {newStore(withParent), withParent, ErrAncestryUnresolved},
-		"one at depth three, with no record (unresolved)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", "", "notes-1"),
-			rec("notes-1", "4", "", accepted)), tree, ErrAncestryUnresolved},
+		"the input is an acceptance blob":                          {newStore(hiddenInput), hiddenInput, ErrAcceptanceInput},
+		"a parent is one, with no record (22a-6L: refused as one)": {newStore(withParent), withParent, ErrAcceptanceInput},
+		"one at depth three, with no record (refused as one)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", "", "notes-1"),
+			rec("notes-1", "4", "", accepted)), tree, ErrAcceptanceInput},
 		"an ancestor under another id holds it (Astra #252 r2 H1)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", acceptance, "")), tree, ErrAcceptanceInput},
 		"an ancestor whose id is the acceptance digest, its content another (Opus #289 M1)": {newStore(withParent, rec(accepted, "2", "build")), withParent,
 			ErrAcceptanceInput},
@@ -128,12 +134,12 @@ func TestIntentAcceptance(t *testing.T) {
 	}
 	for role, intent := range roles {
 		x := in(t, clean, tree)
-		x.Records.Resolve = nil
+		x.Records.resolve = nil
 		if _, err := intent(x); !errors.Is(err, ErrAncestryUnresolved) {
 			t.Errorf("no resolver, %s: %v", role, err)
 		}
 		x = in(t, clean, tree)
-		x.Records.Acceptance = nil
+		x.Records.acceptance = nil
 		if _, err := intent(x); !errors.Is(err, ErrAncestryUnresolved) {
 			t.Errorf("the task's acceptance not read, %s: %v", role, err)
 		}
@@ -199,7 +205,7 @@ func TestIntentBounds(t *testing.T) {
 		}
 	}
 	total := len(s.lookups) // the input, its two layer-0 parents, and every node below
-	w := newWalk(newStore(append(recs, input)...).records())
+	w := newWalk(newStore(append(recs, input)...).records(), "builder")
 	if _, err := w.start(ref(t, input)); err != nil || w.peak > total {
 		t.Errorf("the queue's peak %d, over the %d distinct ids: %v", w.peak, total, err)
 	}
@@ -227,7 +233,7 @@ func TestIntentBounds(t *testing.T) {
 	wide := rec("tree-1", "1", "graph", many...)
 	for name, b := range map[string][2]int{"the edge bound": {10, 1 << 20}, "the byte bound": {1 << 20, 100}} {
 		maxRecords, maxEdges, maxIDBytes = 1<<20, b[0], b[1]
-		w := newWalk(newStore(wide).records())
+		w := newWalk(newStore(wide).records(), "builder")
 		if _, err := w.start(ref(t, wide)); !errors.Is(err, ErrAncestryUnresolved) || !strings.Contains(fmt.Sprint(err), "ancestry is over") || len(w.walked) > 1 || w.peak != 0 {
 			t.Errorf("one wide lineage past %s: %v, %d walked, a queue of %d", name, err, len(w.walked), w.peak)
 		}
@@ -235,7 +241,7 @@ func TestIntentBounds(t *testing.T) {
 	// The same lineage past the record bound only: refused before more ids
 	// than the bound are scheduled (Astra #289 M1).
 	maxRecords, maxEdges, maxIDBytes = 10, 1<<20, 1<<20
-	w = newWalk(newStore(wide).records())
+	w = newWalk(newStore(wide).records(), "builder")
 	if _, err := w.start(ref(t, wide)); !errors.Is(err, ErrAncestryUnresolved) || !strings.Contains(fmt.Sprint(err), "ancestry is over") || len(w.walked) > maxRecords || w.peak >= maxRecords {
 		t.Errorf("one wide lineage past the record bound: %v, %d scheduled, a queue of %d", err, len(w.walked), w.peak)
 	}
@@ -300,5 +306,181 @@ func TestIntentFresh(t *testing.T) {
 	}
 	if _, err := Builder(in(t, s, relay)); err != nil {
 		t.Errorf("a builder taking it: %v", err)
+	}
+}
+
+// TestIntentDeclassified (22a-6L; #226 entries 91(3), 94(2)): a gate
+// report derived from the acceptance (its truthful lineage) is taken by a
+// reviewer through its record's Sanitised only, never by a builder; a
+// review's findings view derived from it is taken by a builder through
+// BuilderSafe only, never by a reviewer (a review's result); a
+// declassified record whose own digest is acceptance is refused; a
+// declassified ancestor is walked through, whatever the inputs' order
+// (Opus #321 L1).
+func TestIntentDeclassified(t *testing.T) {
+	accepted := string(digest(acceptance))
+	report := rec("gate-report", "1", types.NodeKindGate, accepted)
+	report.Sanitised = true
+	decision := rec("decision", "2", types.NodeKindReview, "gate-report")
+	view := rec("view", "3", types.NodeKindReview, "decision")
+	view.BuilderSafe = true
+	hidden := rec("hidden-report", acceptance, types.NodeKindGate)
+	hidden.Sanitised, hidden.BuilderSafe = true, true
+	via := rec("via", "4", types.NodeKindAccept, "gate-report")
+	s := newStore(report, decision, view, hidden, via)
+	for name, c := range map[string]struct {
+		input graph.RefRecord
+		want  map[string]error // by role; nil: taken
+	}{
+		"a sanitised gate report":           {report, map[string]error{"builder": ErrAcceptanceInput, "reviewer": nil}},
+		"a builder-safe findings view":      {view, map[string]error{"builder": nil, "reviewer": ErrAcceptanceInput}}, // the reviewer walks it,
+		"the decision it derives from":      {decision, map[string]error{"builder": ErrAcceptanceInput, "reviewer": ErrAcceptanceInput}},
+		"a declassified acceptance blob":    {hidden, map[string]error{"builder": ErrAcceptanceInput, "reviewer": ErrAcceptanceInput}},
+		"a sanitised report as an ancestor": {via, map[string]error{"builder": ErrAcceptanceInput, "reviewer": ErrAcceptanceInput}},
+	} {
+		for role, intent := range roles {
+			_, err := intent(in(t, s, c.input))
+			if want := c.want[role]; want == nil && err != nil || want != nil && !errors.Is(err, want) {
+				t.Errorf("%s, %s: %v, want %v", name, role, err, want)
+			}
+		}
+	}
+	for name, order := range map[string][]graph.RefRecord{"the report first": {report, via}, "the report last": {via, report}} {
+		if _, err := Reviewer(in(t, s, order...)); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("a reviewer's sanitised report and an input derived from it, %s: %v", name, err)
+		}
+	}
+}
+
+// TestIntentCheck (22a-6L; #226 entry 91(1)): a recorded intent is
+// checked as it was built, under its consumer's role, each ref it lists
+// (an input, an included or an omitted one); a recorded intent of another
+// consumer, one stating another role than its consumer's (Opus #321
+// H1), or with no records or records not Load's (L4), is refused.
+func TestIntentCheck(t *testing.T) {
+	tree := rec("tree-1", "1", "graph")
+	report := rec("gate-report", "2", types.NodeKindGate, string(digest(acceptance)))
+	report.Sanitised = true
+	s := newStore(tree, report)
+	recorded := func(role string, inputs, included, omitted []graph.RefRecord) types.ManifestIntent {
+		mi := call()
+		mi.Consumer.Role = role
+		for _, r := range inputs {
+			mi.Inputs = append(mi.Inputs, ref(t, r))
+		}
+		for _, r := range included {
+			mi.Included = append(mi.Included, types.ManifestIntentIncludedItem{Ref: ref(t, r), Bytes: 10, Purpose: "review input"})
+		}
+		for _, r := range omitted {
+			mi.Omitted = append(mi.Omitted, types.ManifestIntentOmittedItem{Ref: ref(t, r), Reason: types.ManifestIntentOmittedItemReasonBudget})
+		}
+		return mi
+	}
+	one := []graph.RefRecord{report}
+	for name, c := range map[string]struct {
+		mi   types.ManifestIntent
+		role string
+		recs Records
+		ok   bool
+	}{
+		"a reviewer's, the report an input":   {recorded("reviewer", one, nil, nil), "reviewer", s.records(), true},
+		"a builder's, the report an input":    {recorded("builder", one, nil, nil), "builder", s.records(), false},
+		"a builder's, the report included":    {recorded("builder", nil, one, nil), "builder", s.records(), false},
+		"a builder's, the report omitted":     {recorded("builder", nil, nil, one), "builder", s.records(), false},
+		"a builder's, a clean tree":           {recorded("builder", []graph.RefRecord{tree}, nil, nil), "builder", s.records(), true},
+		"another consumer's, a clean tree":    {recorded("planner", []graph.RefRecord{tree}, nil, nil), "planner", s.records(), false},
+		"no records":                          {recorded("reviewer", one, nil, nil), "reviewer", Records{}, false},
+		"the acceptance not read":             {recorded("reviewer", one, nil, nil), "reviewer", Records{resolve: s.resolve, reviewed: s.reviewed, safe: s.records().safe}, false},
+		"a builder's, stated as a reviewer's": {recorded("reviewer", one, nil, nil), "builder", s.records(), false},
+		"a reviewer's, stated as a builder's": {recorded("builder", []graph.RefRecord{tree}, nil, nil), "reviewer", s.records(), false},
+		"records not Load's":                  {recorded("reviewer", one, nil, nil), "reviewer", Records{resolve: s.resolve, reviewed: s.reviewed, acceptance: s.records().acceptance}, false},
+	} {
+		if err := Check(c.recs, c.role, c.mi); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// An intent is built from Load's records only (Opus #321 L4).
+	built := in(t, s, tree)
+	built.Records.safe = nil
+	for role, intent := range roles {
+		if _, err := intent(built); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s from records not Load's: %v", role, err)
+		}
+	}
+}
+
+// TestRecordsImmutable (Astra #321 M4): Records have no exported field, so
+// no caller replaces their resolver, acceptance or reviewed digests, nor
+// constructs them with any; Acceptance is a copy.
+func TestRecordsImmutable(t *testing.T) {
+	rt := reflect.TypeFor[Records]()
+	for i := range rt.NumField() {
+		if f := rt.Field(i); f.IsExported() {
+			t.Errorf("Records exports %s", f.Name)
+		}
+	}
+	r := newStore().records()
+	r.Acceptance()[0] = digest("1")
+	if r.Acceptance()[0] != digest(acceptance) {
+		t.Error("Acceptance is Records' own slice")
+	}
+}
+
+// TestDeclassificationVerified (Astra #321 H1): a candidate its check does
+// not verify is walked as any other input, so one derived from acceptance
+// refuses; a check that fails refuses.
+func TestDeclassificationVerified(t *testing.T) {
+	accepted := "sha256:" + strings.Repeat(acceptance, 64)
+	report := rec("report-1", "1", types.NodeKindGate, accepted)
+	report.Sanitised = true
+	view := rec("view-1", "2", types.NodeKindReview, accepted)
+	view.BuilderSafe = true
+	s := newStore(report, view)
+	for role, input := range map[string]graph.RefRecord{"reviewer": report, "builder": view} {
+		x := in(t, s, input)
+		if _, err := roles[role](x); err != nil {
+			t.Errorf("%s, verified: %v", role, err)
+		}
+		x.Records.safe = func(graph.RefRecord) (bool, error) { return false, nil }
+		if _, err := roles[role](x); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s, not verified: %v", role, err)
+		}
+		x.Records.safe = func(graph.RefRecord) (bool, error) { return true, errors.New("blob not read") }
+		if _, err := roles[role](x); err == nil {
+			t.Errorf("%s, the check failing: accepted", role)
+		}
+	}
+}
+
+// blobMap is a blob store by digest, its content whatever a test put.
+type blobMap map[string][]byte
+
+func (m blobMap) Has(d string) (bool, error) { _, ok := m[d]; return ok, nil }
+
+func (m blobMap) Open(d string) (io.ReadCloser, error) {
+	b, ok := m[d]
+	if !ok {
+		return nil, errors.New("no blob")
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+// TestReadBlob (Astra #321 H1): a declassified output's bytes are its
+// digest's content, within maxSafeBytes, or no safe output.
+func TestReadBlob(t *testing.T) {
+	sum := func(b []byte) types.Digest { return types.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256(b))) }
+	good, big := []byte("a report"), bytes.Repeat([]byte("x"), maxSafeBytes+1)
+	at := bytes.Repeat([]byte("x"), maxSafeBytes)
+	blobs := blobMap{string(sum(good)): good, string(sum(big)): big, string(sum(at)): at, string(digest("1")): good}
+	for name, c := range map[string]struct {
+		d  types.Digest
+		ok bool
+	}{"its content": {sum(good), true}, "at the bound": {sum(at), true}, "past the bound": {sum(big), false}, "another digest's content": {digest("1"), false}} {
+		if _, ok, err := readBlob(blobs, c.d); err != nil || ok != c.ok {
+			t.Errorf("%s: %v %v", name, ok, err)
+		}
+	}
+	if _, _, err := readBlob(blobs, digest("2")); err == nil {
+		t.Error("a missing blob read")
 	}
 }

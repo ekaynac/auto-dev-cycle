@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
@@ -49,6 +50,9 @@ const (
 	maxReported  = 1000 // blocking findings in a report
 	maxID        = 256  // bytes of a reported package or test name
 	evidenceType = "application/x-go-test-json"
+	// instrumentName is the instrument of every gate receipt Result makes:
+	// Contract's name for the one result adapter Run accepts.
+	instrumentName = "gate." + results.GoTestJSON
 )
 
 // Blobs is the blob store as the gate needs it.
@@ -61,6 +65,11 @@ type Blobs interface {
 type Subject struct {
 	Project  types.ProjectID
 	Revision string // the profile's contract revision
+	// Acceptance is the acceptance blobs whose overlay the run applied: the
+	// lineage of the receipt and the report, which derive from them
+	// (#226 entry 91(3): the acceptance edge is kept; a reviewer takes them
+	// through graph.RefRecord.Sanitised only).
+	Acceptance []types.Digest
 }
 
 // Contract is the gate's instrument contract for g run in img.
@@ -119,9 +128,16 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 		d, err := blobs.Put(bytes.NewReader(b), "")
 		return types.Digest(d), err
 	}
+	if v.overlaid && len(s.Acceptance) == 0 { // a lineage that is not the run's: the report would read as derived from nothing
+		return types.Result{}, fmt.Errorf("%w: the run applied an acceptance overlay, and the subject names no acceptance blob", ErrSpec)
+	}
+	lineage := []string{}
+	for _, a := range slices.Compact(slices.Sorted(slices.Values(s.Acceptance))) {
+		lineage = append(lineage, string(a))
+	}
 	seal := func(t types.RefType, id string, d types.Digest) (types.Ref, error) {
 		return knowledge.Seal(types.Ref{Type: t, ID: id, Scope: types.RefScope{Project: &s.Project},
-			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
+			Lineage: slices.Clone(lineage), Restrictions: []types.Restriction{}, ContentDigest: d})
 	}
 	stream, err := put(v.Stream)
 	if err != nil {
@@ -188,42 +204,186 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 // maxReported, the rest counted, each id cut to at most maxID bytes, its
 // ellipsis included: a name is the candidate's text, Opus #286 L2), and
 // its charge links (none). It holds at most about maxReported × 2 maxID
-// bytes of ids. A short id stays verbatim, by design (the
-// hostile-gate-output fixture): the reviewer's handling of ids is P16's.
+// bytes of ids. A short id stays verbatim: no prompt renders the report's
+// bytes (Opus #321 L7: `review.Prompt` renders counts and the verdict
+// only, the hostile-gate-output fixture's decision), and the findings
+// view redacts the ids it is given (review.Facts.GateIDs).
 func (v Verdict) Report() ([]byte, error) {
-	type finding struct {
-		Package string          `json:"package"`
-		Name    string          `json:"name,omitempty"`
-		Outcome results.Outcome `json:"outcome"`
-	}
 	id := func(s string) string {
 		if len(s) <= maxID {
 			return s
 		}
 		return strings.ToValidUTF8(s[:maxID-len("…")], "") + "…"
 	}
-	var blocking []finding
+	var blocking []reportFinding
 	for _, x := range v.Results.Blocking() {
-		blocking = append(blocking, finding{id(x.Package), id(x.Name), x.Outcome})
+		blocking = append(blocking, reportFinding{id(x.Package), id(x.Name), x.Outcome})
 	}
 	pkgs := v.Results.BlockingPackages()
 	for _, p := range slices.Sorted(maps.Keys(pkgs)) {
-		blocking = append(blocking, finding{Package: id(p), Outcome: pkgs[p]})
+		blocking = append(blocking, reportFinding{Package: id(p), Outcome: pkgs[p]})
 	}
 	truncated := max(0, len(blocking)-maxReported)
-	return json.Marshal(struct {
-		Schema      string         `json:"schema"`
-		ElapsedMS   int64          `json:"elapsed_ms"`
-		Tree        string         `json:"tree"`
-		Outcome     vocab.Outcome  `json:"outcome"`
-		Reason      string         `json:"reason"`
-		Detail      string         `json:"detail"`
-		Tests       int            `json:"tests"`
-		Blocking    []finding      `json:"blocking"`
-		Truncated   int            `json:"truncated"`
-		ChargeLinks []types.CallID `json:"charge_links"`
-	}{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, len(v.Results.Results),
-		append([]finding{}, blocking[:len(blocking)-truncated]...), truncated, []types.CallID{}})
+	return json.Marshal(report{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, len(v.Results.Results),
+		append([]reportFinding{}, blocking[:len(blocking)-truncated]...), truncated, []types.CallID{}})
+}
+
+// report is Report's record.
+type report struct {
+	Schema      string          `json:"schema"`
+	ElapsedMS   int64           `json:"elapsed_ms"`
+	Tree        string          `json:"tree"`
+	Outcome     vocab.Outcome   `json:"outcome"`
+	Reason      string          `json:"reason"`
+	Detail      string          `json:"detail"`
+	Tests       int             `json:"tests"`
+	Blocking    []reportFinding `json:"blocking"`
+	Truncated   int             `json:"truncated"`
+	ChargeLinks []types.CallID  `json:"charge_links"`
+}
+
+type reportFinding struct {
+	Package string          `json:"package"`
+	Name    string          `json:"name,omitempty"`
+	Outcome results.Outcome `json:"outcome"`
+}
+
+// maxReportBytes bounds a report CheckReport reads: maxReported findings
+// of two ids, with room for the rest.
+const maxReportBytes = 2*maxReported*(2*maxID+64) + 64<<10
+
+// MaxDetail bounds a gate receipt's free text a reviewer may take (Opus
+// #321 r2 M2; Mythos #348 M1): its detail and its predicates', its
+// environment's description, its contract revision and its instrument's
+// version.
+const MaxDetail = 1024
+
+// CheckReport is report read as Report's bytes, strictly (Astra #321 H1:
+// what a reviewer takes as a gate's sanitised report): the bytes
+// json.Marshal gives of a report, exactly, with no other key, within
+// Report's bounds (at most maxReported findings, each id at most maxID
+// bytes, no charge link), and its content checked (Opus #321 r2 M2): its
+// outcome one of the four, its reason a registered code, its tree a hex
+// git id, its detail one of the controller's phrases (isWhy; Mythos #348
+// L1), its counts at least 0, and each finding's outcome a test outcome.
+func CheckReport(b []byte) error {
+	var r report
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if len(b) > maxReportBytes {
+		return fmt.Errorf("%w: a gate report of over %d bytes", ErrSpec, maxReportBytes)
+	}
+	if err := dec.Decode(&r); err != nil || r.Schema != reportSchema || len(r.Blocking) > maxReported || len(r.ChargeLinks) != 0 {
+		return fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
+	}
+	_, rerr := vocab.ParseReason(r.Reason)
+	switch {
+	case !slices.Contains([]vocab.Outcome{vocab.Found, vocab.Empty, vocab.CouldNotRun, vocab.Failed}, r.Outcome):
+		return fmt.Errorf("%w: a gate report's outcome %q", ErrSpec, r.Outcome)
+	case rerr != nil:
+		return fmt.Errorf("%w: a gate report's reason: %v", ErrSpec, rerr)
+	case !hexID(r.Tree):
+		return fmt.Errorf("%w: a gate report's tree is no git id", ErrSpec)
+	case !isWhy(r.Detail):
+		return fmt.Errorf("%w: a gate report's detail is none of the controller's phrases", ErrSpec)
+	case r.ElapsedMS < 0 || r.Tests < 0 || r.Truncated < 0:
+		return fmt.Errorf("%w: a gate report's count below 0", ErrSpec)
+	}
+	for _, f := range r.Blocking {
+		if len(f.Package) > maxID || len(f.Name) > maxID {
+			return fmt.Errorf("%w: a gate report's id over %d bytes", ErrSpec, maxID)
+		}
+		if !slices.Contains([]results.Outcome{results.Pass, results.Skip, results.Missing, results.Incomplete, results.Fail}, f.Outcome) {
+			return fmt.Errorf("%w: a gate report's finding outcome %q", ErrSpec, f.Outcome)
+		}
+	}
+	if again, err := json.Marshal(r); err != nil || !bytes.Equal(again, b) {
+		return fmt.Errorf("%w: not a gate report's bytes (%v)", ErrSpec, err)
+	}
+	return nil
+}
+
+// CheckReceipt is whether b is a gate receipt under id exactly as Result
+// makes one (Opus #321 r2 M2; Mythos #348 M1, #355 M1): decoded strictly as
+// records/receipt, of kind gate, its id the ref's, its instrument the
+// gate's (instrumentName, its version at most MaxDetail bytes), its
+// subject a tree whose environment description and contract revision are
+// at most MaxDetail bytes, no call, model family or contributor in its
+// provenance, its reason a registered code and its detail at most
+// MaxDetail bytes, and exactly one predicate: tests, its reason a
+// registered code, its detail at most MaxDetail bytes, no payload, and
+// exactly one evidence item, the results artifact of the gate's media
+// type.
+func CheckReceipt(b []byte, id string) error {
+	r, err := contract.Decode[types.Receipt]("records/receipt", b)
+	if err != nil {
+		return fmt.Errorf("%w: not a receipt (%v)", ErrSpec, err)
+	}
+	_, rerr := vocab.ParseReason(r.Reason.String())
+	switch {
+	case r.Kind != types.ReceiptKindGate || string(r.ID) != id:
+		return fmt.Errorf("%w: not a gate receipt under %s", ErrSpec, id)
+	case r.Instrument.Name != instrumentName || len(r.Instrument.Version) > MaxDetail:
+		return fmt.Errorf("%w: a receipt of another instrument", ErrSpec)
+	case len(r.Provenance.Calls) != 0 || len(r.Provenance.ModelFamilies) != 0 || len(r.Provenance.Contributors) != 0:
+		return fmt.Errorf("%w: a gate receipt with calls, model families or contributors", ErrSpec)
+	case rerr != nil || len(r.Detail) > MaxDetail:
+		return fmt.Errorf("%w: a gate receipt's reason or detail (%v)", ErrSpec, rerr)
+	case len(r.Predicates) != 1:
+		return fmt.Errorf("%w: a gate receipt of %d predicates", ErrSpec, len(r.Predicates))
+	}
+	tree, ok := r.Subject.Variant.(*types.TreeSubject)
+	if !ok || len(tree.Environment.Description) > MaxDetail || len(tree.ContractRevision) > MaxDetail {
+		return fmt.Errorf("%w: a gate receipt's subject", ErrSpec)
+	}
+	p := r.Predicates[0]
+	_, perr := vocab.ParseReason(p.Reason.String())
+	if p.Name != "tests" || perr != nil || len(p.Detail) > MaxDetail || len(p.Payload) != 0 || len(p.Evidence) != 1 ||
+		p.Evidence[0].Artifact != "results" || p.Evidence[0].MediaType != evidenceType {
+		return fmt.Errorf("%w: a gate receipt's predicate", ErrSpec)
+	}
+	return nil
+}
+
+// hexID is whether s is a git object id: 40 (SHA-1) or 64 (SHA-256)
+// lower-case hex digits.
+func hexID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ReportIDs is a gate report's ids (Report's): each blocking finding's
+// package and test name, each once, in order; the ids review.Result keeps
+// out of the builder's findings view (#226 entry 94(2)). A report with
+// none gives an empty list, never nil (Astra #321 M3: nil is "not
+// supplied" to review.Facts.GateIDs).
+func ReportIDs(report []byte) ([]string, error) {
+	var r struct {
+		Schema   string `json:"schema"`
+		Blocking []struct {
+			Package string `json:"package"`
+			Name    string `json:"name"`
+		} `json:"blocking"`
+	}
+	if err := json.Unmarshal(report, &r); err != nil || r.Schema != reportSchema {
+		return nil, fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
+	}
+	out := []string{}
+	for _, f := range r.Blocking {
+		for _, id := range []string{f.Package, f.Name} {
+			if id != "" && !slices.Contains(out, id) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out, nil
 }
 
 // String is v's verdict, for logs.
