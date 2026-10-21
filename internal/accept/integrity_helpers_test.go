@@ -274,6 +274,7 @@ func TestTable(t *testing.T) {
 type suite struct{ t *testing.T }
 
 func (s suite) check() {
+	s.t.Log("suite")
 	if Add(1, 2) != 3 {
 		s.t.Fatal("suite")
 	}
@@ -376,6 +377,8 @@ func TestIntegrityHelpers(t *testing.T) {
 		// Opus #376 M1: a testing value through a field or an embedding.
 		"a suite field's assertion removed":                     {in("pkg/more_test.go", moreFile, "\t\ts.t.Fatal(\"suite\")\n", "\t\t_ = s\n"), "pkg:pkg.suite.check " + weakened + " (1 → 0)"},
 		"a struct's own Fatal method, its call removed (clean)": {in("pkg/more_test.go", moreFile, "\t\to.Fatal(\"own\")\n", "\t\t_ = o\n"), ""},
+		"a suite field's log call removed (clean)":              {in("pkg/more_test.go", moreFile, "\ts.t.Log(\"suite\")\n", ""), ""},
+		"a table renamed weaker":                                {map[string]string{"pkg/more_test.go": strings.NewReplacer("var table = ", "var table2 = ", "range table {", "range table2 {", "\t\tt.Fatal(\"one\")\n", "\t\t_ = t\n").Replace(moreFile)}, "pkg:pkg.table a helper renamed or replaced, weaker (1 → 0)"},
 		"an embedded value's assertion removed":                 {in("pkg/more_test.go", moreFile, "\t\te.Fatal(\"emb\")\n", "\t\t_ = e\n"), "pkg:pkg.emb.check " + weakened + " (1 → 0)"},
 		// Stated false blocks (main accepts each).
 		"a function replaced by a var naming another (stated false block)":     {edit("func checkCase(t *testing.T) {\n"+one+"}\n", "var checkCase = checkTwo\n"), "pkg:pkg.checkCase " + weakened + " (1 → 0)"},
@@ -402,6 +405,12 @@ func TestIntegrityHelpers(t *testing.T) {
 		if v := f.guarded(t, files); !v.Accepted() || !finds(v.Warnings, "pkg:pkg."+name+" an assertion, its condition or a test case changed") {
 			t.Errorf("%s's helper call inlined weaker: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	// A helper with no assertions of its own removed while its name is still
+	// used: no block (its calls are not followed).
+	v0 := f.guarded(t, map[string]string{"pkg/helpers_test.go": strings.NewReplacer("func outer(t *testing.T) {\n\tinner(t)\n}\n", "", "func TestOuter(t *testing.T) { outer(t) }", "func TestOuter(t *testing.T) {\n\touter := inner\n\touter(t)\n}").Replace(helpersBase)})
+	if finds(v0.Blocks, "pkg.outer") {
+		t.Errorf("an assertion-free helper removed: %q", whats(v0.Blocks))
 	}
 	// A test is main's to compare: its assertion removed (not made dead) is
 	// main's block only (Opus #369 L2).
