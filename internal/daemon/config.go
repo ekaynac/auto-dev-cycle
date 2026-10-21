@@ -43,6 +43,9 @@ type Config struct {
 	clock func() time.Time
 	// authenticated is the command endpoint's test hook (commands).
 	authenticated func(identity.Principal)
+	// reconcileEvery is the reconcile loop's period; 0 is reconcileEvery
+	// (5 s). Only tests set it (Opus #312 L2).
+	reconcileEvery time.Duration
 }
 
 // SharedSocket enables the shared socket, <RunDir>/adcd-shared.sock, mode
