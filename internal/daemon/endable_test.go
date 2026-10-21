@@ -66,6 +66,32 @@ func planResultBy(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID,
 	})
 }
 
+// ended revokes and settles the lease of attempt a, at its revision: an
+// attempt is replaced only once its lease has ended (#226 entry 83).
+func ended(w *seeder, sys types.ActorID, a types.AttemptID) {
+	var id types.LeaseID
+	w.view(func(tx *eventstore.Tx) error {
+		at, _, _, err := lease.AttemptOf(tx, a)
+		id = at.Lease
+		return err
+	})
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		_, rev, _, err := lease.LeaseOf(tx, id)
+		if err != nil {
+			return nil, err
+		}
+		return lease.ChangeLease(tx, id, rev, lease.LeaseEvent{Kind: lease.Revoked, Reason: "authority_revoked"}, nil)
+	})
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		_, rev, _, err := lease.LeaseOf(tx, id)
+		st, serr := capacity.Settlement(tx, id)
+		if err = errors.Join(err, serr); err != nil {
+			return nil, err
+		}
+		return lease.ChangeLease(tx, id, rev, lease.LeaseEvent{Kind: lease.Settled, Settlement: &st}, nil)
+	})
+}
+
 // grantedOn requests and grants a lease on node's unit, returning it.
 func grantedOn(w *seeder, sys types.ActorID, node types.NodeID) types.Lease {
 	ls := w.lease(4)
@@ -103,6 +129,7 @@ func TestANodeItsAttemptRunsTakesItsResultAlone(t *testing.T) {
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.SealMinimal(tx, a1, 2, graph.Units{Tasks: authority.Tasks{}}, w.blobs, nil, sys)
 	})
+	ended(w, sys, a1)
 	second := grantedOn(w, sys, plan)
 	a2 := types.AttemptID(newID(t, "att"))
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {

@@ -167,7 +167,7 @@ func (f faults) moves(s mstate) []move {
 	}
 	ended, replaceable := lease.Ended, lease.Replaceable(s.L1) == nil
 	if f.ended != nil { // as dispatch and lease.Replaceable would use it
-		ended, replaceable = f.ended, f.ended(s.L1.State) || s.L1.State == types.LeaseStateActive
+		ended, replaceable = f.ended, f.ended(s.L1.State)
 	}
 	if s.A2.ID == "" && s.L2.State == "" && s.A1.Status != types.AttemptStatusRunning && (f.placeEarly || ended(s.L1.State)) {
 		n := s
@@ -383,9 +383,8 @@ func TestTheRecoveryModelsFaults(t *testing.T) {
 		f    faults
 		want string
 	}{
-		"step 1 loses nothing":                                                 {faults{skipLose: true}, "I1 fencing"},
-		"the controller acts before step 1":                                    {faults{beforeLose: true}, "I1 fencing"},
-		"placement does not wait for L1":                                       {faults{placeEarly: true}, "I3 settle before replace"},
+		"step 1 loses nothing":              {faults{skipLose: true}, "I1 fencing"},
+		"the controller acts before step 1": {faults{beforeLose: true}, "I1 fencing"},
 		"a grant outside dispatch, and the supersession ignores the old lease": {faults{placeEarly: true, ignoreOldLease: true, from: initials()[:1]}, "I3 settle before replace"},
 		"the terminal-state predicate admits settling":                         {faults{ended: func(s types.LeaseState) bool { return lease.Ended(s) || s == types.LeaseStateSettling }}, "I3 settle before replace"},
 		"the settlement names no call":                                         {faults{dropLiability: true}, "I5 no dropped charge"},
@@ -404,10 +403,11 @@ func TestTheRecoveryModelsFaults(t *testing.T) {
 }
 
 // M7: a grant outside dispatch, while L1 settles after a cut run, still never starts A2 early: the supersession
-// refuses it (lease.Replaceable). Only an attempt sealed under its still-active lease, which no step of recovery
-// leaves, is replaceable early that way; dispatch.placed refuses it.
+// refuses it (lease.Replaceable), from every initial state: since #226 entry 83 an attempt sealed under its
+// still-active lease is refused too, so placement that does not wait for L1 breaks nothing alone (only with a
+// supersession that ignores the old lease, TestTheRecoveryModelsFaults).
 func TestTheSupersessionWaitsForTheOldLease(t *testing.T) {
-	if _, broken := (faults{placeEarly: true, from: initials()[:1]}).explore(); len(broken) > 0 {
+	if _, broken := (faults{placeEarly: true}).explore(); len(broken) > 0 {
 		t.Fatalf("a grant outside dispatch breaks %v", broken)
 	}
 }

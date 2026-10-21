@@ -217,6 +217,15 @@ func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 	return out, err
 }
 
+// ViewOf is node's view (an unrecorded node is an error).
+func ViewOf(tx *eventstore.Tx, node types.NodeID) (NodeView, error) {
+	vs, err := views(tx, []string{string(node)})
+	if err != nil || len(vs) != 1 {
+		return NodeView{}, errors.Join(err, fmt.Errorf("graph: node %s is not recorded", node))
+	}
+	return vs[0], nil
+}
+
 // ProjectOf is node's project, as its record holds it.
 func ProjectOf(tx *eventstore.Tx, node types.NodeID) (types.ProjectID, error) {
 	rec, err := loadNode(tx, node)

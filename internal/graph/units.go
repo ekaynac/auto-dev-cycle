@@ -107,6 +107,14 @@ func (u Units) Placement(tx *eventstore.Tx, unit types.UnitID, families Families
 	if err := u.Startable(tx, unit); err != nil {
 		return "", nil, err
 	}
+	return u.Roster(tx, unit, families)
+}
+
+// Roster is Placement whatever unit's node's state: its project and its
+// pinned roster (nil for a node not rostered), checked against the
+// registry. A held node's configuration is read through it (Mythos
+// 22a-5c-1 M1).
+func (u Units) Roster(tx *eventstore.Tx, unit types.UnitID, families Families) (types.ProjectID, []types.RosterMember, error) {
 	rec, _, err := unitNode(tx, unit)
 	if err != nil {
 		return "", nil, err

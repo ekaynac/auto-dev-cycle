@@ -174,6 +174,21 @@ func (w *world) granted(l types.Lease) {
 	})
 }
 
+// ended revokes and settles lease id at its revision: an attempt is
+// replaced only once its lease has ended (#226 entry 83).
+func (w *world) ended(id types.LeaseID) {
+	w.t.Helper()
+	for _, k := range []string{Revoked, Settled} {
+		w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			_, rev, _, err := LeaseOf(tx, id)
+			if err != nil {
+				return nil, err
+			}
+			return ChangeLease(tx, id, rev, event(k), w.h)
+		})
+	}
+}
+
 func isStale(err error) bool {
 	var s *StaleRecord
 	return errors.As(err, &s)
@@ -297,6 +312,12 @@ func TestMinting(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return SupersedeAttempt(tx, attA, 3, leaB, 2, attB, base)
+	}); err == nil || !strings.Contains(err.Error(), "is active; it settles before its attempt is replaced") {
+		t.Errorf("a replacement beside its predecessor's active lease (#226 entry 83): %v", err)
+	}
+	w.ended(leaID)
 	other := requested()
 	other.ID, other.Unit = "lea_01m3250vnfeyrv67x6w0ddqr6a", "unt_01m3250v57ft7aehkqwq0yrq3n"
 	w.granted(other)
@@ -551,6 +572,7 @@ func TestStartNeedsBinding(t *testing.T) {
 	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return SealMinimal(tx, attA, 2, w.units, w.blobs, nil, "act_01m3250v0aer9ss2097svmefj8")
 	})
+	w.ended(leaID)
 	w.close()
 	w.units = refusing{}
 	w.open()

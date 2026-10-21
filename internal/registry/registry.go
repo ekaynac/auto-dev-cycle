@@ -96,6 +96,7 @@ func (r *Refusal) Error() string {
 // Registry is the checked registry. It cannot change once built.
 type Registry struct {
 	executors map[types.ExecutorID]types.RegistryExecutor
+	limits    map[types.ResourceGroupID]int64 // each group's limit, where its capacity model states one
 }
 
 // Load reads the registry file, a regular file and never a link, and checks it
@@ -127,7 +128,12 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 	if contract.Validate(Schema, mustJSON(doc)) != nil {
 		return Registry{}, &Refusal{Executor: -1, Rule: RuleUnreadable}
 	}
-	r := Registry{executors: map[types.ExecutorID]types.RegistryExecutor{}}
+	r := Registry{executors: map[types.ExecutorID]types.RegistryExecutor{}, limits: map[types.ResourceGroupID]int64{}}
+	for _, g := range groups {
+		if l := g.CapacityModel.Limit; l != nil {
+			r.limits[g.ID] = *l
+		}
+	}
 	destinations := map[types.Slug]types.RegistryDestination{}
 	ids := map[string]types.Slug{} // origin → destination id
 	for i, e := range doc.Executors {
@@ -327,6 +333,25 @@ func (r Registry) Executor(id types.ExecutorID) (types.RegistryExecutor, bool) {
 		return types.RegistryExecutor{}, false
 	}
 	return copyOf(e), true
+}
+
+// Limit is group's limit, as the groups the registry was built over state
+// it; false when none does.
+func (r Registry) Limit(group types.ResourceGroupID) (int64, bool) {
+	l, ok := r.limits[group]
+	return l, ok
+}
+
+// Executors are the registered executors of role, in id order.
+func (r Registry) Executors(role types.RegistryExecutorRole) []types.ExecutorID {
+	var out []types.ExecutorID
+	for id, e := range r.executors {
+		if e.Role == role {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // copyOf deep-copies an executor through its JSON, so no pointer is shared.

@@ -102,7 +102,7 @@ var kept = map[Row]bool{
 	{"I5", Fold}: true, {"I5", Effect}: true,
 	{"I6", Fold}: true, {"I6", Consumption}: true,
 	{"I7", Fold}: true, {"I7", Effect}: true,
-	{"I8", Fold}:         true,
+	{"I8", Admission}: true, {"I8", Fold}: true,
 	{"I9", Fold}:         true,
 	{"I11", Consumption}: true, {"I11", Effect}: true,
 	{"I12", Fold}: true, {"I12", Effect}: true,
