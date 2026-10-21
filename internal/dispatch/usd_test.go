@@ -152,7 +152,8 @@ func TestUSDTaskRail(t *testing.T) {
 // unsettled; its lease settles it as a 4,000-micro liability; its end
 // (Reconciler.Ended, no Query) records it uncertain, then still_uncertain
 // (the route has no query), never completed. The next lease the same day
-// is refused at the day rail. The contrast: a route whose query answers the
+// is refused at the day rail, which the liability leaves less than one
+// turn. The contrast: a route whose query answers the
 // gateway's own count (300 in, 200 out, 1,100 micros) completes the call,
 // and the next lease is placed.
 func TestUSDAnUnqueriedCallStaysALiability(t *testing.T) {
@@ -166,7 +167,10 @@ func TestUSDAnUnqueriedCallStaysALiability(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reg, gs := stub(t, nil)
 			e := open(t, gs)
-			perTask, perDay := noCap, int64(2*reservedMicros-1)
+			// The day holds the liability and less than one turn more: since
+			// #226 entry 120 (P22a-5c-1) a day leaving a turn or more places a
+			// smaller reservation, so only less than a turn is refused.
+			perTask, perDay := noCap, int64(reservedMicros+turnMicros-1)
 			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 			id, a, call := e.liveCall(d, e.nodeIn(task))
 			e.hostileZeroFinal(call, a, id)
