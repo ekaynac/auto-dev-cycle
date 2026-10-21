@@ -394,6 +394,23 @@ func TestRebuildReportsUnknownRecord(t *testing.T) {
 	refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "names a projection this build does not fold")
 }
 
+// A record at a later version than this build folds is refused at start
+// (store_unreadable) and is ErrBuildRecord on the daemon's rebuild, so the
+// two agree (Mythos #342 L2).
+func TestRebuildReportsLaterRecord(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, dir, `UPDATE proj_kv SET value = '{"version":99}' WHERE projection = '_built' AND key = 'leases'`)
+	_, err = d.store.RebuildProjections(context.Background())
+	if cerr := d.Close(); cerr != nil || !errors.Is(err, eventstore.ErrBuildRecord) {
+		t.Fatalf("the rebuild: %v, %v", err, cerr)
+	}
+	refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "record of built projections cannot be read")
+}
+
 // declaredProjections are the projection names the code declares: every
 // string constant named *Projection outside tests and the test guard's
 // fakes, which projector does not compose.

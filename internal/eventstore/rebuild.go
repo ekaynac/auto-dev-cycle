@@ -25,11 +25,11 @@ var ErrReplayRefused = errors.New("eventstore: rebuild: the projector refused th
 var rebuildBatch = 512
 
 // RebuildProjections replays the whole log through the Project hook into
-// fresh projection tables and compares them with the live ones (03, `adc dev
-// rebuild-projections`). It verifies the full chain first and changes
-// nothing: the rebuild runs in a writer transaction that is always rolled
-// back. An empty result means the live projections are exactly what the log
-// derives.
+// fresh projection tables and compares them with the live ones (03; no `adc
+// dev rebuild-projections` command wires it yet). It verifies the full
+// chain first and changes nothing: the rebuild runs in a writer transaction
+// that is always rolled back. An empty result means the live projections
+// are exactly what the log derives.
 //
 // The fresh table is a TEMP proj_rebuild, which the hook's Tx reads and
 // writes in place of the live proj_kv. The hook is replayed one event at a
@@ -40,8 +40,8 @@ var rebuildBatch = 512
 // The store's record of built projections (build.go) is no projection: it
 // is compared only when the store was opened with Config.Projections. Then
 // a record of a projection not registered there is a difference, as at
-// start (ProjectionDiff.BuildRecord), and a record that does not decode is
-// ErrBuildRecord.
+// start (ProjectionDiff.BuildRecord), and a record that does not decode or
+// records a later version than registered is ErrBuildRecord, as at start.
 func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error) {
 	var diffs []ProjectionDiff
 	err := s.do(func() error {
@@ -76,6 +76,9 @@ func (s *Store) rebuild(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, erro
 	}
 	recorded, err := builtProjections(ctx, tx)
 	if err != nil {
+		return nil, err
+	}
+	if err := laterRecords(recorded, s.projections); err != nil {
 		return nil, err
 	}
 	// _built sorts before every projection name: the order stays compare's.

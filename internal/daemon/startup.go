@@ -141,7 +141,8 @@ func checkKinds(ctx context.Context, s *eventstore.Store) error {
 // and nothing is kept: a projection the store built once, emptied since,
 // is a difference, never one to build. A record of built projections naming
 // a projection this build does not fold is a difference with its own detail
-// (the store opens with Config.Projections, so a rebuild reports it too).
+// (the store opens with Config.Projections, so Store.RebuildProjections
+// reports it too; no `adc dev rebuild-projections` command wires it yet).
 // A record of built projections that cannot be read, and a replay that
 // cannot run (storage, cancellation), are store_unreadable. Startup never
 // repairs a projection, and one it has not matched is never trusted. A

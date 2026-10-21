@@ -275,7 +275,12 @@ var builtBeforeRecord = []string{
 // too, so a store records it as built while it is still empty; wiring it
 // later over existing events is then refused, as on main, and that
 // projection loses the build at start. Wire a projection's fold in the PR
-// that declares it.
+// that declares it. A projection name is never removed or renamed, here or
+// in builtBeforeRecord, without a store migration (Mythos #342 L3): every
+// store this build started keeps its _built row, which a build that no
+// longer registers the name refuses as a record of a projection it does not
+// fold (ambiguous_state). That refusal is the intended fail-closed result
+// until a migration exists.
 var addedSinceRecord = []string{
 	lease.GrantProjection,                          // #328
 	lease.OpenProjection, graph.TaskNodeProjection, // #333

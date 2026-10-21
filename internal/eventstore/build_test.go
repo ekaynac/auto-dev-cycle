@@ -251,6 +251,22 @@ func TestRebuildComparesTheRecord(t *testing.T) {
 		t.Fatalf("an undecodable record: %v", err)
 	}
 	e.close()
+	// A later recorded version is ErrBuildRecord on a rebuild too, as at
+	// start (Mythos #342 L2); the rebuild changes nothing.
+	mustExec(t, raw(t, dir), `DELETE FROM proj_kv WHERE projection = '`+builtRecord+`' AND key = 'zzz'`,
+		`UPDATE proj_kv SET value = '{"version":99}' WHERE projection = '`+builtRecord+`' AND key = 'kinds'`)
+	before := liveRows(t, dir)
+	e = openRegistered(t, dir, counting(nil), counted)
+	if _, err := e.s.RebuildProjections(context.Background()); !errors.Is(err, ErrBuildRecord) {
+		t.Fatalf("a later recorded version: %v", err)
+	}
+	if _, _, err := e.s.BuildProjections(context.Background(), counted, nil); !errors.Is(err, ErrBuildRecord) {
+		t.Fatalf("a later recorded version at build: %v", err)
+	}
+	if fmt.Sprint(liveRows(t, dir)) != fmt.Sprint(before) {
+		t.Fatal("a refused rebuild or build changed the store")
+	}
+	e.close()
 	lock, err := AcquireLock(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -259,5 +275,50 @@ func TestRebuildComparesTheRecord(t *testing.T) {
 	if s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: e.blobs, Projections: []Projection{{Name: "kinds", Version: 0}}}); err == nil {
 		s.Close()
 		t.Fatal("an invalid Config.Projections was accepted")
+	}
+}
+
+// Mythos #342 L3: a projection a later build retires, its rows gone but no
+// store migration run, leaves its _built row, which that build refuses as
+// a record of a projection it does not fold, at start and on a rebuild. It
+// fails closed, and nothing is kept.
+func TestRetiredProjectionRefused(t *testing.T) {
+	dir := stateDir(t)
+	e := openRegistered(t, dir, counting(nil), counted)
+	populate(t, e)
+	if _, diffs, err := e.s.BuildProjections(context.Background(), counted, nil); err != nil || len(diffs) != 0 {
+		t.Fatalf("the build: %+v, %v", diffs, err)
+	}
+	e.close()
+	// The later build folds kinds and subjects only: recent is retired.
+	all := counting(nil)
+	retired := func(tx *Tx, evs []Event) error {
+		if err := all(tx, evs); err != nil {
+			return err
+		}
+		keys, err := tx.Keys("recent", "")
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			if err := tx.Delete("recent", k); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	mustExec(t, raw(t, dir), `DELETE FROM proj_kv WHERE projection = 'recent'`)
+	before := liveRows(t, dir)
+	e = openRegistered(t, dir, retired, counted[:2])
+	built, diffs, err := e.s.BuildProjections(context.Background(), counted[:2], nil)
+	if err != nil || built != nil || len(diffs) != 1 || !diffs[0].BuildRecord() || diffs[0].Key != "recent" {
+		t.Fatalf("a retired projection at build: built %v, diffs %+v, %v", built, diffs, err)
+	}
+	diffs, err = e.s.RebuildProjections(context.Background())
+	if err != nil || len(diffs) != 1 || !diffs[0].BuildRecord() || diffs[0].Key != "recent" {
+		t.Fatalf("a retired projection on a rebuild: %+v, %v", diffs, err)
+	}
+	if fmt.Sprint(liveRows(t, dir)) != fmt.Sprint(before) {
+		t.Fatal("a refused build changed the store")
 	}
 }
