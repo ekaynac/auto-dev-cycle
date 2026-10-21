@@ -546,7 +546,9 @@ func TestASlowCountEndsTheResponseWhole(t *testing.T) {
 	}()
 	r, _ := http.NewRequest(http.MethodPost, BaseURL+"/chat/completions", strings.NewReader(good))
 	r.Header.Set("Authorization", "Bearer "+token)
-	resp, err := overSocket(serveOn(t, g, nil)).Do(r)
+	done := make(chan bool, 1)
+	t.Cleanup(func() { <-done }) // the handler has ended: nothing reads writeIdle as it is reset
+	resp, err := overSocket(serveOn(t, g, done)).Do(r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -599,9 +601,141 @@ func TestTheResponseEndHasAFreshDeadline(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := &deadlines{ResponseRecorder: httptest.NewRecorder(), counted: counted}
 	g.ServeHTTP(w, r)
-	cleared := slices.ContainsFunc(w.set, func(d deadline) bool { return d.at.IsZero() && !d.counted })
+	cleared := slices.ContainsFunc(w.set, func(d deadline) bool { return d.at.IsZero() && !d.counted }) // the request's first deadline
 	if last := w.set[len(w.set)-1]; w.Code != http.StatusOK || !counted.Load() || !cleared || last.at.IsZero() || !last.counted {
 		t.Errorf("the deadlines set: %+v (counted %v, status %d)", w.set, counted.Load(), w.Code)
+	}
+}
+
+// order is a recorder that takes write deadlines and records, in order,
+// each deadline set (zero: cleared) and each header written.
+type order struct {
+	*httptest.ResponseRecorder
+	events []string
+}
+
+func (o *order) SetWriteDeadline(at time.Time) error {
+	o.events = append(o.events, map[bool]string{true: "clear", false: "arm"}[at.IsZero()])
+	return nil
+}
+
+func (o *order) WriteHeader(code int) {
+	o.events = append(o.events, "header")
+	o.ResponseRecorder.WriteHeader(code)
+}
+
+// Opus #308 r2 M1: a refusal arms its own deadline right before its
+// header, after the request's first one was cleared.
+func TestARefusalArmsItsOwnDeadline(t *testing.T) {
+	g, _ := rig(t, newUpstream(t, nil), nil)
+	r, _ := http.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(good))
+	r.Header.Set("Authorization", "Bearer not-a-token")
+	w := &order{ResponseRecorder: httptest.NewRecorder()}
+	g.ServeHTTP(w, r)
+	if i := slices.Index(w.events, "header"); w.Code != http.StatusUnauthorized || i < 2 || w.events[i-1] != "arm" || !slices.Contains(w.events[:i-1], "clear") {
+		t.Errorf("a refusal's deadlines and header: %v (status %d)", w.events, w.Code)
+	}
+}
+
+// Opus #308 r2 M1: a refusal decided past writeIdle (an upstream slower
+// than it, answering with a Content-Encoding) reaches the adapter whole: a
+// refusal arms its own deadline.
+func TestALateRefusalIsWhole(t *testing.T) {
+	old := writeIdle
+	writeIdle = 200 * time.Millisecond
+	t.Cleanup(func() { writeIdle = old })
+	g, token := rig(t, newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(5 * writeIdle)
+		w.Header().Set("Content-Encoding", "br")
+		_, _ = w.Write([]byte("x"))
+	}), nil)
+	done := make(chan bool, 1)
+	s, code, err := post(overSocket(serveOn(t, g, done)), token)
+	if err != nil || s != http.StatusBadGateway || code != "encoding" {
+		t.Errorf("a refusal past writeIdle: %d %q %v, want 502 encoding", s, code, err)
+	}
+	<-done // the handler has ended: nothing reads writeIdle as it is reset
+}
+
+// slowLeases answers every lease read after wait.
+type slowLeases struct {
+	Leases
+	wait time.Duration
+}
+
+func (l slowLeases) Lease(ctx context.Context, id types.LeaseID) (types.Lease, bool, error) {
+	time.Sleep(l.wait)
+	return l.Leases.Lease(ctx, id)
+}
+
+// Opus #308 r2 M1, its 100 Continue variant: a request with Expect:
+// 100-continue whose lease read takes longer than writeIdle still has its
+// 100 Continue and then its whole response.
+func TestALate100ContinueIsWritten(t *testing.T) {
+	old := writeIdle
+	writeIdle = 200 * time.Millisecond
+	t.Cleanup(func() { writeIdle = old })
+	const usage = `{"usage":{"prompt_tokens":10,"completion_tokens":1}}`
+	g, token := rig(t, newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(usage))
+	}), func(c *Config) { c.Leases = slowLeases{c.Leases, 5 * writeIdle} })
+	done := make(chan bool, 1)
+	t.Cleanup(func() { <-done }) // the handler has ended: nothing reads writeIdle as it is reset
+	conn, err := net.Dial("unix", serveOn(t, g, done))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	fmt.Fprintf(conn, "POST /chat/completions HTTP/1.1\r\nHost: adc-gateway\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nExpect: 100-continue\r\n\r\n", token, len(good))
+	br := bufio.NewReader(conn)
+	cont, err := http.ReadResponse(br, nil)
+	if err != nil || cont.StatusCode != http.StatusContinue {
+		t.Fatalf("the 100 Continue: %v %v", cont, err)
+	}
+	_, _ = io.WriteString(conn, good)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if body, err := io.ReadAll(resp.Body); err != nil || resp.StatusCode != http.StatusOK || string(body) != usage {
+		t.Errorf("the response after a late 100 Continue: %d %q %v", resp.StatusCode, body, err)
+	}
+}
+
+// panicCapture panics on every capture.
+type panicCapture struct{}
+
+func (panicCapture) Keep(context.Context, Binding, []byte) error { panic("capture") }
+
+// Opus #308 r2 L1: a side effect that panics still ends: with another
+// request of the same token in flight, Unbind returns.
+func TestUnbindAfterAPanickingSideEffect(t *testing.T) {
+	arrived, release := make(chan bool, 1), make(chan bool)
+	held := true
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		if held {
+			held = false
+			arrived <- true
+			<-release
+		}
+	})
+	t.Cleanup(sync.OnceFunc(func() { close(release) }))
+	g, token := rig(t, up, nil)
+	done := make(chan bool, 4)
+	c := overSocket(serveOn(t, g, done))
+	go func() { _, _, _ = post(c, token) }()
+	<-arrived // the first request is in flight, upstream
+	g.cfg.Capture = panicCapture{}
+	_, _, _ = post(c, token) // the second's capture panics; net/http recovers it
+	<-done
+	unbound := make(chan bool)
+	go func() { g.Unbind(token); close(unbound) }()
+	select {
+	case <-unbound:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Unbind did not return after a side effect panicked")
 	}
 }
 

@@ -164,6 +164,13 @@ func (g *Gateway) Bind(b Binding) (string, error) {
 // Unbind ends token's binding, cancels its requests in flight, and returns
 // what was observed for its attempt. It is idempotent: a token unbound
 // already, or never bound, gives Observed{} (serve.go).
+//
+// It blocks until the side effects its token's requests were admitted to
+// before it (a capture, an intent, a floor's commit) have ended; a floor's
+// commit is never cancelled. So it is never called from a Capture, Intents
+// or Counts implementation, nor while holding a lock one of them takes (a
+// store transaction, the attempt end's own mutex): it would deadlock
+// (Opus #308 r2 L2).
 func (g *Gateway) Unbind(token string) Observed {
 	g.mu.Lock()
 	key := sha256.Sum256([]byte(token))
@@ -224,8 +231,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	r = r.WithContext(ctx)
 	rc := http.NewResponseController(w)
-	arm(rc)       // nothing is written without its deadline, a refusal or a header included (Astra #308 3)
-	defer arm(rc) // the response's end (its last chunk) has a fresh deadline, however long the count took (Astra #308 1)
+	arm(rc)                              // a writer that cannot take a deadline aborts here, before anything is written (Astra #308 3)
+	_ = rc.SetWriteDeadline(time.Time{}) // none armed while the request is read and forwarded: each write arms its own (Opus #308 r2 M1)
+	defer arm(rc)                        // the response's end (its last chunk) has a fresh deadline, however long the count took (Astra #308 1)
 	f := &flight{cancel}
 	b, no := g.enter(r, f)
 	if no != nil {
@@ -455,35 +463,42 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		g.observe(b.Attempt, 0, RouteInBody)
 		return nil, none, &refusal{http.StatusForbidden, RouteInBody}
 	}
-	done, ok := g.admit(r, f) // unbound meanwhile: nothing captured (Opus #322 L4); Unbind waits for it (Astra #308 2)
-	if !ok {
+	// Unbound meanwhile: nothing captured (Opus #322 L4); Unbind waits for it (Astra #308 2).
+	ok, err = g.effect(r, f, func() error {
+		if g.cfg.Capture == nil {
+			return nil
+		}
+		return g.cfg.Capture.Keep(ctx, b, out)
+	})
+	switch {
+	case !ok:
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
-	}
-	if g.cfg.Capture != nil && g.cfg.Capture.Keep(ctx, b, out) != nil {
-		done()
+	case err != nil:
 		return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 	}
-	done()
-	if done, ok = g.admit(r, f); !ok { // unbound meanwhile: no intent (Opus #308 M2)
+	ok, err = g.effect(r, f, func() error { return g.intend(r, b, e.Destination.ID) }) // unbound meanwhile: no intent (Opus #308 M2)
+	switch {
+	case !ok:
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
-	}
-	err = g.intend(r, b, e.Destination.ID)
-	if done(); err != nil {
+	case err != nil:
 		return nil, none, &refusal{http.StatusServiceUnavailable, "intent_unrecorded"}
 	}
 	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, dialAddr(target)), http.MethodPost, target.String(), bytes.NewReader(out))
 	if err != nil {
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
-	if done, ok = g.admit(r, f); !ok { // unbound meanwhile: no floor (Opus #308 M2)
+	var s sending
+	ok, err = g.effect(r, f, func() error { // unbound meanwhile: no floor (Opus #308 M2)
+		g.mu.Lock()
+		s = sending{cred, g.seq, len(out)}
+		g.seq++
+		g.mu.Unlock()
+		return g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l))
+	})
+	if !ok {
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
 	}
-	g.mu.Lock()
-	s := sending{cred, g.seq, len(out)}
-	g.seq++
-	g.mu.Unlock()
-	err = g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l))
-	if done(); err != nil {
+	if err != nil {
 		g.observe(b.Attempt, 0, RouteUncounted)
 		return nil, none, &refusal{http.StatusServiceUnavailable, RouteUncounted}
 	}
@@ -567,6 +582,7 @@ const RefusalHeader = "Adc-Gateway-Refusal"
 // body is never drained first, with or without Expect: 100-continue, and
 // never read after (Astra #308 4).
 func refuse(w http.ResponseWriter, rc *http.ResponseController, no *refusal) {
+	arm(rc) // its own deadline, however long the request took to refuse (Opus #308 r2 M1)
 	body := fmt.Sprintf(`{"error":{"type":"gateway_refused","code":%q}}`, no.code)
 	h := w.Header()
 	h.Set("Content-Type", "application/json")

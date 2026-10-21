@@ -123,6 +123,18 @@ func (g *Gateway) admit(r *http.Request, f *flight) (done func(), ok bool) {
 	return ops.Done, true
 }
 
+// effect runs fn, one side effect of r, only when admit admits it, and
+// ends it however fn ends, a panic included: Unbind never waits for a
+// side effect that cannot end (Opus #308 r2 L1).
+func (g *Gateway) effect(r *http.Request, f *flight, fn func() error) (ok bool, err error) {
+	done, ok := g.admit(r, f)
+	if !ok {
+		return false, nil
+	}
+	defer done()
+	return true, fn()
+}
+
 // arm gives the response's next writes their deadline, writeIdle away;
 // past a writer that cannot take one, the handler aborts, writing nothing
 // more (Opus #308 L5; Astra #308 3).
@@ -158,6 +170,5 @@ func (f flushing) Write(p []byte) (int, error) {
 			err = nil
 		}
 	}
-	_ = f.rc.SetWriteDeadline(time.Time{}) // the deadline is the write's: none armed while nothing is written (Astra #308 1)
 	return n, err
 }
