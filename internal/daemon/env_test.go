@@ -13,10 +13,10 @@ import (
 )
 
 // P22a-5b (Opus #312 L5): adcd's evaluation Env carries the receipt blobs,
-// the registry's families, each task's rails and M1(a)'s requirements:
-// none on the inputs of the plan, the build, accept and the gate; a
-// review's refused until the review capability; and task.raise_rail is
-// launch's action, wired only while launch is active.
+// the registry's families, each task's rails and M1(a)'s requirements, an
+// allow-list by the consuming node's kind and the result kind its input
+// takes; and task.raise_rail is launch's action, wired only while launch is
+// active.
 func TestEvaluationEnv(t *testing.T) {
 	d := restart(t, stateDir(t))
 	t.Cleanup(func() { _ = d.Close() })
@@ -24,15 +24,27 @@ func TestEvaluationEnv(t *testing.T) {
 	if e.Need == nil || e.Blobs == nil || e.Families == nil || e.Rails == nil || e.Authority == nil {
 		t.Fatalf("the Env: %+v", e)
 	}
-	in := types.InputSpec{Name: "x"}
-	for _, k := range []types.NodeKind{types.NodeKindPlan, types.NodeKindBuild, types.NodeKindAccept, types.NodeKindGate} {
-		if r, err := e.Need(types.Node{Kind: k}, in); r != nil || err != nil {
-			t.Errorf("%s: %v, %v", k, r, err)
+	takes := func(kind types.ResultKind) types.InputSpec {
+		return types.InputSpec{Name: "x", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", ResultKind: kind}}}
+	}
+	for _, ok := range []struct {
+		node  types.NodeKind
+		takes types.ResultKind
+	}{{types.NodeKindBuild, types.ResultKindPlan}, {types.NodeKindAccept, types.ResultKindPatch}, {types.NodeKindGate, types.ResultKindTree}} {
+		if r, err := e.Need(types.Node{Kind: ok.node}, takes(ok.takes)); r != nil || err != nil {
+			t.Errorf("%s taking %s: %v, %v", ok.node, ok.takes, r, err)
 		}
 	}
-	for _, k := range []types.NodeKind{types.NodeKindReview, types.NodeKindReviewRequirement} {
-		if _, err := e.Need(types.Node{Kind: k}, in); err == nil {
-			t.Errorf("%s: a requirement resolved before the review capability", k)
+	// Opus #325 L6: an allow-list by the pair: a round-2 build taking a
+	// review, a plan taking anything, a gate taking a patch, and a review's
+	// input are refused.
+	for _, no := range []struct {
+		node  types.NodeKind
+		takes types.ResultKind
+	}{{types.NodeKindBuild, types.ResultKindReview}, {types.NodeKindPlan, types.ResultKindPlan}, {types.NodeKindGate, types.ResultKindPatch},
+		{types.NodeKindReview, types.ResultKindGateResult}, {types.NodeKindReviewRequirement, types.ResultKindTree}} {
+		if _, err := e.Need(types.Node{Kind: no.node}, takes(no.takes)); err == nil {
+			t.Errorf("%s taking %s: a requirement resolved", no.node, no.takes)
 		}
 	}
 	launch, _ := capability.Of("launch")

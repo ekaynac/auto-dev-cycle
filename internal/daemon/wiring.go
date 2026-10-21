@@ -85,17 +85,26 @@ func env(d *Daemon, reg registry.Registry) graph.Env {
 	return graph.Env{Authority: authority.Answers{}, Need: needs, Blobs: d.blobs, Families: reg, Rails: authority.Rails}
 }
 
-// needs are M1(a)'s requirements: none on the inputs of the plan, the
-// build, accept and the gate, which take results whole (the gate its
-// accepted tree, P14a). A review's inputs need P16's review requirement,
-// which comes with the review capability (22a-6): until then they are
-// refused, so no review is claimed on a requirement left out.
+// noRequirement are the inputs M1(a) resolves with no requirement, by the
+// consuming node's kind and the kind of result the input takes: the build
+// takes the plan, accept the build's patch, the gate accept's tree, each
+// whole (P14a); the plan takes none (Opus #325 L6).
+var noRequirement = map[types.NodeKind]types.ResultKind{
+	types.NodeKindBuild:  types.ResultKindPlan,
+	types.NodeKindAccept: types.ResultKindPatch,
+	types.NodeKindGate:   types.ResultKindTree,
+}
+
+// needs are M1(a)'s requirements, an allow-list: an input noRequirement
+// names needs none, and any other is refused, so nothing is claimed on a
+// requirement left out. The review capability (22a-6) adds its inputs.
 func needs(n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
-	switch n.Kind {
-	case types.NodeKindPlan, types.NodeKindBuild, types.NodeKindAccept, types.NodeKindGate:
-		return nil, nil
+	if src, ok := in.Source.Variant.(*types.ResultSource); ok {
+		if kind, known := noRequirement[n.Kind]; known && src.ResultKind == kind {
+			return nil, nil
+		}
 	}
-	return nil, fmt.Errorf("daemon: the %s node's input %s needs a requirement adcd does not resolve before the review capability (P22a-6)", n.Kind, in.Name)
+	return nil, fmt.Errorf("daemon: the %s node's input %s needs a requirement adcd does not resolve (M1(a): the build takes the plan, accept the patch, the gate the tree)", n.Kind, in.Name)
 }
 
 // authorizer is the one authorizer over the wired handlers: the writer's
