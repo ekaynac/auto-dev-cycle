@@ -105,6 +105,7 @@ MUTS = [
     ("visible overlay skipped", W, 'if v := filepath.Join(s.taskDir(c), "visible"); exists(v) {', 'if v := filepath.Join(s.taskDir(c), "visible"); false && exists(v) {'),
     ("another prompt sent", R, 'Call: call, Prompt: prompt,', 'Call: call, Prompt: []byte("Review the change."),'),
     ("decision mapping swapped", R, '\tcase types.OutcomeEmpty:\n\t\to.Decision = review.Go', '\tcase types.OutcomeEmpty:\n\t\to.Decision = review.NoGo'),
+    ("the launch's tool allowance dropped (#359)", R, 'Tools: adapterhost.EditLoopTools(), ', ''),
     # Opus #306 r2 H1: one defect and one control per task.
     ("the suite unbalanced again", S, '"id": "defect-sku-package-test-weakened",\n      "task": "go-mini-refactor-1",', '"id": "defect-sku-package-test-weakened",\n      "task": "go-mini-failing-then-green-1",'),
     # Opus #306 r2 M1: the run's cursor.

@@ -162,7 +162,11 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 	adapter := r.Adapter
 	adapter.Env = append(append([]string{}, adapter.Env...), "ADC_GATEWAY_SOCKET="+sock)
 	limits := types.AdapterPrepareParamsLimits{MaxTurns: MaxTurns, MaxOutputTokens: MaxOutputTokens, WallSeconds: max(1, int64(cmpDur(r.Bounds.Result, 10*time.Minute)/time.Second))}
-	spec := adapterhost.Spec{Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: call, Prompt: prompt, Bounds: r.Bounds, Adapter: adapter,
+	// Tools: adcd's launch allowance, the edit loop's own tools, which the
+	// http-chat adapter always describes; a reviewer is prepared with none
+	// (ToolPolicy.Allowed is empty, and the adapter sends no tools).
+	spec := adapterhost.Spec{Tools: adapterhost.EditLoopTools(), Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: call, Prompt: prompt,
+		Bounds: r.Bounds, Adapter: adapter,
 		Base: types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
 		Prepare: types.AdapterPrepareParams{Role: "reviewer", Executor: e.ID, Model: e.Model, Limits: limits,
 			Workspace:  types.AdapterPrepareParamsWorkspace{Path: work, Writable: false},
