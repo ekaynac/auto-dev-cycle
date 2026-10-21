@@ -19,8 +19,9 @@ import (
 )
 
 // ManifestLabel is the prepared image's manifest (00 §8 item 2): a JSON
-// object naming the toolchain it was prepared for and the sha256 of each
-// lockfile its dependencies were baked from.
+// object naming the toolchain it was prepared for, the sha256 of each
+// lockfile its dependencies were baked from and, per platform, the digest
+// of the builder's adapter it carries (P22a-5d).
 const ManifestLabel = "dev.adc.prepared"
 
 const maxLockfile = 16 << 20
@@ -29,7 +30,8 @@ var (
 	// ErrImage: the pinned image is absent, its digest differs, or it is
 	// built for another OS or architecture than the host's.
 	ErrImage = errors.New("sandbox: the pinned image is not present at its digest")
-	// ErrManifest: the image was not prepared for this toolchain and base.
+	// ErrManifest: the image was not prepared for this toolchain and base,
+	// or carries another adapter than the installed release's.
 	ErrManifest = errors.New("sandbox: the image manifest does not match the pinned toolchain and the base's lockfiles")
 
 	pinned = regexp.MustCompile(`^[^@\t\n\f\r ]+@sha256:[0-9a-f]{64}$`)
@@ -46,10 +48,14 @@ type Image struct {
 	Manifest Manifest
 }
 
-// Manifest is what ManifestLabel declares.
+// Manifest is what ManifestLabel declares. Adapter is keyed by OS/ARCH
+// (one label covers a manifest list; Node differs per platform): the
+// AdapterDigest of the closure under /opt/adc/lib. An image prepared
+// before P22a-5d has none; CheckManifest does not read it.
 type Manifest struct {
 	Toolchain string            `json:"toolchain"`
-	Lockfiles map[string]string `json:"lockfiles"` // repo path -> sha256:hex
+	Lockfiles map[string]string `json:"lockfiles"`         // repo path -> sha256:hex
+	Adapter   map[string]string `json:"adapter,omitempty"` // os/arch -> sha256:hex
 }
 
 // Resolve finds ref (name@sha256:hex) in the host's storage, never

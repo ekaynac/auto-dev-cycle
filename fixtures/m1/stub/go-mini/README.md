@@ -15,4 +15,6 @@ go-mini is the small Go project that checkpoint (a)'s CI stub cases run on. The 
 
 **The pin.** The profile pins go-mini's own prepared image (#226 entry 97): `ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5…4e113d`, tag `go1.27.1-2026-10-21`, for linux/amd64 and linux/arm64. It is built by this repository's recipe, `scripts/prepare-go-image.sh build go-mini NAME`: the same base and toolchain as this repository's image, labelled `dev.adc.prepared` with go-mini's `go.mod`, so `sandbox.Image.CheckManifest` accepts it for go-mini. On linux/arm64 it resolves to the platform image `88e9e039a6ba…`.
 
+**The adapter (P22a-5d).** The recipe now also bakes the builder's http-chat adapter under `/opt/adc/lib` (`make dist`'s closure, `sandbox.AdapterClosure`) and adds each platform's `sandbox.AdapterDigest` to the label's `adapter`; `Image.CheckAdapter` refuses an image whose adapter is not the installed release's. The pin above predates it: it has no `adapter`, still passes `CheckManifest` for the gate, and is replaced by a rebuild (the commands are in the script's header).
+
 **Re-recording.** Re-record with `gate.Measure` in the pinned image whenever T0's `repo/` or the pin changes. The gate refuses a baseline of another command, platform image or base tree, and `TestGateGoMini` fails when `repo/`'s tree is no longer the baseline's.

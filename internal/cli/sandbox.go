@@ -10,6 +10,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
 // Prober is a Client that also runs the sandbox probe.
@@ -53,6 +54,32 @@ func sandboxProbe(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	}
 	if len(rep.Violations) > 0 {
 		return entry.ExitRefused
+	}
+	return entry.ExitOK
+}
+
+// devAdapterDigest is `adc dev adapter-digest DIR` (P22a-5d): the digest of
+// the builder's adapter closure under DIR, an installed lib/adc or a
+// prepared image's context (sandbox.AdapterDigest), on one line. A closure
+// that cannot be digested exits refused.
+func devAdapterDigest(args []string, stdout, stderr io.Writer) int {
+	const name = "adc dev adapter-digest"
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
+	}
+	if fs.NArg() != 1 {
+		say(stderr, "%s: usage: %s DIR\n", name, name)
+		return entry.ExitUsage
+	}
+	sum, err := sandbox.AdapterDigest(fs.Arg(0))
+	if err != nil {
+		say(stderr, "%s: refused: %s\n", name, err)
+		return entry.ExitRefused
+	}
+	if err := say(stdout, "%s\n", sum); err != nil {
+		say(stderr, "%s: could_not_run: writing the digest: %s\n", name, err)
+		return entry.ExitCouldNotRun
 	}
 	return entry.ExitOK
 }
