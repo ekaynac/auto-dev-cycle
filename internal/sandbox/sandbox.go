@@ -12,6 +12,11 @@
 // what is mounted is the boundary: Run refuses any mount that overlaps a
 // controller or Podman path, and the probe checks what a run can reach.
 //
+// A run is batch (Start: run to its end, its stdout returned) or, for an
+// adapter, interactive (Interactive, P22a-5d): the same confinement, its
+// stdin and stdout the caller's, its exchange root mounted, named for its
+// attempt so a restart finds what a crash left (RemoveStale).
+//
 // bubblewrap stays the test sandbox (scripts/test-sandbox.sh); this is the
 // product's.
 package sandbox
@@ -42,6 +47,8 @@ const (
 	WorkspaceDir  = "/workspace"
 	ResultsDir    = "/results"
 	GatewaySocket = "/run/adc/gateway.sock"
+	ExchangeIn    = "/exchange/in"  // an interactive run's exchange in/, read-only
+	ExchangeOut   = "/exchange/out" // and its out/
 	homeDir       = "/home/adc"
 )
 
@@ -154,18 +161,26 @@ func (h Host) env() []string {
 
 // podman runs podman with the host's global flags.
 func (h Host) podman(ctx context.Context, args ...string) ([]byte, error) {
-	global := []string{"--root", filepath.Join(h.Root, "storage"), "--runroot", h.runRoot(),
-		"--cgroup-manager=cgroupfs", "--events-backend=none"}
-	for _, d := range h.podmanDirs()[:2] { // HOME and XDG_RUNTIME_DIR
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			return nil, err
-		}
+	global, err := h.global()
+	if err != nil {
+		return nil, err
 	}
 	r := h.Runner
 	if r == nil {
 		r = execRunner{}
 	}
 	return r.Run(ctx, h.Podman, append(global, args...), h.env())
+}
+
+// global are podman's global flags, its HOME and XDG_RUNTIME_DIR made.
+func (h Host) global() ([]string, error) {
+	for _, d := range h.podmanDirs()[:2] { // HOME and XDG_RUNTIME_DIR
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	return []string{"--root", filepath.Join(h.Root, "storage"), "--runroot", h.runRoot(),
+		"--cgroup-manager=cgroupfs", "--events-backend=none"}, nil
 }
 
 type execRunner struct{}

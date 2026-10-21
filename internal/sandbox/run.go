@@ -42,8 +42,13 @@ type Run struct {
 	Mode    Mode
 	Attempt *Attempt // its workspace and results are the only directories mounted
 	Gateway string   // the gateway's socket on the host: build mode only
-	Limits  Limits
-	Argv    []string
+	// Exchange is an adapter's exchange root on the host (in/ and out/,
+	// P22a-5d), mounted at ExchangeIn (read-only) and ExchangeOut: an
+	// interactive build run's only (Host.Interactive), under
+	// Host.ExchangeRoot, named exchange-<its attempt>.
+	Exchange string
+	Limits   Limits
+	Argv     []string
 }
 
 // resolve is p with every symlink resolved; a missing tail is kept as is.
@@ -59,8 +64,10 @@ func resolve(p string) string {
 
 // mounts are r's mount sources, resolved: the attempt's workspace and
 // results, which must be one attempt's directly under the sandbox root's
-// runs/, and in build mode the gateway, which must be a socket. None may
-// overlap a controller or Podman path, or be or contain the home.
+// runs/, in build mode the gateway, which must be a socket, and an
+// interactive run's exchange in/ and out/, real directories of a root
+// directly under ExchangeRoot. None may overlap a controller or Podman
+// path, or be or contain the home.
 func (h Host) mounts(r Run) ([]string, error) {
 	refuse := func(why string) ([]string, error) { return nil, fmt.Errorf("%w: %s", ErrSpec, why) }
 	if r.Attempt == nil || (r.Mode == Gate) != (r.Gateway == "") || r.Mode != Gate && r.Mode != Build {
@@ -77,6 +84,18 @@ func (h Host) mounts(r Run) ([]string, error) {
 			return refuse("the gateway is not a socket")
 		}
 		mounts = append(mounts, resolve(r.Gateway))
+	}
+	if r.Exchange != "" {
+		x := filepath.Join(resolve(h.ExchangeRoot()), filepath.Base(r.Exchange))
+		if r.Mode != Build || !absClean(r.Exchange) || resolve(r.Exchange) != x || !strings.HasPrefix(filepath.Base(x), "exchange-") {
+			return refuse("an exchange is a build run's, a root directly under the sandbox's exchange root")
+		}
+		for _, d := range []string{"in", "out"} {
+			if st, err := os.Lstat(filepath.Join(x, d)); err != nil || !st.IsDir() {
+				return refuse("an exchange's in/ and out/ are directories, never symlinks")
+			}
+			mounts = append(mounts, filepath.Join(x, d))
+		}
 	}
 	home := resolve(h.Home)
 	for _, m := range mounts {
@@ -115,6 +134,10 @@ func (h Host) args(r Run, name string) ([]string, error) {
 	if r.Mode == Build {
 		args = append(args, "--mount=type=bind,src="+m[2]+",dst="+GatewaySocket)
 	}
+	if r.Exchange != "" { // an interactive run: the adapter's stdio, its exchange, and where its gateway is
+		args = append(args, "--interactive", "--mount=type=bind,src="+m[3]+",dst="+ExchangeIn+",ro=true",
+			"--mount=type=bind,src="+m[4]+",dst="+ExchangeOut, "--env=ADC_GATEWAY_SOCKET="+GatewaySocket)
+	}
 	if h.mutate != nil { // tests only: the live fault injections
 		args = h.mutate(args)
 	}
@@ -132,6 +155,9 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 	_, _ = rand.Read(b)
 	name := "adc-" + hex.EncodeToString(b)
 	args, err := h.args(r, name)
+	if err == nil && r.Exchange != "" {
+		err = fmt.Errorf("%w: an exchange is an interactive run's", ErrSpec)
+	}
 	if err != nil {
 		return nil, err
 	}

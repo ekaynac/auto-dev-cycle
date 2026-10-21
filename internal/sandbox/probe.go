@@ -76,6 +76,7 @@ type Report struct {
 	Violations []string          `json:"violations"`
 
 	attempt, gateway string // the run's own mount sources: its attempt's id, the gateway's host path
+	exchange         string // and an interactive run's exchange root's name
 }
 
 // ErrProbe: the probe did not run to its end; nothing is proven.
@@ -161,6 +162,8 @@ func (r Report) allowed(m Mount) bool {
 		return r.attempt != "" && strings.HasSuffix(m.Root, "/"+r.attempt+m.Point) // relative to runs/ or to a mount at runs/
 	case m.Point == GatewaySocket && r.Mode == Build:
 		return r.gateway != "" && path.Base(m.Root) == path.Base(r.gateway)
+	case m.Point == ExchangeIn || m.Point == ExchangeOut: // an interactive run's (P22a-5d)
+		return r.exchange != "" && strings.HasSuffix(m.Root, "/"+r.exchange+"/"+path.Base(m.Point))
 	case m.Type == "devtmpfs":
 		return m.Point == "/dev"+m.Root && slices.Contains(devices, path.Base(m.Root)) ||
 			strings.HasPrefix(m.Point, "/proc/") && m.Root == "/null"
