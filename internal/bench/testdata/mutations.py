@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The benchmark recorder's mutations (P25): each is applied alone to a
-# clean copy of the repository, and `go test ./internal/bench/` must fail on
-# it (KILLED). Run from the repository root:
+# clean copy of the repository, which must build (`go vet`; otherwise
+# NOCOMPILE, not a kill), and `go test ./internal/bench/` must fail on it
+# (KILLED). The copy is under /tmp, never under $HOME, and TMPDIR is
+# ignored. Run from the repository root:
 #
 #   python3 internal/bench/testdata/mutations.py [jobs] [index ...]
 import os
@@ -28,7 +30,7 @@ MUTS = [
     ("rescues not counted", B, 'bt.Rescues += b2i(iv.Kind == Rescue)', 'bt.Rescues += 0'),
     ("a hold dropped", B, '\t\th := t.Hold\n\t\tbt.Hold = &h', '\t\th := t.Hold\n\t\t_ = h'),
     ("an unknown intervention accepted", B, 'if !slices.Contains(kinds, iv.Kind) {', 'if false {'),
-    ("a changed outcome unreported", C, 'if a, b := verdict(p), verdict(t); a != b {', 'if false {'),
+    ("a changed outcome unreported", C, 'if a, b := verdict(p), verdict(t); a != b {', 'if a, b := verdict(p), verdict(t); a != b && false {'),
     ("a lower metric reported", C, '\t\t\t\tif m.is > m.was {', '\t\t\t\tif m.is != m.was {'),
     ("a task gone unreported", C, '\t\tif !seen[t.Task] {', '\t\tif false {'),
     ("wall time growth unreported", C, 'if p.WallMs != nil && t.WallMs != nil && *t.WallMs > *p.WallMs {', 'if false {'),
@@ -54,7 +56,7 @@ MUTS = [
     ("no claimed time accepted", B, '} else if n.Claimed.IsZero() && (', '} else if false && ('),
     ("no route's executor accepted", B, 'if _, ok := route[a.Executor]; !ok {', 'if false {'),
     ("a route without a price accepted", B, 'if _, ok := m.Prices[r.Executor]; !ok {', 'if false {'),
-    ("the output not validated", B, '_, err = contract.Decode[types.BenchmarkRun]("records/benchmark-run", raw)', '_ = raw'),
+    ("the output not validated", B, '_, err = contract.Decode[types.BenchmarkRun]("records/benchmark-run", raw)', '_, _ = contract.Decode[types.BenchmarkRun]("records/benchmark-run", raw)'),
     # M3.
     ("the gateway's basis counted", B, '\t\t\tat = gateway\n', '\t\t\tat = own\n'),
     ("two bases accepted", B, 'if len(own) != 1 {', 'if len(own) == 0 {'),
@@ -76,13 +78,13 @@ MUTS = [
     ("unfinished not summarised", C, 'unfinished := fmt.Sprint(s.Unfinished)', 'unfinished := "0"'),
     # The review of #313 by Astra (docs/reviews/2026-10-21-pr313-astra.md).
     # H1.
-    ("an unsettled call at zero accepted", B, 'if owed && micros <= 0 {', 'if false {'),
+    ("an unsettled call at zero accepted", B, 'if owed && micros <= 0 {', 'if owed && false {'),
     ("the liability ignored", B, 'liability[id], "USD"', 'int64(0), "USD"'),
     # H2.
     ("unmeasured bound calls dropped", B, 'for _, id := range slices.Sorted(slices.Values(bound)) {', 'for _, id := range slices.Sorted(maps.Keys(calls)) {'),
     ("a stage of unmeasured calls dropped", B, 'if err != nil || len(bound) == 0 {', 'if err != nil || len(usage) == 0 {'),
     ("an unbound measurement accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("measurement %s of call %s', '\t\tif false {\n\t\t\treturn bt, fmt.Errorf("measurement %s of call %s'),
-    ("a bound call of no node's attempt accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("bound call', '\t\tif false {\n\t\t\treturn bt, fmt.Errorf("bound call'),
+    ("a bound call of no node's attempt accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("bound call', '\t\tif !ok && false {\n\t\t\treturn bt, fmt.Errorf("bound call'),
     ("a call bound twice accepted", B, '} else if _, dup := callAttempt[c.ID]; dup {', '} else if false {'),
     ("a negative liability accepted", B, '} else if c.Liability < 0 {', '} else if false {'),
     ("no sources as null", B, 'st.Sources = append(st.Sources, slices.Sorted(maps.Keys(sources))...)', 'st.Sources = slices.Sorted(maps.Keys(sources))'),
@@ -94,7 +96,7 @@ MUTS = [
     ("money added unchecked", B, 'add(&err, &into[k].AmountMicros, micros)', 'into[k].AmountMicros += micros'),
     # M5.
     ("a price for a route", B, 'route[a.Executor]; !ok', 'm.Prices[a.Executor]; !ok'),
-    ("a conflicting route accepted", B, 'ok && q != r {', 'false {'),
+    ("a conflicting route accepted", B, 'ok && q != r {', 'ok && q != r && false {'),
     # Opus's re-check of #313 (docs/reviews/2026-10-21-pr313-opus-r2.md).
     # M1.
     ("a settled cash call not floored", B, 'max(reported, priced), c', 'reported, c'),
@@ -107,7 +109,7 @@ MUTS = [
     # L1.
     ("a task after the recording accepted", B, 'case t.Approved.After(m.RecordedAt) || t.Closed.After(m.RecordedAt):', 'case false:'),
     ("a node after the recording accepted", B, '} else if n.Claimed.After(m.RecordedAt) || n.Done.After(m.RecordedAt) {', '} else if false {'),
-    ("a saturated duration accepted", B, 'd == time.Duration(math.MaxInt64)', 'false'),
+    ("a saturated duration accepted", B, 'd == time.Duration(math.MaxInt64)', 'd == time.Duration(math.MaxInt64) && false'),
     ("a node's saturated duration accepted", B, 'err = cmp.Or(err, serr)', '_ = serr'),
     # L2.
     ("a negative cost accepted", B, '} else if u.Cost.AmountMicros < 0 {', '} else if false {'),
@@ -130,7 +132,8 @@ def main():
     repo = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True, check=True).stdout.strip()
     jobs = int(sys.argv[1]) if len(sys.argv) > 1 else 4
     sel = [int(a) for a in sys.argv[2:]] or list(range(len(MUTS)))
-    work = tempfile.mkdtemp(prefix='bench-mutations-')
+    env = {k: v for k, v in os.environ.items() if k != 'TMPDIR'}
+    work = tempfile.mkdtemp(prefix='bench-mutations-', dir='/tmp')
     copies = []
     for w in range(jobs):
         d = os.path.join(work, str(w))
@@ -148,16 +151,19 @@ def main():
                 continue
             open(p, 'w').write(src.replace(old, new))
             try:
-                r = subprocess.run(['go', 'test', '-count=1', './internal/bench/'], cwd=copies[w], capture_output=True, text=True)
+                v = subprocess.run(['go', 'vet', './internal/bench/'], cwd=copies[w], capture_output=True, text=True, env=env)
+                r = v if v.returncode else subprocess.run(['go', 'test', '-count=1', './internal/bench/'], cwd=copies[w], capture_output=True, text=True, env=env)
             finally:
                 open(p, 'w').write(src)
-            out.append((i, name, 'KILLED' if r.returncode else 'SURVIVED'))
+            out.append((i, name, 'NOCOMPILE' if v.returncode else 'KILLED' if r.returncode else 'SURVIVED'))
         return out
 
     with ThreadPoolExecutor(jobs) as ex:
         results = sorted(r for rs in ex.map(job, range(jobs)) for r in rs)
     for i, name, res in results:
         print(i, name, res)
+    print('killed', sum(r == 'KILLED' for _, _, r in results), 'survived', sum(r == 'SURVIVED' for _, _, r in results),
+          'nocompile', sum(r == 'NOCOMPILE' for _, _, r in results), 'badstring', sum(r == 'BADSTRING' for _, _, r in results))
     for d in copies:
         clean = all(subprocess.run(['diff', '-r', '-q', os.path.join(d, x), os.path.join(repo, x)], capture_output=True).returncode == 0 for x in ('internal', 'schemas'))
         print('copy', os.path.basename(d), 'clean' if clean else 'DIRTY')
