@@ -33,7 +33,12 @@ effects (external side effects; durable identities) [M2]
 ```
 
 Projections (`proj_*`) are derived, rebuildable caches, updated **in the same transaction** as the events that change
-them. `adc dev rebuild-projections` replays the log into fresh tables and compares them with the live ones.
+them. `adc dev rebuild-projections` replays the log into fresh tables and compares them with the live ones. At start,
+the daemon first builds from the log, in one transaction, each registered projection the store has never built (one
+a later build added: no live record and no record of its build in the store's `_built` rows), then compares every
+projection; a projection the store built and has since emptied is a difference, never built again (#226 entry 107).
+Any difference keeps nothing. A store written before the `_built` record is taken to have built every projection main
+folded then, `lease_grants` (#328) aside.
 
 Large payloads live in a **content-addressed blob store** (`<state_dir>/blobs/sha256/ab/cd…`). A blob is written to a
 temp file, fsynced, digest-verified and renamed into place **before** any event references it. Blobs are immutable.

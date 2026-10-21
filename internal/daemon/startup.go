@@ -133,13 +133,16 @@ func checkKinds(ctx context.Context, s *eventstore.Store) error {
 }
 
 // checkProjections replays the log through the production projector into
-// scratch tables and compares them with the persisted projections
-// (eventstore.RebuildProjections, which always rolls back). Any difference,
-// or a replay the projector refuses, is ambiguous_state; a replay that
-// cannot run (storage, cancellation) is store_unreadable. Startup never
-// repairs a projection, and one it has not matched is never trusted.
+// scratch tables, builds from it each registered projection the store has
+// never built (a projection a later build added: #226 entry 107), and
+// compares every projection with the replay (eventstore.BuildProjections).
+// Any difference, or a replay the projector refuses, is ambiguous_state,
+// and nothing is kept: a projection the store built once, emptied since,
+// is a difference, never one to build. A replay that cannot run (storage,
+// cancellation) is store_unreadable. Startup never repairs a projection,
+// and one it has not matched is never trusted.
 func checkProjections(ctx context.Context, s *eventstore.Store) error {
-	diffs, err := s.RebuildProjections(ctx)
+	_, diffs, err := s.BuildProjections(ctx, projections, builtBeforeRecord)
 	switch {
 	case errors.Is(err, eventstore.ErrChainBroken):
 		return &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonLogIntegrityBroken, Detail: "the event log fails verification; adc dev verify-log reports the finding", cause: err}
