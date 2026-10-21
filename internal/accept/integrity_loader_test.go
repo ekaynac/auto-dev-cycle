@@ -236,7 +236,7 @@ func TestIntegrityProcess(t *testing.T) {
 		"a Python change":                {vb, map[string]string{"money.py": baseFiles["money.py"] + "\nimport os\nos._exit(0)\n"}},
 	}
 	modules := []byte("## workspace\n")
-	decisionA, listings := false, 0
+	decisionA, emptyA, listings := false, false, 0
 	for name, c := range changes {
 		vb, change := c.at, c.files
 		var blobs, calls []string // what the change reads and lists, in this process
@@ -255,8 +255,11 @@ func TestIntegrityProcess(t *testing.T) {
 		}
 		vb.withIgnored(t, record(func(l Lister) Guard { return integrity(vb.repo, vb.base, l) }), change, nil)
 		blobs, calls = slices.Compact(slices.Sorted(slices.Values(blobs))), slices.Compact(slices.Sorted(slices.Values(calls)))
-		for _, at := range slices.Concat(blobs, calls) {
-			text := "boom " + at[:min(len(at), 40)] + " é€" // multi-byte, whole
+		for i := range 2*len(blobs) + 2*len(calls) {
+			at, text := slices.Concat(blobs, calls)[i/2], "" // an empty panic (Opus #339 r2 M1′), then a multi-byte one, whole
+			if i%2 == 1 {
+				text = "boom " + at[:min(len(at), 40)] + " é€"
+			}
 			panicking := func(guard func(Lister) Guard) Guard {
 				lister := func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 					if pl[0]+"/"+pl[1]+" "+strings.Join(paths, ",") == at {
@@ -280,17 +283,17 @@ func TestIntegrityProcess(t *testing.T) {
 			out := vb.withIgnored(t, panicking(func(l Lister) Guard { return Integrity(vb.repo, vb.base, l, "") }), change, nil)
 			in.Elapsed, out.Elapsed = 0, 0
 			if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !sameVerdict(t, in, out) {
-				t.Errorf("%s, a panic at %.60s: in this process %q, in its own %q", name, at, whats(in.Blocks), whats(out.Blocks))
+				t.Errorf("%s, a panic %q at %.60s: in this process %q, in its own %q", name, text, at, whats(in.Blocks), whats(out.Blocks))
 			}
 			if bytes.Contains([]byte(strings.Join(whats(in.Blocks), "\n")), []byte("decision A's outside-initialization check failed ("+text+")")) {
-				decisionA = true
+				decisionA, emptyA = decisionA || text != "", emptyA || text == ""
 			}
 		}
-		t.Logf("%s: a panic at each of %d blobs and %d listings", name, len(blobs), len(calls))
+		t.Logf("%s: two panics (empty, and not) at each of %d blobs and %d listings", name, len(blobs), len(calls))
 		listings += len(calls)
 	}
-	if !decisionA || listings == 0 {
-		t.Errorf("decision A's recover met: %v; %d listings: the enumeration no longer meets them", decisionA, listings)
+	if !decisionA || !emptyA || listings == 0 {
+		t.Errorf("decision A's recover met: %v, by an empty panic: %v; %d listings: the enumeration no longer meets them", decisionA, emptyA, listings)
 	}
 	// #1 (Astra #293 r2): an empty root go.mod added, or deleted: the
 	// in-process guard's verdicts (no absent blob read).

@@ -171,6 +171,18 @@ func TestProcService(t *testing.T) {
 	if !ok || err != nil || !has(blocks, "unverifiable: the guard failed (boom)") {
 		t.Errorf("a panic under a clean result: %v %v %q", ok, err, whats(blocks))
 	}
+	// An empty panic, then a clean result (Opus #339 r2 M1′): latched all
+	// the same, its block "the guard failed ()".
+	silent := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+		panic("")
+	}
+	blocks, _, err, ok = fakeChild(req, read, silent, func(next func(childMsg) procMsg) {
+		next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}})
+		next(clean)
+	})
+	if !ok || err != nil || len(blocks) != 1 || blocks[0].What != "unverifiable: the guard failed ()" {
+		t.Errorf("an empty panic under a clean result: %v %v %q", ok, err, whats(blocks))
+	}
 	// A blob outside the run: never read, refused and latched.
 	asked = nil
 	blocks, _, err, ok = fakeChild(req, read, boom, func(next func(childMsg) procMsg) {
@@ -463,5 +475,33 @@ func TestListerKeepsPresence(t *testing.T) {
 	}
 	if _, err := list(context.Background(), "", pl, []byte{}, nil, []string{"fmt"}); err == nil {
 		t.Error("an empty go.mod listed as the fallback module")
+	}
+}
+
+// TestProcWire (Opus #339 r2 L2): the child's calls go one at a time, and
+// none once its result is sent: a call after it panics (in an abandoned
+// worker, which recovers it), and nothing follows the result frame.
+func TestProcWire(t *testing.T) {
+	var out bytes.Buffer
+	var answers bytes.Buffer
+	if err := gob.NewEncoder(&answers).Encode(procMsg{OK: true, B: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	w := &wire{out: &out, dec: gob.NewDecoder(&answers)}
+	if rep := w.call(childMsg{op: 'r', blob: "b", max: 1}); !rep.OK || string(rep.B) != "x" {
+		t.Fatalf("a call before the result: %+v", rep)
+	}
+	result := childMsg{op: 'd'}.frame()
+	before := out.Len()
+	if err := w.result(result); err != nil {
+		t.Fatal(err)
+	}
+	refused := func() (p any) {
+		defer func() { p = recover() }()
+		w.call(childMsg{op: 'r', blob: "b", max: 1})
+		return nil
+	}()
+	if refused != "the guard's result is already sent" || !bytes.Equal(out.Bytes()[before:], result) {
+		t.Errorf("a call after the result: %v; %d bytes after it", refused, out.Len()-before-len(result))
 	}
 }

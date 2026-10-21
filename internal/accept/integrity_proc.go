@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -370,8 +371,9 @@ type service struct {
 	readLeft        int64
 	requests, lists int
 	readErr         error
-	failed          string // a block the result must hold, unless it holds the panic's (panicked)
-	panicked        string // the first service panic's text: the guard's recovers wrap it as "unverifiable: …(text)"
+	latched         bool   // a service panicked (every failure latched here is a panic, a refusal included)
+	failed          string // the block the result must hold unless it acknowledges the panic
+	panicked        string // the first panic's text, "" included: the guard's recovers wrap it as "unverifiable: …(text)"
 	listFailed      string // a listing's failure: the result must block (Astra #287 r2 #5)
 }
 
@@ -396,7 +398,7 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
 				return blocks, warnings, s.readErr, true, nil
-			case s.failed != "" && !slices.ContainsFunc(c.blocks, s.acknowledges):
+			case s.latched && !slices.ContainsFunc(c.blocks, s.acknowledges):
 				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
 			case s.listFailed != "" && len(blocks) == 0:
 				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, nil, true, nil
@@ -428,13 +430,10 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 
 // acknowledges: b is a block of the guard's recovering the service's
 // panic, whichever recover made it (the guard's own, "the guard failed";
-// decision A's, "…check failed"): unverifiable, the panic's whole text in
-// its closing parentheses (Opus #339 M1). A service failure that is no
-// panic (a request refused) has its own text, which a block must equal.
+// decision A's, "…check failed"): unverifiable, the panic's whole text,
+// empty or not, in its closing parentheses (Opus #339 M1, M1′). Every
+// failure the service latches is a panic's, its refusals included.
 func (s *service) acknowledges(b Block) bool {
-	if s.panicked == "" {
-		return b.What == s.failed
-	}
 	return strings.HasPrefix(b.What, "unverifiable: ") && strings.HasSuffix(b.What, "("+s.panicked+")")
 }
 
@@ -444,8 +443,8 @@ func (s *service) acknowledges(b Block) bool {
 func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	defer func() {
 		if p := recover(); p != nil {
-			if s.failed == "" {
-				s.failed, s.panicked = fmt.Sprintf("unverifiable: the guard failed (%v)", p), fmt.Sprint(p)
+			if !s.latched {
+				s.latched, s.failed, s.panicked = true, fmt.Sprintf("unverifiable: the guard failed (%v)", p), fmt.Sprint(p)
 			}
 			m = procMsg{Panic: fmt.Sprint(p), Panicked: true}
 		}
@@ -481,15 +480,8 @@ func child(in io.Reader, out io.Writer) int {
 	if dec.Decode(&req) != nil {
 		return 2
 	}
-	call := func(m childMsg) procMsg {
-		var rep procMsg
-		if _, err := out.Write(m.frame()); err != nil || dec.Decode(&rep) != nil {
-			os.Exit(2) // the controller is gone
-		} else if rep.Panicked {
-			panic(rep.Panic)
-		}
-		return rep
-	}
+	w := &wire{out: out, dec: dec}
+	call := w.call
 	errOf := func(rep procMsg) error {
 		if !rep.Erred {
 			return nil
@@ -533,8 +525,46 @@ func child(in io.Reader, out io.Writer) int {
 	} else if f = (childMsg{op: 'd', blocks: blocks, warnings: warnings, err: errText(err), erred: err != nil}).frame(); len(f)-4 > maxFrame {
 		f = childMsg{op: 'd', blocks: unverifiable(fmt.Sprintf("the guard's result is over its bound (%d bytes)", len(f)-4))}.frame()
 	}
-	if _, err := out.Write(f); err != nil {
+	if w.result(f) != nil {
 		return 2
 	}
 	return 0
+}
+
+// wire is the child's side of its pipes: one call at a time, a request
+// written and its answer read whole (no frame of another call between its
+// bytes), and none once the result is sent (Opus #339 r2 L2): a type check
+// abandoned past its deadline that reads on after it panics, in its own
+// worker, which recovers it, as main's abandoned check would.
+type wire struct {
+	mu   sync.Mutex
+	out  io.Writer
+	dec  *gob.Decoder
+	sent bool
+}
+
+func (w *wire) call(m childMsg) procMsg {
+	var rep procMsg
+	w.mu.Lock()
+	if w.sent {
+		w.mu.Unlock()
+		panic("the guard's result is already sent")
+	}
+	if _, err := w.out.Write(m.frame()); err != nil || w.dec.Decode(&rep) != nil {
+		os.Exit(2) // the controller is gone
+	}
+	w.mu.Unlock()
+	if rep.Panicked {
+		panic(rep.Panic)
+	}
+	return rep
+}
+
+// result writes the result frame f, the last; no call after it.
+func (w *wire) result(f []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sent = true
+	_, err := w.out.Write(f)
+	return err
 }
