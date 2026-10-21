@@ -83,6 +83,10 @@ type Standing struct {
 	// Below: the latest provider reconciliation is below the gateway's observed counts, so the call settles at the
 	// counts (P20, H1), flagged; a later reconciliation may correct it.
 	Below bool
+	// Saturated: the reports could not be summed (an overflow), so Usage is
+	// a stand-in at the contract's limit, not an upper bound on the call's
+	// usage (Astra #302 H1): what it costs is not known at any price.
+	Saturated bool
 }
 
 // StandingOf is call's standing from its reports ms. Unlike Reconcile it
@@ -92,8 +96,9 @@ type Standing struct {
 //     currencies are reconciled as one and only flagged (pricing reads the
 //     executor's declared price, never the reported currency or cost);
 //   - reports Reconcile cannot sum (an overflow) leave the call uncertain at
-//     a saturated figure, flagged, unless a provider reconciliation settles
-//     it, never below the gateway's observed counts (trusted).
+//     a saturated figure, flagged and Saturated, unless a provider
+//     reconciliation settles it, never below the gateway's observed counts
+//     (trusted).
 func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 	if len(ms) == 0 {
 		return Standing{}
@@ -126,7 +131,7 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 	}
 	counted, err := sum(bound(seen, floors))
 	if len(recon) == 0 || err != nil {
-		return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
+		return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true, Saturated: true}
 	}
 	f, _ := latest(recon)
 	st := Standing{Settled: true, Usage: &f, Inconsistent: true}

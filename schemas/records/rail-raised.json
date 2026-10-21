@@ -2,15 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/rail-raised.json",
   "title": "RailRaised",
-  "description": "The payload of task.rail_raised/v1 (M1 slice plan P17a): an operator raised one of a task's count rails, for that task, to a cap above the one then in force. internal/authority admits it only under its task's id, by its actor, at its event's time, and above any earlier raise of that rail.",
+  "description": "The payload of task.rail_raised/v1 (M1 slice plan P17a, P17b): an operator raised one of a task's rails, for that task, above the cap then in force: a count rail's to, or per_task_usd's to_usd. internal/authority admits it only under its task's id, by its actor, at its event's time, with exactly the cap its rail takes, above the cap in force.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["task", "project", "rail", "to", "by", "at"],
+  "required": ["task", "project", "rail", "by", "at"],
   "properties": {
     "task": {"$ref": "../common/defs.json#/$defs/TaskID"},
     "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
-    "rail": {"$ref": "../api/scope/task-raise-rail.json#/$defs/CountRail"},
+    "rail": {"$ref": "../api/scope/task-raise-rail.json#/$defs/RaisableRail"},
     "to": {"$ref": "../api/scope/task-raise-rail.json#/$defs/RailCap"},
+    "to_usd": {"$ref": "../config/project-profile.json#/$defs/USD"},
     "by": {"$ref": "../common/defs.json#/$defs/ActorID"},
     "at": {"$ref": "../common/defs.json#/$defs/Time"}
   }

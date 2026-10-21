@@ -4,21 +4,23 @@
 
 package types
 
-// TaskRaiseRailScope: The scope of task.raise_rail (M1 slice plan P17a; §6 L3): an operator raises one of a task's count rails to a higher cap, for that task only, and every budget_rail hold of the task on that rail clears. The USD rails are P17b's; per_day_usd is the project's, raised only by a profile change.
+// TaskRaiseRailScope: The scope of task.raise_rail (M1 slice plan P17a, P17b; §6 L3): an operator raises one of a task's rails above the cap in force, for that task only, and every budget_rail hold of the task on that rail clears. A count rail takes to; per_task_usd takes to_usd (P17b); per_day_usd is the project's, raised only by a profile change.
 type TaskRaiseRailScope struct {
-	Task TaskID    `json:"task"`
-	Rail CountRail `json:"rail"`
-	To   RailCap   `json:"to"`
+	Task  TaskID       `json:"task"`
+	Rail  RaisableRail `json:"rail"`
+	To    *RailCap     `json:"to,omitempty"`
+	ToUsd *USD         `json:"to_usd,omitempty"`
 }
 
-// CountRail: A count rail of the project profile's budget.rails.
-type CountRail string
+// RaisableRail: A rail of the project profile's budget.rails a task raises: a count rail, or per_task_usd.
+type RaisableRail string
 
 const (
-	CountRailAttemptsPerRound             CountRail = "attempts_per_round"
-	CountRailRoundsPerTask                CountRail = "rounds_per_task"
-	CountRailMergeOperationsPerGeneration CountRail = "merge_operations_per_generation"
+	RaisableRailAttemptsPerRound             RaisableRail = "attempts_per_round"
+	RaisableRailRoundsPerTask                RaisableRail = "rounds_per_task"
+	RaisableRailMergeOperationsPerGeneration RaisableRail = "merge_operations_per_generation"
+	RaisableRailPerTaskUsd                   RaisableRail = "per_task_usd"
 )
 
-// RailCap: A raised cap: above the one in force.
+// RailCap: A raised count cap: above the one in force.
 type RailCap = int64

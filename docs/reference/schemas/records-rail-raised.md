@@ -4,7 +4,7 @@
 
 `schemas/records/rail-raised.json`
 
-The payload of task.rail_raised/v1 (M1 slice plan P17a): an operator raised one of a task's count rails, for that task, to a cap above the one then in force. internal/authority admits it only under its task's id, by its actor, at its event's time, and above any earlier raise of that rail.
+The payload of task.rail_raised/v1 (M1 slice plan P17a, P17b): an operator raised one of a task's rails, for that task, above the cap then in force: a count rail's to, or per_task_usd's to_usd. internal/authority admits it only under its task's id, by its actor, at its event's time, with exactly the cap its rail takes, above the cap in force.
 
 ## Fields of the document
 
@@ -12,8 +12,9 @@ The payload of task.rail_raised/v1 (M1 slice plan P17a): an operator raised one 
 |---|---|---|---|
 | `task` | yes | [TaskID](common-defs.md#taskid) |  |
 | `project` | yes | [ProjectID](common-defs.md#projectid) |  |
-| `rail` | yes | [CountRail](api-scope-task-raise-rail.md#countrail) |  |
-| `to` | yes | [RailCap](api-scope-task-raise-rail.md#railcap) |  |
+| `rail` | yes | [RaisableRail](api-scope-task-raise-rail.md#raisablerail) |  |
+| `to` |  | [RailCap](api-scope-task-raise-rail.md#railcap) |  |
+| `to_usd` |  | [USD](config-project-profile.md#usd) |  |
 | `by` | yes | [ActorID](common-defs.md#actorid) |  |
 | `at` | yes | [Time](common-defs.md#time) |  |
 

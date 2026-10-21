@@ -351,7 +351,7 @@ func TestUnreconcilableReportsNeverWedge(t *testing.T) {
 			}
 			var inconsistent bool
 			w.view(func(tx *eventstore.Tx) (err error) {
-				_, inconsistent, err = capacity.LiabilitiesOf(tx, r.lease, []types.ResourceGroupID{quota})
+				_, inconsistent, _, err = capacity.LiabilitiesOf(tx, r.lease, []types.ResourceGroupID{quota})
 				return err
 			})
 			if l := w.liable(quota); l != want || !inconsistent {
@@ -446,7 +446,7 @@ func TestSettledCallOwesAgainWhateverTheOrder(t *testing.T) {
 			}
 			var inconsistent bool
 			w.view(func(tx *eventstore.Tx) (err error) {
-				_, inconsistent, err = capacity.LiabilitiesOf(tx, r.lease, []types.ResourceGroupID{quota})
+				_, inconsistent, _, err = capacity.LiabilitiesOf(tx, r.lease, []types.ResourceGroupID{quota})
 				return err
 			})
 			if l := w.liable(quota); l != maxTokens || !inconsistent {

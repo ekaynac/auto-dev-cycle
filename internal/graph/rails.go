@@ -20,9 +20,15 @@ package graph
 //   - A task's caps are its project profile's, absent ones the defaults,
 //     raised for the task by task.raise_rail (authority.Rails), which
 //     clears the task's holds on that rail (ClearRail).
+//   - The USD rails (P17b): per task and per project day, in micros, from
+//     the profile's budget.rails; per_task_usd is raised for one task by
+//     task.raise_rail, per_day_usd only by a profile change.
+//     dispatch.Match checks them at lease admission.
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -31,23 +37,51 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// The count rails, by their profile and task.raise_rail names.
+// The rails, by their profile and task.raise_rail names.
 const (
 	RailAttempts = "attempts_per_round"
 	RailRounds   = "rounds_per_task"
 	RailMergeOps = "merge_operations_per_generation"
+	RailTaskUSD  = "per_task_usd"
+	RailDayUSD   = "per_day_usd"
 )
 
-// Caps are a task's count rails in force.
-type Caps struct{ AttemptsPerRound, RoundsPerTask, MergeOperationsPerGeneration int64 }
+// Caps are a task's rails in force: the count rails, and the USD rails in
+// micros (NoUSDRail: none known).
+type Caps struct {
+	AttemptsPerRound, RoundsPerTask, MergeOperationsPerGeneration int64
+	PerTaskMicros, PerDayMicros                                   int64
+}
+
+// NoUSDRail is a USD rail no profile set: DefaultCaps', which no project
+// is admitted under (the profile's USD rails are required).
+const NoUSDRail = -1
 
 // DefaultCaps are the caps of a profile that names none (the operator's,
 // 2026-10-20).
-var DefaultCaps = Caps{AttemptsPerRound: 3, RoundsPerTask: 5, MergeOperationsPerGeneration: 2}
+var DefaultCaps = Caps{AttemptsPerRound: 3, RoundsPerTask: 5, MergeOperationsPerGeneration: 2, PerTaskMicros: NoUSDRail, PerDayMicros: NoUSDRail}
 
-// CapsOf are r's count rails, a default for each one absent.
+// USDMicros is a USD amount (records' USD: whole dollars, at most two
+// decimals) in micros.
+func USDMicros(u types.USD) (int64, error) {
+	whole, cents, _ := strings.Cut(string(u), ".")
+	w, err := strconv.ParseInt(whole, 10, 64)
+	c := int64(0)
+	if err == nil && cents != "" {
+		c, err = strconv.ParseInt((cents + "0")[:2], 10, 64)
+	}
+	if err != nil || w < 0 || c < 0 || len(cents) > 2 || w > 1<<40 {
+		return 0, fmt.Errorf("graph: %q is no USD amount", u)
+	}
+	return w*1_000_000 + c*10_000, nil
+}
+
+// CapsOf are r's rails, a default for each count rail absent. A USD rail
+// that does not parse is 0: nothing is admitted under it.
 func CapsOf(r types.ProjectProfileBudgetRails) Caps {
 	c := DefaultCaps
+	c.PerTaskMicros, _ = USDMicros(r.PerTaskUsd)
+	c.PerDayMicros, _ = USDMicros(r.PerDayUsd)
 	for _, f := range []struct {
 		v  *int64
 		to *int64
@@ -59,7 +93,7 @@ func CapsOf(r types.ProjectProfileBudgetRails) Caps {
 	return c
 }
 
-// Of is c's cap on rail; false for a rail that is not a count rail.
+// Of is c's cap on rail (a USD rail's in micros); false for no rail.
 func (c Caps) Of(rail string) (int64, bool) {
 	switch rail {
 	case RailAttempts:
@@ -68,6 +102,10 @@ func (c Caps) Of(rail string) (int64, bool) {
 		return c.RoundsPerTask, true
 	case RailMergeOps:
 		return c.MergeOperationsPerGeneration, true
+	case RailTaskUSD:
+		return c.PerTaskMicros, true
+	case RailDayUSD:
+		return c.PerDayMicros, true
 	}
 	return 0, false
 }
@@ -163,7 +201,7 @@ func (e *evaluation) roundRail(rec nodeRecord) (held bool, err error) {
 // task's nodes, on its signal: task.raise_rail's.
 func ClearRail(tx *eventstore.Tx, task types.TaskID, rail string) ([]eventstore.Event, error) {
 	if _, ok := DefaultCaps.Of(rail); !ok {
-		return nil, fmt.Errorf("graph: %s is no count rail", rail)
+		return nil, fmt.Errorf("graph: %s is no rail", rail)
 	}
 	keys, err := tx.Keys(NodeProjection, "")
 	if err != nil {

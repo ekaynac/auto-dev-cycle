@@ -7,20 +7,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -76,9 +80,21 @@ type env struct {
 	blobs *blobstore.Store
 }
 
-// open is a store with the lease fold over capacity and the checked graph
-// fold (graph.Projector over authority.Answers),
-// as adcd composes them.
+// unrailed are the count rails' defaults and USD rails no test reaches:
+// the rails a test that is not about them passes (P17b: no rails, or no
+// USD rail, fail closed for a priced executor).
+var unrailed graph.Rails = func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
+	c := graph.DefaultCaps
+	c.PerTaskMicros, c.PerDayMicros = 1<<50, 1<<50
+	return c, nil
+}
+
+// clock is the test stores' clock: now, unless a test moves it.
+var clock = time.Now
+
+// open is a store with the lease fold over capacity, the usage ledger and
+// the model calls' bindings, and the checked graph fold (graph.Projector
+// over authority.Answers), as adcd composes them.
 func open(t *testing.T, groups []types.ResourceGroup) env {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "state")
@@ -86,13 +102,15 @@ func open(t *testing.T, groups []types.ResourceGroup) env {
 	blobs := must(blobstore.Open(state))
 	r := must(capacity.NewReservations(groups))
 	kinds := graph.Kinds()
-	for k, v := range lease.Kinds() {
-		kinds[k] = v
+	for _, ks := range []eventstore.Kinds{lease.Kinds(), ledger.Kinds(), modelcall.Kinds()} {
+		maps.Copy(kinds, ks)
 	}
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: modelcall.Effects(),
+		Now: func() time.Time { return clock() },
 		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(
-			capacity.Hook(lease.Projector{Blobs: blobs, Units: graph.Units{}}, r), graph.Projector{Answers: authority.Answers{}}.Project)}})
+			capacity.Hook(lease.Projector{Blobs: blobs, Units: graph.Units{}}, r), ledger.Project, modelcall.Project,
+			graph.Projector{Answers: authority.Answers{}}.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +253,7 @@ func (e env) state(id types.LeaseID, node types.NodeID) (types.Lease, int64, *ty
 func TestMatchAndLaunch(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
+	d := Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(true)}
 	n := e.node(types.NodeKindPlan, reg, false)
 	id, err := e.match(d, card(n), builder)
 	if err != nil {
@@ -290,7 +308,7 @@ func TestMatchAndLaunch(t *testing.T) {
 func TestMatchRefusesBeforeReserving(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	d := Dispatcher{Registry: reg}
+	d := Dispatcher{Rails: unrailed, Registry: reg}
 	plan, req := e.node(types.NodeKindPlan, reg, false), e.node(types.NodeKindReviewRequirement, reg, false)
 	unclaimed := e.node(types.NodeKindPlan, reg, true)
 	for name, c := range map[string]struct {
@@ -375,10 +393,10 @@ func TestLaunchReadiness(t *testing.T) {
 		d            Dispatcher
 		hold, signal string
 	}{
-		"the gateway holds no credential": {Dispatcher{Registry: reg, Images: images{}, Credentials: creds(false)}, "source_invalid_config", "destination stub"},
-		"no gateway (P11 unbuilt)":        {Dispatcher{Registry: reg, Images: images{}}, "source_invalid_config", "destination stub"},
-		"the image is absent":             {Dispatcher{Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}, "wrong_owner", "image " + image},
-		"no image store":                  {Dispatcher{Registry: reg, Credentials: creds(true)}, "wrong_owner", "image " + image},
+		"the gateway holds no credential": {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(false)}, "source_invalid_config", "destination stub"},
+		"no gateway (P11 unbuilt)":        {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, "source_invalid_config", "destination stub"},
+		"the image is absent":             {Dispatcher{Rails: unrailed, Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}, "wrong_owner", "image " + image},
+		"no image store":                  {Dispatcher{Rails: unrailed, Registry: reg, Credentials: creds(true)}, "wrong_owner", "image " + image},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := open(t, gs)
@@ -409,14 +427,14 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 		exe   types.ExecutorID
 		after Dispatcher
 	}{
-		"the destination moved":          {types.NodeKindPlan, builder, Dispatcher{Registry: moved, Images: images{}, Credentials: creds(true)}},
-		"the roster member's family":     {types.NodeKindReviewRequirement, reviewer, Dispatcher{Registry: renamed, Images: images{}, Credentials: creds(true)}},
-		"a builder's family, not placed": {types.NodeKindPlan, builder, Dispatcher{Registry: renamed, Images: images{}, Credentials: creds(true)}},
+		"the destination moved":          {types.NodeKindPlan, builder, Dispatcher{Rails: unrailed, Registry: moved, Images: images{}, Credentials: creds(true)}},
+		"the roster member's family":     {types.NodeKindReviewRequirement, reviewer, Dispatcher{Rails: unrailed, Registry: renamed, Images: images{}, Credentials: creds(true)}},
+		"a builder's family, not placed": {types.NodeKindPlan, builder, Dispatcher{Rails: unrailed, Registry: renamed, Images: images{}, Credentials: creds(true)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := open(t, gs)
 			n := e.node(c.kind, reg, false)
-			id, err := e.match(Dispatcher{Registry: reg}, card(n), c.exe)
+			id, err := e.match(Dispatcher{Rails: unrailed, Registry: reg}, card(n), c.exe)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -437,7 +455,7 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 	// A node held between the grant and the launch is no longer claimed:
 	// the launch is refused and the lease released, with no second hold.
 	e := open(t, gs)
-	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
+	d := Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(true)}
 	n := e.node(types.NodeKindPlan, reg, false)
 	id, err := e.match(d, card(n), builder)
 	if err != nil {
@@ -460,7 +478,7 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 // with a good observation in hand.
 func TestLaunchFailsClosed(t *testing.T) {
 	reg, gs := stub(t, nil)
-	full := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
+	full := Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(true)}
 	ctx := context.Background()
 	// Observations made under another registry, for the same executor and
 	// image, differing in one binding each; the launch runs under reg, the
@@ -482,13 +500,13 @@ func TestLaunchFailsClosed(t *testing.T) {
 		"a readiness for another executor": {full, func(c Card) Readiness { return full.Observe(ctx, c, reviewer) }, "", ""},
 		"a readiness for another image":    {full, func(c Card) Readiness { c.Image += "x"; return full.Observe(ctx, c, builder) }, "", ""},
 		"a readiness for another destination": {full, func(c Card) Readiness {
-			return Dispatcher{Registry: dest, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
+			return Dispatcher{Rails: unrailed, Registry: dest, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
 		}, "", ""},
 		"a readiness for another credential": {full, func(c Card) Readiness {
-			return Dispatcher{Registry: cred, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
+			return Dispatcher{Rails: unrailed, Registry: cred, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
 		}, "", ""},
-		"no image store, a good readiness": {Dispatcher{Registry: reg, Credentials: creds(true)}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "wrong_owner", "image " + image},
-		"no gateway, a good readiness":     {Dispatcher{Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", "destination stub"},
+		"no image store, a good readiness": {Dispatcher{Rails: unrailed, Registry: reg, Credentials: creds(true)}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "wrong_owner", "image " + image},
+		"no gateway, a good readiness":     {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", "destination stub"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := open(t, gs)
@@ -508,7 +526,7 @@ func TestLaunchFailsClosed(t *testing.T) {
 func TestMatchOncePerUnit(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	d := Dispatcher{Registry: reg}
+	d := Dispatcher{Rails: unrailed, Registry: reg}
 	n := e.node(types.NodeKindPlan, reg, false)
 	id, err := e.match(d, card(n), builder)
 	if err != nil {
@@ -532,7 +550,7 @@ func TestMatchOncePerUnit(t *testing.T) {
 // another project than the card's is refused and released (L4).
 func TestLaunchErrorsAndProjects(t *testing.T) {
 	reg, gs := stub(t, nil)
-	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
+	d := Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(true)}
 	e := open(t, gs)
 	n := e.node(types.NodeKindPlan, reg, false)
 	id, err := e.match(d, card(n), builder)
@@ -585,14 +603,14 @@ func TestReadinessSnapshotsCredential(t *testing.T) {
 	gateway := credSet{"stub": true} // A only
 	e := open(t, gs)
 	n := e.node(types.NodeKindPlan, regA, false)
-	observed := Dispatcher{Registry: regA, Images: images{}, Credentials: gateway}.Observe(context.Background(), card(n), builder)
+	observed := Dispatcher{Rails: unrailed, Registry: regA, Images: images{}, Credentials: gateway}.Observe(context.Background(), card(n), builder)
 
 	*doc.Executors[0].CredentialRef = "other" // B, through the document's pointer
 	regB, err := registry.New(doc, gs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dB := Dispatcher{Registry: regB, Images: images{}, Credentials: gateway}
+	dB := Dispatcher{Rails: unrailed, Registry: regB, Images: images{}, Credentials: gateway}
 	id, err := e.match(dB, card(n), builder)
 	if err != nil {
 		t.Fatal(err)
@@ -606,7 +624,7 @@ func TestReadinessSnapshotsCredential(t *testing.T) {
 // raised and the refusal, release and hold all commit.
 func TestLaunchMissingImagePastSignal(t *testing.T) {
 	reg, gs := stub(t, nil)
-	d := Dispatcher{Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}
+	d := Dispatcher{Rails: unrailed, Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}
 	// Past the signal's 1024 characters; and past the placement detail's
 	// 4096, which only the capability check's bounded detail lets match
 	// (Astra, #246 round 2).
@@ -672,7 +690,7 @@ func TestLaunchAttemptRail(t *testing.T) {
 	e := open(t, gs)
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true),
 		Rails: func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
-			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2}, nil
+			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2, PerTaskMicros: 1 << 50, PerDayMicros: 1 << 50}, nil
 		}}
 	n := e.node(types.NodeKindPlan, reg, false)
 	for i := range 2 {

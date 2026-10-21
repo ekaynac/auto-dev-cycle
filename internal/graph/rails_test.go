@@ -30,14 +30,22 @@ func clearRail(rail string) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return ClearRail(tx, tskID, rail) }
 }
 
-// TestCapsOf: a profile's count rails, a default for each one absent.
+// TestCapsOf: a profile's count rails, a default for each one absent, and
+// its USD rails in micros (P17b); a USD amount that does not parse is 0.
 func TestCapsOf(t *testing.T) {
 	two := int64(2)
-	if c := CapsOf(types.ProjectProfileBudgetRails{}); c != DefaultCaps || c != (Caps{3, 5, 2}) {
+	usd := types.ProjectProfileBudgetRails{PerTaskUsd: "5", PerDayUsd: "20.05"}
+	if c := CapsOf(usd); c != (Caps{3, 5, 2, 5_000_000, 20_050_000}) || DefaultCaps != (Caps{3, 5, 2, NoUSDRail, NoUSDRail}) {
 		t.Errorf("no count rails: %+v", c)
 	}
-	if c := CapsOf(types.ProjectProfileBudgetRails{RoundsPerTask: &two}); c != (Caps{3, 2, 2}) {
-		t.Errorf("rounds_per_task 2: %+v", c)
+	usd.RoundsPerTask, usd.PerTaskUsd = &two, "0.5"
+	if c := CapsOf(usd); c != (Caps{3, 2, 2, 500_000, 20_050_000}) {
+		t.Errorf("rounds_per_task 2, per_task_usd 0.5: %+v", c)
+	}
+	for _, bad := range []types.USD{"", "x", "-1", "1.234", "1.x"} {
+		if m, err := USDMicros(bad); err == nil {
+			t.Errorf("USDMicros(%q) = %d", bad, m)
+		}
 	}
 }
 
@@ -53,7 +61,7 @@ func TestRoundRail(t *testing.T) {
 		t.Fatal(err)
 	}
 	one := g.env(noRequirement)
-	one.Rails = capped(Caps{3, 1, 2})
+	one.Rails = capped(Caps{3, 1, 2, NoUSDRail, NoUSDRail})
 	g.must(evaluate(one, next.Node.ID))
 	h, held := g.railHold(next.Node.ID, RailRounds)
 	if st := g.state(next.Node.ID); !held || st.State != types.NodeStateStateHeld || h.Owner != types.OwnerOperator {
@@ -83,13 +91,13 @@ func TestRoundRail(t *testing.T) {
 		t.Error("a raise of one task cleared another task's hold")
 	}
 	two := g.env(noRequirement)
-	two.Rails = capped(Caps{3, 2, 2})
+	two.Rails = capped(Caps{3, 2, 2, NoUSDRail, NoUSDRail})
 	g.must(evaluate(two, next.Node.ID))
 	if st := g.state(next.Node.ID).State; st != types.NodeStateStateClaimed {
 		t.Errorf("round 2 once the rail is 2: %s", st)
 	}
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return ClearRail(tx, tskID, "per_day_usd") }); err == nil {
-		t.Error("a USD rail cleared as a count rail")
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return ClearRail(tx, tskID, "per_week_usd") }); err == nil {
+		t.Error("an unknown rail cleared")
 	}
 }
 
@@ -116,7 +124,7 @@ func TestMergeRail(t *testing.T) {
 	g.must(clearRail(RailMergeOps))
 	var raised Operation
 	env := effectEnv
-	env.Rails = capped(Caps{3, 5, 3})
+	env.Rails = capped(Caps{3, 5, 3, NoUSDRail, NoUSDRail})
 	g.must(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
 		raised, err = Operate(tx, gen.Merge, env)
 		return nil, err
