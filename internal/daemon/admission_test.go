@@ -221,17 +221,10 @@ func TestDaemonClaimTakesAdmission(t *testing.T) {
 	})
 }
 
-// Opus #309 H1, input 2, through adcd's own fold: task A's plan completed
-// and A done, B admitted; invalidating A's plan, which would claim it again
-// at its next generation, is refused (A is not admitted): a done task runs
-// nothing while another is admitted.
-func TestDaemonDoneTaskRunsNothing(t *testing.T) {
-	w, sys := withSystem(t)
-	_, first := admittedTask(t, w, sys)
-	plan := templateNodes(w, first)[types.NodeKindPlan]
-	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
-	})
+// completePlan commits a completed result of plan, claimed at round 1, as
+// sys.
+func completePlan(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID) {
+	t.Helper()
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		nodes, err := graph.Nodes(tx)
 		var key types.ComputationKey
@@ -248,6 +241,20 @@ func TestDaemonDoneTaskRunsNothing(t *testing.T) {
 		none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 		return nil, graph.Commit(tx, plan, r, graph.Env{Need: none, Authority: authority.Answers{}})
 	})
+}
+
+// Opus #309 H1, input 2, through adcd's own fold: task A's plan completed
+// and A done, B admitted; invalidating A's plan, which would claim it again
+// at its next generation, is refused (A is not admitted): a done task runs
+// nothing while another is admitted.
+func TestDaemonDoneTaskRunsNothing(t *testing.T) {
+	w, sys := withSystem(t)
+	_, first := admittedTask(t, w, sys)
+	plan := templateNodes(w, first)[types.NodeKindPlan]
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+	})
+	completePlan(t, w, sys, plan)
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, first) })
 	_, second := admittedTask(t, w, sys)
 	if len(templateNodes(w, second)) != 4 {

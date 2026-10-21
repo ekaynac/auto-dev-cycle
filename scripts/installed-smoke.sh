@@ -174,7 +174,7 @@ want 0 opnote
 adc_as /tmp/op deferred task request-review --expect 0 --reason smoke --json
 want 2 deferred action_deferred
 
-step "intake: the operator creates a project and a task, and cancels the task (P22a-2)"
+step "intake: a project and a task; the reconcile loop admits it; a second task is cancelled (P22a-2, P22a-4)"
 # field NAME KEY: the first "KEY":"value" or "KEY":number in NAME's output.
 field() { sed -n "s/.*\"$2\":\"\{0,1\}\([a-z0-9_]*\).*/\1/p" "$out/$1.out" | head -n 1; }
 adc_as /tmp/op project project create --expect 0 --reason smoke --json --scope "$(cat /py-mini.json)"
@@ -183,17 +183,28 @@ prj="$(field project project)"
 [[ "$prj" == prj_* ]] || die "project create: no project id: $(head -c 400 "$out/project.out")"
 printf '{"project":"%s","title":"smoke","requirement":"r"}' "$prj" >/tmp/spec.json
 printf 'def test_smoke():\n    pass\n' >/tmp/test_smoke.py
-adc_as /tmp/op task task create --expect 0 --reason smoke --json --scope-file /tmp/spec.json --attach /tmp/test_smoke.py
-want 0 task
-tsk="$(field task task)" first="$(field task first_seq)"
-[[ "$tsk" == tsk_* && -n "$first" ]] || die "task create: no task id: $(head -c 400 "$out/task.out")"
-grep -q '"state":"ready"' "$out/task.out" || die "task create: not ready: $(head -c 400 "$out/task.out")"
+# create NAME: an operator's task create, its output under NAME; tsk and
+# first are its task and its first seq.
+create() {
+  adc_as /tmp/op "$1" task create --expect 0 --reason smoke --json --scope-file /tmp/spec.json --attach /tmp/test_smoke.py
+  want 0 "$1"
+  tsk="$(field "$1" task)" first="$(field "$1" first_seq)"
+  [[ "$tsk" == tsk_* && -n "$first" ]] || die "task create: no task id: $(head -c 400 "$out/$1.out")"
+  grep -q '"state":"ready"' "$out/$1.out" || die "task create: not ready: $(head -c 400 "$out/$1.out")"
+}
+create task
+admitted() {
+  adc_as /tmp/op board board --json
+  [[ $rc -eq 0 ]] && grep -q '"admitted":true' "$out/board.out"
+}
+within 30 "the reconcile loop to admit the task" admitted
+create task2
 adc_as /tmp/op cancel task cancel --expect "$first" --reason smoke --json --scope "{\"task\":\"$tsk\"}"
 want 0 cancel
 adc_as /tmp/op board board --json
 want 0 board
-if ! grep -q '"column":"done"' "$out/board.out" || ! grep -q '"cancelled":true' "$out/board.out"; then
-  die "board: the cancelled task is not in Done: $(head -c 400 "$out/board.out")"
+if ! grep -q '"column":"done"' "$out/board.out" || ! grep -q '"cancelled":true' "$out/board.out" || ! grep -q '"admitted":true' "$out/board.out"; then
+  die "board: the first task is not admitted, or the second not cancelled in Done: $(head -c 400 "$out/board.out")"
 fi
 
 step "a scoped read returns only granted records"

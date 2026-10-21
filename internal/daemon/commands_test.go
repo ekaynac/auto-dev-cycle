@@ -49,7 +49,9 @@ type commanded struct {
 }
 
 // runCommanded starts the daemon over the seeded store; each extra seeds
-// more history through the seeder, as the operator, before the start.
+// more history through the seeder, as the operator, before the start. The
+// reconcile loop's period is an hour: only the start and the nudge after
+// each applied command run its passes (Opus #312 L2).
 func runCommanded(t *testing.T, extra ...func(w *seeder, op types.ActorID)) *commanded {
 	t.Helper()
 	testguard.Home(t) // never the user's real ~/.config/adc
@@ -109,7 +111,7 @@ func runCommanded(t *testing.T, extra ...func(w *seeder, op types.ActorID)) *com
 	w.done()
 	ctx, cancel := context.WithCancel(context.Background())
 	done, ready := make(chan error, 1), make(chan *Daemon, 1)
-	cfg := Config{StateDir: c.dir, authenticated: func(p identity.Principal) {
+	cfg := Config{StateDir: c.dir, reconcileEvery: time.Hour, authenticated: func(p identity.Principal) {
 		if f := c.hook.Load(); f != nil {
 			(*f)(p)
 		}
