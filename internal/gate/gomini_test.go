@@ -38,6 +38,20 @@ const (
 	goMiniARM64 = "88e9e039a6ba7719b386347388c00292458a81bc44de5f370731c7dea5bfbe6a"
 )
 
+// recorded: a record's environment names the pin and go-mini's arm64
+// platform image.
+func recorded(image, id, pin string) bool { return image == pin && id == goMiniARM64 }
+
+// TestGateGoMiniRecordStale (Opus #330 L1): a record still naming the old
+// pin, or the old platform image, is not go-mini's.
+func TestGateGoMiniRecordStale(t *testing.T) {
+	const pin = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d"
+	old := "ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97"
+	if !recorded(pin, goMiniARM64, pin) || recorded(pin, pinnedARM64, pin) || recorded(old, goMiniARM64, pin) {
+		t.Error("the record's environment check")
+	}
+}
+
 // goMiniFiles are go-mini's repository files, by repo path.
 func goMiniFiles(t *testing.T) map[string]string {
 	t.Helper()
@@ -57,11 +71,13 @@ func goMiniFiles(t *testing.T) map[string]string {
 }
 
 // TestGateGoMini (#226 entries 94, 97): go-mini's recorded baseline,
-// measured by Measure in go-mini's own pinned image, binds its profile's command, that pin, the
-// platform image it resolves to and the tree of T0's repo/ as committed;
-// the measured run, judged against it, is clean; the acceptance record
-// names the stub task's committed hidden test and reference change; and
-// the gate measures that tree green here too, with this host's go.
+// measured by Measure in go-mini's own pinned image, binds its profile's
+// command, that pin, the platform image it resolves to and the tree of
+// T0's repo/ as committed, and so does the record's environment (Opus #330
+// L1); the measured run, judged against it, is clean; the acceptance
+// record names the stub task's committed hidden test and reference
+// change; and the gate measures that tree green here too, with this
+// host's go.
 func TestGateGoMini(t *testing.T) {
 	var b Baseline
 	var p struct {
@@ -69,8 +85,12 @@ func TestGateGoMini(t *testing.T) {
 		Toolchain struct{ Images map[string]string }
 	}
 	var rec struct {
-		BaseTree string `json:"base_tree"`
-		Result   struct {
+		BaseTree    string `json:"base_tree"`
+		Environment struct {
+			Image   string `json:"image"`
+			ImageID string `json:"image_id"`
+		}
+		Result struct {
 			TestsPassed int `json:"tests_passed"`
 		}
 		Acceptance struct {
@@ -95,7 +115,7 @@ func TestGateGoMini(t *testing.T) {
 	f := newFixture(t, goMiniFiles(t), p.Gate.Command...)
 	pin := p.Toolchain.Images["go"]
 	in := In{Image: sandbox.Image{Pinned: pin, ID: goMiniARM64, OS: "linux", Arch: "arm64"}, Gate: p.Gate, Env: "ci", Base: f.tree, Baseline: &b}
-	if err := in.check(); err != nil || pin == "" || b.Image != pin || b.Base != f.tree || rec.BaseTree != f.tree || len(b.Results) != rec.Result.TestsPassed || !b.Green() {
+	if err := in.check(); err != nil || pin == "" || b.Image != pin || b.Base != f.tree || rec.BaseTree != f.tree || !recorded(rec.Environment.Image, rec.Environment.ImageID, pin) || len(b.Results) != rec.Result.TestsPassed || !b.Green() {
 		t.Fatalf("go-mini's baseline is not bound to its gate, image and tree: %v (%s, the profile pins %s; base %s, the record %s, the tree %s; %d results)",
 			err, b.Image, pin, b.Base, rec.BaseTree, f.tree, len(b.Results))
 	}

@@ -13,6 +13,7 @@
     "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d",
     "image_id": "88e9e039a6ba7719b386347388c00292458a81bc44de5f370731c7dea5bfbe6a",
     "platform": "linux/arm64",
+    "image_label": {"dev.adc.prepared": {"toolchain": "go", "lockfiles": {"go.mod": "sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"}}},
     "pin": "go-mini's own prepared image (#226 entry 97), tag go1.27.1-2026-10-21; its manifest names go-mini's go.mod",
     "sandbox": "gate mode: --network=none, read-only root, tmpfs /tmp and HOME, --cap-drop=all",
     "measured_by": "gate.Measure (P15): a run that ended on its own with green results",
