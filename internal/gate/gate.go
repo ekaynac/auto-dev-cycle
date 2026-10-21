@@ -130,6 +130,7 @@ type Verdict struct {
 	Stream   []byte
 	Elapsed  time.Duration
 	baseline *Baseline // Run's: what the receipt's demand binds; none for Measure's, never a gate result
+	overlaid bool      // Run applied an acceptance overlay: Result needs its digests (Opus #321 M2)
 }
 
 func (v *Verdict) set(o vocab.Outcome, r vocab.Reason, why string) {
@@ -170,6 +171,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// the comparison and the receipt's demand use this copy, never the
 	// caller's object, which may change before Result.
 	v.baseline = in.Baseline.snapshot()
+	v.overlaid = len(in.Overlay) > 0
 	a, err := in.Host.NewAttempt()
 	if err != nil {
 		return v, err
@@ -198,7 +200,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	}
 	out := filepath.Join(a.Dir, "out")
 	if err := a.CopyOut(out, maxResults); err != nil {
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results could not be copied out within their bounds")
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyCopyOut)
 		return v, nil
 	}
 	// Astra #286 H1: a candidate run cut by its timeout or a signal may have
@@ -207,12 +209,12 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// from the exit code.
 	zero, normal := ending(runErr)
 	if in.Baseline != nil && !normal {
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run did not finish (its timeout, a signal or the runner)")
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyUnfinished)
 		return v, nil
 	}
 	v.Stream, err = os.ReadFile(filepath.Join(out, resultsFile))
 	if err != nil {
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run never wrote its results")
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyNoResults)
 		return v, nil
 	}
 	var base *results.Report
@@ -220,7 +222,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		base = &v.baseline.Report
 	}
 	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not a go test -json stream")
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyNotStream)
 		return v, nil
 	}
 	v.judge(in, module, zero)
@@ -317,11 +319,11 @@ func (v *Verdict) judge(in In, module string, ended bool) {
 	if in.Baseline == nil {
 		switch {
 		case !v.Results.Green():
-			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the base is not green: no baseline")
+			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyBaseRed)
 		case !ended:
-			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the base run did not finish: no baseline")
+			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyBaseUnfinished)
 		default:
-			v.set(vocab.Empty, vocab.ReasonCompletedClean, "the baseline is green")
+			v.set(vocab.Empty, vocab.ReasonCompletedClean, whyBaseGreen)
 		}
 		return
 	}
@@ -348,14 +350,61 @@ func (v *Verdict) judge(in In, module string, ended bool) {
 	}
 	switch {
 	case theirs > 0:
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, fmt.Sprintf("%d results missing or incomplete outside the candidate's packages (and %d of the candidate's)", theirs, mine))
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, fmt.Sprintf(whyTheirs, theirs, mine))
 	case mine > 0:
-		v.set(vocab.Found, vocab.ReasonGateTestFailed, fmt.Sprintf("%d tests or packages fail against the baseline", mine))
+		v.set(vocab.Found, vocab.ReasonGateTestFailed, fmt.Sprintf(whyFailing, mine))
 	case !v.Results.Clean():
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "no test passed")
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyNonePassed)
 	default:
-		v.set(vocab.Empty, vocab.ReasonCompletedClean, fmt.Sprintf("%d tests pass against the baseline", len(v.Results.Results)))
+		v.set(vocab.Empty, vocab.ReasonCompletedClean, fmt.Sprintf(whyPassing, len(v.Results.Results)))
 	}
+}
+
+// The controller's phrases, a verdict's Why: fixed, or with counts (%d).
+// CheckReport takes a report's detail only when it is one of them
+// (Mythos #348 L1: no free text of another source).
+const (
+	whyCopyOut        = "the run's results could not be copied out within their bounds"
+	whyUnfinished     = "the run did not finish (its timeout, a signal or the runner)"
+	whyNoResults      = "the run never wrote its results"
+	whyNotStream      = "the run's results are not a go test -json stream"
+	whyBaseRed        = "the base is not green: no baseline"
+	whyBaseUnfinished = "the base run did not finish: no baseline"
+	whyBaseGreen      = "the baseline is green"
+	whyTheirs         = "%d results missing or incomplete outside the candidate's packages (and %d of the candidate's)"
+	whyFailing        = "%d tests or packages fail against the baseline"
+	whyNonePassed     = "no test passed"
+	whyPassing        = "%d tests pass against the baseline"
+)
+
+var whys = []string{whyCopyOut, whyUnfinished, whyNoResults, whyNotStream, whyBaseRed, whyBaseUnfinished, whyBaseGreen, whyTheirs, whyFailing, whyNonePassed, whyPassing}
+
+// isWhy is whether s is one of the controller's phrases, each %d a count:
+// 1 to 19 decimal digits.
+func isWhy(s string) bool {
+	return slices.ContainsFunc(whys, func(f string) bool { return phrased(f, s) })
+}
+
+// phrased is whether s is the phrase f with each %d a count.
+func phrased(f, s string) bool {
+	for f != "" {
+		if rest, ok := strings.CutPrefix(f, "%d"); ok {
+			n := 0
+			for n < len(s) && n < 19 && '0' <= s[n] && s[n] <= '9' {
+				n++
+			}
+			if n == 0 {
+				return false
+			}
+			f, s = rest, s[n:]
+			continue
+		}
+		if s == "" || f[0] != s[0] {
+			return false
+		}
+		f, s = f[1:], s[1:]
+	}
+	return s == ""
 }
 
 func cmpOr(a, b string) string {
