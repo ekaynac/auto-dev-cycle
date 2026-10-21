@@ -308,20 +308,21 @@ type fileMeta struct {
 // pkgScan is one type-checked package: its testing parameters, functions,
 // methods by receiver and asserting helpers (testing values made: the types layer).
 type pkgScan struct {
-	r         *run
-	cs        caseScan // P14d-b (integrity_cases.go)
-	pkg       *types.Package
-	info      *types.Info
-	tvals     map[types.Object]string
-	decls     map[types.Object]*ast.FuncDecl
-	same      map[string][]*ast.FuncDecl // every declaration of a name (race, !race): each counts
-	pi        int                        // the platform read (platforms[pi])
-	asserting map[*ast.FuncDecl]bool
-	mentioned map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
-	pkgVars   map[*ast.ValueSpec]bool
-	aliases   map[types.Object]ast.Expr // an alias's right-hand side
-	skipping  map[*ast.FuncDecl]bool    // P14d-a1 (integrity_skips.go)
-	skipBad   string                    // why the skip layer's facts are unknown (its bound; a type not resolved): its tests unverifiable
+	r          *run
+	cs         caseScan // P14d-b (integrity_cases.go)
+	pkg        *types.Package
+	info       *types.Info
+	tvals      map[types.Object]string
+	decls      map[types.Object]*ast.FuncDecl
+	same       map[string][]*ast.FuncDecl // every declaration of a name (race, !race): each counts
+	pi         int                        // the platform read (platforms[pi])
+	asserting  map[*ast.FuncDecl]bool
+	mentioned  map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
+	pkgVars    map[*ast.ValueSpec]bool
+	aliases    map[types.Object]ast.Expr // an alias's right-hand side
+	skipping   map[*ast.FuncDecl]bool    // P14d-a1 (integrity_skips.go)
+	aliasClass map[types.Object]int8     // possiblyTesting's memo per alias: 1 testing, 2 not, 3 being followed
+	skipBad    string                    // why the skip layer's facts are unknown (its bound): its tests unverifiable
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -571,7 +572,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
-		skipping: map[*ast.FuncDecl]bool{}}
+		skipping: map[*ast.FuncDecl]bool{}, aliasClass: map[types.Object]int8{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)

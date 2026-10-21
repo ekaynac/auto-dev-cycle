@@ -115,6 +115,7 @@ type run struct {
 	budget             int64
 	work               int
 	skipWork           int                 // the skip layer's own (integrity_skips.go: maxSkipWork)
+	modFirsts          map[string]bool     // the run's module paths' first elements (integrity_skips.go)
 	blobs              map[string][]byte   // blobs read, once
 	cgoBlobs           map[string][]byte   // read by the cgo pass, not yet charged to the budget
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
