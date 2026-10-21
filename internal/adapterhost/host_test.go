@@ -137,6 +137,19 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	if out, err := w.host.Run(context.Background(), sp); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
 		t.Fatalf("the edit loop's own tools: %v, session %v", err, out.Session)
 	}
+	// Opus #322 L3: a refused tool never hides an unverified exit: a caller
+	// must not clean up a tree that may still write.
+	w = newWorld(t)
+	waitTree = func(*session.Session) error { return session.ErrUnverified }
+	sp = spec(stub(t, stubPlan{Tools: []string{"read_file"}, Files: map[string]string{"patch.diff": patch},
+		Events: []string{`"event":"tool.result","turn":1,"tool":"run_command","mediated_by_controller":false,"delivered":null,"bytes":1`, usageEvent(10)},
+		Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 10)}))
+	sp.AnyTool, sp.Tools = false, EditLoopTools()
+	out, err = w.host.Run(context.Background(), sp)
+	waitTree = (*session.Session).Wait
+	if err != nil || !errors.Is(out.Session, ErrToolRefused) || !errors.Is(out.Session, session.ErrUnverified) {
+		t.Errorf("a refused tool over an unverified exit: %v, session %v", err, out.Session)
+	}
 	// Opus #322 L2: a tool it reports running, past its launch's, refuses
 	// the run too; the http-chat adapter's "unknown" (refused, not run)
 	// does not.

@@ -86,8 +86,10 @@ func (l lockedCapture) Keep(ctx context.Context, b gateway.Binding, body []byte)
 // token, and the failures of closing its socket or settling its call.
 type attemptEnd func(ctx context.Context) (gateway.Observed, error)
 
-// settleBound bounds one end's settlement of the call (Reconciler.Ended).
-const settleBound = time.Minute
+// settleBound bounds one end's settlement of the call (Reconciler.Ended):
+// a provider's usage query within its own deadline, and the record after
+// it (Opus #322 L5).
+const settleBound = modelcall.QueryDeadline + time.Minute
 
 // open serves the gateway on socket for b's attempt and mints the adapter's
 // gateway value. Its end unbinds the token and closes the socket once; it
@@ -124,12 +126,15 @@ func (e *egress) open(b gateway.Binding, socket string) (types.AdapterPreparePar
 		}
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleBound)
 		defer cancel()
-		err := e.settle(sctx, b.Call)
+		err := settleCall(e, sctx, b.Call)
 		settled = err == nil
 		return obs, errors.Join(closeErr, err)
 	}
 	return v, end, nil
 }
+
+// settleCall is egress.settle; a test makes it fail.
+var settleCall = (*egress).settle
 
 // settle ends call's effect once its attempt is over, if it was intended.
 func (e *egress) settle(ctx context.Context, call types.CallID) error {
