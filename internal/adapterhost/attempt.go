@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -87,6 +88,12 @@ type Spec struct {
 	Prepare types.AdapterPrepareParams
 	Prompt  []byte
 	Bounds  Bounds // the waits on the adapter; zero: as Bounds says
+	// Tools are the only tools the adapter may describe (EditLoopTools for
+	// adcd's launches, #226 entry 65); nil: none.
+	Tools []types.AdapterLabel
+	// AnyTool allows any described tool: only the M0 harness and the
+	// contract fixtures, whose adapters describe their own tools, set it.
+	AnyTool bool
 }
 
 // Outcome is what an attempt left.
@@ -173,11 +180,13 @@ type attemptRun struct {
 	token int64
 	x     *exchange
 
-	mu        sync.Mutex // the session's reader adds to these
-	usage     []*types.UsageEvent
-	declared  []types.AdapterHandle // final outputs the events declared, deduplicated
-	unserved  bool
-	cancelRun context.CancelFunc
+	mu       sync.Mutex // the session's reader adds to these
+	usage    []*types.UsageEvent
+	declared []types.AdapterHandle // final outputs the events declared, deduplicated
+	unserved bool
+	// toolRefused is a tool the adapter ran that its launch does not allow.
+	toolRefused string
+	cancelRun   context.CancelFunc
 
 	out           Outcome
 	staged        map[types.AdapterHandle]*blobstore.Staged
@@ -212,9 +221,13 @@ func (r *attemptRun) run(ctx context.Context) (out Outcome, err error) {
 	defer cancel()
 	endErr := sessionEnd(fctx, s, shutErr)
 	r.mu.Lock()
-	unserved := r.unserved
+	unserved, toolRefused := r.unserved, r.toolRefused
 	r.mu.Unlock()
 	switch {
+	case toolRefused != "":
+		// With the tree's own end: an unverified exit (session.ErrUnverified)
+		// is never hidden from a caller that must not clean up (Opus #322 L3).
+		return r.finish(fctx, nil, errors.Join(fmt.Errorf("%w: %q", ErrToolRefused, toolRefused), waitErr), false)
 	case errors.Is(waitErr, session.ErrUnverified):
 		return r.finish(fctx, nil, waitErr, false) // the tree may still write: nothing is ingested (09)
 	case unserved && runErr == nil:
@@ -296,10 +309,14 @@ func sessionEnd(ctx context.Context, s *session.Session, shutErr error) error {
 func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.AdapterRunResult, error) {
 	b := r.spec.Bounds
 	hook("describe")
-	if _, err := bounded(ctx, b.Start, "start", s.Describe); err != nil {
+	d, err := bounded(ctx, b.Start, "start", s.Describe)
+	if err != nil {
 		return types.AdapterRunResult{}, err
 	}
 	p := r.spec.Prepare
+	if err := exclusive(r.spec, d.ToolSurface); err != nil {
+		return types.AdapterRunResult{}, err
+	}
 	p.Attempt, p.FencingToken, p.Inputs = r.spec.Attempt, r.token, []types.AdapterHandle{r.x.prompt}
 	p.Exchange = types.AdapterPrepareParamsExchange{In: r.x.in, Out: r.x.out}
 	hook("prepare")
@@ -318,6 +335,34 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 	return bounded(runCtx, b.Result, "result", func(ctx context.Context) (types.AdapterRunResult, error) {
 		return s.Run(ctx, types.AdapterRunParams{Attempt: r.spec.Attempt, FencingToken: r.token, Call: r.spec.Call, Prompt: r.x.prompt}, r.onEvent)
 	})
+}
+
+// EditLoopTools are the edit loop's own tools: its reads and writes of its
+// workspace, one at a time, as a fresh slice. adcd's launch makes them an
+// attempt's only ones (Spec.Tools): no executable or concurrent tool, since
+// the workspace's confinement holds only while that loop is its sole
+// writer (#226 entry 65).
+func EditLoopTools() []types.AdapterLabel {
+	return []types.AdapterLabel{"read_file", "list_dir", "write_file", "delete_file"}
+}
+
+// unknownTool is what the http-chat adapter reports for a tool call it
+// refused and did not run.
+const unknownTool = "unknown"
+
+// ErrToolRefused: the adapter describes, or reports running, a tool its
+// Spec does not allow.
+var ErrToolRefused = errors.New("adapterhost: the adapter has a tool its launch does not allow (#226 entry 65)")
+
+// exclusive refuses an adapter whose described tools reach past spec's:
+// its Tools, none when nil (fail closed), any only with AnyTool.
+func exclusive(spec Spec, surface []types.AdapterLabel) error {
+	for _, t := range surface {
+		if !spec.AnyTool && !slices.Contains(spec.Tools, t) {
+			return fmt.Errorf("%w: %q", ErrToolRefused, t)
+		}
+	}
+	return nil
 }
 
 // onEvent keeps usage reports and the final outputs events declare, and
@@ -342,8 +387,12 @@ func (r *attemptRun) onEvent(e session.Event) {
 	case *types.ToolRequestEvent:
 		r.unserve()
 	case *types.ToolResultEvent:
-		if v.Delivered != nil {
+		switch {
+		case v.Delivered != nil:
 			r.unserve() // no delivery record in this increment can match it
+		case !v.MediatedByController && !r.spec.AnyTool && v.Tool != unknownTool && !slices.Contains(r.spec.Tools, v.Tool):
+			r.toolRefused = string(v.Tool) // a tool it ran that the launch does not allow (Opus #322 L2)
+			r.unserve()
 		}
 	}
 }

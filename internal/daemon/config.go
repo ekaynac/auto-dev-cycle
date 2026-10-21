@@ -38,6 +38,10 @@ type Config struct {
 	// Groups (P7); registryErr is its file's refusal, reported at load.
 	Registry    *types.ExecutorRegistry
 	registryErr error
+	// CaptureEgress (--capture-egress, exit runs only: 00-slice-plan §8
+	// item 4) keeps each model request body the gateway sends as a
+	// restricted capture, purged 7 days later.
+	CaptureEgress bool
 	// clock is the store clock (eventstore.Config.Now) that every command
 	// and the bootstrap decide by; nil is time.Now. Only tests set it.
 	clock func() time.Time
@@ -80,7 +84,7 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE [--registry FILE]] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE [--registry FILE]] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]] [--capture-egress]"
 	// sandboxRefusal is the one text for a refused sandbox (P9b).
 	sandboxRefusal = "the sandbox: --podman and --sandbox-root must be absolute, clean paths; the root short " +
 		"(Podman's runroot, <root>/r, is at most 50 characters) and apart from the state directory and the sockets; " +
@@ -99,7 +103,9 @@ func LoadConfig(args []string) (Config, error) {
 		addr, cert, key := fs.String("https-addr", "", ""), fs.String("https-cert", "", ""), fs.String("https-key", "", "")
 		root, podman := fs.String("sandbox-root", "", ""), fs.String("podman", "/usr/bin/podman", "")
 		reg := fs.String("registry", "", "")
+		capture := fs.Bool("capture-egress", false, "")
 		return func(cfg *Config) {
+			cfg.CaptureEgress = *capture
 			if *reg != "" {
 				doc, err := registry.Load(*reg)
 				cfg.Registry, cfg.registryErr = &doc, err

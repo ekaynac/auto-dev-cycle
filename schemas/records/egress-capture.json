@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/egress-capture.json",
+  "title": "EgressCapture",
+  "description": "The payload of blob.capture_kept/v1 and blob.capture_purged/v1 (docs/design/m1/00-slice-plan.md §8 item 4; P22a-5a): one request body the gateway sent for a model call during an exit run, kept before the credential was injected, as a restricted blob in the controller's capture store, which no route serves and no builder or reviewer input names. The system actor records it when kept, and again when the controller's purge removes its bytes at its expiry, 7 days (P7D) after it was kept.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["digest", "lease", "attempt", "call", "class", "expires_at"],
+  "properties": {
+    "digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"},
+    "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+    "call": {"$ref": "../common/defs.json#/$defs/CallID"},
+    "class": {"const": "restricted"},
+    "expires_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

@@ -174,7 +174,7 @@ func fake(t *testing.T, scenario string) session.Config {
 }
 
 func spec(adapter session.Config) Spec {
-	return Spec{Lease: leaID, LeaseRevision: 2, Attempt: attID, Base: base, Call: calID, Adapter: adapter, Prompt: []byte("fix it\n"),
+	return Spec{AnyTool: true, Lease: leaID, LeaseRevision: 2, Attempt: attID, Base: base, Call: calID, Adapter: adapter, Prompt: []byte("fix it\n"),
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", Model: "fake-model",
 			Workspace:  types.AdapterPrepareParamsWorkspace{Path: "/workspace", Writable: true},
 			Limits:     types.AdapterPrepareParamsLimits{MaxTurns: 8, MaxOutputTokens: 8000, WallSeconds: 60},

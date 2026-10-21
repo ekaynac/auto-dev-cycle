@@ -351,7 +351,7 @@ func runCase(ctx context.Context, host *adapterhost.Host, do func(func(*eventsto
 		return out, "", "", nil, err
 	}
 	call = types.CallID(cid)
-	out, err = host.Run(ctx, adapterhost.Spec{Lease: l.ID, LeaseRevision: 2, Attempt: att, Call: call, Prompt: []byte("fix it\n"),
+	out, err = host.Run(ctx, adapterhost.Spec{AnyTool: true, Lease: l.ID, LeaseRevision: 2, Attempt: att, Call: call, Prompt: []byte("fix it\n"),
 		Base:    types.AttemptBase{Tree: types.GitID("git:" + "cccccccccccccccccccccccccccccccccccccccc"), ContractRevision: "7"},
 		Adapter: session.Config{InProcess: inproc.New(scriptedPeer(c, &failed)), Deadline: 30 * time.Second},
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: l.Executor, Model: "fixture-model",
