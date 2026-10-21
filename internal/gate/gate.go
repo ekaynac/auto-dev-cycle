@@ -130,6 +130,7 @@ type Verdict struct {
 	Stream   []byte
 	Elapsed  time.Duration
 	baseline *Baseline // Run's: what the receipt's demand binds; none for Measure's, never a gate result
+	overlaid bool      // Run applied an acceptance overlay: Result needs its digests (Opus #321 M2)
 }
 
 func (v *Verdict) set(o vocab.Outcome, r vocab.Reason, why string) {
@@ -170,6 +171,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// the comparison and the receipt's demand use this copy, never the
 	// caller's object, which may change before Result.
 	v.baseline = in.Baseline.snapshot()
+	v.overlaid = len(in.Overlay) > 0
 	a, err := in.Host.NewAttempt()
 	if err != nil {
 		return v, err

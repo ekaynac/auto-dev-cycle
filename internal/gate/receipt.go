@@ -61,6 +61,11 @@ type Blobs interface {
 type Subject struct {
 	Project  types.ProjectID
 	Revision string // the profile's contract revision
+	// Acceptance is the acceptance blobs whose overlay the run applied: the
+	// lineage of the receipt and the report, which derive from them
+	// (#226 entry 91(3): the acceptance edge is kept; a reviewer takes them
+	// through graph.RefRecord.Sanitised only).
+	Acceptance []types.Digest
 }
 
 // Contract is the gate's instrument contract for g run in img.
@@ -119,9 +124,16 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 		d, err := blobs.Put(bytes.NewReader(b), "")
 		return types.Digest(d), err
 	}
+	if v.overlaid && len(s.Acceptance) == 0 { // a lineage that is not the run's: the report would read as derived from nothing
+		return types.Result{}, fmt.Errorf("%w: the run applied an acceptance overlay, and the subject names no acceptance blob", ErrSpec)
+	}
+	lineage := []string{}
+	for _, a := range slices.Compact(slices.Sorted(slices.Values(s.Acceptance))) {
+		lineage = append(lineage, string(a))
+	}
 	seal := func(t types.RefType, id string, d types.Digest) (types.Ref, error) {
 		return knowledge.Seal(types.Ref{Type: t, ID: id, Scope: types.RefScope{Project: &s.Project},
-			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
+			Lineage: slices.Clone(lineage), Restrictions: []types.Restriction{}, ContentDigest: d})
 	}
 	stream, err := put(v.Stream)
 	if err != nil {
@@ -188,42 +200,105 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 // maxReported, the rest counted, each id cut to at most maxID bytes, its
 // ellipsis included: a name is the candidate's text, Opus #286 L2), and
 // its charge links (none). It holds at most about maxReported × 2 maxID
-// bytes of ids. A short id stays verbatim, by design (the
-// hostile-gate-output fixture): the reviewer's handling of ids is P16's.
+// bytes of ids. A short id stays verbatim: no prompt renders the report's
+// bytes (Opus #321 L7: `review.Prompt` renders counts and the verdict
+// only, the hostile-gate-output fixture's decision), and the findings
+// view redacts the ids it is given (review.Facts.GateIDs).
 func (v Verdict) Report() ([]byte, error) {
-	type finding struct {
-		Package string          `json:"package"`
-		Name    string          `json:"name,omitempty"`
-		Outcome results.Outcome `json:"outcome"`
-	}
 	id := func(s string) string {
 		if len(s) <= maxID {
 			return s
 		}
 		return strings.ToValidUTF8(s[:maxID-len("…")], "") + "…"
 	}
-	var blocking []finding
+	var blocking []reportFinding
 	for _, x := range v.Results.Blocking() {
-		blocking = append(blocking, finding{id(x.Package), id(x.Name), x.Outcome})
+		blocking = append(blocking, reportFinding{id(x.Package), id(x.Name), x.Outcome})
 	}
 	pkgs := v.Results.BlockingPackages()
 	for _, p := range slices.Sorted(maps.Keys(pkgs)) {
-		blocking = append(blocking, finding{Package: id(p), Outcome: pkgs[p]})
+		blocking = append(blocking, reportFinding{Package: id(p), Outcome: pkgs[p]})
 	}
 	truncated := max(0, len(blocking)-maxReported)
-	return json.Marshal(struct {
-		Schema      string         `json:"schema"`
-		ElapsedMS   int64          `json:"elapsed_ms"`
-		Tree        string         `json:"tree"`
-		Outcome     vocab.Outcome  `json:"outcome"`
-		Reason      string         `json:"reason"`
-		Detail      string         `json:"detail"`
-		Tests       int            `json:"tests"`
-		Blocking    []finding      `json:"blocking"`
-		Truncated   int            `json:"truncated"`
-		ChargeLinks []types.CallID `json:"charge_links"`
-	}{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, len(v.Results.Results),
-		append([]finding{}, blocking[:len(blocking)-truncated]...), truncated, []types.CallID{}})
+	return json.Marshal(report{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, len(v.Results.Results),
+		append([]reportFinding{}, blocking[:len(blocking)-truncated]...), truncated, []types.CallID{}})
+}
+
+// report is Report's record.
+type report struct {
+	Schema      string          `json:"schema"`
+	ElapsedMS   int64           `json:"elapsed_ms"`
+	Tree        string          `json:"tree"`
+	Outcome     vocab.Outcome   `json:"outcome"`
+	Reason      string          `json:"reason"`
+	Detail      string          `json:"detail"`
+	Tests       int             `json:"tests"`
+	Blocking    []reportFinding `json:"blocking"`
+	Truncated   int             `json:"truncated"`
+	ChargeLinks []types.CallID  `json:"charge_links"`
+}
+
+type reportFinding struct {
+	Package string          `json:"package"`
+	Name    string          `json:"name,omitempty"`
+	Outcome results.Outcome `json:"outcome"`
+}
+
+// maxReportBytes bounds a report CheckReport reads: maxReported findings
+// of two ids, with room for the rest.
+const maxReportBytes = 2*maxReported*(2*maxID+64) + 64<<10
+
+// CheckReport is report read as Report's bytes, strictly (Astra #321 H1:
+// what a reviewer takes as a gate's sanitised report): the bytes
+// json.Marshal gives of a report, exactly, with no other key, within
+// Report's bounds (at most maxReported findings, each id at most maxID
+// bytes, no charge link).
+func CheckReport(b []byte) error {
+	var r report
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if len(b) > maxReportBytes {
+		return fmt.Errorf("%w: a gate report of over %d bytes", ErrSpec, maxReportBytes)
+	}
+	if err := dec.Decode(&r); err != nil || r.Schema != reportSchema || len(r.Blocking) > maxReported || len(r.ChargeLinks) != 0 {
+		return fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
+	}
+	for _, f := range r.Blocking {
+		if len(f.Package) > maxID || len(f.Name) > maxID {
+			return fmt.Errorf("%w: a gate report's id over %d bytes", ErrSpec, maxID)
+		}
+	}
+	if again, err := json.Marshal(r); err != nil || !bytes.Equal(again, b) {
+		return fmt.Errorf("%w: not a gate report's bytes (%v)", ErrSpec, err)
+	}
+	return nil
+}
+
+// ReportIDs is a gate report's ids (Report's): each blocking finding's
+// package and test name, each once, in order; the ids review.Result keeps
+// out of the builder's findings view (#226 entry 94(2)). A report with
+// none gives an empty list, never nil (Astra #321 M3: nil is "not
+// supplied" to review.Facts.GateIDs).
+func ReportIDs(report []byte) ([]string, error) {
+	var r struct {
+		Schema   string `json:"schema"`
+		Blocking []struct {
+			Package string `json:"package"`
+			Name    string `json:"name"`
+		} `json:"blocking"`
+	}
+	if err := json.Unmarshal(report, &r); err != nil || r.Schema != reportSchema {
+		return nil, fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
+	}
+	out := []string{}
+	for _, f := range r.Blocking {
+		for _, id := range []string{f.Package, f.Name} {
+			if id != "" && !slices.Contains(out, id) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out, nil
 }
 
 // String is v's verdict, for logs.

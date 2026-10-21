@@ -16,11 +16,26 @@
 //     (graph.Repair); no submitted decision → could_not_run with the exit
 //     map's reason; a decision that is not one → could_not_run/
 //     degenerate_output. The adapter's own outcome never decides.
-//   - The result's value is the decision (the repair builder's findings
-//     input), when it is one, and the D55 report, each with the review's
+//   - The result's value is the decision, when it is one, a no_go's
+//     findings view (below: the repair builder's findings input), and the
+//     D55 report, last, each with the review's
 //     rendered input ids as its lineage: the decision derives from what
 //     the reviewer saw, the gate report included (I18). The detail never
 //     echoes the reviewer's text.
+//   - A no_go's result also holds the builder-safe findings view (#226
+//     entry 94(2), the operator's decision; 22a-6L): each finding's
+//     severity and title only, every gate id of at least minRedacted
+//     bytes (Facts.GateIDs, which a no_go requires; its "/" segments, its
+//     words; ids and titles normalized alike, ASCII only: normalize; a
+//     title that is not ASCII, or every title when an id is not, is
+//     redacted whole) in a title replaced by "[test]", and control
+//     characters made spaces; the view names its decision and round, so each round's
+//     view is its own ref; it is a view ref whose lineage is the
+//     decision's (truthful): graph.Records marks it a BuilderSafe
+//     candidate, and intent honours it only when its bytes are this view
+//     of that decision (CheckView), so a repair builder takes it where the
+//     decision, derived from the declassified gate report, would refuse
+//     its intent.
 //   - D55: the report records the elapsed time, the charge links (the
 //     reviewer's model call ids), the roster, the verdict, each finding's
 //     severity and title (cut to maxTitle bytes), and the reviewed
@@ -56,6 +71,8 @@ const (
 	maxTitle     = 256
 	maxDetail    = 4096
 	maxDecision  = 1 << 20 // bytes: the adapter host's bound on a decision (adapterhost.BoundDecision)
+	viewSchema   = "adc.findings-view/v1"
+	minRedacted  = 4 // bytes: a shorter gate id is no channel, and redacting it would garble titles
 )
 
 // The decision's verdicts.
@@ -93,6 +110,9 @@ type Facts struct {
 	// lineage of its decision and report, which derive from them (I18;
 	// Opus #291 M2).
 	Inputs []string
+	// GateIDs are the ids of the gate report the claim rendered
+	// (gate.ReportIDs): kept out of the findings view.
+	GateIDs []string
 }
 
 // Finding is one finding of a decision.
@@ -197,6 +217,11 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 			r.Outcome, r.Reason = types.OutcomeEmpty, vocab.ReasonCompletedClean
 		} else {
 			r.Outcome, r.Reason, r.Detail = types.OutcomeFound, vocab.ReasonCompletedWithFindings, fmt.Sprintf("the reviewer's decision is no_go, with %d findings", len(d.Findings))
+			vref, verr := view(f, d, ref.ID, blobs)
+			if verr != nil {
+				return types.Result{}, verr
+			}
+			r.Value = append(r.Value, vref)
 		}
 	}
 	report, err := Report(f, r, d)
@@ -213,6 +238,176 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 	}
 	r.Value = append(r.Value, pref)
 	return r, graph.Check(r)
+}
+
+// view publishes d's builder-safe findings view (ViewBytes), derived from
+// the decision ref decision.
+func view(f Facts, d Decision, decision string, blobs Blobs) (types.Ref, error) {
+	b, err := ViewBytes(d, decision, f.CandidateRound, f.GateIDs)
+	if err != nil {
+		return types.Ref{}, err
+	}
+	vd, err := blobs.Put(bytes.NewReader(b), "")
+	if err != nil {
+		return types.Ref{}, err
+	}
+	return knowledge.Seal(types.Ref{Type: types.RefTypeView, ID: vd, Scope: types.RefScope{Project: &f.Project},
+		Lineage: []string{decision}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest(vd)})
+}
+
+type viewFinding struct {
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+}
+
+type viewRecord struct {
+	Schema   string        `json:"schema"`
+	Decision string        `json:"decision"`
+	Round    int64         `json:"candidate_round"`
+	Findings []viewFinding `json:"findings"`
+}
+
+// ViewBytes are the findings view's bytes of decision d, recorded under
+// the ref id decision, at the candidate's round, its titles redacted of
+// gateIDs (redact; nil: not supplied, refused; empty: none). The bytes
+// name the decision and the round (Opus #321 H2): a view's id is its
+// digest, so two rounds' views of the same titles are two refs, each of
+// its own lineage, never one ambiguous id.
+func ViewBytes(d Decision, decision string, round int64, gateIDs []string) ([]byte, error) {
+	if gateIDs == nil {
+		return nil, errors.New("review: no gate ids supplied for the findings view (an empty list: none)")
+	}
+	ids, all := redacted(gateIDs)
+	findings := []viewFinding{}
+	for _, x := range d.Findings {
+		findings = append(findings, viewFinding{x.Severity, redact(x.Title, ids, all)})
+	}
+	return json.Marshal(viewRecord{viewSchema, decision, round, findings})
+}
+
+// CheckView is whether view is the findings view review.Result published
+// from the no_go decision whose bytes are dec, recorded under the ref id
+// decision, with gateIDs (Astra #321 H1): the bytes ViewBytes gives of
+// them at the round view names, exactly.
+func CheckView(view, dec []byte, decision string, gateIDs []string) error {
+	var v viewRecord
+	if len(view) > maxDecision {
+		return fmt.Errorf("review: a findings view of over %d bytes", maxDecision)
+	}
+	if err := json.Unmarshal(view, &v); err != nil {
+		return fmt.Errorf("review: not a findings view: %w", err)
+	}
+	d, err := Parse(dec)
+	switch {
+	case err != nil:
+		return err
+	case d.Decision != NoGo:
+		return errors.New("review: a findings view of no no_go decision")
+	}
+	want, err := ViewBytes(d, decision, v.Round, gateIDs)
+	if err == nil && !bytes.Equal(want, view) {
+		err = errors.New("review: the findings view is not its decision's")
+	}
+	return err
+}
+
+// redacted are the marks a view's titles lose, normalized (normalize, so
+// a test name's words, "_" or "-" apart, are its id's), the longest first
+// (no mark redacted inside another's), each at least minRedacted bytes
+// (Opus #321 L2): every gate id, its report's ellipsis cut off, and each
+// of its "/" segments. all is false when an id is not ASCII, so could not
+// be normalized: then every title is redacted whole (fail closed).
+func redacted(gateIDs []string) (ids []string, all bool) {
+	all = true
+	add := func(id string) {
+		v, _, ok := normalize(id)
+		all = all && ok
+		if len(v) >= minRedacted && !slices.Contains(ids, v) {
+			ids = append(ids, v)
+		}
+	}
+	for _, id := range gateIDs {
+		id = strings.TrimSuffix(id, "…")
+		add(id)
+		for _, seg := range strings.Split(id, "/") {
+			add(seg)
+		}
+	}
+	slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) })
+	return ids, all
+}
+
+// normalize is s as ids and titles are both matched, the one function for
+// both (Astra #321 L6), standard library only, so ASCII only: each letter
+// in lower case, and each run of white space, control characters and the
+// separators '_' and '-' one space. at[i] is the byte offset in s of the
+// byte normalize's byte i came from. ok is false when s holds a byte that
+// is not ASCII: such a string is not normalized (its matches cannot be
+// shown complete), and the caller fails closed.
+func normalize(s string) (n string, at []int, ok bool) {
+	b := make([]byte, 0, len(s))
+	space := false
+	for o := range len(s) {
+		c := s[o]
+		switch {
+		case c >= 0x80:
+			return "", nil, false
+		case c <= ' ' || c == 0x7f || c == '_' || c == '-':
+			if !space {
+				b, at = append(b, ' '), append(at, o)
+			}
+			space = true
+			continue
+		case 'A' <= c && c <= 'Z':
+			c += 'a' - 'A'
+		}
+		space = false
+		b, at = append(b, c), append(at, o)
+	}
+	return string(b), at, true
+}
+
+// redact is title for the view: every mark of ids (redacted) found in the
+// title normalized (normalize), and every byte of the title it covers,
+// replaced, as one "[test]" a match; every other control character a
+// space (no newline or fence break reaches the repair builder's renderer:
+// Opus #321 L3). A title holding any character that is not ASCII, which
+// normalize cannot fold, and every title when an id could not be
+// normalized (all false), is redacted whole: fail closed.
+func redact(title string, ids []string, all bool) string {
+	n, at, ok := normalize(title)
+	if !ok || !all {
+		return "[test]"
+	}
+	covered, starts := make([]bool, len(title)), make([]bool, len(title))
+	for i := 0; i < len(n); {
+		j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(n[i:], id) })
+		if j < 0 {
+			i++
+			continue
+		}
+		first, last := at[i], at[i+len(ids[j])-1]
+		starts[first] = true
+		for o := first; o <= last; o++ {
+			covered[o] = true
+		}
+		i += len(ids[j])
+	}
+	var out strings.Builder
+	for o := range len(title) {
+		c := title[o]
+		switch {
+		case covered[o]:
+			if o == 0 || !covered[o-1] || starts[o] {
+				out.WriteString("[test]")
+			}
+		case c < ' ' || c == 0x7f:
+			out.WriteByte(' ')
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
 }
 
 // Report is the D55 record of one review node with result r and decision
