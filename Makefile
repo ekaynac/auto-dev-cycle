@@ -43,7 +43,7 @@ BINARIES   := adcd adc adc-harness adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check inventory-count vocab-check build dist install-check installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -106,6 +106,7 @@ TS_GEN_SCRIPT := adapters/contract/scripts/gen.mjs
 API_DOC   := schemas/openapi.yaml
 SCHEMA_DOCS := docs/reference/schemas
 PARITY_DOC := docs/reference/action-matrix.md
+INVENTORY := docs/design/m1/01-invariant-inventory.md
 
 schema-docs: go-check ## Regenerate docs/reference/schemas from schemas/ (also part of make gen)
 	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
@@ -121,6 +122,9 @@ gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), voca
 	@$(GO) run ./tools/paritygen $(PARITY_DOC)
 	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
 	@node $(TS_GEN_SCRIPT) $(TS_GEN)
+
+inventory-count: go-check ## Print the invariant inventory's rows by status (counted from its tables, never kept in it)
+	@$(GO) run ./tools/inventorycount $(INVENTORY)
 
 gen-check: go-check ts-deps ## Fail if the committed generated code differs from a fresh generation
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
