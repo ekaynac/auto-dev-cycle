@@ -46,10 +46,14 @@ type Route struct {
 	Bounds   adapterhost.Bounds
 }
 
-// Review runs one review of prompt: its decision (review.Go, review.NoGo,
-// or "" when the reviewer returned none, or one review.Parse refuses) and
-// its D55 report (review.Report, through review.Result).
-func (r Route) Review(ctx context.Context, prompt []byte) (o Outcome, err error) {
+// Review runs one review of prompt, the seq-th case of run: its decision
+// (review.Go, review.NoGo, or "" when the reviewer returned none, or one
+// review.Parse refuses), its D55 report (review.Report, through
+// review.Result) and the evidence of the execution (Astra #306 H1): run's
+// id and adapter and suite, seq, the digest of the prompt the adapter
+// host was given, the route of the registry executor the review ran on,
+// and the review's model call.
+func (r Route) Review(ctx context.Context, run Run, seq int, prompt []byte) (o Outcome, err error) {
 	e, ok := r.Registry.Executor(r.Executor)
 	if !ok || e.Role != types.RegistryExecutorRoleReviewer {
 		return o, fmt.Errorf("qualify: %s is not a reviewer of the registry", r.Executor)
@@ -175,6 +179,8 @@ func (r Route) Review(ctx context.Context, prompt []byte) (o Outcome, err error)
 	case types.OutcomeFound:
 		o.Decision = review.NoGo
 	}
+	o.evidence = &types.QualifiedEvidence{RunID: run.ID, Seq: int64(seq), PromptDigest: digest(spec.Prompt), Route: RouteOf(e), AdapterDigest: run.Adapter,
+		SuiteDigest: run.Suite, Call: call}
 	return o, nil
 }
 

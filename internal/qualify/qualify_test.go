@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -295,12 +297,14 @@ func TestPrompt(t *testing.T) {
 
 const pinnedPrompt = "b73d979dfc3d748a3c3601cc714b14d1a221e575c96bcfd1cfb646a0c310f6fa"
 
-// TestAdapterDigest: the digest moves with the http-chat adapter's source,
-// its package.json, the lockfile and the limits, and not with its tests
-// (Opus #306 M6).
+// TestAdapterDigest: the digest moves with the http-chat adapter's runtime
+// closure (its source and package.json, the contract package's source and
+// package.json, the generated validators and formats, the workspace's
+// manifests and lockfile) and the limits, and not with the packages' tests
+// (Opus #306 M6; Astra #306 M3).
 func TestAdapterDigest(t *testing.T) {
 	dir := t.TempDir()
-	for _, p := range append(slices.Clone(adapterPaths), "adapters/http-chat/test") {
+	for _, p := range append(slices.Clone(adapterPaths), "adapters/http-chat/test", "adapters/contract/test") {
 		src := filepath.Join(root, p)
 		fi, err := os.Stat(src)
 		if err != nil {
@@ -330,11 +334,19 @@ func TestAdapterDigest(t *testing.T) {
 		path  string
 		moves bool
 	}{
-		"the adapter's source":   {"adapters/http-chat/src/adapter.ts", true},
-		"a new source file":      {"adapters/http-chat/src/extra.ts", true},
-		"package.json":           {"adapters/http-chat/package.json", true},
-		"the lockfile":           {"adapters/pnpm-lock.yaml", true},
-		"the adapter's own test": {"adapters/http-chat/test/x.test.ts", false},
+		"the adapter's source":            {"adapters/http-chat/src/adapter.ts", true},
+		"a new source file":               {"adapters/http-chat/src/extra.ts", true},
+		"package.json":                    {"adapters/http-chat/package.json", true},
+		"the lockfile":                    {"adapters/pnpm-lock.yaml", true},
+		"the contract's source (Astra)":   {"adapters/contract/src/adapter.ts", true},
+		"the contract's package.json":     {"adapters/contract/package.json", true},
+		"the generated validators":        {"gen/ts/validators.cjs", true},
+		"the generated formats":           {"gen/ts/formats.cjs", true},
+		"the generated package.json":      {"gen/ts/package.json", true},
+		"the workspace's package.json":    {"adapters/package.json", true},
+		"the workspace's package list":    {"adapters/pnpm-workspace.yaml", true},
+		"the adapter's own test":          {"adapters/http-chat/test/x.test.ts", false},
+		"the contract package's own test": {"adapters/contract/test/x.test.ts", false},
 	} {
 		p := filepath.Join(dir, c.path)
 		old, _ := os.ReadFile(p)
@@ -345,6 +357,81 @@ func TestAdapterDigest(t *testing.T) {
 			t.Errorf("%s changed: the digest moves %v, want %v (%v)", name, d != base, c.moves, err)
 		}
 		restore(t, p, old)
+	}
+}
+
+// TestAdapterClosure: every local file the http-chat adapter loads at run
+// time (its value imports, re-exports and requires, from its entry point;
+// type-only imports are erased) is under one of adapterPaths, and so is
+// each local package's manifest (Astra #306 M3).
+func TestAdapterClosure(t *testing.T) {
+	packages := map[string]string{"@adc/contract": "adapters/contract", "@adc/contract-gen": "gen/ts"} // the workspace's local packages the adapter reaches
+	loads := []*regexp.Regexp{
+		regexp.MustCompile(`(?s)(?:^|\n)\s*(?:import|export)(\s+type)?\s[^;]*?\bfrom\s+"([^"]+)"`),
+		regexp.MustCompile(`(?:^|\n)\s*import()\s+"([^"]+)"`),
+		regexp.MustCompile(`\brequire\(()\s*"([^"]+)"\s*\)`),
+		regexp.MustCompile(`createRequire\([^)]*\)\(()\s*"([^"]+)"\s*\)`),
+	}
+	covered := func(rel string) bool {
+		return slices.ContainsFunc(adapterPaths, func(p string) bool { return rel == p || strings.HasPrefix(rel, p+"/") })
+	}
+	resolve := func(from, spec string) string {
+		switch {
+		case strings.HasPrefix(spec, "."):
+			return filepath.ToSlash(filepath.Join(filepath.Dir(from), spec))
+		case packages[spec] != "": // the package's "." export
+			var m struct {
+				Exports map[string]string `json:"exports"`
+			}
+			b, err := os.ReadFile(filepath.Join(root, packages[spec], "package.json"))
+			if err != nil || json.Unmarshal(b, &m) != nil || m.Exports["."] == "" {
+				t.Fatalf("%s has no export", spec)
+			}
+			return filepath.ToSlash(filepath.Join(packages[spec], m.Exports["."]))
+		}
+		for name, dir := range packages {
+			if rest, ok := strings.CutPrefix(spec, name+"/"); ok {
+				return dir + "/" + rest
+			}
+		}
+		return "" // node: built-ins and registry packages, which the lockfile pins
+	}
+	seen, queue := map[string]bool{}, []string{"adapters/http-chat/src/main.ts"}
+	for len(queue) > 0 {
+		f := queue[0]
+		queue = queue[1:]
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		b, err := os.ReadFile(filepath.Join(root, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, re := range loads {
+			for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+				if m[1] == "" { // a type-only import or export loads nothing
+					if next := resolve(f, m[2]); next != "" {
+						queue = append(queue, next)
+					}
+				}
+			}
+		}
+	}
+	for _, want := range []string{"adapters/contract/src/adapter.ts", "gen/ts/validators.cjs", "gen/ts/formats.cjs"} {
+		if !seen[want] {
+			t.Errorf("the walk never reached %s: its patterns are broken", want)
+		}
+	}
+	for f := range seen {
+		if !covered(f) {
+			t.Errorf("the adapter loads %s, which AdapterDigest does not cover", f)
+		}
+	}
+	for _, dir := range append(slices.Collect(maps.Values(packages)), "adapters/http-chat", "adapters") {
+		if !covered(dir + "/package.json") {
+			t.Errorf("%s/package.json is not covered", dir)
+		}
 	}
 }
 
@@ -364,17 +451,34 @@ func restore(t *testing.T, p string, old []byte) {
 var route = types.QualifiedRoute{Executor: "exe_01m4tm99haemr8ajyf09v4ytzb", Family: "stub-reviewer", Adapter: "http-chat", Model: "stub-reviewer-1",
 	Destination: "stub", Endpoint: "http://127.0.0.1:18080/v1"}
 
-// outcomes is every case's outcome as decided, each with its review report
-// (review.Report): its own call, the route's reviewer as its roster.
-func outcomes(t *testing.T, decided map[string]string) map[string]Outcome {
+// outcomes is every case's outcome in run x as decided, as Route.Review
+// returns it: its review report (review.Report), with the route's
+// reviewer as its roster and a call of its own, and its evidence (the
+// run, the case's place in its order and prompt, the call).
+func outcomes(t *testing.T, s Suite, x Run, decided map[string]string) map[string]Outcome {
 	t.Helper()
 	out := map[string]Outcome{}
-	for id, d := range decided {
-		out[id] = outcome(t, d, types.CallID(fmt.Sprintf("cal_01m4tm99haemss9tvzd438v%03d", len(out))), route)
+	for seq, c := range s.Order(x.Seed) {
+		call := newCall(t)
+		o := outcome(t, decided[c.ID], call, x.Route)
+		o.evidence = &types.QualifiedEvidence{RunID: x.ID, Seq: int64(seq), PromptDigest: c.PromptDigest, Route: x.Route, AdapterDigest: x.Adapter,
+			SuiteDigest: x.Suite, Call: call}
+		out[c.ID] = o
 	}
 	return out
 }
 
+func newCall(t *testing.T) types.CallID {
+	t.Helper()
+	id, err := ids.New("cal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return types.CallID(id)
+}
+
+// outcome is a decision d's report, with call and r's reviewer, and no
+// evidence.
 func outcome(t *testing.T, d string, call types.CallID, r types.QualifiedRoute) Outcome {
 	t.Helper()
 	res := types.Result{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonDegenerateOutput}
@@ -392,25 +496,28 @@ func outcome(t *testing.T, d string, call types.CallID, r types.QualifiedRoute) 
 	return Outcome{Decision: d, Report: b}
 }
 
-// Check fails closed (the lead's decision 3; Opus #306): no record, a
-// record that is not one, another route, prompt, adapter or suite, cases
-// that are not the suite's, a report missing, not its digest or not
-// agreeing with its case, counts that are not the cases', a score under
-// the bar, and a latest run that fails each leave the route unqualified.
+// Check fails closed (the lead's decision 3; Opus #306; Astra #306): no
+// record, a record that is not one, another route, prompt, adapter or
+// suite, cases that are not the suite's, a report missing, not its digest,
+// not one or not agreeing with its case, evidence not binding a case to
+// the record's run, route and adapter, its prompt and the run's order,
+// counts that are not the cases', a score under the bar, and a latest run
+// that fails each leave the route unqualified.
 func TestCheck(t *testing.T) {
 	s := suite(t)
 	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	if err := Check(t.TempDir(), route, s); !errors.Is(err, ErrUnqualified) {
 		t.Errorf("no record: %v", err)
 	}
-	record := func(dir, name string, when time.Time, decided map[string]string) {
-		if _, err := s.Record(dir, name, route, when, outcomes(t, decided)); err != nil {
+	record := func(dir, name string, r types.QualifiedRoute, when time.Time, decided map[string]string) {
+		x := s.NewRun(r, when)
+		if _, err := s.Record(dir, name, x, outcomes(t, s, x, decided)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	fresh := func(decided map[string]string) string {
 		dir := t.TempDir()
-		record(dir, "run", at, decided)
+		record(dir, "run", route, at, decided)
 		return dir
 	}
 	if err := Check(fresh(all(s, "")), route, s); err != nil {
@@ -419,38 +526,61 @@ func TestCheck(t *testing.T) {
 	if err := Check(fresh(with(all(s, ""), "control-transfer", "")), route, s); err != nil {
 		t.Errorf("one control a miss: %v", err)
 	}
-	edit := func(dir string, fn func(*types.ReviewQualification)) {
-		p := filepath.Join(dir, "run.json")
-		raw, err := os.ReadFile(p)
+	load := func(dir string) types.ReviewQualification {
+		var rec types.ReviewQualification
+		raw, err := os.ReadFile(filepath.Join(dir, "run.json"))
+		if err == nil {
+			err = json.Unmarshal(raw, &rec)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		var rec types.ReviewQualification
-		if err := json.Unmarshal(raw, &rec); err != nil {
-			t.Fatal(err)
-		}
+		return rec
+	}
+	edit := func(dir string, fn func(*types.ReviewQualification)) {
+		rec := load(dir)
 		fn(&rec)
-		if raw, err = json.Marshal(rec); err == nil {
-			err = os.WriteFile(p, raw, 0o644)
+		raw, err := json.Marshal(rec)
+		if err == nil {
+			err = os.WriteFile(filepath.Join(dir, "run.json"), raw, 0o644)
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	report := func(dir, id string, o Outcome) func(*types.ReviewQualification) { // a case's report replaced, its digest updated
-		if err := os.WriteFile(filepath.Join(dir, "run", id+".review-report.json"), o.Report, 0o644); err != nil {
+	report := func(dir, id string, b []byte) func(*types.ReviewQualification) { // a case's report replaced, its digest updated
+		if err := os.WriteFile(filepath.Join(dir, "run", id+".review-report.json"), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return func(r *types.ReviewQualification) {
 			for i := range r.Cases {
 				if r.Cases[i].ID == id {
-					r.Cases[i].ReportDigest = digest(o.Report)
+					r.Cases[i].ReportDigest = digest(b)
 				}
 			}
 		}
 	}
+	callOf := func(dir, id string) types.CallID {
+		for _, c := range load(dir).Cases {
+			if c.ID == id {
+				return c.Evidence.Call
+			}
+		}
+		t.Fatalf("no case %s", id)
+		return ""
+	}
+	recount := func(r *types.ReviewQualification) { // the counts and verdict made the cases'
+		m := map[string]string{}
+		for _, c := range r.Cases {
+			m[c.ID] = string(c.Decision)
+		}
+		noGo, goes, ok := s.Score(m)
+		r.NoGoOnDefects, r.GoOnControls, r.Qualified = int64(noGo), int64(goes), ok
+	}
 	other := route
 	other.Model = "another-model"
+	endpoint := route
+	endpoint.Endpoint = "https://elsewhere.example/v1"
 	first, second := s.Cases[0].ID, s.Cases[1].ID
 	for name, c := range map[string]struct {
 		decided map[string]string
@@ -481,7 +611,7 @@ func TestCheck(t *testing.T) {
 		"a report changed": {all(s, ""), route, func(d string) {
 			os.WriteFile(filepath.Join(d, "run", "control-lowstock.review-report.json"), []byte("{}"), 0o644)
 		}, "report is missing"},
-		// H1: a record's decisions edited, its real reports unchanged.
+		// Opus H1: a record's decisions edited, its real reports unchanged.
 		"decisions edited, reports unchanged": {all(s, review.Go), route, func(d string) {
 			edit(d, func(r *types.ReviewQualification) {
 				for i := range r.Cases {
@@ -491,24 +621,106 @@ func TestCheck(t *testing.T) {
 			})
 		}, "report decides"},
 		"a report that is not one": {all(s, ""), route, func(d string) {
-			edit(d, report(d, first, Outcome{Report: []byte(`{"schema":"adc.review-report/v1","decision":"no_go"}`)}))
+			edit(d, report(d, first, []byte(`{"schema":"adc.review-report/v1","decision":"no_go"}`)))
 		}, "is not an adc.review-report/v1"},
 		"another case's report": {all(s, ""), route, func(d string) {
 			b, _ := os.ReadFile(filepath.Join(d, "run", first+".review-report.json")) // a no_go for a no_go, but the first case's call
-			edit(d, report(d, second, Outcome{Report: b}))
+			edit(d, report(d, second, b))
 		}, "no call of its own"},
 		"another reviewer's report": {all(s, ""), route, func(d string) {
 			stranger := route
 			stranger.Executor, stranger.Family = "exe_01m4tm99haemqt8es2qfbwj8pa", "stub-builder"
-			edit(d, report(d, first, outcome(t, review.NoGo, "cal_01m4tm99haemss9tvzd438vzzz", stranger)))
+			edit(d, report(d, first, outcome(t, review.NoGo, callOf(d, first), stranger).Report))
 		}, "another reviewer's"},
 		"an outcome not its decision": {all(s, ""), route, func(d string) {
-			o := outcome(t, review.NoGo, "cal_01m4tm99haemss9tvzd438vyyy", route)
-			edit(d, report(d, first, Outcome{Report: bytes.Replace(o.Report, []byte(`"outcome":"found"`), []byte(`"outcome":"empty"`), 1)}))
-		}, "report decides"},
+			b := outcome(t, review.NoGo, callOf(d, first), route).Report
+			edit(d, report(d, first, bytes.Replace(b, []byte(`"outcome":"found"`), []byte(`"outcome":"empty"`), 1)))
+		}, "an outcome or reason not its decision's"},
 		"not the schema's": {all(s, ""), route, func(d string) {
 			os.WriteFile(filepath.Join(d, "run.json"), []byte(`{"schema":"adc.review-qualification/v1"}`), 0o644)
 		}, "is not a record"},
+		// Astra H2: an all-go run's defect reports keep "decision":"go" and
+		// gain case-variant "Decision":"no_go" and "Outcome":"found"; their
+		// digests, decisions and counts updated.
+		"case-variant aliases (Astra H2)": {all(s, review.Go), route, func(d string) {
+			for _, c := range s.Cases {
+				if c.Expect != review.NoGo {
+					continue
+				}
+				b, _ := os.ReadFile(filepath.Join(d, "run", c.ID+".review-report.json"))
+				b = append(bytes.TrimSuffix(bytes.TrimSpace(b), []byte("}")), []byte(`,"Decision":"no_go","Outcome":"found"}`)...)
+				edit(d, report(d, c.ID, b))
+				edit(d, func(r *types.ReviewQualification) {
+					for i := range r.Cases {
+						if r.Cases[i].ID == c.ID {
+							r.Cases[i].Decision = types.QualifiedCaseDecisionNoGo
+						}
+					}
+					recount(r)
+				})
+			}
+		}, "not a report: its keys"},
+		// Astra H1: a passing record's route changed, its evidence not.
+		"another model": {all(s, ""), other, func(d string) { edit(d, func(r *types.ReviewQualification) { r.Route = other }) }, "ran on another route"},
+		"another endpoint": {all(s, ""), endpoint, func(d string) {
+			edit(d, func(r *types.ReviewQualification) { r.Route = endpoint })
+		}, "ran on another route"},
+		"a case of another run": {all(s, ""), route, func(d string) {
+			edit(d, func(r *types.ReviewQualification) { r.RunID = strings.Repeat("0", 32) })
+		}, "ran in another run"},
+		"a case sent another prompt": {all(s, ""), route, func(d string) {
+			edit(d, func(r *types.ReviewQualification) { r.Cases[5].Evidence.PromptDigest = digest([]byte("x")) })
+		}, "was sent another prompt"},
+		"a case on another adapter": {all(s, ""), route, func(d string) {
+			edit(d, func(r *types.ReviewQualification) { r.Cases[6].Evidence.AdapterDigest = digest([]byte("x")) })
+		}, "ran on another adapter or suite"},
+		"a case on another suite": {all(s, ""), route, func(d string) {
+			edit(d, func(r *types.ReviewQualification) { r.Cases[6].Evidence.SuiteDigest = digest([]byte("x")) })
+		}, "ran on another adapter or suite"},
+		"a case out of the seed's order (Astra M5)": {all(s, ""), route, func(d string) {
+			edit(d, func(r *types.ReviewQualification) {
+				r.Cases[0].Evidence.Seq, r.Cases[1].Evidence.Seq = r.Cases[1].Evidence.Seq, r.Cases[0].Evidence.Seq
+			})
+		}, "out of its run's order"},
+		"a report charging another call": {all(s, ""), route, func(d string) {
+			edit(d, func(r *types.ReviewQualification) { r.Cases[3].Evidence.Call = newCall(t) })
+		}, "no call of its own"},
+		"a call shared by two cases": {all(s, ""), route, func(d string) {
+			call := callOf(d, first)
+			edit(d, report(d, second, outcome(t, s.Cases[1].Expect, call, route).Report))
+			edit(d, func(r *types.ReviewQualification) { r.Cases[1].Evidence.Call = call })
+		}, "no call of its own"},
+		// Astra M4: a record or a report that is a link, or a reports
+		// directory that is one.
+		"a record linking to /dev/zero": {all(s, ""), route, func(d string) { os.Symlink("/dev/zero", filepath.Join(d, "poison.json")) }, "poison.json is not a record"},
+		"a record that is a link to one": {all(s, ""), route, func(d string) {
+			later := t.TempDir()
+			record(later, "later", route, at.Add(time.Hour), all(s, ""))
+			os.Symlink(filepath.Join(later, "later.json"), filepath.Join(d, "later.json"))
+			os.Symlink(filepath.Join(later, "later"), filepath.Join(d, "later"))
+		}, "later.json is not a record"},
+		"a report linking to /dev/zero": {all(s, ""), route, func(d string) {
+			p := filepath.Join(d, "run", first+".review-report.json")
+			os.Remove(p)
+			os.Symlink("/dev/zero", p)
+		}, "report is missing"},
+		"a reports directory that is a link": {all(s, ""), route, func(d string) {
+			os.Rename(filepath.Join(d, "run"), filepath.Join(d, "elsewhere"))
+			os.Symlink(filepath.Join(d, "elsewhere"), filepath.Join(d, "run"))
+		}, "its reports are not a directory"},
+		"a record over its bound": {all(s, ""), route, func(d string) {
+			os.WriteFile(filepath.Join(d, "huge.json"), bytes.Repeat([]byte(" "), maxRecordBytes+1), 0o644)
+		}, "huge.json is not a record: is 1048577 bytes, over"},
+		"too many records": {all(s, ""), route, func(d string) {
+			for i := range maxRecords {
+				os.WriteFile(filepath.Join(d, fmt.Sprintf("x%04d.json", i)), nil, 0o644)
+			}
+		}, "past its bounds"},
+		"too many entries": {all(s, ""), route, func(d string) {
+			for i := range maxEntries {
+				os.WriteFile(filepath.Join(d, fmt.Sprintf("x%04d", i)), nil, 0o644)
+			}
+		}, "past its bounds"},
 	} {
 		dir := fresh(c.decided)
 		if c.change != nil {
@@ -518,35 +730,163 @@ func TestCheck(t *testing.T) {
 			t.Errorf("%s: %v, want unqualified (%s)", name, err, c.why)
 		}
 	}
+	// Astra H1, the reviewer's input: the four unchanged defect reports of
+	// an all-no_go run and the four unchanged control reports of an all-go
+	// run, under one record with its decisions and counts made to agree.
+	goes, noGos := fresh(all(s, review.Go)), fresh(all(s, review.NoGo))
+	edit(goes, func(r *types.ReviewQualification) {
+		donor := load(noGos)
+		for i, c := range s.Cases {
+			if c.Expect == review.NoGo {
+				b, _ := os.ReadFile(filepath.Join(noGos, "run", c.ID+".review-report.json"))
+				report(goes, c.ID, b)
+				r.Cases[i] = donor.Cases[i]
+			}
+		}
+		recount(r)
+	})
+	if err := Check(goes, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "ran in another run") {
+		t.Errorf("two runs' reports as one record: %v", err)
+	}
+	// Record makes no evidence: old reports without it, another run's
+	// outcomes, and outcomes on another route are refused, and nothing is
+	// written.
+	x := s.NewRun(route, at)
+	bare := outcomes(t, s, x, all(s, ""))
+	for id, o := range bare {
+		bare[id] = Outcome{Decision: o.Decision, Report: o.Report}
+	}
+	elsewhere := s.NewRun(other, at)
+	for name, c := range map[string]struct {
+		x   Run
+		out map[string]Outcome
+		why string
+	}{
+		"reports without evidence": {x, bare, "has no outcome of a run"},
+		"another run's outcomes":   {x, outcomes(t, s, s.NewRun(route, at), all(s, "")), "ran in another run"},
+		"outcomes on another route": {x, func() map[string]Outcome {
+			out := outcomes(t, s, elsewhere, all(s, ""))
+			for id, o := range out {
+				o.evidence.RunID = x.ID
+				out[id] = o
+			}
+			return out
+		}(), "ran on another route"},
+	} {
+		dir := t.TempDir()
+		if _, err := s.Record(dir, "run", c.x, c.out); err == nil || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("%s: recorded (%v), want refused (%s)", name, err, c.why)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) > 0 {
+			t.Errorf("%s: Record wrote %d entries", name, len(entries))
+		}
+	}
 	// M3: only the latest run of the route counts.
 	dir := t.TempDir()
-	record(dir, "a", at, all(s, ""))
-	record(dir, "b", at.Add(24*time.Hour), with(all(s, ""), "control-lowstock", review.NoGo))
+	record(dir, "a", route, at, all(s, ""))
+	record(dir, "b", route, at.Add(24*time.Hour), with(all(s, ""), "control-lowstock", review.NoGo))
 	if err := Check(dir, route, s); err != nil {
 		t.Errorf("a passing run after a passing one: %v", err)
 	}
-	record(dir, "c", at.Add(48*time.Hour), all(s, review.Go))
+	record(dir, "c", route, at.Add(48*time.Hour), all(s, review.Go))
 	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "c.json (the latest run)") {
 		t.Errorf("a failing run after a passing one: %v", err)
 	}
-	record(dir, "d", at.Add(72*time.Hour), all(s, ""))
+	record(dir, "d", route, at.Add(72*time.Hour), all(s, ""))
 	if err := Check(dir, route, s); err != nil {
 		t.Errorf("a passing run after a failing one: %v", err)
 	}
-	record(dir, "e", at.Add(72*time.Hour), all(s, review.NoGo))
+	record(dir, "e", route, at.Add(72*time.Hour), all(s, review.NoGo))
 	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) {
 		t.Errorf("a failing run beside a passing one at the same time: %v", err)
 	}
-	if _, err := s.Record(dir, "f", other, at.Add(96*time.Hour), outcomes(t, all(s, review.Go))); err != nil {
-		t.Fatal(err)
-	}
+	record(dir, "f", other, at.Add(96*time.Hour), all(s, review.Go))
 	if err := Check(dir, other, s); !errors.Is(err, ErrUnqualified) { // another route's run is its own
 		t.Errorf("another route's failing run: %v", err)
 	}
-	tampered := s // a suite changed after the run: its digest moves
+	// The suite or the adapter changed after the run: the record and its
+	// evidence agree with each other, not with the current digests.
+	tampered := s
 	tampered.Digest = digest([]byte("another suite"))
-	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) {
+	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "(the latest run): another suite") {
 		t.Errorf("a changed suite: %v", err)
+	}
+	tampered = s
+	tampered.Adapter = digest([]byte("another adapter"))
+	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "(the latest run): another adapter") {
+		t.Errorf("a changed adapter: %v", err)
+	}
+}
+
+// TestOrder: a run's order is a permutation of the suite that its seed
+// alone decides, and seeds order the cases differently (Astra #306 M5).
+func TestOrder(t *testing.T) {
+	s := suite(t)
+	idsOf := func(cs []Case) (out []string) {
+		for _, c := range cs {
+			out = append(out, c.ID)
+		}
+		return out
+	}
+	suiteOrder := idsOf(s.Cases)
+	firsts := map[string]bool{}
+	for i := range 64 {
+		seed := fmt.Sprintf("%064x", i)
+		got := idsOf(s.Order(seed))
+		if !slices.Equal(got, idsOf(s.Order(seed))) || !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(suiteOrder))) {
+			t.Fatalf("seed %d: %v is not one permutation of the suite", i, got)
+		}
+		firsts[got[0]] = true
+	}
+	if len(firsts) < len(s.Cases)/2 {
+		t.Errorf("64 seeds put only %d cases first: the order does not follow the seed", len(firsts))
+	}
+	a, b := s.NewRun(route, time.Now()), s.NewRun(route, time.Now())
+	if a.ID == b.ID || a.Seed == b.Seed || len(a.ID) != 32 || len(a.Seed) != 64 {
+		t.Errorf("two runs %+v and %+v: not random ids and seeds", a, b)
+	}
+}
+
+// TestReadRegular: a record or report is a regular file read within its
+// bound: never through a link, never a device, never past the bound, even
+// when its size says otherwise (Astra #306 M4).
+func TestReadRegular(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "ok.json")
+	if err := os.WriteFile(ok, []byte("0123456789"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(ok, filepath.Join(dir, "link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := readRegular(ok, 10); err != nil || string(b) != "0123456789" {
+		t.Errorf("a file at its bound: %q, %v", b, err)
+	}
+	for name, c := range map[string]struct {
+		path  string
+		limit int64
+		why   string
+	}{
+		"a link to a regular file": {filepath.Join(dir, "link.json"), 10, "symbolic link"},
+		"a link to /dev/zero":      {filepath.Join(dir, "zero.json"), 10, "symbolic link"},
+		"/dev/zero":                {"/dev/zero", 10, "not a regular file"},
+		"/dev/null":                {"/dev/null", 10, "not a regular file"},
+		"a directory":              {dir, 10, "not a regular file"},
+		"a file past its bound":    {ok, 9, "is 10 bytes, over 9"},
+		"a file whose size lies":   {"/proc/self/status", 10, "grew past 10 bytes"},
+	} {
+		if name == "a link to /dev/zero" {
+			if err := os.Symlink("/dev/zero", c.path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := os.Lstat(c.path); err != nil {
+			t.Logf("%s: %v; skipped", name, err)
+			continue
+		}
+		if b, err := readRegular(c.path, c.limit); err == nil || !strings.Contains(err.Error(), c.why) || int64(len(b)) > c.limit+1 {
+			t.Errorf("%s: %d bytes, %v; want %q, and never past the bound", name, len(b), err, c.why)
+		}
 	}
 }
 

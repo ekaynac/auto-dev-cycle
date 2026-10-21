@@ -9,15 +9,34 @@
 // (AdapterDigest) and the suite. P22a's activation of the review
 // capability calls Check (the I-inventory's obligation P22a-6).
 //
-// Decisions (the lead, 2026-10-20, and Opus #306):
+// Decisions (the lead, 2026-10-20, Opus #306 and Astra #306):
 //   - Check fails closed: no record of the route, a record that is not
 //     one, a stale route, prompt, adapter or suite digest, a report missing,
 //     not its digest, or not agreeing with its case (its decision, its
-//     roster, its charge links), and a score under the bar each leave the
-//     route unqualified. The score is recomputed from the cases; the
-//     record's own counts and verdict must agree with it.
+//     roster, its charge links), a case's evidence not binding its report
+//     to the record's run, route and adapter, the case's prompt and the
+//     run's order, and a score under the bar each leave the route
+//     unqualified. The score is recomputed from the cases; the record's
+//     own counts and verdict must agree with it.
+//   - Each case's evidence is Route.Review's: the run's id, the case's
+//     place in the run's order, the digest of the prompt it sent, the
+//     registry's route it sent it on, the run's adapter and suite, and
+//     the model call its report charges. Record takes it from the outcome
+//     and never makes it: an outcome Route.Review did not produce, or one
+//     of another run, route or prompt, is refused (Astra #306 H1).
 //   - Only the latest run of a route counts (by ran_at): a failing run
 //     after a passing one takes the qualification away.
+//   - A record and a report are each read as a regular file, never
+//     through a link, within a byte bound checked before reading, and a
+//     records directory holds at most maxRecords records: past a bound,
+//     the route is unqualified (Astra #306 M4).
+//   - A run's cases run in an order its random seed decides, recorded
+//     (Astra #306 M5). The bar's chance figure assumes decisions that are
+//     independent and identically distributed across cases; a reviewer
+//     that ignores the case and answers by the request's place in the run
+//     is outside it. Under the seeded order, no_go to the first four
+//     requests passes with probability 1/70 per run, and no_go to exactly
+//     five, the best such policy, with 1/14.
 //   - The run goes through the real http-chat adapter and gateway
 //     (Route.Review, adapterhost.Host.Run); a live run is the lead's,
 //     committed as a record. CI runs the harness against a scripted
@@ -25,26 +44,29 @@
 //   - A reviewer sees review.Prompt only: the task's requirement, the
 //     candidate's diff and the gate's summary. Never a case's id, the
 //     suite's notes, the sealed probes or the task's hidden tests.
-//   - Any change to the http-chat adapter's source or to the reviewer's
-//     limits makes every record stale (a false block accepted: the
-//     adapter's system message and decision schema need no export).
+//   - Any change to the http-chat adapter's runtime closure or to the
+//     reviewer's limits makes every record stale (a false block accepted:
+//     the adapter's system message and decision schema need no export).
 package qualify
 
 import (
 	"bytes"
 	"cmp"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -67,8 +89,23 @@ const (
 	reportSchema = "adc.review-report/v1"
 )
 
-// adapterPaths are what AdapterDigest covers, from the repository root.
-var adapterPaths = []string{"adapters/http-chat/src", "adapters/http-chat/package.json", "adapters/pnpm-lock.yaml"}
+// The bounds Check reads within (Astra #306 M4).
+const (
+	maxRecords     = 1024    // records in a records directory
+	maxEntries     = 4096    // entries of a records directory: each record's file and reports directory, and more
+	maxRecordBytes = 1 << 20 // bytes of a record
+)
+
+// adapterPaths are what AdapterDigest covers, from the repository root: the
+// http-chat adapter's local runtime closure (Astra #306 M3). Its source
+// and manifest; the contract package it imports (@adc/contract), its
+// source and manifest; the generated validators that package loads and
+// the formats they load (@adc/contract-gen); the workspace's manifests and
+// lockfile, which link the packages and pin every registry dependency.
+// TestAdapterClosure walks the adapter's imports from its entry point and
+// requires every local file it reaches to be under one of them.
+var adapterPaths = []string{"adapters/http-chat/src", "adapters/http-chat/package.json", "adapters/contract/src", "adapters/contract/package.json",
+	"gen/ts/validators.cjs", "gen/ts/formats.cjs", "gen/ts/package.json", "adapters/package.json", "adapters/pnpm-workspace.yaml", "adapters/pnpm-lock.yaml"}
 
 var (
 	caseID      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,95}$`)
@@ -153,9 +190,9 @@ func suiteDigest(dir string) (types.Digest, error) {
 	})
 }
 
-// AdapterDigest is the digest of the http-chat adapter's source, its
-// package.json and the workspace lockfile under root, and of the
-// reviewer's limits (Opus #306 M6).
+// AdapterDigest is the digest of the http-chat adapter's runtime closure
+// under root (adapterPaths) and of the reviewer's limits (Opus #306 M6;
+// Astra #306 M3).
 func AdapterDigest(root string) (types.Digest, error) {
 	return adapterDigest(root, MaxTurns, MaxOutputTokens)
 }
@@ -240,36 +277,79 @@ func RouteOf(e types.RegistryExecutor) types.QualifiedRoute {
 	return types.QualifiedRoute{Executor: e.ID, Family: e.Family, Adapter: e.Adapter, Model: e.Model, Destination: e.Destination.ID, Endpoint: e.Destination.Endpoint}
 }
 
+// Run is one run of the suite on a route (Astra #306 H1, M5): a random id
+// every case's evidence carries, a random seed that orders its cases, its
+// time, and the route, adapter and suite it runs on.
+type Run struct {
+	ID      types.QualificationRunID
+	Seed    string
+	At      time.Time
+	Route   types.QualifiedRoute
+	Adapter types.Digest
+	Suite   types.Digest
+}
+
+// NewRun is a new run of s on route, at at.
+func (s Suite) NewRun(route types.QualifiedRoute, at time.Time) Run {
+	id, seed := make([]byte, 16), make([]byte, 32)
+	_, _ = rand.Read(id) // crypto/rand.Read never fails
+	_, _ = rand.Read(seed)
+	return Run{ID: hex.EncodeToString(id), Seed: hex.EncodeToString(seed), At: at.UTC(), Route: route, Adapter: s.Adapter, Suite: s.Digest}
+}
+
+// Order is the suite's cases in the order a run with seed runs them, by
+// sha256(seed, case id): a permutation the seed alone decides (Astra #306
+// M5).
+func (s Suite) Order(seed string) []Case {
+	key := func(c Case) []byte {
+		sum := sha256.Sum256([]byte(seed + "\x00" + c.ID))
+		return sum[:]
+	}
+	out := slices.Clone(s.Cases)
+	slices.SortFunc(out, func(a, b Case) int { return bytes.Compare(key(a), key(b)) })
+	return out
+}
+
 // Outcome is one case's run: the decision (review.Go, review.NoGo or "",
-// a miss) and its D55 report.
+// a miss), its D55 report and the evidence of its execution, which only
+// Route.Review makes.
 type Outcome struct {
 	Decision string
 	Report   []byte
+	evidence *types.QualifiedEvidence
 }
 
-// Record is the record of the suite's run on route, at, with each case's
-// outcome; it writes each report beside it, under dir/<name>/.
-func (s Suite) Record(dir, name string, route types.QualifiedRoute, at time.Time, out map[string]Outcome) (types.ReviewQualification, error) {
-	rec := types.ReviewQualification{Schema: recordSchema, Route: route, PromptDigest: review.PromptDigest, AdapterDigest: s.Adapter, SuiteDigest: s.Digest,
-		RanAt: types.Time(at.UTC().Format(time.RFC3339)), Cases: []types.QualifiedCase{}}
+// Record is the record of the suite's run, with each case's outcome; it
+// writes each report beside it, under dir/<name>/. Every outcome must be
+// one Route.Review returned in run, for its case's prompt, on run's route,
+// with run's adapter and suite the current ones; Record refuses any other
+// and writes nothing (Astra #306 H1).
+func (s Suite) Record(dir, name string, run Run, out map[string]Outcome) (types.ReviewQualification, error) {
+	rec := types.ReviewQualification{Schema: recordSchema, RunID: run.ID, Seed: run.Seed, Route: run.Route, PromptDigest: review.PromptDigest, AdapterDigest: run.Adapter,
+		SuiteDigest: run.Suite, RanAt: types.Time(run.At.UTC().Format(time.RFC3339)), Cases: []types.QualifiedCase{}}
 	decided := map[string]string{}
+	for _, c := range s.Cases {
+		o, ok := out[c.ID]
+		if !ok || len(o.Report) == 0 || o.evidence == nil {
+			return rec, fmt.Errorf("qualify: case %s has no outcome of a run", c.ID)
+		}
+		decided[c.ID] = o.Decision
+		rec.Cases = append(rec.Cases, types.QualifiedCase{ID: c.ID, Expect: types.QualifiedCaseExpect(c.Expect), PromptDigest: c.PromptDigest,
+			Decision: types.QualifiedCaseDecision(cmp.Or(o.Decision, "none")), ReportDigest: digest(o.Report), Evidence: *o.evidence})
+	}
+	noGo, goes, ok := s.Score(decided)
+	rec.NoGoOnDefects, rec.GoOnControls, rec.Qualified = int64(noGo), int64(goes), ok
+	if err := s.verify(rec, func(id string) ([]byte, error) { return out[id].Report, nil }); err != nil {
+		return rec, fmt.Errorf("qualify: the outcomes are not the run's: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
 		return rec, err
 	}
 	for _, c := range s.Cases {
-		o, ok := out[c.ID]
-		if !ok || len(o.Report) == 0 {
-			return rec, fmt.Errorf("qualify: case %s has no outcome", c.ID)
-		}
-		decided[c.ID] = o.Decision
-		if err := os.WriteFile(filepath.Join(dir, name, c.ID+".review-report.json"), o.Report, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name, c.ID+".review-report.json"), out[c.ID].Report, 0o644); err != nil {
 			return rec, err
 		}
-		rec.Cases = append(rec.Cases, types.QualifiedCase{ID: c.ID, Expect: types.QualifiedCaseExpect(c.Expect), PromptDigest: c.PromptDigest,
-			Decision: types.QualifiedCaseDecision(cmp.Or(o.Decision, "none")), ReportDigest: digest(o.Report)})
 	}
-	noGo, goes, ok := s.Score(decided)
-	rec.NoGoOnDefects, rec.GoOnControls, rec.Qualified = int64(noGo), int64(goes), ok
 	b, err := json.MarshalIndent(rec, "", "  ")
 	if err == nil {
 		err = os.WriteFile(filepath.Join(dir, name+".json"), append(b, '\n'), 0o644)
@@ -283,11 +363,14 @@ var ErrUnqualified = errors.New("qualify: the reviewer route is not qualified")
 // Check is nil when the latest record (by ran_at) of route under dir
 // qualifies it for the suite s, the current prompt and the current
 // adapter; otherwise ErrUnqualified, with the reason. A record that is not
-// one fails the whole check.
+// one, or a records directory past its bounds, fails the whole check.
 func Check(dir string, route types.QualifiedRoute, s Suite) error {
-	names, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil {
-		return err
+	names, err := recordNames(dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%w: no record of the route", ErrUnqualified)
+	case err != nil:
+		return fmt.Errorf("%w: %v", ErrUnqualified, err)
 	}
 	type run struct {
 		path string
@@ -295,18 +378,19 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 		at   time.Time
 	}
 	var runs []run
-	for _, p := range names {
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			return err
+	for _, n := range names {
+		p := filepath.Join(dir, n)
+		raw, err := readRegular(p, maxRecordBytes)
+		var rec types.ReviewQualification
+		if err == nil {
+			rec, err = contract.Decode[types.ReviewQualification]("config/review-qualification", raw)
 		}
-		rec, err := contract.Decode[types.ReviewQualification]("config/review-qualification", raw)
 		var at time.Time
 		if err == nil {
 			at, err = time.Parse(time.RFC3339Nano, string(rec.RanAt))
 		}
 		if err != nil {
-			return fmt.Errorf("%w: %s is not a record: %v", ErrUnqualified, filepath.Base(p), err)
+			return fmt.Errorf("%w: %s is not a record: %v", ErrUnqualified, n, err)
 		}
 		if rec.Route == route {
 			runs = append(runs, run{p, rec, at})
@@ -327,47 +411,80 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	return nil
 }
 
-// report is an adc.review-report/v1 (review.Report), read strictly.
-type report struct {
-	Schema      string               `json:"schema"`
-	ElapsedMS   int64                `json:"elapsed_ms"`
-	Round       int64                `json:"candidate_round"`
-	Roster      []types.RosterMember `json:"roster"`
-	Outcome     types.Outcome        `json:"outcome"`
-	Reason      string               `json:"reason"`
-	Decision    string               `json:"decision"`
-	Findings    []json.RawMessage    `json:"findings"`
-	RepairRound *int64               `json:"repair_round"`
-	ChargeLinks []types.CallID       `json:"charge_links"`
-}
-
-// readReport reads b into r strictly: every key of the report, each once,
-// no other (the decoder refuses one), and no trailing data.
-func readReport(b []byte, r *report) error {
-	v, err := contract.ReadStrict(b)
+// recordNames are the names of the records (*.json) in dir, sorted, read
+// within maxEntries and maxRecords.
+func recordNames(dir string) ([]string, error) {
+	f, err := os.Open(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	m, ok := v.(map[string]any)
-	if !ok {
-		return errors.New("not a report")
+	defer f.Close()
+	entries, err := f.ReadDir(maxEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
-	for _, k := range reportKeys {
-		if _, ok := m[k]; !ok {
-			return errors.New("not a report's keys")
+	var names []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, e.Name())
 		}
 	}
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	return d.Decode(r)
+	if len(entries) > maxEntries || len(names) > maxRecords {
+		return nil, fmt.Errorf("the records directory is past its bounds (%d entries, %d records)", maxEntries, maxRecords)
+	}
+	slices.Sort(names)
+	return names, nil
 }
 
-var reportKeys = []string{"schema", "elapsed_ms", "candidate_round", "roster", "outcome", "reason", "decision", "findings", "repair_round", "charge_links"}
+// readRegular is the regular file at p, opened never through a link and
+// never a special file, of at most limit bytes: its size is checked before
+// it is read, and the read stops past the limit (Astra #306 M4).
+func readRegular(p string, limit int64) ([]byte, error) {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	switch {
+	case err != nil:
+		return nil, err
+	case !fi.Mode().IsRegular():
+		return nil, errors.New("not a regular file")
+	case fi.Size() > limit:
+		return nil, fmt.Errorf("is %d bytes, over %d", fi.Size(), limit)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, limit+1)) // a file that grows, or whose size lies (/proc), is still read within the bound
+	if err == nil && int64(len(b)) > limit {
+		err = fmt.Errorf("grew past %d bytes", limit)
+	}
+	return b, err
+}
 
-// outcomeOf is the review result's outcome for a decision (review.Result).
-var outcomeOf = map[string]types.Outcome{review.Go: types.OutcomeEmpty, review.NoGo: types.OutcomeFound, "": types.OutcomeCouldNotRun}
-
+// check is whether the record at p, with its reports beside it, qualifies
+// for s.
 func check(p string, rec types.ReviewQualification, s Suite) error {
+	reports := strings.TrimSuffix(p, ".json")
+	if fi, err := os.Lstat(reports); err != nil || !fi.IsDir() {
+		return errors.New("its reports are not a directory")
+	}
+	if err := s.verify(rec, func(id string) ([]byte, error) {
+		return readRegular(filepath.Join(reports, id+".review-report.json"), review.MaxReport)
+	}); err != nil {
+		return err
+	}
+	if !rec.Qualified {
+		return fmt.Errorf("under the bar: %d of %d defects no_go, %d go", rec.NoGoOnDefects, s.Pass.NoGo, rec.GoOnControls)
+	}
+	return nil
+}
+
+// verify is whether rec is a run of s on the current prompt and adapter:
+// its cases the suite's, each report (from report) its digest, a report
+// agreeing with its case, each case's evidence binding it to the record's
+// run, route, adapter and suite, the case's prompt and the run's order,
+// and the counts the cases'.
+func (s Suite) verify(rec types.ReviewQualification, report func(id string) ([]byte, error)) error {
 	switch {
 	case rec.PromptDigest != review.PromptDigest:
 		return errors.New("another prompt")
@@ -378,41 +495,51 @@ func check(p string, rec types.ReviewQualification, s Suite) error {
 	case len(rec.Cases) != len(s.Cases):
 		return errors.New("not the suite's cases")
 	}
-	decided, links := map[string]string{}, map[types.CallID]bool{}
+	seq := map[string]int64{}
+	for i, c := range s.Order(rec.Seed) {
+		seq[c.ID] = int64(i)
+	}
+	decided, calls := map[string]string{}, map[types.CallID]bool{}
 	roster := []types.RosterMember{{Executor: rec.Route.Executor, Family: rec.Route.Family}}
 	for i, c := range s.Cases {
 		rc := rec.Cases[i]
+		ev := rc.Evidence
 		if rc.ID != c.ID || string(rc.Expect) != c.Expect || rc.PromptDigest != c.PromptDigest {
 			return fmt.Errorf("case %d is not the suite's %s", i, c.ID)
 		}
-		b, err := os.ReadFile(filepath.Join(strings.TrimSuffix(p, ".json"), c.ID+".review-report.json"))
+		switch { // the case's execution is this run's, on this route, of this prompt (Astra #306 H1)
+		case ev.RunID != rec.RunID:
+			return fmt.Errorf("case %s ran in another run", c.ID)
+		case ev.Route != rec.Route:
+			return fmt.Errorf("case %s ran on another route", c.ID)
+		case ev.PromptDigest != c.PromptDigest:
+			return fmt.Errorf("case %s was sent another prompt", c.ID)
+		case ev.AdapterDigest != rec.AdapterDigest || ev.SuiteDigest != rec.SuiteDigest:
+			return fmt.Errorf("case %s ran on another adapter or suite", c.ID)
+		case ev.Seq != seq[c.ID]:
+			return fmt.Errorf("case %s ran out of its run's order", c.ID)
+		}
+		b, err := report(c.ID)
 		if err != nil || digest(b) != rc.ReportDigest {
 			return fmt.Errorf("case %s's report is missing or not its digest", c.ID)
 		}
-		var r report
 		if rc.Decision != types.QualifiedCaseDecisionNone {
 			decided[c.ID] = string(rc.Decision)
 		}
-		switch err := readReport(b, &r); { // the report agrees with its case (Opus #306 H1)
-		case err != nil || r.Schema != reportSchema:
-			return fmt.Errorf("case %s's report is not an %s", c.ID, reportSchema)
-		case r.Decision != decided[c.ID] || r.Outcome != outcomeOf[r.Decision]:
+		switch r, err := review.ReadReport(b); { // the report agrees with its case (Opus #306 H1; Astra #306 H2)
+		case err != nil:
+			return fmt.Errorf("case %s's report is not an %s: %v", c.ID, reportSchema, err)
+		case r.Decision != decided[c.ID]:
 			return fmt.Errorf("case %s's report decides %q, its record %q", c.ID, r.Decision, rc.Decision)
 		case !slices.Equal(r.Roster, roster):
 			return fmt.Errorf("case %s's report is another reviewer's", c.ID)
-		case len(r.ChargeLinks) == 0 || slices.ContainsFunc(r.ChargeLinks, func(l types.CallID) bool { return links[l] }):
-			return fmt.Errorf("case %s's report has no call of its own", c.ID)
+		case !slices.Equal(r.ChargeLinks, []types.CallID{ev.Call}) || calls[ev.Call]:
+			return fmt.Errorf("case %s's report charges no call of its own execution", c.ID)
 		}
-		for _, l := range r.ChargeLinks {
-			links[l] = true
-		}
+		calls[ev.Call] = true
 	}
-	noGo, goes, ok := s.Score(decided)
-	switch {
-	case int64(noGo) != rec.NoGoOnDefects || int64(goes) != rec.GoOnControls || ok != rec.Qualified:
+	if noGo, goes, ok := s.Score(decided); int64(noGo) != rec.NoGoOnDefects || int64(goes) != rec.GoOnControls || ok != rec.Qualified {
 		return errors.New("its counts are not its cases'")
-	case !ok:
-		return fmt.Errorf("under the bar: %d of %d defects no_go, %d go", noGo, s.Pass.NoGo, goes)
 	}
 	return nil
 }

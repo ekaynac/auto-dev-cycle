@@ -72,26 +72,26 @@ func TestQualifyLive(t *testing.T) {
 		Adapter: session.Config{Command: []string{node, filepath.Join(adapters, "http-chat", "src", "main.ts")},
 			Env: append([]string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir()}, testguard.HomeEnv(t)...), Deadline: 15 * time.Minute}}
 	ctx := context.Background()
+	run := s.NewRun(RouteOf(e), time.Now()) // one id and one seed for every case; the cases run in the seed's order (Astra #306 H1, M5)
 	out := map[string]Outcome{}
-	for _, c := range s.Cases {
+	for seq, c := range s.Order(run.Seed) {
 		p, err := s.Prompt(ctx, c, gobin, t.TempDir(), env)
 		if err != nil {
 			t.Fatal(err)
 		}
-		o, err := r.Review(ctx, p)
+		o, err := r.Review(ctx, run, seq, p)
 		if err != nil {
 			t.Fatalf("%s: %v", c.ID, err)
 		}
 		out[c.ID] = o
-		t.Logf("%s: expect %s, decided %q", c.ID, c.Expect, o.Decision)
+		t.Logf("%d %s: expect %s, decided %q", seq, c.ID, c.Expect, o.Decision)
 	}
 	dir := os.Getenv("ADC_QUALIFY_OUT")
 	if dir == "" {
 		dir = filepath.Join(s.Root, Dir, "records")
 	}
-	at := time.Now().UTC()
-	name := at.Format("2006-01-02") + "-" + strings.ReplaceAll(string(e.ID), "_", "-")
-	rec, err := s.Record(dir, name, RouteOf(e), at, out)
+	name := run.At.Format("2006-01-02") + "-" + strings.ReplaceAll(string(e.ID), "_", "-") + "-" + run.ID[:8]
+	rec, err := s.Record(dir, name, run, out)
 	if err != nil {
 		t.Fatal(err)
 	}

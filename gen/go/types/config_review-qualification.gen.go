@@ -4,13 +4,17 @@
 
 package types
 
-// ReviewQualification: One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest record (by ran_at) has the current route, prompt, adapter and suite digests, every report agrees with it, and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
+// ReviewQualification: One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the run's id and order seed, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest and the evidence of its execution, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest record (by ran_at) has the current route, prompt, adapter and suite digests, every case's evidence binds its report to this run, this route and its prompt, every report agrees with it, and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
 type ReviewQualification struct {
-	Schema string         `json:"schema"`
-	Route  QualifiedRoute `json:"route"`
+	Schema string `json:"schema"`
+	// The run's id, random, shared by every case's evidence (Astra #306 H1).
+	RunID QualificationRunID `json:"run_id"`
+	// The run's random seed: the cases ran in internal/qualify.Suite.Order(seed) (Astra #306 M5).
+	Seed  string         `json:"seed"`
+	Route QualifiedRoute `json:"route"`
 	// internal/review.PromptDigest: the reviewer prompt's template.
 	PromptDigest Digest `json:"prompt_digest"`
-	// internal/qualify.AdapterDigest: the http-chat adapter's source, package.json and the workspace lockfile, and the reviewer's limits (Opus #306 M6): any change makes the record stale.
+	// internal/qualify.AdapterDigest: the http-chat adapter's runtime closure (its source and package.json, the contract package's source and package.json, the generated validators and formats it loads, the workspace's manifests and lockfile) and the reviewer's limits (Opus #306 M6; Astra #306 M3): any change makes the record stale.
 	AdapterDigest Digest `json:"adapter_digest"`
 	// internal/qualify.Suite's digest: suite.json (each case's rendered prompt digest included), every case's patch and every sealed file.
 	SuiteDigest   Digest          `json:"suite_digest"`
@@ -55,5 +59,22 @@ type QualifiedCase struct {
 	// The reviewer's typed decision; none when it returned none or one internal/review.Parse refuses (a miss).
 	Decision QualifiedCaseDecision `json:"decision"`
 	// The case's adc.review-report/v1 (internal/review.Report), committed beside the record.
-	ReportDigest Digest `json:"report_digest"`
+	ReportDigest Digest            `json:"report_digest"`
+	Evidence     QualifiedEvidence `json:"evidence"`
+}
+
+type QualificationRunID = string
+
+// QualifiedEvidence: What internal/qualify.Route.Review observed running the case (Astra #306 H1): the run, the case's place in its order, the digest of the prompt it sent, the registry's route it sent it on, the adapter and suite the run was on, and the model call its report charges. Check requires each to be the record's and the case's.
+type QualifiedEvidence struct {
+	RunID QualificationRunID `json:"run_id"`
+	// The case's place in the run's order, from 0.
+	Seq int64 `json:"seq"`
+	// The digest of the prompt the adapter host was given.
+	PromptDigest  Digest         `json:"prompt_digest"`
+	Route         QualifiedRoute `json:"route"`
+	AdapterDigest Digest         `json:"adapter_digest"`
+	SuiteDigest   Digest         `json:"suite_digest"`
+	// The review's model call: its report's one charge link.
+	Call CallID `json:"call"`
 }

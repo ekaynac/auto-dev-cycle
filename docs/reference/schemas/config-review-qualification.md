@@ -4,16 +4,18 @@
 
 `schemas/config/review-qualification.json`
 
-One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest record (by ran_at) has the current route, prompt, adapter and suite digests, every report agrees with it, and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
+One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the run's id and order seed, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest and the evidence of its execution, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest record (by ran_at) has the current route, prompt, adapter and suite digests, every case's evidence binds its report to this run, this route and its prompt, every report agrees with it, and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
 
 ## Fields of the document
 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `schema` | yes | `adc.review-qualification/v1` |  |
+| `run_id` | yes | [QualificationRunID](#qualificationrunid) | The run's id, random, shared by every case's evidence (Astra #306 H1). |
+| `seed` | yes | string (pattern `^[0-9a-f]{64}$`) | The run's random seed: the cases ran in internal/qualify.Suite.Order(seed) (Astra #306 M5). |
 | `route` | yes | [QualifiedRoute](#qualifiedroute) |  |
 | `prompt_digest` | yes | [Digest](common-defs.md#digest) | internal/review.PromptDigest: the reviewer prompt's template. |
-| `adapter_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.AdapterDigest: the http-chat adapter's source, package.json and the workspace lockfile, and the reviewer's limits (Opus #306 M6): any change makes the record stale. |
+| `adapter_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.AdapterDigest: the http-chat adapter's runtime closure (its source and package.json, the contract package's source and package.json, the generated validators and formats it loads, the workspace's manifests and lockfile) and the reviewer's limits (Opus #306 M6; Astra #306 M3): any change makes the record stale. |
 | `suite_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.Suite's digest: suite.json (each case's rendered prompt digest included), every case's patch and every sealed file. |
 | `ran_at` | yes | [Time](common-defs.md#time) |  |
 | `cases` | yes | array of [QualifiedCase](#qualifiedcase) (minItems `1`, maxItems `64`) |  |
@@ -53,5 +55,28 @@ No other fields are allowed.
 | `prompt_digest` | yes | [Digest](common-defs.md#digest) | The digest of the case's rendered review.Prompt, as suite.json pins it (Opus #306 M2). |
 | `decision` | yes | one of `go`, `no_go`, `none` | The reviewer's typed decision; none when it returned none or one internal/review.Parse refuses (a miss). |
 | `report_digest` | yes | [Digest](common-defs.md#digest) | The case's adc.review-report/v1 (internal/review.Report), committed beside the record. |
+| `evidence` | yes | [QualifiedEvidence](#qualifiedevidence) |  |
+
+No other fields are allowed.
+
+### QualificationRunID
+
+Type: string (pattern `^[0-9a-f]{32}$`)
+
+### QualifiedEvidence
+
+What internal/qualify.Route.Review observed running the case (Astra #306 H1): the run, the case's place in its order, the digest of the prompt it sent, the registry's route it sent it on, the adapter and suite the run was on, and the model call its report charges. Check requires each to be the record's and the case's.
+
+#### Fields of QualifiedEvidence
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `run_id` | yes | [QualificationRunID](#qualificationrunid) |  |
+| `seq` | yes | integer (minimum `0`, maximum `63`) | The case's place in the run's order, from 0. |
+| `prompt_digest` | yes | [Digest](common-defs.md#digest) | The digest of the prompt the adapter host was given. |
+| `route` | yes | [QualifiedRoute](#qualifiedroute) |  |
+| `adapter_digest` | yes | [Digest](common-defs.md#digest) |  |
+| `suite_digest` | yes | [Digest](common-defs.md#digest) |  |
+| `call` | yes | [CallID](common-defs.md#callid) | The review's model call: its report's one charge link. |
 
 No other fields are allowed.

@@ -143,9 +143,12 @@ func TestRoute(t *testing.T) {
 	for _, c := range s.Cases {
 		byPrompt[string(prompts[c.ID])] = c
 	}
-	run := func(reply func(c Case) string) map[string]Outcome { // the upstream answers the prompt it was sent, not the loop's case (Opus #306 M5)
+	// run is one run of the suite, in its seed's order: the upstream answers
+	// the prompt it was sent, not the loop's case (Opus #306 M5).
+	run := func(reply func(c Case) string) (Run, map[string]Outcome) {
+		x := s.NewRun(qr, time.Now())
 		out := map[string]Outcome{}
-		for _, c := range s.Cases {
+		for seq, c := range s.Order(x.Seed) {
 			var got string
 			up.mu.Lock()
 			up.reply = func(p string) string {
@@ -156,7 +159,7 @@ func TestRoute(t *testing.T) {
 				return "an unknown prompt"
 			}
 			up.mu.Unlock()
-			o, err := r.Review(ctx, prompts[c.ID])
+			o, err := r.Review(ctx, x, seq, prompts[c.ID])
 			if err != nil {
 				t.Fatalf("%s: %v", c.ID, err)
 			}
@@ -165,13 +168,17 @@ func TestRoute(t *testing.T) {
 				t.Errorf("%s: the provider was sent another prompt (%d bytes, want %d)", c.ID, len(got), len(prompts[c.ID]))
 			}
 			up.mu.Unlock()
-			var rep report
-			if err := readReport(o.Report, &rep); err != nil || rep.Schema != "adc.review-report/v1" || rep.Decision != o.Decision {
+			if rep, err := review.ReadReport(o.Report); err != nil || rep.Decision != o.Decision {
 				t.Errorf("%s: the report %s, %v", c.ID, o.Report, err)
+			}
+			// Astra #306 H1: the evidence is the execution's.
+			if ev := o.evidence; ev == nil || ev.RunID != x.ID || ev.Seq != int64(seq) || ev.PromptDigest != c.PromptDigest || ev.Route != qr ||
+				ev.AdapterDigest != s.Adapter || ev.SuiteDigest != s.Digest {
+				t.Errorf("%s: the evidence %+v", c.ID, ev)
 			}
 			out[c.ID] = o
 		}
-		return out
+		return x, out
 	}
 	decided := func(out map[string]Outcome) map[string]string {
 		m := map[string]string{}
@@ -181,11 +188,11 @@ func TestRoute(t *testing.T) {
 		return m
 	}
 	records := t.TempDir()
-	good := run(func(c Case) string { return decision(c.Expect) })
+	goodRun, good := run(func(c Case) string { return decision(c.Expect) })
 	if noGo, goes, ok := s.Score(decided(good)); !ok || noGo != 4 || goes != 4 {
 		t.Errorf("the discriminating reviewer: %d no_go, %d go, qualified %v", noGo, goes, ok)
 	}
-	if _, err := s.Record(records, "good", qr, time.Now(), good); err != nil {
+	if _, err := s.Record(records, "good", goodRun, good); err != nil {
 		t.Fatal(err)
 	}
 	if err := Check(records, qr, s); err != nil {
@@ -199,36 +206,74 @@ func TestRoute(t *testing.T) {
 			up.auth[i] != "Bearer fake-credential-0123456789" {
 			t.Errorf("request %d: %v (authorization injected: %v)", i, body, up.auth[i] == "Bearer fake-credential-0123456789")
 		}
+		if i < len(s.Cases) { // Astra #306 M5: the requests came in the seed's order
+			last, _ := ms[len(ms)-1].(map[string]any)
+			if want := s.Order(goodRun.Seed)[i]; last["content"] != string(prompts[want.ID]) {
+				t.Errorf("request %d is not the seed's case %s", i, want.ID)
+			}
+		}
 	}
 	if n := len(up.seen); n != len(s.Cases) {
 		t.Errorf("%d requests for %d cases", n, len(s.Cases))
 	}
 	up.mu.Unlock()
 	lax := t.TempDir()
-	allGo := run(func(Case) string { return decision(review.Go) })
+	goRun, allGo := run(func(Case) string { return decision(review.Go) })
 	if noGo, _, ok := s.Score(decided(allGo)); ok || noGo != 0 {
 		t.Errorf("the all-go reviewer: %d no_go, qualified %v", noGo, ok)
 	}
-	if rec, err := s.Record(lax, "all-go", qr, time.Now(), allGo); err != nil || rec.Qualified {
+	if rec, err := s.Record(lax, "all-go", goRun, allGo); err != nil || rec.Qualified {
 		t.Fatalf("%+v, %v", rec, err)
 	}
 	if err := Check(lax, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "under the bar") {
 		t.Errorf("the all-go reviewer's record: %v", err)
 	}
 	noGos := t.TempDir() // Opus #306 L1: a reviewer that always says no_go
-	allNoGo := run(func(Case) string { return decision(review.NoGo) })
+	noGoRun, allNoGo := run(func(Case) string { return decision(review.NoGo) })
 	if noGo, goes, ok := s.Score(decided(allNoGo)); ok || noGo != 4 || goes != 0 {
 		t.Errorf("the all-no_go reviewer: %d no_go, %d go, qualified %v", noGo, goes, ok)
 	}
-	if _, err := s.Record(noGos, "all-no-go", qr, time.Now(), allNoGo); err != nil {
+	if _, err := s.Record(noGos, "all-no-go", noGoRun, allNoGo); err != nil {
 		t.Fatal(err)
 	}
 	if err := Check(noGos, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "under the bar: 4 of 4 defects no_go, 0 go") {
 		t.Errorf("the all-no_go reviewer's record: %v", err)
 	}
-	for id, o := range run(func(Case) string { return "not a decision" }) {
+	// Astra #306 H1: the all-no_go run's defects and the all-go run's
+	// controls, unchanged, recorded as either run (or a new one) are not
+	// a run: Record refuses them.
+	mixed := map[string]Outcome{}
+	for _, c := range s.Cases {
+		mixed[c.ID] = allGo[c.ID]
+		if c.Expect == review.NoGo {
+			mixed[c.ID] = allNoGo[c.ID]
+		}
+	}
+	for name, x := range map[string]Run{"the all-go run": goRun, "the all-no_go run": noGoRun, "a new run": s.NewRun(qr, time.Now())} {
+		if _, err := s.Record(t.TempDir(), "mixed", x, mixed); err == nil || !strings.Contains(err.Error(), "ran in another run") {
+			t.Errorf("two runs' reports recorded as %s: %v", name, err)
+		}
+	}
+	_, garbled := run(func(Case) string { return "not a decision" })
+	for id, o := range garbled {
 		if o.Decision != "" {
 			t.Errorf("%s: a malformed answer decided %q", id, o.Decision)
 		}
+	}
+	// Astra #306 H1: the evidence's route is the executor's the review ran
+	// on, never the run's claim; a run claimed for another model is
+	// refused by Record.
+	claimed := qr
+	claimed.Model = "another-model"
+	x := s.NewRun(claimed, time.Now())
+	c := s.Order(x.Seed)[0]
+	o, err := r.Review(ctx, x, 0, prompts[c.ID])
+	if err != nil || o.evidence == nil || o.evidence.Route != qr {
+		t.Fatalf("a review in a run claimed for another model: %+v, %v", o.evidence, err)
+	}
+	out := outcomes(t, s, x, all(s, ""))
+	out[c.ID] = o
+	if _, err := s.Record(t.TempDir(), "claimed", x, out); err == nil || !strings.Contains(err.Error(), "ran on another route") {
+		t.Errorf("a review on the executor's route recorded as another model's: %v", err)
 	}
 }
