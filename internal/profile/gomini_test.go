@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -16,10 +17,10 @@ import (
 )
 
 // go-mini, checkpoint (a)'s stub project (#226 entry 94): its profile passes
-// the schema, the project.create scope and Check; it pins this repository's
-// prepared Go image (provisional, #226 entry 97), gates T0 go-mini offline
-// with go_test_json, and
-// its remote is an absolute path the sandbox clones (#226 entry 28).
+// the schema, the project.create scope and Check; it pins go-mini's own
+// prepared Go image (#226 entry 97), never this repository's; it gates T0
+// go-mini offline with go_test_json, and its remote is an absolute path the
+// sandbox clones (#226 entry 28).
 func TestGoMiniProfile(t *testing.T) {
 	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
 	if err != nil {
@@ -39,7 +40,7 @@ func TestGoMiniProfile(t *testing.T) {
 	if p.Name != "go-mini" || p.Forge.Kind != "git" || p.Repo.BaseRef != "refs/heads/main" || !filepath.IsAbs(p.Repo.Url) ||
 		p.Gate.ResultAdapter != results.GoTestJSON || !slices.Equal(p.Gate.Command, []string{"go", "test", "-count=1", "-json", "./..."}) ||
 		len(p.Gate.Environments) != 1 || p.Gate.Environments[0].Facts.Network != "none" ||
-		len(p.Toolchain.Images) != 1 || p.Toolchain.Images["go"] != self.Toolchain.Images["go"] ||
+		len(p.Toolchain.Images) != 1 || p.Toolchain.Images["go"] != goMiniImage || p.Toolchain.Images["go"] == self.Toolchain.Images["go"] ||
 		!slices.Equal(p.Toolchain.DependencyRecipe.Lockfiles, []string{"go.mod"}) {
 		t.Fatalf("the profile: %+v", p)
 	}
@@ -54,10 +55,19 @@ func TestGoMiniProfile(t *testing.T) {
 	}
 }
 
+// goMiniImage is go-mini's own prepared image (#226 entry 97): built from
+// main 842dde6 by scripts/prepare-go-image.sh build go-mini, tag
+// go1.27.1-2026-10-21, and goMiniLabel its dev.adc.prepared label as
+// pushed (podman image inspect).
+const (
+	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d"
+	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"}}`
+)
+
 // go-mini's prepared image (#226 entry 97): the recipe's label for go-mini
-// passes P9's check against T0's repo/ under the profile's toolchain key and
-// lockfiles; this repository's label is refused for it, and go-mini's for
-// this repository (the discriminating controls).
+// is the pinned image's, and passes P9's check against T0's repo/ under the
+// profile's toolchain key and lockfiles; this repository's label is refused
+// for it, and go-mini's for this repository (the discriminating controls).
 func TestGoMiniPreparedManifest(t *testing.T) {
 	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
 	if err != nil {
@@ -83,6 +93,13 @@ func TestGoMiniPreparedManifest(t *testing.T) {
 	lockfiles := p.Toolchain.DependencyRecipe.Lockfiles
 	if err := goMini.CheckManifest("go", repo, lockfiles); err != nil {
 		t.Errorf("go-mini's label for go-mini: %v", err)
+	}
+	var pushed sandbox.Image
+	if err := json.Unmarshal([]byte(goMiniLabel), &pushed.Manifest); err != nil || !reflect.DeepEqual(pushed.Manifest, goMini.Manifest) {
+		t.Errorf("the pinned image's label %+v, the recipe's %+v: %v", pushed.Manifest, goMini.Manifest, err)
+	}
+	if err := pushed.CheckManifest("go", repo, lockfiles); err != nil {
+		t.Errorf("the pinned image's label for go-mini: %v", err)
 	}
 	if err := self.CheckManifest("go", repo, lockfiles); err == nil {
 		t.Error("this repository's label passed for go-mini")
