@@ -71,12 +71,16 @@ import (
 // Card is a claimed node offered for placement, with what its project
 // profile and template fix for it.
 type Card struct {
-	Node     types.NodeID
-	Project  types.ProjectID
-	Policy   types.ProjectProfileDataPolicy // the profile's data policy
-	Image    string                         // the pinned toolchain image, name@sha256:hex
-	Priority int64
-	Deadline types.Time
+	Node    types.NodeID
+	Project types.ProjectID
+	Policy  types.ProjectProfileDataPolicy // the profile's data policy
+	// PolicyDigest is that policy's digest over its recorded bytes
+	// (authority.PolicyDigest), as a plan brief's restriction names it: the
+	// data_floor check's (Mythos 22a-5c-3 L1).
+	PolicyDigest types.Digest
+	Image        string // the pinned toolchain image, name@sha256:hex
+	Priority     int64
+	Deadline     types.Time
 }
 
 // Dispatcher places cards on registered executors and launches them.
@@ -202,7 +206,7 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 	}
 	e, ok := d.Registry.Executor(executor)
 	c := types.LeasePlacementChecks{
-		DataFloor:     pass("policy " + digest(card.Policy)),
+		DataFloor:     pass("policy " + string(card.PolicyDigest)),
 		Destinations:  pass("executor " + string(executor) + " " + digest(e)),
 		Capability:    pass(imageSignal(card.Image)), // bounded: the detail holds 4096
 		Independence:  pass("roster " + digest(roster)),

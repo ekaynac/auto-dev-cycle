@@ -100,6 +100,44 @@ func ProjectProfile(tx *eventstore.Tx, id types.ProjectID) (*types.ProjectProfil
 	return p, true, nil
 }
 
+// ProjectDataPolicy is project id's data policy as its adopted profile
+// records it: the bytes of the recorded profile's data_policy member, never
+// a re-encoding of the decoded profile (Opus 22a-5c-3 r2 M1); false with no
+// adopted profile.
+func ProjectDataPolicy(tx *eventstore.Tx, id types.ProjectID) (json.RawMessage, bool, error) {
+	if _, ok, err := ProjectProfile(tx, id); err != nil || !ok { // the record holds its profile
+		return nil, ok, err
+	}
+	raw, _, err := tx.Get(ProjectProjection, string(id))
+	var rec ProjectRecord
+	var members map[string]json.RawMessage
+	if err == nil {
+		err = json.Unmarshal(raw, &rec)
+	}
+	if err == nil {
+		err = json.Unmarshal(rec.Profile, &members)
+	}
+	dp, ok := members["data_policy"]
+	if err == nil && !ok {
+		err = fmt.Errorf("authority: project %s's profile holds no data policy", id)
+	}
+	return dp, true, err
+}
+
+// PolicyDigest is the digest of a data policy, policy its recorded bytes
+// (ProjectDataPolicy): the SHA-256 of their RFC 8785 canonical form, never
+// of a re-encoded struct, so a field the struct gains changes no stored
+// policy's digest. A plan brief's restriction and a lease's data_floor
+// check name a policy by it alike (Opus 22a-5c-3 r2 M1; Mythos L1).
+func PolicyDigest(policy json.RawMessage) (types.Digest, error) {
+	c, err := eventstore.Canonical(policy)
+	if err != nil {
+		return "", err
+	}
+	d, err := eventstore.ContentDigest(c)
+	return types.Digest(d), err
+}
+
 // ProjectCreateHandler derives project.create.
 type ProjectCreateHandler struct{}
 

@@ -15,7 +15,9 @@
 //     (#226 entry 100: it can run nothing more). Only when the snapshot
 //     allows evaluation (the launch capability is active: until then a
 //     claimed node would wait for an attempt nothing can start): Evaluate
-//     the admitted task's open nodes; Match each of its claimed nodes an
+//     the admitted task's open nodes; Plan each of its claimed plan nodes,
+//     whose result the controller records itself (P22a-5c-3: the plan
+//     brief, internal/brief); Match each of its claimed nodes an
 //     executor runs that nothing is placed on (P22a-5c-1: a build); and
 //     ClearRail each of its nodes held on the day's USD rail, which a new
 //     day or a profile change may have reopened (#226 entry 120); and
@@ -80,10 +82,11 @@ const (
 	ClearRailAction = "reconcile.clear_rail"
 	UnblockAction   = "reconcile.unblock"
 	LaunchAction    = "reconcile.launch"
+	PlanAction      = "reconcile.plan"
 )
 
 // Actions are the loop's system actions.
-var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction}
+var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction}
 
 // Placed are the node kinds Match places on an executor: a build (P22a-5c-1).
 // A review is the review capability's (22a-6); a plan, accept and gate run
@@ -120,6 +123,8 @@ type Snapshot struct {
 	Unplaced    []Versioned
 	DayHeld     []Held
 	PlacingHeld []Held // held on configuration by the placer
+	// Plans are its claimed plan nodes, whose result the controller records.
+	Plans []Versioned
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
 	Next Versioned
@@ -154,6 +159,17 @@ type Evaluate struct {
 
 // Match places Node, read at its version, on an executor (Placer.Place).
 type Match struct{ Node Versioned }
+
+// Plan records Node's result, read at its version (Planner.Plan).
+type Plan struct{ Node Versioned }
+
+func (Plan) action() string { return PlanAction }
+
+func (p Plan) subject() string { return p.Node.ID }
+
+func (p Plan) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: p.Node.ID, Version: p.Node.Version}}
+}
 
 // ClearRail clears Held's day-rail hold once the day's rail leaves its
 // node room (Placer.Reopened).
@@ -243,6 +259,9 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		case st == types.NodeStateStateRunnable || st == types.NodeStateStateWaiting:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Open = append(s.Open, v)
+		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindPlan:
+			v.Version, err = tx.SubjectVersion(v.ID)
+			s.Plans = append(s.Plans, v)
 		case st == types.NodeStateStateClaimed && g.Evaluates && slices.Contains(Placed, n.Node.Kind):
 			var free bool
 			if free, err = dispatch.Unplaced(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
@@ -278,6 +297,9 @@ func Decide(s Snapshot) []Action {
 		if len(s.Open) > 0 {
 			out = append(out, Evaluate{Task: types.TaskID(s.Admitted.ID), Goals: slices.Clone(s.Open)})
 		}
+		for _, n := range s.Plans {
+			out = append(out, Plan{Node: n})
+		}
 		for _, n := range s.Unplaced {
 			out = append(out, Match{Node: n})
 		}
@@ -303,6 +325,15 @@ type Executor struct {
 	// Placer places and reopens nodes (adcd's); nil refuses Match and
 	// ClearRail.
 	Placer Placer
+	// Planner records a plan node's result (adcd's); nil leaves a claimed
+	// plan to whoever records it, as before 22a-5c-3: Plan changes nothing.
+	Planner Planner
+}
+
+// Planner is what Plan does, in the action's command.
+type Planner interface {
+	// Plan records node's result, emitting its events (graph.Commit).
+	Plan(tx *eventstore.Tx, node types.NodeID) error
 }
 
 // Placer is what Match and ClearRail do, in the action's command.
@@ -351,6 +382,13 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 			}
 			return x.Placer.Place(tx, types.NodeID(a.Node.ID))
 		}
+	case Plan:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if x.Planner == nil {
+				return nil, errNothing
+			}
+			return nil, x.Planner.Plan(tx, types.NodeID(a.Node.ID))
+		}
 	case ClearRail:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if x.Placer == nil {
@@ -371,7 +409,7 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 	_, err = x.Store.SubmitApplied(ctx, x.System.Command(cmd, a.action(), cmd, input, a.expected()), eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := logic(tx)
-			if err == nil && len(evs) == 0 {
+			if err == nil && len(evs) == 0 && tx.Emitted() == 0 {
 				err = errNothing
 			}
 			return evs, json.RawMessage(`{}`), err
