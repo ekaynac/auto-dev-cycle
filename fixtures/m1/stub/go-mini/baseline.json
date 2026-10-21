@@ -10,10 +10,10 @@
     "./..."
   ],
   "environment": {
-    "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97",
-    "image_id": "d1a298571f62cfddb6deaea8eaf43ea32365a52ac6e5ec4e371700931c6e73ae",
+    "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d",
+    "image_id": "88e9e039a6ba7719b386347388c00292458a81bc44de5f370731c7dea5bfbe6a",
     "platform": "linux/arm64",
-    "pin": "provisional: go-mini's own prepared image replaces it before P22a-5 (#226 entry 97)",
+    "pin": "go-mini's own prepared image (#226 entry 97), tag go1.27.1-2026-10-21; its manifest names go-mini's go.mod",
     "sandbox": "gate mode: --network=none, read-only root, tmpfs /tmp and HOME, --cap-drop=all",
     "measured_by": "gate.Measure (P15): a run that ended on its own with green results",
     "report": "baseline-report.json, with the run's stream in baseline-stream.json"
@@ -48,6 +48,6 @@
         "TestHiddenTransferToSelfIsRejected"
       ]
     },
-    "measured_by": "gate.Measure in the pinned image, the hidden test overlaid, at the base and with the reference patch applied"
+    "measured_by": "gate.Measure in the pinned image (go-mini's own), the hidden test overlaid, at the base and with the reference patch applied"
   }
 }

@@ -28,10 +28,14 @@ const (
 	goMini     = "../../fixtures/m1/stub/go-mini" // the m1 records: baseline and acceptance
 	goMiniT0   = "../../fixtures/t0/go-mini"      // the project: repo/ and tasks/
 	goMiniRepo = goMiniT0 + "/repo"
-	// pinnedARM64 is the platform image the pinned prepared Go image
-	// (…@sha256:8876412b…) resolves to on linux/arm64, recorded apart from
-	// any baseline (podman image inspect; Opus #300 L1).
+	// pinnedARM64 is the platform image this repository's pinned prepared
+	// Go image (…@sha256:8876412b…) resolves to on linux/arm64, recorded
+	// apart from any baseline (podman image inspect; Opus #300 L1).
 	pinnedARM64 = "d1a298571f62cfddb6deaea8eaf43ea32365a52ac6e5ec4e371700931c6e73ae"
+	// goMiniARM64 is the platform image go-mini's own prepared image
+	// (…-go-mini@sha256:ee7758f5…, #226 entry 97) resolves to on
+	// linux/arm64 (podman image inspect).
+	goMiniARM64 = "88e9e039a6ba7719b386347388c00292458a81bc44de5f370731c7dea5bfbe6a"
 )
 
 // goMiniFiles are go-mini's repository files, by repo path.
@@ -52,8 +56,8 @@ func goMiniFiles(t *testing.T) map[string]string {
 	return files
 }
 
-// TestGateGoMini (#226 entry 94): go-mini's recorded baseline, measured by
-// Measure in the pinned image, binds its profile's command, that pin, the
+// TestGateGoMini (#226 entries 94, 97): go-mini's recorded baseline,
+// measured by Measure in go-mini's own pinned image, binds its profile's command, that pin, the
 // platform image it resolves to and the tree of T0's repo/ as committed;
 // the measured run, judged against it, is clean; the acceptance record
 // names the stub task's committed hidden test and reference change; and
@@ -90,7 +94,7 @@ func TestGateGoMini(t *testing.T) {
 	}
 	f := newFixture(t, goMiniFiles(t), p.Gate.Command...)
 	pin := p.Toolchain.Images["go"]
-	in := In{Image: sandbox.Image{Pinned: pin, ID: pinnedARM64, OS: "linux", Arch: "arm64"}, Gate: p.Gate, Env: "ci", Base: f.tree, Baseline: &b}
+	in := In{Image: sandbox.Image{Pinned: pin, ID: goMiniARM64, OS: "linux", Arch: "arm64"}, Gate: p.Gate, Env: "ci", Base: f.tree, Baseline: &b}
 	if err := in.check(); err != nil || pin == "" || b.Image != pin || b.Base != f.tree || rec.BaseTree != f.tree || len(b.Results) != rec.Result.TestsPassed || !b.Green() {
 		t.Fatalf("go-mini's baseline is not bound to its gate, image and tree: %v (%s, the profile pins %s; base %s, the record %s, the tree %s; %d results)",
 			err, b.Image, pin, b.Base, rec.BaseTree, f.tree, len(b.Results))
