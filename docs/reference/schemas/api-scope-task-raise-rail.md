@@ -4,28 +4,29 @@
 
 `schemas/api/scope/task-raise-rail.json`
 
-The scope of task.raise_rail (M1 slice plan P17a; §6 L3): an operator raises one of a task's count rails to a higher cap, for that task only, and every budget_rail hold of the task on that rail clears. The USD rails are P17b's; per_day_usd is the project's, raised only by a profile change.
+The scope of task.raise_rail (M1 slice plan P17a, P17b; §6 L3): an operator raises one of a task's rails above the cap in force, for that task only, and every budget_rail hold of the task on that rail clears. A count rail takes to; per_task_usd takes to_usd (P17b); per_day_usd is the project's, raised only by a profile change.
 
 ## Fields of the document
 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `task` | yes | [TaskID](common-defs.md#taskid) |  |
-| `rail` | yes | [CountRail](#countrail) |  |
-| `to` | yes | [RailCap](#railcap) |  |
+| `rail` | yes | [RaisableRail](#raisablerail) |  |
+| `to` |  | [RailCap](#railcap) |  |
+| `to_usd` |  | [USD](config-project-profile.md#usd) |  |
 
 No other fields are allowed.
 
 ## Definitions
 
-### CountRail
+### RaisableRail
 
-A count rail of the project profile's budget.rails.
+A rail of the project profile's budget.rails a task raises: a count rail, or per_task_usd.
 
-Type: one of `attempts_per_round`, `rounds_per_task`, `merge_operations_per_generation`
+Type: one of `attempts_per_round`, `rounds_per_task`, `merge_operations_per_generation`, `per_task_usd`
 
 ### RailCap
 
-A raised cap: above the one in force.
+A raised count cap: above the one in force.
 
 Type: integer (minimum `2`, maximum `1000`)

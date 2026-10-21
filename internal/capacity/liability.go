@@ -48,6 +48,9 @@ type liability struct {
 	Amount int64 `json:"amount"`
 	// Inconsistent: a report conflicted (inconsistent_usage), or could not be reconciled at all.
 	Inconsistent bool `json:"inconsistent,omitempty"`
+	// Saturated: Amount is clipped at the contract's limit, a call's standing
+	// saturated or its measured tokens past it: no upper bound on what it owes.
+	Saturated bool `json:"saturated,omitempty"`
 }
 
 // Settlement is the settlement lease id's bound calls owe now, from the call ledger: a call ledger.StandingOf
@@ -216,8 +219,15 @@ func owed(res types.LeaseReservationsItem, uncertain []ledger.Standing) liabilit
 	var measured int64
 	for _, st := range uncertain {
 		out.Inconsistent = out.Inconsistent || st.Inconsistent
+		out.Saturated = out.Saturated || st.Saturated
 		if f := st.Usage; f != nil && res.Unit == types.CapacityUnitTokens {
-			measured = saturated(measured, f.In, f.Out, f.CacheRead, f.CacheWrite)
+			for _, b := range []int64{f.In, f.Out, f.CacheRead, f.CacheWrite} {
+				if b = max(b, 0); b > maxAmount-measured {
+					measured, out.Saturated = maxAmount, true
+				} else {
+					measured += b
+				}
+			}
 		}
 	}
 	out.Amount = max(out.Amount, measured)
@@ -257,21 +267,22 @@ func Liable(tx *eventstore.Tx, group types.ResourceGroupID) (int64, error) {
 	return t.Liable, err
 }
 
-// LiabilitiesOf lists what lease id owes each of groups, and whether any of it is inconsistent_usage.
-func LiabilitiesOf(tx *eventstore.Tx, id types.LeaseID, groups []types.ResourceGroupID) (map[types.ResourceGroupID]int64, bool, error) {
-	out, inconsistent := map[types.ResourceGroupID]int64{}, false
+// LiabilitiesOf lists what lease id owes each of groups, whether any of it is inconsistent_usage, and whether any
+// is saturated: clipped at the contract's limit, so no bound on what it owes.
+func LiabilitiesOf(tx *eventstore.Tx, id types.LeaseID, groups []types.ResourceGroupID) (out map[types.ResourceGroupID]int64, inconsistent, clipped bool, err error) {
+	out = map[types.ResourceGroupID]int64{}
 	for _, g := range groups {
 		raw, ok, err := tx.Get(LiabilityProjection, string(g)+"/"+string(id))
 		if err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		var v liability
 		if ok {
 			if err := json.Unmarshal(raw, &v); err != nil {
-				return nil, false, err
+				return nil, false, false, err
 			}
-			out[g], inconsistent = v.Amount, inconsistent || v.Inconsistent
+			out[g], inconsistent, clipped = v.Amount, inconsistent || v.Inconsistent, clipped || v.Saturated
 		}
 	}
-	return out, inconsistent, nil
+	return out, inconsistent, clipped, nil
 }

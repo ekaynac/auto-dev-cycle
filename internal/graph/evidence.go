@@ -64,7 +64,7 @@ var subjectKinds = map[types.InstrumentContractSubjectType][]types.ResultKind{
 var (
 	notRun = []string{"precondition_failed", "evidence_cap_exhausted", "capacity_reserved_full", "quota_unknown", "action_deferred",
 		"project_unconfigured", "controller_already_running", "store_unreadable", "ambiguous_state", "reviewer_not_independent", "instrument_changed",
-		"check_unloadable", "view_stale", "evidence_inapplicable"}
+		"check_unloadable", "view_stale", "evidence_inapplicable", "budget_rail_reached"}
 	ran = []string{"quota_exhausted", "broker_credit_exhausted", "runner_fault", "receipt_incomplete",
 		"attempt_stopped", "adapter_protocol_error", "provider_request_refused", "provider_unavailable", "stream_idle_cut", "degenerate_output",
 		"executor_incomplete", "isolation_unproven"}

@@ -46,8 +46,9 @@
 //     credential seam (Credentials), and nothing in adcd constructs it
 //     either; without one, a destination that needs a credential never
 //     launches.
-//   - Only the first fallback step exists (fallback chains are M2); the
-//     rails (paid authority, budget) are P17's, and their checks say so.
+//   - Only the first fallback step exists (fallback chains are M2). The
+//     budget check is the USD rails' (P17b, usd.go); paid authority is not
+//     checked here, as its check says.
 package dispatch
 
 import (
@@ -85,14 +86,16 @@ type Dispatcher struct {
 	Registry    registry.Registry
 	Images      Images
 	Credentials Credentials
-	Rails       graph.Rails // each task's count rails (P17a); nil: graph.DefaultCaps
+	Rails       graph.Rails // each task's rails (P17a, P17b); nil: graph.DefaultCaps, which has no USD rail, so a priced executor is refused
 }
 
 // Refused is a match that placed nothing: the placement check that
-// blocked it.
+// blocked it, and, for a USD rail, the budget_rail hold the caller raises
+// on the node (graph.Raise) in its own command (P17b).
 type Refused struct {
 	Check string
 	types.PlacementCheck
+	Hold *types.NodeHold
 }
 
 func (r *Refused) Error() string {
@@ -125,11 +128,18 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 	} else if card.Tokens <= 0 {
 		return nil, "", fmt.Errorf("dispatch: card %s reserves %d tokens; an attempt's footprint is positive", card.Node, card.Tokens)
 	}
+	budget, hold, err := d.usdRail(tx, card, executor, res)
+	if err != nil {
+		return nil, "", err
+	}
+	if checks.Budget = budget; budget.Outcome != types.OutcomeEmpty {
+		return nil, "", &Refused{Check: "budget", PlacementCheck: budget, Hold: hold}
+	}
 	id, err := ids.New("lea")
 	if err != nil {
 		return nil, "", err
 	}
-	l := types.Lease{ID: types.LeaseID(id), Unit: unit, Role: types.Name(e.Role), Executor: executor, State: types.LeaseStateRequested,
+	l := types.Lease{ID: types.LeaseID(id), Unit: unit, Role: types.Name(e.Role), Executor: executor, Price: e.Price, State: types.LeaseStateRequested,
 		Reservations: []types.LeaseReservationsItem{res}, Priority: card.Priority, Footprint: card.Footprint,
 		Deadline: card.Deadline, PlacementChecks: checks}
 	evs, err := lease.RequestGranted(tx, l)
@@ -175,7 +185,7 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 		Capability:    pass(imageSignal(card.Image)), // bounded: the detail holds 4096
 		Independence:  pass("roster " + digest(roster)),
 		PaidAuthority: pass("not checked here: the rails are P17's"),
-		Budget:        pass("the attempt rail is checked at launch; the USD rails are P17b's"),
+		Budget:        pass("the USD rails are checked with the reservation (Match); the attempt rail at launch"),
 		FallbackScope: pass("the first step; fallback chains are M2's"),
 	}
 	if err := d.Registry.Admits(card.Policy, executor); err != nil {

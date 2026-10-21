@@ -4,12 +4,13 @@
 
 package types
 
-// RailRaised: The payload of task.rail_raised/v1 (M1 slice plan P17a): an operator raised one of a task's count rails, for that task, to a cap above the one then in force. internal/authority admits it only under its task's id, by its actor, at its event's time, and above any earlier raise of that rail.
+// RailRaised: The payload of task.rail_raised/v1 (M1 slice plan P17a, P17b): an operator raised one of a task's rails, for that task, above the cap then in force: a count rail's to, or per_task_usd's to_usd. internal/authority admits it only under its task's id, by its actor, at its event's time, with exactly the cap its rail takes, above the cap in force.
 type RailRaised struct {
-	Task    TaskID    `json:"task"`
-	Project ProjectID `json:"project"`
-	Rail    CountRail `json:"rail"`
-	To      RailCap   `json:"to"`
-	By      ActorID   `json:"by"`
-	At      Time      `json:"at"`
+	Task    TaskID       `json:"task"`
+	Project ProjectID    `json:"project"`
+	Rail    RaisableRail `json:"rail"`
+	To      *RailCap     `json:"to,omitempty"`
+	ToUsd   *USD         `json:"to_usd,omitempty"`
+	By      ActorID      `json:"by"`
+	At      Time         `json:"at"`
 }

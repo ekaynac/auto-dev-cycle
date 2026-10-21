@@ -11,6 +11,7 @@
     "unit": {"$ref": "../common/defs.json#/$defs/UnitID"},
     "role": {"$ref": "receipt.json#/$defs/Name"},
     "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+    "price": {"description": "The executor's price declared when the lease was placed (dispatch.Match, M1 P17b), which the USD rails price the lease's spend at; absent for an executor with none. A later registry edit does not change it.", "$ref": "../config/executor-registry.json#/$defs/RegistryPrice"},
     "state": {
       "description": "requested, waiting, granted, active and releasing; settling, then (evidence targets) restoring, restore_failed and settling_verified; settled and released are terminal.",
       "enum": ["requested", "waiting", "granted", "active", "releasing", "settling", "restoring", "restore_failed", "settling_verified", "settled", "released"]

@@ -70,6 +70,7 @@ export type Lease = {
    * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
    */
   executor: string;
+  price?: RegistryPrice;
   /**
    * requested, waiting, granted, active and releasing; settling, then (evidence targets) restoring, restore_failed and settling_verified; settled and released are terminal.
    */
@@ -232,6 +233,13 @@ export type SubmittedResult = {
   blob: null | string;
 };
 
+/**
+ * The executor's price declared when the lease was placed (dispatch.Match, M1 P17b), which the USD rails price the lease's spend at; absent for an executor with none. A later registry edit does not change it.
+ */
+export interface RegistryPrice {
+  input_usd_micros_per_mtok: number;
+  output_usd_micros_per_mtok: number;
+}
 /**
  * Every result but empty names its detail (02). Whether the reason fits the outcome is the vocabulary's check, in internal/lease's placement validator.
  *
