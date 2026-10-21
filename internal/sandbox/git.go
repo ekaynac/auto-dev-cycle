@@ -164,7 +164,14 @@ func pointers(p, base, prefix string) []string {
 // Clone makes a fresh controller-side clone of url's branch (a
 // refs/heads/ name) at dst, without a checkout: one branch, no
 // submodules, never sharing files with a local source, and never from a
-// repository a run may have written.
+// repository a run may have written. Every object received is checked
+// (transfer.fsckObjects): a tree holding .git, .GIT, git~1 or a duplicate
+// entry refuses the clone (Opus #326 M2). An ssh URL passes the check but
+// never clones (core.sshCommand=false): M1 clones over https or from a
+// local path. A local path must name a repository the controller owns and
+// trusts: the 2.41 floor is GIT_ATTR_SOURCE's, not a security floor, and a
+// stock git before 2.45.1 may run a local partial clone's promisor command
+// (CVE-2024-32465).
 func (h Host) Clone(ctx context.Context, url, ref, dst string) (Repo, error) {
 	branch, ok := strings.CutPrefix(ref, "refs/heads/")
 	if !ok || branch == "" || strings.HasPrefix(url, "-") || h.refused(url) {
@@ -173,7 +180,7 @@ func (h Host) Clone(ctx context.Context, url, ref, dst string) (Repo, error) {
 	if err := gitOnce(); err != nil {
 		return Repo{}, err
 	}
-	if out, err := git(ctx, "/", nil, "clone", "--quiet", "--no-local", "--no-checkout", "--no-recurse-submodules",
+	if out, err := git(ctx, "/", nil, "-c", "transfer.fsckObjects=true", "clone", "--quiet", "--no-local", "--no-checkout", "--no-recurse-submodules",
 		"--single-branch", "--branch", branch, "--", url, dst).CombinedOutput(); err != nil {
 		return Repo{}, fmt.Errorf("%w: clone: %w: %s", ErrGit, err, strings.TrimSpace(string(out)))
 	}
@@ -208,6 +215,17 @@ func (r Repo) snapshot() (string, error) {
 		fmt.Fprintf(h, "%s %t %d\n%s", f, err == nil, len(b), b)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Origin is the URL the clone's origin remote names, read from its own
+// config file alone (no include, no other file): a caller checks it against
+// the URL it meant to clone before using the clone.
+func (r Repo) Origin(ctx context.Context) (string, error) {
+	out, err := git(ctx, r.Dir, nil, "config", "--file", filepath.Join(r.Dir, ".git", "config"), "--no-includes", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return "", fmt.Errorf("%w: the clone names no origin", ErrGit)
+	}
+	return strings.TrimSuffix(string(out), "\n"), nil
 }
 
 // Git is a hardened git on the controller's repository with tree (a

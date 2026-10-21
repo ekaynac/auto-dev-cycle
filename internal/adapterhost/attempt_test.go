@@ -68,7 +68,7 @@ func newWorld(t *testing.T) *world {
 	}
 	kinds := lease.Kinds()
 	maps.Copy(kinds, ledger.Kinds())
-	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: anyUnit{}}.Project
+	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: worldUnits}.Project
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
@@ -174,7 +174,7 @@ func fake(t *testing.T, scenario string) session.Config {
 }
 
 func spec(adapter session.Config) Spec {
-	return Spec{AnyTool: true, Lease: leaID, LeaseRevision: 2, Attempt: attID, Base: base, Call: calID, Adapter: adapter, Prompt: []byte("fix it\n"),
+	return Spec{AnyTool: true, Lease: leaID, Attempt: attID, Base: base, Call: calID, Adapter: adapter, Prompt: []byte("fix it\n"),
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", Model: "fake-model",
 			Workspace:  types.AdapterPrepareParamsWorkspace{Path: "/workspace", Writable: true},
 			Limits:     types.AdapterPrepareParamsLimits{MaxTurns: 8, MaxOutputTokens: 8000, WallSeconds: 60},
@@ -203,7 +203,7 @@ func counted(t *testing.T, w *world, out Outcome) {
 
 func TestSafeOutputIsPublished(t *testing.T) {
 	w := newWorld(t)
-	out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
+	out, err := w.run(context.Background(), spec(fake(t, "safe-output")))
 	if err != nil || out.Session != nil {
 		t.Fatalf("run: %v, session %v", err, out.Session)
 	}
@@ -267,7 +267,7 @@ func TestUnsafeOutputsAreRefused(t *testing.T) {
 	} {
 		t.Run(scenario, func(t *testing.T) {
 			w := newWorld(t)
-			out, err := w.host.Run(context.Background(), spec(fake(t, scenario)))
+			out, err := w.run(context.Background(), spec(fake(t, scenario)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -310,7 +310,7 @@ func TestStaleAttemptIsRefusedButCounted(t *testing.T) {
 				return ingest.Stage(dir, name, declared, size, bound, store)
 			}
 			t.Cleanup(func() { testHook, stage = nil, ingest.Stage })
-			out, err := w.host.Run(context.Background(), spec(fake(t, tc.scenario)))
+			out, err := w.run(context.Background(), spec(fake(t, tc.scenario)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -334,30 +334,41 @@ func (w *world) tmpFiles() int {
 	return len(left)
 }
 
-// A failed prelaunch check refuses the start: the lease is released, no
-// attempt exists and the adapter is never launched.
+// run is the world's controller: it prepares sp's attempt, starts it on
+// the granted lease once the prelaunch check passes (the host never starts
+// one: I16), and runs it.
+func (w *world) run(ctx context.Context, sp Spec) (Outcome, error) {
+	w.t.Helper()
+	p, err := w.host.Prepare(sp)
+	if err != nil {
+		return Outcome{}, err
+	}
+	w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, sp.Lease, 2, sp.Attempt, sp.Base)
+	})
+	return p.Run(ctx)
+}
+
+// A failed prelaunch check, before any start: Prepare refuses, nothing is
+// recorded (the lease stays granted, no attempt), the exchange is gone and
+// the adapter is never launched.
 func TestCapabilityCheckFailureLaunchesNothing(t *testing.T) {
 	w := newWorld(t)
 	probe = func(*os.File) error { return fmt.Errorf("%w: withheld by the test", ingest.ErrUnsupported) }
 	t.Cleanup(func() { probe = ingest.SupportedIn })
 	marker := filepath.Join(t.TempDir(), "launched")
-	out, err := w.host.Run(context.Background(), spec(session.Config{Command: []string{"/bin/sh", "-c", "echo > " + marker},
-		Env: []string{"PATH=/usr/bin:/bin"}, Deadline: 10 * time.Second}))
-	if err != nil || !errors.Is(out.StartRefused, ingest.ErrUnsupported) {
-		t.Fatalf("run: %v, start refused %v", err, out.StartRefused)
+	if _, err := w.host.Prepare(spec(session.Config{Command: []string{"/bin/sh", "-c", "echo > " + marker},
+		Env: []string{"PATH=/usr/bin:/bin"}, Deadline: 10 * time.Second})); !errors.Is(err, ingest.ErrUnsupported) {
+		t.Fatalf("prepare: %v", err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the adapter was launched")
 	}
-	l, _ := record[types.Lease](w, lease.LeaseProjection, string(leaID))
-	if l.State != types.LeaseStateReleasing || l.Attempt != nil {
+	if l, _ := record[types.Lease](w, lease.LeaseProjection, string(leaID)); l.State != types.LeaseStateGranted || l.Attempt != nil {
 		t.Fatalf("lease %s, attempt %v", l.State, l.Attempt)
 	}
 	if _, ok := record[types.Attempt](w, lease.AttemptProjection, string(attID)); ok {
 		t.Fatal("an attempt exists")
-	}
-	if len(w.usage()) != 0 || out.Result != nil {
-		t.Fatal("something ran")
 	}
 	entries, err := os.ReadDir(w.host.Root)
 	if err != nil || len(entries) != 0 {
@@ -365,22 +376,19 @@ func TestCapabilityCheckFailureLaunchesNothing(t *testing.T) {
 	}
 }
 
-// A start the writer commits as refused (14 N2) launches nothing: only an
-// applied start advances the attempt.
-func TestACommittedRefusalBeforeStartLaunchesNothing(t *testing.T) {
+// I16 (P22a-5c-w): the host never starts an attempt. A prepared attempt
+// its caller did not start is refused (ErrNotStarted): nothing launched, no
+// attempt recorded, the lease still granted, the exchange gone.
+func TestTheHostNeverStartsAnAttempt(t *testing.T) {
 	w := newWorld(t)
-	decided := 0
-	decideStart = func(*eventstore.Tx, Spec) (eventstore.Decision, error) {
-		decided++
-		return eventstore.Decision{Disposition: eventstore.DispositionRefused,
-			Result: json.RawMessage(`{"outcome":"failed","reason":"precondition_failed","detail":"refused by the test"}`)}, nil
-	}
-	t.Cleanup(func() { decideStart = startAttempt })
 	marker := filepath.Join(t.TempDir(), "launched")
-	out, err := w.host.Run(context.Background(), spec(session.Config{Command: []string{"/bin/sh", "-c", "echo > " + marker},
+	p, err := w.host.Prepare(spec(session.Config{Command: []string{"/bin/sh", "-c", "echo > " + marker},
 		Env: []string{"PATH=/usr/bin:/bin"}, Deadline: 10 * time.Second}))
-	if !errors.Is(err, eventstore.ErrNotApplied) || decided != 1 {
-		t.Fatalf("run: %v (decided %d)", err, decided)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := p.Run(context.Background()); !errors.Is(err, ErrNotStarted) || out.Result != nil {
+		t.Fatalf("run: %v", err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the adapter was launched")
@@ -391,10 +399,13 @@ func TestACommittedRefusalBeforeStartLaunchesNothing(t *testing.T) {
 	if l, _ := record[types.Lease](w, lease.LeaseProjection, string(leaID)); l.State != types.LeaseStateGranted || l.Attempt != nil {
 		t.Fatalf("lease %s, attempt %v", l.State, l.Attempt)
 	}
-	if len(w.usage()) != 0 || out.Result != nil || out.Submitted != nil {
-		t.Fatal("something ran")
+	if entries, err := os.ReadDir(w.host.Root); err != nil || len(entries) != 0 {
+		t.Fatalf("the exchange root was left behind: %v %v", entries, err)
 	}
 }
+
+// worldUnits are newWorld's projector's units (a test binds them).
+var worldUnits lease.Units = anyUnit{}
 
 // anyUnit admits an attempt on every unit and binds none to a project and
 // task: these tests run leases with no graph (M1 P8a's binding).
