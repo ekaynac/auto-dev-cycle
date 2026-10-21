@@ -286,6 +286,7 @@ var addedSinceRecord = []string{
 	lease.GrantProjection,                          // #328
 	lease.OpenProjection, graph.TaskNodeProjection, // #333
 	lease.StartProjection, lease.FirstProjection, // #345
+	api.CaptureProjection, // #336
 }
 
 // projections are the projections projector folds, each at its fold's
