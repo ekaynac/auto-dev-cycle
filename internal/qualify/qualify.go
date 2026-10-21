@@ -3,13 +3,15 @@
 // Package qualify is reviewer qualification (D56; P31): a reviewer route is
 // qualified when, on the suite under fixtures/m1/review-qualification/, it
 // returns no_go on every planted defect and go on at least three of the
-// four clean controls, and the latest committed record of a run on that
-// route (adc.review-qualification/v1) still binds the route, the prompt
+// four clean controls in each of its latest two committed runs, which
+// have different seeds, and each of their records
+// (adc.review-qualification/v1) still binds the route, the prompt
 // (review.PromptDigest and each case's rendered prompt), the adapter
 // (AdapterDigest) and the suite. P22a's activation of the review
 // capability calls Check (the I-inventory's obligation P22a-6).
 //
-// Decisions (the lead, 2026-10-20, Opus #306 and Astra #306):
+// Decisions (the lead, 2026-10-20 and #226 entry 110, Opus #306 and
+// Astra #306):
 //   - Check fails closed: no record of the route, a record that is not
 //     one, a stale route, prompt, adapter or suite digest, a report missing,
 //     not its digest, or not agreeing with its case (its decision, its
@@ -24,8 +26,11 @@
 //     the model call its report charges. Record takes it from the outcome
 //     and never makes it: an outcome Route.Review did not produce, or one
 //     of another run, route or prompt, is refused (Astra #306 H1).
-//   - Only the latest run of a route counts (by ran_at): a failing run
-//     after a passing one takes the qualification away.
+//   - Only the latest two runs of a route count (by ran_at; the lead,
+//     #226 entry 110): both must pass, and their seeds must differ (two
+//     records of one seed are one run). One passing run is not enough,
+//     and a failing run after passing ones takes the qualification away
+//     until two more pass. Every run at the latest time is judged.
 //   - A record and a report are each read as a regular file, never
 //     through a link, within a byte bound checked before reading, and a
 //     records directory holds at most maxRecords records: past a bound,
@@ -36,7 +41,8 @@
 //     that ignores the case and answers by the request's place in the run
 //     is outside it. Under the seeded order, no_go to the first four
 //     requests passes with probability 1/70 per run, and no_go to exactly
-//     five, the best such policy, with 1/14.
+//     five, the best such policy, with 1/14; over the latest two runs, of
+//     fresh orders, with at most 1/196 (about 0.5%), the worst case.
 //   - The run goes through the real http-chat adapter and gateway
 //     (Route.Review, adapterhost.Host.Run); a live run is the lead's,
 //     committed as a record. CI runs the harness against a scripted
@@ -360,10 +366,11 @@ func (s Suite) Record(dir, name string, run Run, out map[string]Outcome) (types.
 // ErrUnqualified: no record qualifies the route.
 var ErrUnqualified = errors.New("qualify: the reviewer route is not qualified")
 
-// Check is nil when the latest record (by ran_at) of route under dir
-// qualifies it for the suite s, the current prompt and the current
-// adapter; otherwise ErrUnqualified, with the reason. A record that is not
-// one, or a records directory past its bounds, fails the whole check.
+// Check is nil when the latest two records (by ran_at) of route under dir,
+// of different seeds, each qualify it for the suite s, the current prompt
+// and the current adapter; otherwise ErrUnqualified, with the reason. A
+// record that is not one, or a records directory past its bounds, fails
+// the whole check.
 func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	names, err := recordNames(dir)
 	switch {
@@ -399,14 +406,22 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	if len(runs) == 0 {
 		return fmt.Errorf("%w: no record of the route", ErrUnqualified)
 	}
-	latest := slices.MaxFunc(runs, func(a, b run) int { return a.at.Compare(b.at) }).at
-	for _, r := range runs { // every run at the latest time must qualify (Opus #306 M3)
-		if !r.at.Equal(latest) {
-			continue
+	// The latest first (names break ties). The latest two are judged, and
+	// every run at the latest time (Opus #306 M3; #226 entry 110).
+	slices.SortStableFunc(runs, func(a, b run) int { return b.at.Compare(a.at) })
+	for i, r := range runs {
+		if i > 1 && !r.at.Equal(runs[0].at) {
+			break
 		}
 		if err := check(r.path, r.rec, s); err != nil {
-			return fmt.Errorf("%w: %s (the latest run): %v", ErrUnqualified, filepath.Base(r.path), err)
+			return fmt.Errorf("%w: %s (a latest run): %v", ErrUnqualified, filepath.Base(r.path), err)
 		}
+	}
+	if len(runs) < 2 {
+		return fmt.Errorf("%w: one run of the route: qualification takes its latest two runs, of different seeds, passing", ErrUnqualified)
+	}
+	if runs[0].rec.Seed == runs[1].rec.Seed {
+		return fmt.Errorf("%w: %s and %s share a seed: they are one run, not two", ErrUnqualified, filepath.Base(runs[0].path), filepath.Base(runs[1].path))
 	}
 	return nil
 }

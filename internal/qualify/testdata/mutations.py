@@ -21,7 +21,12 @@ Q, R, W, P, V = 'internal/qualify/qualify.go', 'internal/qualify/route.go', 'int
 MUTS = [
     # Check: the record, the latest run, the digests.
     ("another route's record counts", Q, 'if rec.Route == route {', 'if true {'),
-    ("an older run judged, not the latest", Q, 'if !r.at.Equal(latest) {', 'if r.at.Equal(latest) {'),
+    # The latest two runs, of different seeds (#226 entry 110).
+    ("the earliest runs judged, not the latest", Q, 'return b.at.Compare(a.at)', 'return a.at.Compare(b.at)'),
+    ("only the latest run judged", Q, 'if i > 1 && !r.at.Equal(runs[0].at) {', 'if i > 0 && !r.at.Equal(runs[0].at) {'),
+    ("a third run at the latest time not judged", Q, 'if i > 1 && !r.at.Equal(runs[0].at) {', 'if i > 1 {'),
+    ("one passing run enough", Q, 'return fmt.Errorf("%w: one run of the route', 'return nil\n\t\t_ = fmt.Errorf("%w: one run of the route'),
+    ("two records of one seed count as two", Q, 'if runs[0].rec.Seed == runs[1].rec.Seed {', 'if false {'),
     ("no record passes", Q, '\tif len(runs) == 0 {\n\t\treturn fmt.Errorf("%w: no record of the route", ErrUnqualified)', '\tif len(runs) == 0 {\n\t\treturn nil'),
     ("another prompt accepted", Q, 'case rec.PromptDigest != review.PromptDigest:', 'case false:'),
     ("another adapter accepted", Q, 'case rec.AdapterDigest != s.Adapter:', 'case false:'),

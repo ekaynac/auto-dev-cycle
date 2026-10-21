@@ -96,7 +96,10 @@ func TestQualifyLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("%s: %d of %d defects no_go, %d go; qualified %v", name, rec.NoGoOnDefects, s.Pass.NoGo, rec.GoOnControls, rec.Qualified)
-	if err := Check(dir, RouteOf(e), s); err != nil {
-		t.Error(err)
+	// The route qualifies on its latest two runs, of different seeds
+	// (#226 entry 110): after one passing run, Check still refuses it.
+	t.Logf("Check on %s: %v", dir, Check(dir, RouteOf(e), s))
+	if !rec.Qualified {
+		t.Error("this run is under the bar: commit its record all the same")
 	}
 }

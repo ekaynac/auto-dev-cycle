@@ -515,8 +515,9 @@ func TestCheck(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	fresh := func(decided map[string]string) string {
+	fresh := func(decided map[string]string) string { // a passing run, then run.json, the latest: the rows change it
 		dir := t.TempDir()
+		record(dir, "earlier", route, at.Add(-time.Hour), all(s, ""))
 		record(dir, "run", route, at, decided)
 		return dir
 	}
@@ -781,39 +782,67 @@ func TestCheck(t *testing.T) {
 			t.Errorf("%s: Record wrote %d entries", name, len(entries))
 		}
 	}
-	// M3: only the latest run of the route counts.
+	// Opus M3 and the lead's #226 entry 110: the latest two runs, of
+	// different seeds, must both pass.
 	dir := t.TempDir()
 	record(dir, "a", route, at, all(s, ""))
+	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "one run of the route") {
+		t.Errorf("one passing run: %v, want unqualified", err)
+	}
 	record(dir, "b", route, at.Add(24*time.Hour), with(all(s, ""), "control-lowstock", review.NoGo))
 	if err := Check(dir, route, s); err != nil {
-		t.Errorf("a passing run after a passing one: %v", err)
+		t.Errorf("two passing runs: %v", err)
 	}
 	record(dir, "c", route, at.Add(48*time.Hour), all(s, review.Go))
-	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "c.json (the latest run)") {
-		t.Errorf("a failing run after a passing one: %v", err)
+	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "c.json (a latest run)") {
+		t.Errorf("pass, then fail: %v", err)
 	}
 	record(dir, "d", route, at.Add(72*time.Hour), all(s, ""))
-	if err := Check(dir, route, s); err != nil {
-		t.Errorf("a passing run after a failing one: %v", err)
+	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "c.json (a latest run)") {
+		t.Errorf("fail, then one pass: %v, want unqualified", err)
 	}
-	record(dir, "e", route, at.Add(72*time.Hour), all(s, review.NoGo))
-	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) {
+	record(dir, "e", route, at.Add(96*time.Hour), all(s, ""))
+	if err := Check(dir, route, s); err != nil {
+		t.Errorf("fail, then two passes: %v", err)
+	}
+	record(dir, "f", route, at.Add(96*time.Hour), all(s, review.NoGo))
+	if err := Check(dir, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "f.json (a latest run)") {
 		t.Errorf("a failing run beside a passing one at the same time: %v", err)
 	}
-	record(dir, "f", other, at.Add(96*time.Hour), all(s, review.Go))
+	record(dir, "g", other, at.Add(120*time.Hour), all(s, review.Go))
 	if err := Check(dir, other, s); !errors.Is(err, ErrUnqualified) { // another route's run is its own
 		t.Errorf("another route's failing run: %v", err)
+	}
+	ties := t.TempDir() // every run at the latest time is judged, past the latest two
+	record(ties, "p", route, at, all(s, ""))
+	record(ties, "q", route, at, all(s, ""))
+	record(ties, "r", route, at, all(s, review.Go))
+	if err := Check(ties, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "r.json (a latest run)") {
+		t.Errorf("a third run at the latest time failing: %v", err)
+	}
+	// Two passing records of one seed are one run, not two.
+	same := t.TempDir()
+	x1 := s.NewRun(route, at)
+	x2 := x1
+	x2.ID, x2.At = s.NewRun(route, at).ID, at.Add(time.Hour)
+	for name, x := range map[string]Run{"one": x1, "two": x2} {
+		if _, err := s.Record(same, name, x, outcomes(t, s, x, all(s, ""))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Check(same, route, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "share a seed") {
+		t.Errorf("two runs of one seed: %v, want unqualified", err)
 	}
 	// The suite or the adapter changed after the run: the record and its
 	// evidence agree with each other, not with the current digests.
 	tampered := s
 	tampered.Digest = digest([]byte("another suite"))
-	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "(the latest run): another suite") {
+	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "run.json (a latest run): another suite") {
 		t.Errorf("a changed suite: %v", err)
 	}
 	tampered = s
 	tampered.Adapter = digest([]byte("another adapter"))
-	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "(the latest run): another adapter") {
+	if err := Check(fresh(all(s, "")), route, tampered); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "run.json (a latest run): another adapter") {
 		t.Errorf("a changed adapter: %v", err)
 	}
 }

@@ -195,8 +195,8 @@ func TestRoute(t *testing.T) {
 	if _, err := s.Record(records, "good", goodRun, good); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(records, qr, s); err != nil {
-		t.Errorf("the discriminating reviewer's record: %v", err)
+	if err := Check(records, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "one run of the route") {
+		t.Errorf("the discriminating reviewer's one record: %v, want unqualified (#226 entry 110)", err)
 	}
 	up.mu.Lock()
 	for i, body := range up.seen {
@@ -217,6 +217,13 @@ func TestRoute(t *testing.T) {
 		t.Errorf("%d requests for %d cases", n, len(s.Cases))
 	}
 	up.mu.Unlock()
+	againRun, again := run(func(c Case) string { return decision(c.Expect) }) // a second run, its own seed: the route qualifies
+	if _, err := s.Record(records, "good-again", againRun, again); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(records, qr, s); err != nil {
+		t.Errorf("the discriminating reviewer's two records: %v", err)
+	}
 	lax := t.TempDir()
 	goRun, allGo := run(func(Case) string { return decision(review.Go) })
 	if noGo, _, ok := s.Score(decided(allGo)); ok || noGo != 0 {
