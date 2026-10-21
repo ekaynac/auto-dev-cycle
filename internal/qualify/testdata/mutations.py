@@ -10,6 +10,11 @@
 #
 # The copies keep symlinks (the adapters' node_modules): a copy that follows
 # them breaks the adapter's TypeScript loading, and every run would fail.
+# The copies are under the default temporary directory, never under $HOME
+# (testguard fails tests there, so every mutation would read KILLED); the
+# unmutated copy must pass first; and a mutation that does not compile
+# (`go test -run '^$'`, which also runs go test's vet checks) is NOCOMPILE,
+# never KILLED. Killed, survived and no-compile are counted apart.
 import os
 import shutil
 import subprocess
@@ -101,16 +106,27 @@ MUTS = [
 ]
 
 
+TESTS = ['./internal/qualify/', './internal/review/']
+
+
 def main():
     repo = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True, check=True).stdout.strip()
     jobs = int(sys.argv[1]) if len(sys.argv) > 1 else 4
     sel = [int(a) for a in sys.argv[2:]] or list(range(len(MUTS)))
     work = tempfile.mkdtemp(prefix='qualify-mutations-')
+    home = os.path.realpath(os.path.expanduser('~'))
+    if os.path.realpath(work).startswith(home + os.sep):
+        sys.exit('mutations: the copies would be under $HOME (%s): testguard fails every test there, and every mutation would read KILLED; unset TMPDIR' % work)
     copies = []
     for w in range(jobs):
         d = os.path.join(work, str(w))
-        shutil.copytree(repo, d, symlinks=True, ignore=shutil.ignore_patterns('.git', '.claude'))
+        shutil.copytree(repo, d, symlinks=True, ignore=shutil.ignore_patterns('.git', '.claude', '__pycache__'))
         copies.append(d)
+    for d in copies:  # the baseline: the unmutated copy passes, or no result means anything
+        r = subprocess.run(['go', 'test', '-count=1'] + TESTS, cwd=d, capture_output=True, text=True)
+        if r.returncode:
+            shutil.rmtree(work, ignore_errors=True)
+            sys.exit('mutations: the unmutated copy fails its tests:\n' + r.stdout[-4000:] + r.stderr[-4000:])
 
     def job(w):
         out = []
@@ -123,10 +139,12 @@ def main():
                 continue
             open(p, 'w').write(src.replace(old, new))
             try:
-                r = subprocess.run(['go', 'test', '-count=1', './internal/qualify/', './internal/review/'], cwd=copies[w], capture_output=True, text=True)
+                # A mutation that does not compile proves nothing: it is NOCOMPILE, never KILLED.
+                built = subprocess.run(['go', 'test', '-count=1', '-run', '^$'] + TESTS, cwd=copies[w], capture_output=True, text=True)
+                r = built if built.returncode else subprocess.run(['go', 'test', '-count=1'] + TESTS, cwd=copies[w], capture_output=True, text=True)
             finally:
                 open(p, 'w').write(src)
-            out.append((i, name, 'KILLED' if r.returncode else 'SURVIVED'))
+            out.append((i, name, 'NOCOMPILE' if built.returncode else 'KILLED' if r.returncode else 'SURVIVED'))
         return out
 
     with ThreadPoolExecutor(jobs) as ex:
@@ -136,6 +154,8 @@ def main():
     for d in copies:
         clean = subprocess.run(['diff', '-r', '-q', os.path.join(d, 'internal'), os.path.join(repo, 'internal')], capture_output=True).returncode == 0
         print('copy', os.path.basename(d), 'clean' if clean else 'DIRTY')
+    counts = {k: sum(r == k for _, _, r in results) for k in ('KILLED', 'SURVIVED', 'NOCOMPILE', 'BADSTRING')}
+    print(' '.join('%s %d' % kv for kv in counts.items()))
     shutil.rmtree(work, ignore_errors=True)
     sys.exit(1 if any(r != 'KILLED' for _, _, r in results) else 0)
 
