@@ -176,6 +176,8 @@ type failing struct{ http.ResponseWriter }
 
 func (failing) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
 
+func (failing) SetWriteDeadline(time.Time) error { return nil }
+
 // A response the adapter did not take whole leaves the floor alone: an
 // adapter hanging up before the usage reached it cannot have its call
 // counted as if the gateway had read it.

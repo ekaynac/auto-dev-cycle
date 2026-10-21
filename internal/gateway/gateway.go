@@ -51,6 +51,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -108,6 +109,7 @@ type Gateway struct {
 	mu       sync.Mutex
 	bound    map[[32]byte]Binding          // by the token's hash
 	inflight map[[32]byte]map[*flight]bool // each token's requests in flight (serve.go)
+	ops      map[[32]byte]*sync.WaitGroup  // each token's side effects admitted (admit), which Unbind waits for
 	intended map[[32]byte]bool             // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
 	// seq numbers every request's count, across calls, so a call's are distinct however often it is bound. A
@@ -121,7 +123,7 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil || cfg.Counts == nil {
 		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets, the intents and the counts")
 	}
-	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, inflight: map[[32]byte]map[*flight]bool{}, intended: map[[32]byte]bool{},
+	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, inflight: map[[32]byte]map[*flight]bool{}, ops: map[[32]byte]*sync.WaitGroup{}, intended: map[[32]byte]bool{},
 		observed: map[types.AttemptID]Observed{}}, nil
 }
 
@@ -164,20 +166,25 @@ func (g *Gateway) Bind(b Binding) (string, error) {
 // already, or never bound, gives Observed{} (serve.go).
 func (g *Gateway) Unbind(token string) Observed {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	key := sha256.Sum256([]byte(token))
 	for f := range g.inflight[key] {
 		f.cancel()
 	}
 	delete(g.inflight, key)
+	ops := g.ops[key]
+	delete(g.ops, key)
 	b, ok := g.bound[key]
-	if !ok {
-		return Observed{}
+	var o Observed
+	if ok {
+		o = g.observed[b.Attempt]
+		delete(g.bound, key)
+		delete(g.observed, b.Attempt)
+		delete(g.intended, key)
 	}
-	o := g.observed[b.Attempt]
-	delete(g.bound, key)
-	delete(g.observed, b.Attempt)
-	delete(g.intended, key)
+	g.mu.Unlock()
+	if ops != nil { // the side effects admitted before it end before it returns (Astra #308 2)
+		ops.Wait()
+	}
 	return o
 }
 
@@ -216,24 +223,27 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), RequestDeadline)
 	defer cancel()
 	r = r.WithContext(ctx)
+	rc := http.NewResponseController(w)
+	arm(rc)       // nothing is written without its deadline, a refusal or a header included (Astra #308 3)
+	defer arm(rc) // the response's end (its last chunk) has a fresh deadline, however long the count took (Astra #308 1)
 	f := &flight{cancel}
 	b, no := g.enter(r, f)
 	if no != nil {
-		refuse(w, no)
+		refuse(w, rc, no)
 		return
 	}
 	release := sync.OnceFunc(func() { g.leave(r, f) })
 	defer release()
 	resp, s, no := g.forward(r, b, f)
 	if no != nil {
-		refuse(w, no)
+		refuse(w, rc, no)
 		return
 	}
 	if ct, ok := contentType(resp.Header.Get("Content-Type")); ok {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	out := &redacting{w: flushing{w, http.NewResponseController(w)}, secret: []byte(s.cred.Reveal())}
+	out := &redacting{w: flushing{w, rc}, secret: []byte(s.cred.Reveal())}
 	var t tally
 	_, err := io.Copy(out, io.TeeReader(resp.Body, &t))
 	err = errors.Join(err, out.Close(), resp.Body.Close())
@@ -445,34 +455,35 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		g.observe(b.Attempt, 0, RouteInBody)
 		return nil, none, &refusal{http.StatusForbidden, RouteInBody}
 	}
-	if !g.live(r, f) { // unbound meanwhile: nothing captured (Opus #322 L4)
+	done, ok := g.admit(r, f) // unbound meanwhile: nothing captured (Opus #322 L4); Unbind waits for it (Astra #308 2)
+	if !ok {
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
 	}
-	if g.cfg.Capture != nil {
-		if g.cfg.Capture.Keep(ctx, b, out) != nil {
-			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
-		}
+	if g.cfg.Capture != nil && g.cfg.Capture.Keep(ctx, b, out) != nil {
+		done()
+		return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 	}
-	if !g.live(r, f) { // unbound meanwhile: no intent (Opus #308 M2)
+	done()
+	if done, ok = g.admit(r, f); !ok { // unbound meanwhile: no intent (Opus #308 M2)
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
 	}
-	if err := g.intend(r, b, e.Destination.ID); err != nil {
+	err = g.intend(r, b, e.Destination.ID)
+	if done(); err != nil {
 		return nil, none, &refusal{http.StatusServiceUnavailable, "intent_unrecorded"}
 	}
 	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, dialAddr(target)), http.MethodPost, target.String(), bytes.NewReader(out))
 	if err != nil {
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
-	g.mu.Lock()
-	key, _ := tokenKey(r)
-	if !g.inflight[key][f] || ctx.Err() != nil { // unbound meanwhile: no floor (Opus #308 M2)
-		g.mu.Unlock()
+	if done, ok = g.admit(r, f); !ok { // unbound meanwhile: no floor (Opus #308 M2)
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
 	}
+	g.mu.Lock()
 	s := sending{cred, g.seq, len(out)}
 	g.seq++
 	g.mu.Unlock()
-	if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l)) != nil {
+	err = g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l))
+	if done(); err != nil {
 		g.observe(b.Attempt, 0, RouteUncounted)
 		return nil, none, &refusal{http.StatusServiceUnavailable, RouteUncounted}
 	}
@@ -552,9 +563,18 @@ func (g *Gateway) observe(a types.AttemptID, status int, route string) {
 // cannot forge it.
 const RefusalHeader = "Adc-Gateway-Refusal"
 
-func refuse(w http.ResponseWriter, no *refusal) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set(RefusalHeader, no.code)
+// refuse writes no, whole and at once, and closes the connection: an unread
+// body is never drained first, with or without Expect: 100-continue, and
+// never read after (Astra #308 4).
+func refuse(w http.ResponseWriter, rc *http.ResponseController, no *refusal) {
+	body := fmt.Sprintf(`{"error":{"type":"gateway_refused","code":%q}}`, no.code)
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set(RefusalHeader, no.code)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	h.Set("Connection", "close")
 	w.WriteHeader(no.status)
-	_, _ = fmt.Fprintf(w, `{"error":{"type":"gateway_refused","code":%q}}`, no.code)
+	_, _ = io.WriteString(w, body)
+	_ = rc.Flush()
+	_ = rc.SetReadDeadline(time.Now()) // not supported off a connection (a recorder): nothing to read there
 }

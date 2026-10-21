@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -360,8 +362,9 @@ func (h holdCapture) Keep(context.Context, Binding, []byte) error {
 	return nil
 }
 
-// Opus #308 M2, past the capture: a request Unbind finds between its
-// capture and its intent records no intent and no floor, and sends nothing.
+// Opus #308 M2, past the capture: a request Unbind finds inside its
+// capture records no intent and no floor after it, and sends nothing
+// (Unbind waits for the capture: Astra #308 2).
 func TestUnbindAfterTheCapture(t *testing.T) {
 	up := newUpstream(t, nil)
 	hc := holdCapture{make(chan bool, 1), make(chan bool)}
@@ -370,11 +373,102 @@ func TestUnbindAfterTheCapture(t *testing.T) {
 	c := overSocket(serveOn(t, g, done))
 	go func() { _, _, _ = post(c, token) }()
 	<-hc.arrived
-	g.Unbind(token)
+	unbound := make(chan bool)
+	go func() { g.Unbind(token); close(unbound) }()
+	select {
+	case <-unbound:
+		t.Fatal("Unbind returned inside the capture it admitted")
+	case <-time.After(200 * time.Millisecond): // Unbind has run up to its wait
+	}
 	close(hc.release)
+	<-unbound
 	<-done
 	if n, counted, sent := g.cfg.Intents.(*intents).n(), countsOf(g).all(), up.got(); n != 0 || len(counted) != 0 || len(sent) != 0 {
 		t.Errorf("after Unbind: %d intents, counts %+v, %d sent", n, counted, len(sent))
+	}
+}
+
+// gated holds one side effect (a capture, an intent or a floor) until
+// release is closed, signalling on arrived, and marks it recorded.
+type gated struct {
+	arrived, release chan bool
+	recorded         atomic.Bool
+}
+
+func (g *gated) hold() {
+	g.arrived <- true
+	<-g.release
+	g.recorded.Store(true)
+}
+
+type gatedCapture struct{ *gated }
+
+func (c gatedCapture) Keep(context.Context, Binding, []byte) error { c.hold(); return nil }
+
+type gatedIntents struct {
+	Intents
+	*gated
+}
+
+func (i gatedIntents) Intend(ctx context.Context, b Binding, d types.Slug) error {
+	i.hold()
+	return i.Intents.Intend(context.WithoutCancel(ctx), b, d) // as one that never reads its context
+}
+
+type gatedFloors struct {
+	Counts
+	*gated
+}
+
+func (c gatedFloors) Count(ctx context.Context, b Binding, seq int64, n Count) error {
+	if !n.Observed {
+		c.hold()
+	}
+	return c.Counts.Count(ctx, b, seq, n)
+}
+
+// Astra #308 2: a request held inside its capture, its intent or its
+// floor's commit, already admitted when Unbind runs: Unbind returns only
+// once that side effect is recorded, and the request records nothing
+// after it.
+func TestUnbindWaitsForWhatItAdmitted(t *testing.T) {
+	for _, at := range []string{"capture", "intent", "floor"} {
+		t.Run(at, func(t *testing.T) {
+			up := newUpstream(t, nil)
+			gt := &gated{arrived: make(chan bool, 1), release: make(chan bool)}
+			var cs *counts
+			g, token := rig(t, up, func(c *Config) {
+				cs = c.Counts.(*counts)
+				switch at {
+				case "capture":
+					c.Capture = gatedCapture{gt}
+				case "intent":
+					c.Intents = gatedIntents{c.Intents, gt}
+				case "floor":
+					c.Counts = gatedFloors{c.Counts, gt}
+				}
+			})
+			done := make(chan bool, 1)
+			c := overSocket(serveOn(t, g, done))
+			go func() { _, _, _ = post(c, token) }()
+			<-gt.arrived
+			unbound := make(chan bool)
+			go func() { g.Unbind(token); unbound <- gt.recorded.Load() }()
+			select {
+			case <-unbound:
+				t.Fatal("Unbind returned while a side effect it admitted was still running")
+			case <-time.After(200 * time.Millisecond):
+			}
+			close(gt.release)
+			if recorded := <-unbound; !recorded {
+				t.Error("Unbind returned before the admitted side effect was recorded")
+			}
+			floors := cs.all()
+			<-done
+			if n := len(up.got()); n != 0 || len(cs.all()) != len(floors) {
+				t.Errorf("after Unbind: %d sent, counts %+v (at Unbind's return %+v)", n, cs.all(), floors)
+			}
+		})
 	}
 }
 
@@ -403,20 +497,147 @@ func TestServerBounds(t *testing.T) {
 
 // Opus #308 L5: a ResponseWriter that cannot take a write deadline ends the
 // request: nothing is written without one, and the call keeps its floor.
+//
+// Astra #308 3: so does a refusal (an unbound token, the cap): it aborts,
+// writing nothing, and sends nothing.
 func TestNoWriteWithoutADeadline(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":1}}`))
+	})
+	g, token := rig(t, up, nil)
+	for name, tok := range map[string]string{"a refusal": "not-a-token", "a forwarded response": token} {
+		r, _ := http.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(good))
+		r.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder() // no SetWriteDeadline
+		func() {
+			defer func() {
+				if p := recover(); p != http.ErrAbortHandler {
+					t.Errorf("%s: %v, want the handler aborted", name, p)
+				}
+			}()
+			g.ServeHTTP(w, r)
+		}()
+		if w.Body.Len() != 0 || w.Code != http.StatusOK || len(w.Header()) != 0 {
+			t.Errorf("%s: written without a deadline: %d %v %q", name, w.Code, w.Header(), w.Body)
+		}
+	}
+	if n := len(up.got()); n != 0 {
+		t.Errorf("%d sent", n)
+	}
+}
+
+// Astra #308 1: the count's latency never expires the response's end: a
+// count held past writeIdle, the adapter reads the whole chunked response
+// to its EOF.
+func TestASlowCountEndsTheResponseWhole(t *testing.T) {
+	old := writeIdle
+	writeIdle = 200 * time.Millisecond
+	t.Cleanup(func() { writeIdle = old })
+	const usage = `{"usage":{"prompt_tokens":10,"completion_tokens":1}}`
+	g, token := rig(t, newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(usage))
+	}), nil)
+	slow := &holdCounts{Counts: g.cfg.Counts, hold: make(chan bool), held: make(chan bool, 8)}
+	g.cfg.Counts = slow
+	go func() {
+		<-slow.held
+		time.Sleep(5 * writeIdle) // the count commits well past the last write's deadline
+		close(slow.hold)
+	}()
+	r, _ := http.NewRequest(http.MethodPost, BaseURL+"/chat/completions", strings.NewReader(good))
+	r.Header.Set("Authorization", "Bearer "+token)
+	resp, err := overSocket(serveOn(t, g, nil)).Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != usage || len(resp.TransferEncoding) == 0 {
+		t.Errorf("the response: %q %v (transfer %v), want it whole to its EOF", body, err, resp.TransferEncoding)
+	}
+}
+
+// deadlines is a recorder that takes write deadlines, recording each, and
+// whether the call's usage count had committed when it was set.
+type deadlines struct {
+	*httptest.ResponseRecorder
+	counted *atomic.Bool
+	set     []deadline
+}
+
+type deadline struct {
+	at      time.Time
+	counted bool
+}
+
+func (d *deadlines) SetWriteDeadline(at time.Time) error {
+	d.set = append(d.set, deadline{at, d.counted.Load()})
+	return nil
+}
+
+type markCounts struct {
+	Counts
+	counted *atomic.Bool
+}
+
+func (m markCounts) Count(ctx context.Context, b Binding, seq int64, n Count) error {
+	err := m.Counts.Count(ctx, b, seq, n)
+	m.counted.Store(m.counted.Load() || n.Observed)
+	return err
+}
+
+// Astra #308 1: each write's deadline is cleared after it, and once the
+// usage count has committed the response's end gets a fresh deadline: the
+// last deadline set is a time, set after the count.
+func TestTheResponseEndHasAFreshDeadline(t *testing.T) {
 	g, token := rig(t, newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":1}}`))
 	}), nil)
+	counted := new(atomic.Bool)
+	g.cfg.Counts = markCounts{g.cfg.Counts, counted}
 	r, _ := http.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(good))
 	r.Header.Set("Authorization", "Bearer "+token)
-	w := httptest.NewRecorder() // no SetWriteDeadline
+	w := &deadlines{ResponseRecorder: httptest.NewRecorder(), counted: counted}
 	g.ServeHTTP(w, r)
-	if w.Body.Len() != 0 {
-		t.Errorf("written without a deadline: %q", w.Body)
+	cleared := slices.ContainsFunc(w.set, func(d deadline) bool { return d.at.IsZero() && !d.counted })
+	if last := w.set[len(w.set)-1]; w.Code != http.StatusOK || !counted.Load() || !cleared || last.at.IsZero() || !last.counted {
+		t.Errorf("the deadlines set: %+v (counted %v, status %d)", w.set, counted.Load(), w.Code)
 	}
-	for _, c := range countsOf(g).all() {
-		if c.n.Observed {
-			t.Errorf("counted as observed: %+v", c)
-		}
+}
+
+// Astra #308 4: one request past the cap, its body withheld and no
+// Expect: 100-continue, has its 429 at once and its connection closed;
+// nothing of its body is waited for.
+func TestTheCapNeverWaitsForABody(t *testing.T) {
+	arrived, release := make(chan bool, 8), make(chan bool)
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		arrived <- true
+		<-release
+	})
+	t.Cleanup(sync.OnceFunc(func() { close(release) }))
+	g, token := rig(t, up, nil)
+	sock := serveOn(t, g, nil)
+	c := overSocket(sock)
+	for range MaxInFlight {
+		go func() { _, _, _ = post(c, token) }()
+		<-arrived
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second)) // a drain would wait for the server's one-minute read timeout
+	fmt.Fprintf(conn, "POST /chat/completions HTTP/1.1\r\nHost: adc-gateway\r\nAuthorization: Bearer %s\r\nContent-Length: 1000\r\n\r\n", token)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get(RefusalHeader) != "in_flight_cap" || !resp.Close {
+		t.Fatalf("a request past the cap: %v %v; want 429 in_flight_cap, the connection closed", resp, err)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Errorf("the refusal's body: %v", err)
+	}
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Errorf("after the refusal: %v, want the connection closed", err)
 	}
 }

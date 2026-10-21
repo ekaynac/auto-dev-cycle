@@ -5,6 +5,7 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -32,13 +33,20 @@ import (
 //     commits (Opus #308 L4).
 //   - Unbind is idempotent, and cancels the token's requests in flight:
 //     their upstream exchanges end and keep their floors, and nothing they
-//     do afterwards binds or observes again. A request Unbind finds before
-//     its intent, or before its floor's sequence is taken, records neither
-//     (Opus #308 M2); a floor decided just before Unbind may still commit
-//     just after it returns, as the request it counts may already be sent.
-//   - Served unwrapped: each write needs its deadline, so a ResponseWriter
-//     that cannot set one ends the request rather than write without it
-//     (Opus #308 L5).
+//     do afterwards binds or observes again. A request's capture, intent
+//     and floor are each admitted under the gateway's lock, only while the
+//     request is in flight, and Unbind waits for those already admitted:
+//     none is recorded after it returns (Opus #308 M2, #322 L4; Astra #308
+//     2). What a request already sent counts afterwards (its usage) is
+//     still recorded: never an undercount.
+//   - Served unwrapped: every write, a refusal's and a header included,
+//     has its deadline (each write's own, cleared after it, and a fresh
+//     one for the response's end once the count has committed: Astra #308
+//     1, 3), so a ResponseWriter that cannot set one aborts the request
+//     rather than write without it (Opus #308 L5).
+//   - A refusal is written whole at once and closes the connection: an
+//     unread body is never drained first, with or without Expect (Astra
+//     #308 4).
 
 // BaseURL is the base_url Mint hands an adapter: no path.
 const BaseURL = "http://adc-gateway"
@@ -95,12 +103,33 @@ func (g *Gateway) enter(r *http.Request, f *flight) (Binding, *refusal) {
 	return b, nil
 }
 
-// live: f is still in flight on r's token, and r is not cancelled.
-func (g *Gateway) live(r *http.Request, f *flight) bool {
+// admit admits one side effect of r (its capture, its intent or its
+// floor) while f is in flight on r's token and r is not cancelled; done
+// ends it. Unbind waits for every side effect admitted before it, so none
+// is recorded after it returns (Astra #308 2).
+func (g *Gateway) admit(r *http.Request, f *flight) (done func(), ok bool) {
 	key, _ := tokenKey(r)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.inflight[key][f] && r.Context().Err() == nil
+	if !g.inflight[key][f] || r.Context().Err() != nil {
+		return nil, false
+	}
+	ops := g.ops[key]
+	if ops == nil {
+		ops = new(sync.WaitGroup)
+		g.ops[key] = ops
+	}
+	ops.Add(1)
+	return ops.Done, true
+}
+
+// arm gives the response's next writes their deadline, writeIdle away;
+// past a writer that cannot take one, the handler aborts, writing nothing
+// more (Opus #308 L5; Astra #308 3).
+func arm(rc *http.ResponseController) {
+	if rc.SetWriteDeadline(time.Now().Add(writeIdle)) != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (g *Gateway) leave(r *http.Request, f *flight) {
@@ -109,6 +138,7 @@ func (g *Gateway) leave(r *http.Request, f *flight) {
 	defer g.mu.Unlock()
 	if delete(g.inflight[key], f); len(g.inflight[key]) == 0 {
 		delete(g.inflight, key)
+		delete(g.ops, key) // none pending: each flight's ended before it left
 	}
 }
 
@@ -120,9 +150,7 @@ type flushing struct {
 }
 
 func (f flushing) Write(p []byte) (int, error) {
-	if err := f.rc.SetWriteDeadline(time.Now().Add(writeIdle)); err != nil {
-		return 0, err // never a write without its deadline (Opus #308 L5)
-	}
+	arm(f.rc) // each write's own deadline: never a write without one (Opus #308 L5)
 	n, err := f.w.Write(p)
 	if err == nil {
 		err = f.rc.Flush()
@@ -130,5 +158,6 @@ func (f flushing) Write(p []byte) (int, error) {
 			err = nil
 		}
 	}
+	_ = f.rc.SetWriteDeadline(time.Time{}) // the deadline is the write's: none armed while nothing is written (Astra #308 1)
 	return n, err
 }
