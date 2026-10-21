@@ -203,6 +203,8 @@ func TestPrepareContext(t *testing.T) {
 			return editFile(filepath.Join(d, "node-pins"), func(s string) string { return s + s[strings.Index(s, "linux/arm64"):] })
 		},
 	}
+	message := map[string]string{"a Node that is not the pinned one": "is not the Node",
+		"no pin for a platform": "does not pin one Node", "a platform pinned twice": "does not pin one Node"}
 	for name, edit := range refused {
 		dist := fakeDist(t)
 		if err := edit(dist); err != nil {
@@ -210,7 +212,9 @@ func TestPrepareContext(t *testing.T) {
 		}
 		dir := filepath.Join(t.TempDir(), "ctx")
 		out, errs, err := prepareContext(t, dist, dir)
-		if _, statErr := os.Lstat(dir); err == nil || out != "" || !strings.Contains(errs, "prepare-go-image: ") || !errors.Is(statErr, fs.ErrNotExist) {
+		// One refusal, by its own message (Mythos #373 L3).
+		if _, statErr := os.Lstat(dir); err == nil || out != "" || strings.Count(errs, "prepare-go-image: ") != 1 ||
+			!strings.Contains(errs, message[name]) || !errors.Is(statErr, fs.ErrNotExist) {
 			t.Errorf("%s: %v, %q, %q; the directory: %v", name, err, out, errs, statErr)
 		}
 	}
@@ -229,8 +233,11 @@ func editFile(p string, edit func(string) string) error {
 // dist (ignored, as dist/ is) with its pins as scripts/node-pins, all
 // committed; the dist's adc reports HEAD. A fake podman on PATH records
 // each call in STATE/log, answers exists from STATE/exists-KIND, inspect
-// from STATE/inspect.json and run with STATE/node and the platform's
-// arch, and fails run when STATE/nonode exists.
+// from STATE/inspect.json, run with STATE/node and the platform's arch
+// (failing when STATE/nonode exists), create with c-ARCH, and cp of
+// c-ARCH:… with the dist's lib/adc of ARCH (failing when STATE/nocp
+// exists; the other ARCH's when STATE/swap does; with a byte appended to
+// http-chat's main.ts when STATE/tamper does).
 type buildFixture struct {
 	checkout, state, head string
 	env                   []string
@@ -249,20 +256,29 @@ func newBuildFixture(t *testing.T) buildFixture {
 		t.Fatal(err)
 	}
 	podman := `#!/bin/sh
-state='` + state + `'
+state='` + state + `' dist='` + co + `/dist'
 echo "$*" >>"$state/log"
 case "$1 $2" in
 "manifest exists" | "image exists") [ -e "$state/exists-$1" ] && exit 0; exit 1 ;;
 "manifest inspect") exec cat "$state/inspect.json" ;;
 esac
+for a in "$@"; do
+  case "$a" in --platform=linux/amd64) arch=amd64 ;; --platform=linux/arm64) arch=arm64 ;; esac
+done
 case "$1" in
-build) exit 0 ;;
+build | rm) exit 0 ;;
 run)
   [ -e "$state/nonode" ] && exit 1
-  for a in "$@"; do
-    case "$a" in --platform=linux/amd64) arch=x64 ;; --platform=linux/arm64) arch=arm64 ;; esac
-  done
+  [ "$arch" = amd64 ] && arch=x64
   echo "$(cat "$state/node") $arch" ;;
+create) echo "c-$arch" ;;
+cp)
+  [ -e "$state/nocp" ] && exit 1
+  arch="${2%%:*}" arch="${arch#c-}"
+  if [ -e "$state/swap" ]; then case "$arch" in amd64) arch=arm64 ;; *) arch=amd64 ;; esac; fi
+  cp -PR "$dist/linux-$arch/lib/adc" "$3" || exit 1
+  [ -e "$state/tamper" ] && echo x >>"$3/adapters/http-chat/src/main.ts"
+  exit 0 ;;
 *) exit 125 ;;
 esac
 `
@@ -328,11 +344,14 @@ func (f buildFixture) build(t *testing.T) ([]string, string, error) {
 
 // #373 L5: build's gates, against a fake podman. A clean checkout whose
 // dist's adc is HEAD's builds NAME with the label of the dist's adapters,
-// then lists its images and runs the pinned Node once per platform (M1,
-// L6). A dirty tree, or a dist's adc of another commit or a dirty one, is
-// refused before podman runs; a NAME podman already holds is refused
-// before the build; a list without exactly one image per platform, or a
-// Node that does not start or reports another version, after it.
+// then lists its images and, per platform, runs the pinned Node and
+// copies /opt/adc/lib out of a created container, which it removes (M1,
+// L6; Mythos M1). A dirty tree, or a dist's adc of another commit or a
+// dirty one, is refused before podman runs; a NAME podman already holds
+// is refused before the build; a list without exactly one image per
+// platform, a Node that does not start or reports another version, or an
+// image whose /opt/adc/lib is not the label's adapter (or cannot be
+// copied, the container still removed), after it.
 func TestPrepareBuild(t *testing.T) {
 	f := newBuildFixture(t)
 	calls, out, err := f.build(t)
@@ -348,9 +367,12 @@ func TestPrepareBuild(t *testing.T) {
 		adapter = append(adapter, `"linux/`+arch+`":"`+d+`"`)
 	}
 	label := `,"adapter":{` + strings.Join(adapter, ",") + "}}"
-	want := []string{"manifest exists localhost/adc-test", "image exists localhost/adc-test", "build", "manifest inspect localhost/adc-test",
-		"run --rm --pull=never --network=none --platform=linux/amd64 localhost/adc-test /opt/adc/lib/node/bin/node -p",
-		"run --rm --pull=never --network=none --platform=linux/arm64 localhost/adc-test /opt/adc/lib/node/bin/node -p"}
+	want := []string{"manifest exists localhost/adc-test", "image exists localhost/adc-test", "build", "manifest inspect localhost/adc-test"}
+	for _, arch := range []string{"amd64", "arm64"} {
+		want = append(want, "run --rm --pull=never --network=none --platform=linux/"+arch+" localhost/adc-test /opt/adc/lib/node/bin/node -p",
+			"create --pull=never --network=none --platform=linux/"+arch+" localhost/adc-test true",
+			"cp c-"+arch+":/opt/adc/lib ", "rm c-"+arch)
+	}
 	if len(calls) != len(want) {
 		t.Fatalf("podman calls %q", calls)
 	}
@@ -397,6 +419,10 @@ func TestPrepareBuild(t *testing.T) {
 		"another Node version": {func(f buildFixture) error {
 			return os.WriteFile(filepath.Join(f.state, "node"), []byte("v21.0.0\n"), 0o644)
 		}, 5},
+		// Mythos #373 M1: the image's /opt/adc/lib must have the label's digest.
+		"an image whose adapter differs": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "tamper"), nil, 0o644) }, 8},
+		"the other platform's adapter":   {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "swap"), nil, 0o644) }, 8},
+		"a copy that fails":              {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "nocp"), nil, 0o644) }, 8},
 	}
 	for name, edit := range before {
 		after[name] = struct {

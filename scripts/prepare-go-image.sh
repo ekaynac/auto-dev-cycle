@@ -37,16 +37,20 @@
 #
 # The build needs network (the base image and the Go module proxy), podman
 # and jq. It never pushes. The lead's commands, on a clean checkout (the
-# rm only for a NAME podman already holds, e.g. from the previous build):
+# rm only for a NAME podman already holds, e.g. from the previous build;
+# the tag is the README's form, and the digest files go outside the
+# checkout, which build requires clean):
 #   make dist
 #   podman manifest rm ghcr.io/ekaynac/adc-prepared-go-mini
 #   podman manifest rm ghcr.io/ekaynac/adc-prepared-go
 #   scripts/prepare-go-image.sh build go-mini        ghcr.io/ekaynac/adc-prepared-go-mini
 #   scripts/prepare-go-image.sh build auto-dev-cycle ghcr.io/ekaynac/adc-prepared-go
-#   podman manifest push --all --digestfile go-mini.digest ghcr.io/ekaynac/adc-prepared-go-mini docker://ghcr.io/ekaynac/adc-prepared-go-mini
-#   podman manifest push --all --digestfile go.digest      ghcr.io/ekaynac/adc-prepared-go      docker://ghcr.io/ekaynac/adc-prepared-go
-# Each --digestfile receives the pushed list's index digest (sha256:…). The
-# pin, NAME@sha256:…, goes in the project's profile
+#   tag="go1.27.1-$(date -u +%F)" digests="$(mktemp -d)"
+#   podman manifest push --all --digestfile "$digests/go-mini" ghcr.io/ekaynac/adc-prepared-go-mini "docker://ghcr.io/ekaynac/adc-prepared-go-mini:$tag"
+#   podman manifest push --all --digestfile "$digests/go"      ghcr.io/ekaynac/adc-prepared-go      "docker://ghcr.io/ekaynac/adc-prepared-go:$tag"
+#   head "$digests"/*
+# Each digest file holds the pushed list's index digest (sha256:…), the same
+# whatever the tag. The pin, NAME@sha256:…, goes in the project's profile
 # (fixtures/m1/profiles/PROJECT.json, toolchain.images.go).
 set -euo pipefail
 
@@ -123,9 +127,11 @@ pin() {
 
 # context DIST DIR: puts the lockfiles the label names (under lock/) and
 # each platform's adapter closure (under adapter/linux-ARCH/) into DIR, and
-# sets label. Node must be the one the pins name.
+# sets label and digests (PLATFORM -> its adapter digest). Node must be the
+# one the pins name.
+declare -A digests
 context() {
-  local dist="$1" dir="$2" p f lib dst sum src adapter="{" sep=""
+  local dist="$1" dir="$2" p f lib dst sum src want adapter="{" sep=""
   mkdir -- "$dir/lock" "$dir/adapter"
   for f in "${lockfiles[@]}"; do cp -- "$repo/$f" "$dir/lock/$f"; done
   for p in "${plats[@]}"; do
@@ -139,11 +145,13 @@ context() {
     done
     [[ -f "$dst/node/bin/node" && ! -L "$dst/node/bin/node" ]] || die "node/bin/node of $lib is not a regular file"
     sum="$(sha256sum -- "$dst/node/bin/node")" || die "cannot hash node/bin/node of $lib"
-    [[ "${sum%% *}" == "$(pin "$p" 5)" ]] || die "node/bin/node of $lib is not the Node $pins pins for $p"
+    want="$(pin "$p" 5)" || exit 1
+    [[ "${sum%% *}" == "$want" ]] || die "node/bin/node of $lib is not the Node $pins pins for $p"
     sum="$("$adc" dev adapter-digest "$dst")" || die "the adapter of $p cannot be digested"
     src="$("$adc" dev adapter-digest "$lib")" || die "the adapter of $lib cannot be digested"
     [[ "$sum" =~ ^sha256:[0-9a-f]{64}$ && "$sum" == "$src" ]] || die "the adapter copied for $p differs from $lib's"
     adapter+="$sep\"$p\":\"$sum\""
+    digests[$p]="$sum"
     sep=","
   done
   label="$(manifest "$adapter}")"
@@ -208,8 +216,10 @@ case "${1:-}" in
     [[ -s "$ctx/warm.txt" || "$warm_required" == 0 ]] || die "no third-party packages listed in $repo"
     podman build --pull=missing --timestamp=0 --platform="$(IFS=,; echo "${plats[*]}")" --manifest="$name" \
       --label="dev.adc.prepared=$label" -f "$containerfile" "$ctx"
-    # The new list holds exactly one image per platform, and in each the
-    # pinned Node starts, as the platform's.
+    # The new list holds exactly one image per platform; in each the pinned
+    # Node starts, as the platform's, and /opt/adc/lib, copied out of it,
+    # has the label's adapter digest for the platform (Mythos #373 M1: the
+    # label pins what COPY put in the image, not only the context).
     listed="$(podman manifest inspect "$name" | jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' | LC_ALL=C sort)" ||
       die "cannot list the images of $name (podman manifest inspect, jq)"
     [[ "$listed" == "$(printf '%s\n' "${plats[@]}")" ]] ||
@@ -220,6 +230,14 @@ case "${1:-}" in
       got="$(podman run --rm --pull=never --network=none --platform="$p" "$name" \
         /opt/adc/lib/node/bin/node -p 'process.version + " " + process.arch')" || die "Node does not start in $name for $p"
       [[ "$got" == "$want" ]] || die "Node in $name for $p reports '$got', not '$want'"
+      out="$ctx/image-${p#linux/}"
+      c="$(podman create --pull=never --network=none --platform="$p" "$name" true)" || die "cannot create a container of $name for $p"
+      rc=0
+      podman cp "$c:/opt/adc/lib" "$out" || rc=$?
+      podman rm "$c" >/dev/null || die "cannot remove the container $c"
+      ((rc == 0)) || die "cannot copy /opt/adc/lib out of $name for $p"
+      got="$("$adc" dev adapter-digest "$out")" || die "the adapter in $name for $p cannot be digested"
+      [[ "$got" == "${digests[$p]}" ]] || die "the adapter in $name for $p is $got, not the label's ${digests[$p]}"
     done
     printf 'prepare-go-image: built %s for %s with dev.adc.prepared=%s\n' "$name" "${plats[*]}" "$label"
     ;;
