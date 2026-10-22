@@ -60,6 +60,11 @@ type Manifest struct {
 	Adapter   map[string]string `json:"adapter,omitempty"` // os/arch -> sha256:hex
 }
 
+// ErrUnqualified: the pin names no registry, or is no digest pin: a fault
+// of the profile that pins it, which no wait clears (Opus #393 L2). It is an
+// ErrImage.
+var ErrUnqualified = fmt.Errorf("%w: not a fully qualified reference pinned by digest", ErrImage)
+
 // Resolve finds ref (name@sha256:hex) in the host's storage, never
 // pulling: an image whose digest differs from the pin is refused, and so
 // is one built for another OS or architecture than the host's (#226 entry
@@ -70,7 +75,7 @@ func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
 	// a short name is refused rather than guessed.
 	registry, _, qualified := strings.Cut(ref, "/")
 	if !pinned.MatchString(ref) || !qualified || !strings.ContainsAny(registry, ".:") && registry != "localhost" {
-		return Image{}, fmt.Errorf("%w: not a fully qualified reference pinned by digest", ErrImage)
+		return Image{}, ErrUnqualified
 	}
 	out, err := h.podman(ctx, "image", "inspect", "--", ref)
 	if err != nil {

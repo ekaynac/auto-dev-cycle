@@ -190,13 +190,19 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 // within refuses an attempt that holds more than disk bytes, maxEntries
 // entries or maxDepth levels, or one that cannot be measured. also are
 // directories the run wrote besides the attempt's (an interactive run's
-// exchange out/), counted against the same bound with it.
+// exchange out/), counted against the same bound with it; one already
+// removed (the exchange, once the session's host has ingested it) holds
+// nothing.
 func (a *Attempt) within(disk int64, also ...string) error {
 	var size int64
 	var err error
-	for _, dir := range append([]string{a.Dir}, also...) {
+	for i, dir := range append([]string{a.Dir}, also...) {
 		var root *os.Root
 		if root, err = os.OpenRoot(dir); err != nil {
+			if i > 0 && errors.Is(err, fs.ErrNotExist) {
+				err = nil
+				continue
+			}
 			break
 		}
 		err = walk(root.FS(), ".", maxEntries, func(p string, d fs.DirEntry) error {

@@ -45,13 +45,18 @@ type Interactive struct {
 	// Remove removes the container this run created, by the id Podman
 	// wrote to the attempt's cid file (never by name: another run may hold
 	// it; #374 M2), then checks that Podman lists it no more (with no cid
-	// file, nothing was created: it removes nothing and checks the name),
-	// then that what the run left, its exchange's out/ included, is within
-	// Limits.Disk. Each call does all of it afresh. The attempt is unsafe
-	// (CopyTree and CopyOut refuse it) from Interactive until a call has
-	// seen the container gone: the podman client's exit does not mean the
-	// container's has (conmon runs it).
+	// file, nothing was created: it removes nothing and checks the name).
+	// Each call does it all afresh. Its error means only that the container
+	// was not seen gone. The attempt is unsafe (CopyTree and CopyOut refuse
+	// it) from Interactive until a call has seen the container gone: the
+	// podman client's exit does not mean the container's has (conmon runs
+	// it).
 	Remove func(ctx context.Context) error
+	// Within checks, once Remove has succeeded, that what the run left, its
+	// exchange's out/ included, is within Limits.Disk: ErrLeft when it is
+	// not, or cannot be measured (Opus #393 M2: a breach is the run's
+	// output, not a container that may still run).
+	Within func() error
 }
 
 // cidFile is where an interactive run's container id is written: the
@@ -87,12 +92,15 @@ func (h Host) Interactive(r Run, attempt string) (Interactive, error) {
 		defer cancel()
 		err := h.removeRun(ctx, cidFile(a.Dir), name)
 		a.unsafe = err != nil
-		if err != nil {
-			return err
+		return err
+	}
+	within := func() error {
+		if a.unsafe {
+			return fmt.Errorf("%w: the run's container may still be running", ErrSpec)
 		}
 		return a.within(disk, out)
 	}
-	return Interactive{Command: append(append([]string{h.Podman}, global...), args...), Env: h.env(), Deadline: r.Limits.Timeout, Remove: remove}, nil
+	return Interactive{Command: append(append([]string{h.Podman}, global...), args...), Env: h.env(), Deadline: r.Limits.Timeout, Remove: remove, Within: within}, nil
 }
 
 var containerID = regexp.MustCompile(`^[0-9a-f]{64}$`)

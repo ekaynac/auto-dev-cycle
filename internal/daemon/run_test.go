@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,6 +106,7 @@ type peerStarter struct {
 	peer     *inproc.Peer
 	refuse   error
 	notReady error
+	within   error // what the session's Within returns
 	mu       sync.Mutex
 	runs     []AdapterRun
 }
@@ -117,7 +119,7 @@ func (p *peerStarter) Start(_ context.Context, run AdapterRun) (AdapterSession, 
 		return AdapterSession{}, p.refuse
 	}
 	return AdapterSession{Config: session.Config{InProcess: p.peer, Deadline: run.Deadline}, Path: func(s string) string { return s },
-		Ready: func() error { return p.notReady }}, nil
+		Ready: func() error { return p.notReady }, Within: func() error { return p.within }}, nil
 }
 
 // countRuns is the runner the loop calls, counting the runs it started.
@@ -415,9 +417,10 @@ func TestTheRunHandsTheContainerItsAttempt(t *testing.T) {
 // the prepared exchange (Ready) starts nothing: no attempt, the exchange
 // discarded, the lease released, and the build held source_invalid_config.
 // An image whose manifest or adapter is not the profile's toolchain's or
-// the installed release's is a configuration fault, held on the project's
-// profile, which a profile pinning a rebuilt image clears; any other
-// refusal is retried.
+// the installed release's, or a pin with no registry, is a configuration
+// fault, held on the project's profile, which a profile pinning a rebuilt
+// image clears; any other refusal is retried, the sandbox refusing the
+// container (the host's fault, errHost: Opus #393 L2, L3) among them.
 func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 	for name, c := range map[string]struct {
 		refuse, notReady error
@@ -426,7 +429,8 @@ func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 		"another adapter in the image": {refuse: sandbox.ErrAdapter, signal: reconcile.RunnerSignal("profile ")},
 		"an image not prepared for it": {refuse: sandbox.ErrManifest, signal: reconcile.RunnerSignal("profile ")},
 		"an image not present":         {refuse: sandbox.ErrImage, signal: reconcile.RunnerSignal("retry 1 until ")},
-		"a container not made":         {notReady: sandbox.ErrSpec, signal: reconcile.RunnerSignal("profile ")},
+		"a pin with no registry":       {refuse: sandbox.ErrUnqualified, signal: reconcile.RunnerSignal("profile ")},
+		"a container not made":         {notReady: fmt.Errorf("%w: %w", errHost, sandbox.ErrSpec), signal: reconcile.RunnerSignal("retry 1 until ")},
 		"a Ready that fails":           {notReady: errors.New("no"), signal: reconcile.RunnerSignal("retry 1 until ")},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -634,6 +638,40 @@ func TestAnUnverifiedEndKeepsTheAttemptDirectory(t *testing.T) {
 		t.Error("the clone was kept")
 	}
 	rw.endedNotRun(t, vocab.ReasonAmbiguousState) // never empty/completed_clean from the submission
+}
+
+// Opus #393 M2: a run that left more than its container's disk bound (the
+// session's Within) is the candidate's output: its tree is never diffed, the
+// build's result is failed/unsafe_output by the attempt, and the attempt
+// directory, the exchange and the clone are torn down, never kept.
+func TestARunPastItsBoundIsTornDown(t *testing.T) {
+	rw := newRunWorld(t, true, builder(func(ws string) {
+		_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+	}, false, nil))
+	rw.r.adapters.(*peerStarter).within = sandbox.ErrLeft
+	diffed := false
+	diffOf = func(context.Context, sandbox.Repo, string, string) ([]byte, []string, error) {
+		diffed = true
+		return nil, nil, nil
+	}
+	t.Cleanup(func() { diffOf = accept.Diff })
+	rw.untilRun(t)
+	a, l := rw.attemptOf(t)
+	var res types.Result
+	var byAttempt bool
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		res, byAttempt, err = graph.AttemptResult(tx, a.ID)
+		return err
+	})
+	if diffed || !byAttempt || res.Outcome != types.OutcomeFailed || res.Reason != vocab.ReasonUnsafeOutput || len(res.Value) != 0 ||
+		a.Status != types.AttemptStatusCompleted || l.State != types.LeaseStateSettled {
+		t.Fatalf("diffed %v; the result %+v (by the attempt %v), attempt %s, lease %s", diffed, res, byAttempt, a.Status, l.State)
+	}
+	for _, dir := range []string{rw.r.clones, rw.exch, filepath.Join(rw.r.box.Root, "runs")} {
+		if !empty(dir) {
+			t.Errorf("%s left behind", dir)
+		}
+	}
 }
 
 // ended reports the build's attempt sealed and its lease settled, with the

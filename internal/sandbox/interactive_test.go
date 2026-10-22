@@ -210,18 +210,33 @@ func TestInteractiveRefusesACidFile(t *testing.T) {
 }
 
 // What the run wrote to its exchange's out/ counts against Limits.Disk with
-// the attempt's directory: past the bound, Remove fails (#374 M1).
-func TestInteractiveRemoveBoundsTheExchange(t *testing.T) {
+// the attempt's directory (#374 M1). The breach is Within's, a distinct
+// error, never Remove's, which says only whether the container was seen
+// gone (Opus #393 M2); Within before the container is seen gone refuses.
+func TestInteractiveWithinBoundsTheExchange(t *testing.T) {
 	h := testHost(t, podmanFake(nil, nil, nil))
 	att := newAttemptID(t)
 	r := testRun(t, h, Build)
 	r.Exchange = exchange(t, h, att)
 	it, err := h.Interactive(r, att)
 	must(t, err)
+	if err := it.Within(); !errors.Is(err, ErrSpec) || errors.Is(err, ErrLeft) {
+		t.Fatalf("Within before the removal: %v, want ErrSpec", err)
+	}
 	must(t, it.Remove(context.Background()))
+	must(t, it.Within())
 	must(t, os.WriteFile(filepath.Join(r.Exchange, "out", "big"), make([]byte, r.Limits.Disk+1), 0o600))
-	if err := it.Remove(context.Background()); !errors.Is(err, ErrLeft) {
+	if err := it.Remove(context.Background()); err != nil {
+		t.Fatalf("Remove with an out/ past the bound: %v, want nil (the container is gone)", err)
+	}
+	if err := it.Within(); !errors.Is(err, ErrLeft) {
 		t.Fatalf("an out/ past the bound: %v, want ErrLeft", err)
+	}
+	// The session's host removes the exchange once it has ingested it: a
+	// removed out/ holds nothing (the live row found this order).
+	must(t, os.RemoveAll(r.Exchange))
+	if err := it.Within(); err != nil {
+		t.Fatalf("Within after the exchange's removal: %v", err)
 	}
 }
 

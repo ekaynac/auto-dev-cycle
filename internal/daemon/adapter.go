@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -41,13 +40,18 @@ type AdapterRun struct {
 }
 
 // AdapterSession is a started adapter's session config; Path, a host path
-// under run's Workspace, Exchange or Socket as the adapter sees it; and
-// Ready, which the run calls once the exchange is prepared and before the
-// launch (nil: nothing to do), and whose failure starts nothing.
+// under run's Workspace, Exchange or Socket as the adapter sees it; Ready,
+// which the run calls once the exchange is prepared and before the launch
+// (nil: nothing to do), and whose failure starts nothing; and Within, which
+// the run calls once the session has ended and its process was seen gone
+// (nil: nothing to check): an error is a run that left more than its disk
+// bound, or what cannot be measured (Opus #393 M2), never one that may
+// still run.
 type AdapterSession struct {
 	Config session.Config
 	Path   func(string) string
 	Ready  func() error
+	Within func() error
 }
 
 // The adapter in a prepared image (scripts/prepare-go-image.sh): the
@@ -72,13 +76,9 @@ var containerLimits = sandbox.Limits{Memory: 2 << 30, CPUs: "2", PIDs: 256, Disk
 // read-only workspace (#226 entry 143).
 type containerAdapter struct {
 	Box containerBox // the sandbox (sandbox.Host)
-	// Release is the installed release's lib/adc, whose closure's digest
-	// (sandbox.AdapterDigest) an image's adapter must have.
-	Release string
-
-	once   sync.Once
-	digest string
-	err    error
+	// Want is the installed release's adapter digest (sandbox.AdapterDigest
+	// of its lib/adc, releaseAdapter): what an image's adapter must have.
+	Want string
 }
 
 var _ AdapterStarter = (*containerAdapter)(nil)
@@ -89,26 +89,16 @@ type containerBox interface {
 	Interactive(r sandbox.Run, attempt string) (sandbox.Interactive, error)
 }
 
-// want is the installed release's adapter digest, computed once.
-func (c *containerAdapter) want() (string, error) {
-	c.once.Do(func() { c.digest, c.err = sandbox.AdapterDigest(c.Release) })
-	return c.digest, c.err
-}
-
 func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSession, error) {
 	if run.Box == nil || run.Deadline <= 0 || run.Box.Workspace() != run.Workspace {
 		return AdapterSession{}, errors.New("daemon: an adapter container needs its attempt's directory, its workspace and a positive deadline")
-	}
-	want, err := c.want()
-	if err != nil {
-		return AdapterSession{}, fmt.Errorf("%w: the installed release's adapter cannot be digested: %w", errConfig, err)
 	}
 	img, err := c.Box.Resolve(ctx, run.Image)
 	if err == nil {
 		err = img.CheckManifest(run.Toolchain, run.Workspace, run.Lockfiles)
 	}
 	if err == nil {
-		err = img.CheckAdapter(want)
+		err = img.CheckAdapter(c.Want)
 	}
 	if err != nil {
 		return AdapterSession{}, err
@@ -119,27 +109,48 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 	// The container's command is made once the exchange is (Ready): the
 	// sandbox refuses an exchange whose in/ and out/ are not directories.
 	ct := &session.Container{}
+	var within func() error
 	ready := func() error {
 		it, err := c.Box.Interactive(r, string(run.Attempt))
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %w", errHost, err)
 		}
-		ct.Command, ct.Env, ct.Remove = it.Command, it.Env, it.Remove
+		ct.Command, ct.Env, ct.Remove, within = it.Command, it.Env, it.Remove, it.Within
 		return nil
 	}
 	paths := map[string]string{run.Workspace: sandbox.WorkspaceDir, filepath.Join(run.Exchange, "in"): sandbox.ExchangeIn,
 		filepath.Join(run.Exchange, "out"): sandbox.ExchangeOut, run.Socket: sandbox.GatewaySocket}
 	return AdapterSession{Config: session.Config{Container: ct, Deadline: run.Deadline}, Ready: ready,
+		Within: func() error {
+			if within == nil {
+				return errors.New("daemon: the adapter's container was never made")
+			}
+			return within()
+		},
 		// Any other path has no view in the container: "", which prepare refuses.
 		Path: func(p string) string { return paths[p] }}, nil
 }
 
-// releaseLib is adcd's own installed release's lib/adc: <root>/bin/adcd,
-// resolved, gives <root>.
-func releaseLib() (string, error) {
-	exe, err := os.Executable()
+// executable is os.Executable; a row plants a release.
+var executable = os.Executable
+
+// releaseAdapter is the digest of adcd's own installed release's adapter
+// closure: <root>/bin/adcd, resolved, gives <root>, whose lib/adc it digests
+// (sandbox.AdapterDigest). adcd computes it once, at start (runnerOf), and
+// does not start without it (Opus #393 L1): a build is never placed on a
+// runner that would refuse every image.
+func releaseAdapter() (string, error) {
+	exe, err := executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
-	return filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib", "adc"), err
+	if err != nil {
+		return "", err
+	}
+	lib := filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib", "adc")
+	d, err := sandbox.AdapterDigest(lib)
+	if err != nil {
+		return "", fmt.Errorf("%w: the installed release's adapter (%s) cannot be digested: %w", ErrConfig, lib, err)
+	}
+	return d, nil
 }

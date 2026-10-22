@@ -133,11 +133,15 @@ func (h Host) ownDisk() error {
 	return nil
 }
 
-// devOf is the device of p, or with up of its nearest existing ancestor.
+// devOf is the device of p, or with up of its nearest ancestor that exists
+// and can be stat'ed: a path under a directory the controller cannot search
+// (/run/podman, root's 0700; Opus #393 M3) is measured as that directory's
+// device, which is conservative: what lies under it shares it unless it is
+// a mount point.
 func devOf(p string, up bool) (uint64, error) {
 	var st syscall.Stat_t
 	err := syscall.Stat(p, &st)
-	for up && errors.Is(err, syscall.ENOENT) && p != "/" {
+	for up && (errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.EACCES)) && p != "/" {
 		p = filepath.Dir(p)
 		err = syscall.Stat(p, &st)
 	}
