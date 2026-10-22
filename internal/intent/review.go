@@ -41,6 +41,11 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 )
 
+// ErrUnreviewable: the candidate gives no review context (a diff over
+// review.MaxDiff, or one review.Prompt refuses): the review's verdict,
+// never the controller's failure (22a-6c; Opus 22a-6b M2).
+var ErrUnreviewable = errors.New("intent: the candidate cannot be reviewed")
+
 // ReviewContext is a review node's rendered prompt and its context as the
 // reviewer's intent states it (the file's comment).
 type ReviewContext struct {
@@ -48,6 +53,7 @@ type ReviewContext struct {
 	Included []types.Ref
 	Omitted  []types.ManifestIntentOmittedItem
 	Bytes    map[types.Digest]int64 // each included ref's size, by identity digest
+	GateIDs  []string               // the gate report's ids (gate.ReportIDs), never rendered: what a findings view redacts
 }
 
 // Rendered is c as the context intent.Reviewer takes.
@@ -67,8 +73,12 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 	empty := false // an empty candidate: review.Prompt renders no change
 	include := func(ref types.Ref, limit int64) ([]byte, error) {
 		b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
-		if err == nil && !ok {
-			err = fmt.Errorf("%w: blob %s is over %d bytes or holds other bytes", ErrUnbound, ref.ContentDigest, limit)
+		switch {
+		case err != nil || ok:
+		case int64(len(b)) > limit: // the candidate's: a patch over review.MaxDiff (Opus 22a-6b M2)
+			err = fmt.Errorf("%w: blob %s is over %d bytes", ErrUnreviewable, ref.ContentDigest, limit)
+		default:
+			err = fmt.Errorf("%w: blob %s holds other bytes", ErrUnbound, ref.ContentDigest)
 		}
 		out.Included, out.Bytes[ref.IdentityDigest] = append(out.Included, ref), int64(len(b))
 		return b, err
@@ -114,6 +124,9 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 				return ReviewContext{}, err
 			}
 			s, err := gate.SummaryOf(b)
+			if err == nil {
+				out.GateIDs, err = gate.ReportIDs(b)
+			}
 			if err != nil {
 				return ReviewContext{}, err
 			}
@@ -128,7 +141,7 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 		return ReviewContext{}, fmt.Errorf("%w: review %s's rendered context is not its brief, patch and gate result", ErrUnbound, node)
 	}
 	if out.Prompt, err = review.Prompt(in); err != nil {
-		return ReviewContext{}, err
+		return ReviewContext{}, fmt.Errorf("%w: %w", ErrUnreviewable, err)
 	}
 	return out, nil
 }

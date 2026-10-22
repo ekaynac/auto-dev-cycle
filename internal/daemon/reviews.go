@@ -33,11 +33,9 @@ package daemon
 // 22a-6a H1, re-check H1); a held requirement it moves off is retired with
 // it (the supersession's fold). No independent roster: the hold stays. A
 // roster that changes after the review's claim is caught at the commit
-// (graph.reviewIndependent, 22a-6c; stated, Opus 22a-6a L2); one that
-// changes after the claim and before the placement leaves the review
-// claimed and unplaced: dispatch.Match refuses it (logged once per start),
-// and 22a-6c re-derives it as Unheld does: releases its claim, holds it,
-// or supersedes it (OBLIGATION, Opus 22a-6a round 3 M1).
+// (graph.reviewIndependent: the run records could_not_run/
+// reviewer_not_independent and holds the review reviewer_unavailable,
+// 22a-6c; Opus 22a-6a L2).
 
 import (
 	"encoding/json"
@@ -67,8 +65,8 @@ type reviews struct {
 
 var _ reconcile.Reviews = reviews{}
 
-// Record records gate's task's review nodes (the file's comment): nothing
-// when the task has one already, or no reviewer is registered.
+// Record records gate's review nodes (the file's comment): nothing when a
+// review takes gate already, or no reviewer is registered.
 func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Event, error) {
 	g, err := graph.ViewOf(tx, gate)
 	if err != nil {
@@ -81,12 +79,12 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	if err != nil {
 		return nil, err
 	}
-	// Recorded already: the task has a review or requirement node. So only
-	// a task's first gate gets a review: a later round's gate (after a
-	// no-go and a repair) gets none until 22a-6c keys this by gate (a
-	// review whose gate input is this gate). OBLIGATION, Opus 22a-6a′ L2.
+	// Recorded already: a review takes gate (Opus 22a-6a′ L2: keyed by gate,
+	// so a later round's gate is reviewed too). shortcut: a later gate's
+	// review would record requirement revision 1 again, which the fold
+	// refuses; 22a-6d's repair records the next round's review itself.
 	for _, n := range nodes {
-		if n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement {
+		if n.Node.Kind == types.NodeKindReview && takesGate(n.Node, gate) {
 			return nil, nil
 		}
 	}
@@ -135,6 +133,14 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	}
 	more, err := graph.RecordReview(review, r.reg)
 	return append(evs, more...), err
+}
+
+// takesGate is whether review takes gate's result.
+func takesGate(review types.Node, gate types.NodeID) bool {
+	return slices.ContainsFunc(review.Inputs, func(in types.InputSpec) bool {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		return ok && src.ResultKind == types.ResultKindGateResult && src.Producer == gate
+	})
 }
 
 // producerOf is the producer of node's one input of kind.

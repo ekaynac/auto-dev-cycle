@@ -35,7 +35,7 @@ import (
 const mod = "github.com/ekaynac/auto-dev-cycle/internal/"
 
 // raiseSites are the functions that raise a node hold.
-var raiseSites = []string{"daemon.placer.Place", "daemon.runner.holdOn", "dispatch.Dispatcher.Launch", "graph.Exhaust", "graph.Probe", "graph.Raise",
+var raiseSites = []string{"daemon.placer.Place", "daemon.runner.holdOn", "daemon.runner.notIndependent", "dispatch.Dispatcher.Launch", "graph.Exhaust", "graph.Probe", "graph.Raise",
 	"graph.Retry", "graph.evaluation.await", "graph.evaluation.claim", "graph.evaluation.holdReceipt", "graph.evaluation.roundRail", "graph.mergeRail", "graph.retry"}
 
 // holdRow is a hold built for a raise site: where, its kind and its
@@ -74,6 +74,8 @@ var holdRows = []holdRow{
 	{"daemon.runner.holdOn", "source_invalid_config", "r.retrySignal(tx, node)", "runner: retry 1 until t", "daemon.placer.Unblocked", "\"retry n until t\": t has come; past maxTries, runnerFailed"},
 	{"daemon.runner.holdOn", "source_invalid_config", `reconcile.RunnerSignal("profile " + string(d))`, "runner: profile d", "daemon.placer.Unblocked", "the project's profile changed"},
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerFailed", "runner: failed", "", "terminal, stated (holdOn): nothing clears it; revoking the task's approval abandons it"},
+	// A review's commit refused for independence (runner.notIndependent; P22a-6c).
+	{"daemon.runner.notIndependent", "reviewer_unavailable", "ni.SignalInstance()", "registry:e", "daemon.reviews.Unheld", "an independent roster: cleared, or the review re-derived"},
 	// The evaluator's and Operate's (graph; Opus #400 M1).
 	{"graph.evaluation.await", "awaiting_input", "awaitSignal(ask)", "oi@1", "graph.evaluation.clear", "the answer in force arrives (input.answer)"},
 	{"graph.evaluation.claim", "reviewer_unavailable", "notIndependent.SignalInstance()", "registry:e", "daemon.reviews.Unheld", "an independent roster: cleared, or the review re-derived"},
