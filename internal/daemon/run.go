@@ -289,7 +289,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		lockfiles[i] = string(f)
 	}
 	sess, err := r.adapters.Start(ctx, AdapterRun{Attempt: aid, Box: ws.run, Workspace: ws.Path(), Exchange: filepath.Join(r.host.Root, adapterhost.ExchangeName(aid)),
-		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles})
+		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles, NoBase: review, ReadOnly: review})
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
@@ -454,9 +454,7 @@ func (r *runner) completeReview(ctx context.Context, pl plan, node types.NodeID,
 func (r *runner) unreviewable(ctx context.Context, l types.LeaseID, node types.NodeID, cause error) error {
 	var recorded *types.Result
 	err := r.command(ctx, r.commitStep(node, nil, func(key types.ComputationKey) (types.Result, error) {
-		id, err := ids.New("res")
-		return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindReview, Value: []types.Ref{}, Outcome: types.OutcomeFailed,
-			Reason: vocab.ReasonUnsafeOutput, Detail: cause.Error(), Completed: true}, err
+		return resultOf(key, types.ResultKindReview, types.OutcomeFailed, vocab.ReasonUnsafeOutput, cause.Error())
 	}, &recorded))
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
@@ -1015,9 +1013,7 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 	facts.Ignored = ignored
 	return r.record(ctx, pl.lease.ID, node, attempt, facts.Submitted, diff, ignored, func(key types.ComputationKey) (types.Result, error) {
 		if unsafe != "" {
-			id, err := ids.New("res")
-			return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindPatch, Value: []types.Ref{}, Outcome: types.OutcomeFailed,
-				Reason: vocab.ReasonUnsafeOutput, Detail: unsafe, Completed: true}, err
+			return resultOf(key, types.ResultKindPatch, types.OutcomeFailed, vocab.ReasonUnsafeOutput, unsafe)
 		}
 		return graph.Build(key, facts)
 	})
@@ -1032,10 +1028,17 @@ func (r *runner) abandon(ctx context.Context, pl plan, node types.NodeID, attemp
 		kind = types.ResultKindReview
 	}
 	return r.record(context.WithoutCancel(ctx), pl.lease.ID, node, attempt, false, nil, nil, func(key types.ComputationKey) (types.Result, error) {
-		id, err := ids.New("res")
-		return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: kind, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
-			Reason: reason, Detail: detail}, err
+		return resultOf(key, kind, types.OutcomeCouldNotRun, reason, detail)
 	})
+}
+
+// resultOf is the controller's own result for key: no value, outcome for
+// reason with detail, completed unless it is could_not_run (Mythos chunk
+// 4a L3: the one builder of these literals).
+func resultOf(key types.ComputationKey, kind types.ResultKind, outcome types.Outcome, reason vocab.Reason, detail string) (types.Result, error) {
+	id, err := ids.New("res")
+	return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: kind, Value: []types.Ref{}, Outcome: outcome,
+		Reason: reason, Detail: detail, Completed: outcome != types.OutcomeCouldNotRun}, err
 }
 
 // record records node's result (result, over its claim's key) and ends
@@ -1105,12 +1108,10 @@ func (r *runner) commitStep(node types.NodeID, attempt *types.AttemptID, result 
 // holds node reviewer_unavailable on the refusal's signal, as the claim's
 // refusal does, so reviews.Unheld re-derives its roster.
 func (r *runner) notIndependent(tx *eventstore.Tx, node types.NodeID, attempt types.AttemptID, key types.ComputationKey, ni graph.ErrNotIndependent) (types.Result, []eventstore.Event, error) {
-	id, err := ids.New("res")
+	res, err := resultOf(key, types.ResultKindReview, types.OutcomeCouldNotRun, ni.Reason(), ni.Error())
 	if err != nil {
 		return types.Result{}, nil, err
 	}
-	res := types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindReview, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
-		Reason: ni.Reason(), Detail: ni.Error()}
 	if err := graph.CommitAttempt(tx, node, res, attempt, r.env); err != nil {
 		return types.Result{}, nil, err
 	}

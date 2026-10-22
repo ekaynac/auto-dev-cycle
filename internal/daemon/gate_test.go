@@ -164,7 +164,7 @@ func TestTheGateRunGatesTheAcceptedTree(t *testing.T) {
 			if v.State.State != types.NodeStateStateCompleted {
 				t.Fatalf("the gate node: %s, holds %+v", v.State.State, v.State.Holds)
 			}
-			rr := resultOf(t, rw.w, v)
+			rr := selectedOf(t, rw.w, v)
 			if rr.Attempt != nil || rr.Result.Kind != types.ResultKindGateResult || rr.Result.Outcome != c.outcome || rr.Result.Reason != c.reason {
 				t.Errorf("the gate's result: attempt %v, %s %s/%s %q", rr.Attempt, rr.Result.Kind, rr.Result.Outcome, rr.Result.Reason, rr.Result.Detail)
 			}

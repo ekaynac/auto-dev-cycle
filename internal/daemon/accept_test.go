@@ -55,8 +55,8 @@ func (rw *runWorld) accepting(t *testing.T, lister accept.Lister) graph.NodeView
 	return v
 }
 
-// resultOf is node view v's selected result.
-func resultOf(t *testing.T, w *seeder, v graph.NodeView) types.ResultRecorded {
+// selectedOf is node view v's selected result.
+func selectedOf(t *testing.T, w *seeder, v graph.NodeView) types.ResultRecorded {
 	t.Helper()
 	var rr types.ResultRecorded
 	if v.State.Result == nil {
@@ -106,7 +106,7 @@ func TestTheAcceptRunAcceptsTheBuildsPatch(t *testing.T) {
 			if v.State.State != types.NodeStateStateCompleted {
 				t.Fatalf("the accept node: %s, holds %+v", v.State.State, v.State.Holds)
 			}
-			rr := resultOf(t, rw.w, v)
+			rr := selectedOf(t, rw.w, v)
 			res := rr.Result
 			if rr.Attempt != nil || res.Kind != types.ResultKindTree || res.Outcome != c.outcome || res.Reason != c.reason || !strings.Contains(res.Detail, c.detail) {
 				t.Errorf("accept's result: attempt %v, %s %s/%s %q", rr.Attempt, res.Kind, res.Outcome, res.Reason, res.Detail)
@@ -192,7 +192,7 @@ func TestAFailedGoListRefusesTheCandidate(t *testing.T) {
 	if v.State.State != types.NodeStateStateCompleted {
 		t.Fatalf("the accept node: %s", v.State.State)
 	}
-	if res := resultOf(t, rw.w, v).Result; res.Outcome != types.OutcomeFailed || res.Reason != vocab.ReasonTestIntegrityViolation || !strings.Contains(res.Detail, "unverifiable") {
+	if res := selectedOf(t, rw.w, v).Result; res.Outcome != types.OutcomeFailed || res.Reason != vocab.ReasonTestIntegrityViolation || !strings.Contains(res.Detail, "unverifiable") {
 		t.Errorf("accept's result: %s/%s %q", res.Outcome, res.Reason, res.Detail)
 	}
 }

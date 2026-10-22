@@ -76,13 +76,25 @@ func newContainerWorld(t *testing.T) containerWorld {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = a.Teardown() })
-	lib := filepath.Join(tmp, "lib", "adc")
+	if err := os.WriteFile(filepath.Join(a.Workspace(), "go.mod"), []byte("module m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	box, want := fakeContainer(t, "go", map[string]string{"go.mod": sha256File(t, filepath.Join(a.Workspace(), "go.mod"))})
+	att := types.AttemptID("att_01m3250v9xft08ssr4ygq6g2np")
+	run := AdapterRun{Attempt: att, Box: a, Workspace: a.Workspace(), Exchange: filepath.Join(tmp, "sbx", "runs", "exchange", "exchange-"+string(att)),
+		Socket: filepath.Join(tmp, "sbx", "runs", "gateway", string(att)+".sock"), Deadline: time.Minute, Image: box.img.Pinned, Toolchain: "go", Lockfiles: []string{"go.mod"}}
+	return containerWorld{box: box, c: &containerAdapter{Box: box, Want: want}, run: run, want: want}
+}
+
+// fakeContainer is a sandbox whose one image is prepared for toolchain
+// and lockfiles (repo path → sha256:hex), with this platform's adapter
+// digest want: a release's closure, made under the test's directory.
+func fakeContainer(t *testing.T, toolchain string, lockfiles map[string]string) (*fakeBox, string) {
+	t.Helper()
+	lib := filepath.Join(t.TempDir(), "lib", "adc")
 	for name, body := range map[string]string{"node/bin/node": "node", "adapters/http-chat/src/main.ts": "main", "adapters/contract/src/index.ts": "index",
-		"gen/ts/validators.cjs": "v", "node_modules/ajv/index.js": "ajv", filepath.Join(a.Workspace(), "go.mod"): "module m\n"} {
-		p := name
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(lib, name)
-		}
+		"gen/ts/validators.cjs": "v", "node_modules/ajv/index.js": "ajv"} {
+		p := filepath.Join(lib, name)
 		if err := errors.Join(os.MkdirAll(filepath.Dir(p), 0o755), os.WriteFile(p, []byte(body), 0o755)); err != nil {
 			t.Fatal(err)
 		}
@@ -91,17 +103,12 @@ func newContainerWorld(t *testing.T) containerWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	label, _ := json.Marshal(map[string]any{"toolchain": "go", "lockfiles": map[string]string{"go.mod": sha256File(t, filepath.Join(a.Workspace(), "go.mod"))},
-		"adapter": map[string]string{runtime.GOOS + "/" + runtime.GOARCH: want}})
+	label, _ := json.Marshal(map[string]any{"toolchain": toolchain, "lockfiles": lockfiles, "adapter": map[string]string{runtime.GOOS + "/" + runtime.GOARCH: want}})
 	m, err := sandbox.ParseManifest(label)
 	if err != nil {
 		t.Fatal(err)
 	}
-	box := &fakeBox{img: sandbox.Image{Pinned: "localhost/go-mini@sha256:" + testDigest, ID: testDigest, OS: runtime.GOOS, Arch: runtime.GOARCH, Manifest: m}}
-	att := types.AttemptID("att_01m3250v9xft08ssr4ygq6g2np")
-	run := AdapterRun{Attempt: att, Box: a, Workspace: a.Workspace(), Exchange: filepath.Join(tmp, "sbx", "runs", "exchange", "exchange-"+string(att)),
-		Socket: filepath.Join(tmp, "sbx", "runs", "gateway", string(att)+".sock"), Deadline: time.Minute, Image: box.img.Pinned, Toolchain: "go", Lockfiles: []string{"go.mod"}}
-	return containerWorld{box: box, c: &containerAdapter{Box: box, Want: want}, run: run, want: want}
+	return &fakeBox{img: sandbox.Image{Pinned: "localhost/go-mini@sha256:" + testDigest, ID: testDigest, OS: runtime.GOOS, Arch: runtime.GOARCH, Manifest: m}}, want
 }
 
 const testDigest = "4105e2bb7b57b01eaf420afd4f7970386183f64f4d244bca3d684fa9737e0670"
@@ -151,7 +158,7 @@ func TestTheAdapterStartsInTheAttemptsContainer(t *testing.T) {
 	want := containerLimits
 	want.Timeout = time.Minute
 	if len(w.box.runs) != 1 || w.box.attempts[0] != string(w.run.Attempt) || r.Mode != sandbox.Build || r.Attempt != w.run.Box || r.Gateway != w.run.Socket ||
-		r.Exchange != w.run.Exchange || r.Limits != want || r.Image.ID != testDigest ||
+		r.Exchange != w.run.Exchange || r.Limits != want || r.Image.ID != testDigest || r.ReadOnlyWorkspace ||
 		!slices.Equal(r.Argv, []string{"/opt/adc/lib/node/bin/node", "/opt/adc/lib/adapters/http-chat/src/main.ts"}) {
 		t.Fatalf("the interactive run: %+v (%q)", r, w.box.attempts)
 	}
@@ -238,6 +245,42 @@ func TestTheAdapterContainerRefuses(t *testing.T) {
 	}
 	if err != nil || !errors.Is(s.Within(), sandbox.ErrLeft) {
 		t.Errorf("a run past its bound: %v; Within %v", err, s.Within())
+	}
+}
+
+// Mythos chunk 4a H1, L1: a run with no base (a reviewer's empty
+// workspace) is started under a profile listing a lockfile: the image's
+// toolchain, lockfile set and adapter are checked, no lockfile is hashed at
+// the workspace, and the workspace is mounted read-only. The same empty
+// workspace without NoBase (a build's) is refused as the profile's
+// (ErrManifest), and no check is dropped for a run with no base.
+func TestARunWithNoBaseChecksTheImageNotTheWorkspace(t *testing.T) {
+	w := newContainerWorld(t)
+	if err := os.Remove(filepath.Join(w.run.Workspace, "go.mod")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.c.Start(context.Background(), w.run); !errors.Is(err, sandbox.ErrManifest) || !configFault(err) {
+		t.Fatalf("a build whose base lacks its lockfile: %v, want the profile's ErrManifest", err)
+	}
+	w.run.NoBase, w.run.ReadOnly = true, true
+	s, err := w.c.Start(context.Background(), w.run)
+	if err == nil {
+		err = s.Ready()
+	}
+	if err != nil || len(w.box.runs) != 1 || !w.box.runs[0].ReadOnlyWorkspace {
+		t.Fatalf("a run with no base: %v, interactive runs %+v", err, w.box.runs)
+	}
+	for name, edit := range map[string]func(w *containerWorld){
+		"another toolchain":        func(w *containerWorld) { w.run.Toolchain = "python" },
+		"another set of lockfiles": func(w *containerWorld) { w.run.Lockfiles = []string{"go.mod", "go.sum"} },
+		"another adapter":          func(w *containerWorld) { w.c.Want = "sha256:" + testDigest },
+	} {
+		w := newContainerWorld(t)
+		w.run.NoBase, w.run.ReadOnly = true, true
+		edit(&w)
+		if _, err := w.c.Start(context.Background(), w.run); !errors.Is(err, sandbox.ErrManifest) {
+			t.Errorf("no base, %s: %v, want ErrManifest", name, err)
+		}
 	}
 }
 
