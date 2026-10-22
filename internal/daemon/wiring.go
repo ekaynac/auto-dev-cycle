@@ -21,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
@@ -166,12 +167,16 @@ var noRequirement = map[types.NodeKind][]types.ResultKind{
 }
 
 // needs are M1(a)'s requirements, an allow-list: an input noRequirement
-// names needs none, and any other is refused, so nothing is claimed on a
-// requirement left out. The review capability (22a-6) adds its inputs.
-func needs(n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
+// names needs none, a review's gate result needs the gate requirement the
+// log derives (gateNeed, P22a-6a′), and any other is refused, so nothing
+// is claimed on a requirement left out.
+func needs(tx *eventstore.Tx, n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
 	if src, ok := in.Source.Variant.(*types.ResultSource); ok {
 		if slices.Contains(noRequirement[n.Kind], src.ResultKind) {
 			return nil, nil
+		}
+		if n.Kind == types.NodeKindReview && src.ResultKind == types.ResultKindGateResult {
+			return gateNeed(tx, src.Producer)
 		}
 	}
 	return nil, fmt.Errorf("daemon: the %s node's input %s needs a requirement adcd does not resolve (M1(a): the build takes the plan, accept the patch, the gate the tree)", n.Kind, in.Name)
@@ -301,7 +306,7 @@ func nodeKinds() []types.NodeKind {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds(), api.CaptureKinds(), intent.Kinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds(), api.CaptureKinds(), intent.Kinds(), gate.Kinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -342,7 +347,8 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		modelcall.Project,   // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
 		api.ProjectCaptures, // the egress captures kept and not yet purged (P22a-5a)
 		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds(), Tasks: authority.Tasks{}}.Project, // the folds check the recorded answers (M1 P6), the deferred surfaces (I15) and the claims' tasks (I22)
-		intent.Projector{Env: graph.Env{Authority: authority.Answers{}, Blobs: blobs}}.Project,              // the builder's recorded intent, checked by the I18 walk over the graph's records (P22a-5c-2b-1)
+		gate.MeasuredProjector{}.Project, // what each gate result was measured against (P22a-6a′)
+		intent.Projector{Env: graph.Env{Authority: authority.Answers{}, Blobs: blobs}}.Project, // the builder's recorded intent, checked by the I18 walk over the graph's records (P22a-5c-2b-1)
 	)
 }
 
@@ -392,6 +398,8 @@ var addedSinceRecord = []string{
 	api.CaptureProjection,      // #359
 	graph.TaskResultProjection, // #348
 	intent.RecordedProjection,  // P22a-5c-2b-1
+	gate.MeasuredProjection,    // P22a-6a′
+	gate.ResultsProjection,     // P22a-6a′ (Opus L3)
 }
 
 // projections are the projections projector folds, each at its fold's

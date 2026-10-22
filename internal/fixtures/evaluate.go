@@ -16,12 +16,14 @@ import (
 )
 
 // noNeed: no input needs a receipt.
-func noNeed(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+func noNeed(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) {
+	return nil, nil
+}
 
 // gateNeed requires of a gate result input a go-test receipt about tree
 // under demand; other inputs need none.
 func gateNeed(tree string, demand types.Digest) graph.Requirements {
-	return func(_ types.Node, in types.InputSpec) (*receipt.Requirement, error) {
+	return func(_ *eventstore.Tx, _ types.Node, in types.InputSpec) (*receipt.Requirement, error) {
 		if src, ok := in.Source.Variant.(*types.ResultSource); !ok || src.ResultKind != types.ResultKindGateResult {
 			return nil, nil
 		}

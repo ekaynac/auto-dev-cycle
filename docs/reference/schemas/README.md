@@ -66,6 +66,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/egress-capture.json`](records-egress-capture.md) | EgressCapture |
 | [`records/evidence-node-params.json`](records-evidence-node-params.md) | EvidenceNodeParams |
 | [`records/failure-signature.json`](records-failure-signature.md) | FailureSignature |
+| [`records/gate-measured.json`](records-gate-measured.md) | GateMeasured |
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
 | [`records/grant-replaced.json`](records-grant-replaced.md) | GrantReplaced |
 | [`records/grant.json`](records-grant.md) | Grant |

@@ -192,7 +192,7 @@ func (g graphStore) consumerOf(producer types.NodeID, kind types.ResultKind) typ
 // gateOn is the review kind's requirement: a gate receipt from go-test about
 // tree under demand.
 func gateOn(tree string, demand types.Digest) Requirements {
-	return func(types.Node, types.InputSpec) (*receipt.Requirement, error) {
+	return func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) {
 		s := treeSubject(tree, demand)
 		b, _ := json.Marshal(s)
 		var sub types.Subject
@@ -203,7 +203,9 @@ func gateOn(tree string, demand types.Digest) Requirements {
 	}
 }
 
-func noRequirement(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+func noRequirement(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) {
+	return nil, nil
+}
 
 func (g graphStore) resolveWith(n types.NodeID, answered map[string]Resolved, need Requirements) (map[string]Resolved, []Missing, error) {
 	var res map[string]Resolved

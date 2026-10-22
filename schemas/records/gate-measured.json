@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/gate-measured.json",
+  "title": "GateMeasured",
+  "description": "The payload of gate.measured/v1 (M1 P22a-6a′): what a gate run measured its result against, recorded by the controller in the command recording the gate's result. baseline_digest is the measured baseline's content digest (internal/gate Baseline.Digest), from which the receipt's demand key derives; base_tree is the tree that baseline was measured on, which a consumer compares with the build attempt's base; image is the platform image the run resolved (its pinned reference, its id, OS and architecture). A consumer's gate requirement is derived from it, the accepted tree and the project's gate (internal/daemon needs), never from the receipt it checks. internal/gate admits it only under the gate node, for a gate_result the node recorded in the same command, once per result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node", "result", "baseline_digest", "base_tree", "image"],
+  "properties": {
+    "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+    "result": {"$ref": "../common/defs.json#/$defs/ResultID"},
+    "baseline_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "base_tree": {"$ref": "../common/defs.json#/$defs/GitID"},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pinned", "id", "os", "arch"],
+      "properties": {
+        "pinned": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "os": {"type": "string", "minLength": 1, "maxLength": 64},
+        "arch": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    }
+  }
+}

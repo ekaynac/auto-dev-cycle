@@ -38,7 +38,7 @@ func reconciled(t *testing.T) (*seeder, types.ActorID, reconcile.Executor) {
 		p, err = identity.SystemPrincipal(tx, claim, sys.ID)
 		return err
 	})
-	none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+	none := func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 	return w, sys.ID, reconcile.Executor{Store: w.s, System: p, Kinds: nodeKinds(), Env: graph.Env{Authority: authority.Answers{}, Need: none}}
 }
 
@@ -243,7 +243,9 @@ func TestReconcilePanicRecovered(t *testing.T) {
 		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
 	})
 	completePlan(t, w, sys, plan)
-	x.Env.Need = func(types.Node, types.InputSpec) (*receipt.Requirement, error) { panic("a need that panics") }
+	x.Env.Need = func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) {
+		panic("a need that panics")
+	}
 	gates.Evaluates = true
 	head := w.head()
 	if ran, err := reconcile.NewLoop(x, gates, time.Hour, io.Discard).Pass(ctx); err == nil || !strings.Contains(err.Error(), "reconcile.evaluate panicked: a need that panics") ||
