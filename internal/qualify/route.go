@@ -171,11 +171,8 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 	// (ToolPolicy.Allowed is empty, and the adapter sends no tools).
 	spec := adapterhost.Spec{Tools: adapterhost.EditLoopTools(), Lease: l.ID, Attempt: types.AttemptID(idv["att"]), Call: call, Prompt: prompt,
 		Bounds: r.Bounds, Adapter: adapter,
-		Base: types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
-		Prepare: types.AdapterPrepareParams{Role: "reviewer", Executor: e.ID, Model: e.Model, Limits: limits,
-			Workspace:  types.AdapterPrepareParamsWorkspace{Path: work, Writable: false},
-			Gateway:    &types.AdapterPrepareParamsGatewayValue{BaseUrl: "http://gateway", Token: token},
-			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: []string{}, Mediated: []string{}}}}
+		Base:    types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
+		Prepare: reviewerPrepare(e.ID, e.Model, work, token, limits)}
 	start := time.Now()
 	// The host never starts an attempt (P22a-5c-w): the exchange is
 	// prepared and checked, then the run, its own controller, starts the
@@ -223,6 +220,17 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 		Route: RouteOf(e), AdapterDigest: run.Adapter, SuiteDigest: run.Suite, Call: call}
 	run.log(c.ID, *o.evidence)
 	return o, nil
+}
+
+// reviewerPrepare is a reviewer's prepare params on executor's model: a
+// read-only workspace at work, the gateway's token, limits, and no tool,
+// neither its own nor mediated (P31a: a reviewer runs no tool; the
+// adapter's own refusal to offer one is not this check).
+func reviewerPrepare(executor types.ExecutorID, model types.AdapterLabel, work, token string, limits types.AdapterPrepareParamsLimits) types.AdapterPrepareParams {
+	return types.AdapterPrepareParams{Role: "reviewer", Executor: executor, Model: model, Limits: limits,
+		Workspace:  types.AdapterPrepareParamsWorkspace{Path: work, Writable: false},
+		Gateway:    &types.AdapterPrepareParamsGatewayValue{BaseUrl: "http://gateway", Token: token},
+		ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: []string{}, Mediated: []string{}}}
 }
 
 // soleUnit is the run's unit binding (lease.Units), as adc-harness's: its
