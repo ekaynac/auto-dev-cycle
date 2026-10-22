@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"go/types"
 	"slices"
+	"strings"
 )
 
 // P14d-w1 (#226 entries 122, 129; supersedes #369): assertion weakening in
@@ -242,7 +243,12 @@ func (r *run) compareHelpers(add func(*[]Block, string, string), b, a pkgFacts) 
 		memo[ref] = m
 		return m
 	}
-	seen := map[string]string{} // c → the removed function it was last counted for: one map, shared
+	type union struct {
+		n     int
+		found bool
+	}
+	unions := map[string]union{} // per set of live referrers (sorted, joined): computed once
+	seen := map[string]string{}  // c → the set it was last counted for: one map, shared
 	for _, k := range keys(b.helpers) {
 		bs := b.helpers[k]
 		bl, bd := liveDead(bs)
@@ -263,17 +269,21 @@ func (r *run) compareHelpers(add func(*[]Block, string, string), b, a pkgFacts) 
 				continue // unused: deleted
 			}
 			n, found := newsOf(live[0]).live, len(newsOf(live[0]).fns) > 0
-			if len(live) > 1 { // a union: each new function once
-				n = 0
-				for _, ref := range live {
-					for _, c := range newsOf(ref).fns {
-						if charge(1) && seen[c] != k {
-							seen[c], found = k, true
+			if len(live) > 1 && charge(len(live)) { // a union, each new function once, once per set of referrers (Opus #376 r3 M1)
+				slices.Sort(live)
+				set := strings.Join(live, "\x00")
+				u, done := unions[set]
+				for i := 0; !done && i < len(live); i++ {
+					for _, c := range newsOf(live[i]).fns {
+						if charge(1) && seen[c] != set {
+							seen[c], u.found = set, true
 							l, _ := liveDead(a.helpers[c])
-							n += l
+							u.n += l
 						}
 					}
 				}
+				unions[set] = u
+				n, found = u.n, u.found
 			}
 			switch {
 			case over():

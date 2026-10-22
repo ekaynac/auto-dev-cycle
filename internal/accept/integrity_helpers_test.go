@@ -579,17 +579,21 @@ func TestIntegrityHelpersDeterministic(t *testing.T) {
 	}
 }
 
-// TestIntegrityHelpersRenameWork (Opus #376 r2 H2): the rename rule's work
-// is charged and linear: n helpers, each renamed, every one called by one
-// test, charge about four times as much at 4n, by a deterministic count.
+// TestIntegrityHelpersRenameWork (Opus #376 r2 H2, r3 M1): the rename
+// rule's work is charged and linear: n helpers, each renamed, every one
+// called by one test, or by two (a union, memoized per set of referrers),
+// charge about four times as much at 4n, by a deterministic count.
 func TestIntegrityHelpersRenameWork(t *testing.T) {
-	charged := func(n int) int64 {
+	charged := func(n int, tests ...string) int64 {
 		var b, h strings.Builder
-		b.WriteString("package pkg\n\nimport \"testing\"\n\nfunc TestAll(t *testing.T) {\n")
-		for i := range n {
-			fmt.Fprintf(&b, "\th%d(t)\n", i)
+		b.WriteString("package pkg\n\nimport \"testing\"\n")
+		for _, name := range tests {
+			fmt.Fprintf(&b, "\nfunc %s(t *testing.T) {\n", name)
+			for i := range n {
+				fmt.Fprintf(&b, "\th%d(t)\n", i)
+			}
+			b.WriteString("}\n")
 		}
-		b.WriteString("}\n")
 		base := b.String()
 		for i := range n {
 			fmt.Fprintf(&b, "\nfunc h%d(t *testing.T) { t.Error() }\n", i)
@@ -608,9 +612,11 @@ func TestIntegrityHelpersRenameWork(t *testing.T) {
 		}
 		return caseCharged.Load() - before
 	}
-	small, large := charged(2000), charged(8000)
-	if large > 5*small {
-		t.Errorf("charged %d at n=2000, %d at n=8000: not linear", small, large)
+	for _, tests := range [][]string{{"TestAll"}, {"TestA", "TestB"}} {
+		small, large := charged(2000, tests...), charged(8000, tests...)
+		if large > 5*small {
+			t.Errorf("%v: charged %d at n=2000, %d at n=8000: not linear", tests, small, large)
+		}
 	}
 }
 
@@ -633,9 +639,11 @@ func TestIntegrityHelpersRenameCharge(t *testing.T) {
 		block  string
 	}{
 		{"one referrer", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 1 << 30, 2, ""},
-		{"two referrers, a union", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 6, "a helper renamed or replaced, weaker (2 → 1)"},
-		{"two referrers, kept whole", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 2), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 6, ""},
+		{"two referrers, a union", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 8, "a helper renamed or replaced, weaker (2 → 1)"},
+		{"two referrers, kept whole", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 2), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 8, ""},
 		{"one referrer, the new function twice", map[string][]fnStat{"h": fs(false, 2), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g", "g")}, 1 << 30, 3, "a helper renamed or replaced, weaker (2 → 1)"},
+		// two removed helpers under one set of referrers: base 4, heads 2, keys 2 + 2, the union once 2
+		{"two removed, one set of referrers", map[string][]fnStat{"h": fs(false, 2), "h2": fs(false, 1), "T1": fs(true, 0, "h", "h2"), "T2": fs(true, 0, "h", "h2")}, map[string][]fnStat{"g": fs(false, 1), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 12, "a helper renamed or replaced, weaker (2 → 1)"},
 		{"past the bound reading the base", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 0, 1, "unverifiable: test helpers' renames past the guard's work bound"},
 		{"past the bound", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 1, 2, "unverifiable: test helpers' renames past the guard's work bound"},
 	} {
