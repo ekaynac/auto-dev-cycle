@@ -24,7 +24,19 @@
 # the label. build requires a clean checkout whose HEAD the dist's adc was
 # built from, and a NAME podman does not hold yet (podman build --manifest
 # would add to an existing list); after the build, the list must hold one
-# image per platform, and the pinned Node must start in each.
+# image per platform, the pinned Node must start in the host's native
+# platform's image, and each image's /opt/adc/lib must have the label's
+# adapter digest.
+#
+# Node's start is checked only for the native platform (uname -m). An
+# emulated platform's run (qemu binfmt) once crashed and hung for hours
+# (#226 entry 141), so it is skipped, and the skip printed: that platform's
+# Node bytes are still checked, against scripts/node-pins in the context and
+# by the adapter digest of what is copied out of its image. Every podman
+# call but the build is cut after PREPARE_GO_IMAGE_TIMEOUT seconds (default
+# 300), and the script then fails; a cut run's container is removed. The
+# build itself is not cut: its length depends on the network and on
+# emulation.
 #
 # Usage:
 #   scripts/prepare-go-image.sh [--pins FILE] manifest PROJECT        print the label's lockfile part for PROJECT
@@ -66,6 +78,21 @@ fi
 
 die() { printf 'prepare-go-image: %s\n' "$*" >&2; exit 1; }
 
+step_timeout="${PREPARE_GO_IMAGE_TIMEOUT:-300}"
+[[ "$step_timeout" =~ ^[1-9][0-9]{0,5}$ ]] || die "PREPARE_GO_IMAGE_TIMEOUT is a number of seconds (got '$step_timeout')"
+
+# pod ARGS…: podman ARGS, cut after step_timeout seconds (then killed 10 s
+# later if it ignores the cut). A cut call says so on stderr and returns
+# 124 (137 if killed); the caller fails on any non-zero status.
+pod() {
+  local rc=0
+  timeout --kill-after=10 "$step_timeout" podman "$@" || rc=$?
+  if ((rc == 124 || rc == 137)); then
+    printf 'prepare-go-image: podman %s did not finish within %ss\n' "$1" "$step_timeout" >&2
+  fi
+  return "$rc"
+}
+
 # project PROJECT: sets repo, lockfiles (the profile's, in its order) and
 # warm_required (a project with dependencies must warm some).
 project() {
@@ -90,14 +117,18 @@ platforms() {
   ((${#plats[@]} == n)) || die "PLATFORMS names a platform twice (got '$1')"
 }
 
-# host_adc DIST: sets adc, the dist's adc for this host.
-host_adc() {
-  local arch
+# native: sets arch, this host's platform's architecture (amd64 or arm64).
+native() {
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;
     *) die "no dist platform for this host ($(uname -m))" ;;
   esac
+}
+
+# host_adc DIST: sets adc, the dist's adc for this host.
+host_adc() {
+  native
   adc="$1/linux-$arch/adc"
   [[ -f "$adc" && -x "$adc" ]] || die "$adc is missing: run 'make dist' on this clean commit"
 }
@@ -192,6 +223,7 @@ case "${1:-}" in
     [[ -z "$dirty" ]] || die "uncommitted changes in $here"
     head="$(git -C "$here" rev-parse HEAD)" || die "cannot read HEAD in $here"
     host_adc "$here/dist"
+    host="linux/$arch"
     version="$("$adc" version)" || die "$adc does not run"
     [[ "$version" == *"(commit $head,"* && "$version" != *-dirty* ]] ||
       die "$adc is not built from $head ($version): run 'make dist' on this clean commit"
@@ -199,7 +231,7 @@ case "${1:-}" in
     # name nothing yet, so the list holds only this build's images.
     for kind in manifest image; do
       rc=0
-      podman "$kind" exists "$name" || rc=$?
+      pod "$kind" exists "$name" || rc=$?
       ((rc == 1)) || die "$name already exists in podman's storage, or podman failed: run 'podman manifest rm $name' first"
     done
     printf 'prepare-go-image: preparing %s from %s at %s\n' "$2" "$repo" "$head"
@@ -216,25 +248,36 @@ case "${1:-}" in
     [[ -s "$ctx/warm.txt" || "$warm_required" == 0 ]] || die "no third-party packages listed in $repo"
     podman build --pull=missing --timestamp=0 --platform="$(IFS=,; echo "${plats[*]}")" --manifest="$name" \
       --label="dev.adc.prepared=$label" -f "$containerfile" "$ctx"
-    # The new list holds exactly one image per platform; in each the pinned
-    # Node starts, as the platform's, and /opt/adc/lib, copied out of it,
-    # has the label's adapter digest for the platform (Mythos #373 M1: the
-    # label pins what COPY put in the image, not only the context).
-    listed="$(podman manifest inspect "$name" | jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' | LC_ALL=C sort)" ||
+    # The new list holds exactly one image per platform; in the native
+    # platform's the pinned Node starts, as the platform's (an emulated
+    # platform's run is skipped: #226 entry 141); and in each, /opt/adc/lib,
+    # copied out of it, has the label's adapter digest for the platform
+    # (Mythos #373 M1: the label pins what COPY put in the image, not only
+    # the context).
+    listed="$(pod manifest inspect "$name" | jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' | LC_ALL=C sort)" ||
       die "cannot list the images of $name (podman manifest inspect, jq)"
     [[ "$listed" == "$(printf '%s\n' "${plats[@]}")" ]] ||
       die "$name lists ${listed//$'\n'/ } rather than one image for each of ${plats[*]}: run 'podman manifest rm $name' and build again"
     for p in "${plats[@]}"; do
-      want="$(pin "$p" 2) ${p#linux/}"
-      want="${want/%amd64/x64}"
-      got="$(podman run --rm --pull=never --network=none --platform="$p" "$name" \
-        /opt/adc/lib/node/bin/node -p 'process.version + " " + process.arch')" || die "Node does not start in $name for $p"
-      [[ "$got" == "$want" ]] || die "Node in $name for $p reports '$got', not '$want'"
+      if [[ "$p" == "$host" ]]; then
+        version="$(pin "$p" 2)" || exit 1
+        want="$version ${p#linux/}"
+        want="${want/%amd64/x64}"
+        n="adc-prepare-$$-${p#linux/}"
+        if ! got="$(pod run --rm --name="$n" --pull=never --network=none --platform="$p" "$name" \
+          /opt/adc/lib/node/bin/node -p 'process.version + " " + process.arch')"; then
+          pod rm --force --ignore --time=0 "$n" >/dev/null || printf 'prepare-go-image: the container %s may still run\n' "$n" >&2
+          die "Node does not start in $name for $p"
+        fi
+        [[ "$got" == "$want" ]] || die "Node in $name for $p reports '$got', not '$want'"
+      else
+        printf "prepare-go-image: Node's start in %s for %s is not checked: the platform is emulated on this %s host (its bytes are checked: scripts/node-pins, and the adapter digest below)\n" "$name" "$p" "$host"
+      fi
       out="$ctx/image-${p#linux/}"
-      c="$(podman create --pull=never --network=none --platform="$p" "$name" true)" || die "cannot create a container of $name for $p"
+      c="$(pod create --pull=never --network=none --platform="$p" "$name" true)" || die "cannot create a container of $name for $p"
       rc=0
-      podman cp "$c:/opt/adc/lib" "$out" || rc=$?
-      podman rm "$c" >/dev/null || die "cannot remove the container $c"
+      pod cp "$c:/opt/adc/lib" "$out" || rc=$?
+      pod rm "$c" >/dev/null || die "cannot remove the container $c"
       ((rc == 0)) || die "cannot copy /opt/adc/lib out of $name for $p"
       got="$("$adc" dev adapter-digest "$out")" || die "the adapter in $name for $p cannot be digested"
       [[ "$got" == "${digests[$p]}" ]] || die "the adapter in $name for $p is $got, not the label's ${digests[$p]}"
