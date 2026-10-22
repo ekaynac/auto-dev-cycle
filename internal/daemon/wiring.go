@@ -331,7 +331,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		modelcall.Project,   // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
 		api.ProjectCaptures, // the egress captures kept and not yet purged (P22a-5a)
 		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds(), Tasks: authority.Tasks{}}.Project, // the folds check the recorded answers (M1 P6), the deferred surfaces (I15) and the claims' tasks (I22)
-		intent.Projector{Blobs: blobs}.Project, // the builder's recorded intent, checked by the I18 walk over the graph's records (P22a-5c-2b-1)
+		intent.Projector{Env: graph.Env{Authority: authority.Answers{}, Blobs: blobs}}.Project,              // the builder's recorded intent, checked by the I18 walk over the graph's records (P22a-5c-2b-1)
 	)
 }
 

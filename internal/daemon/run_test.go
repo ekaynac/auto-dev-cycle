@@ -149,11 +149,20 @@ type runWorld struct {
 
 func newRunWorld(t *testing.T, images bool, peer *inproc.Peer) *runWorld {
 	t.Helper()
+	return newRunWorldWith(t, images, peer, nil)
+}
+
+// newRunWorldWith is newRunWorld whose profile edit changes.
+func newRunWorldWith(t *testing.T, images bool, peer *inproc.Peer, edit func(map[string]any)) *runWorld {
+	t.Helper()
 	tmp := t.TempDir()
 	src := sourceRepo(t, tmp, "src")
 	perDay := int64(1 << 50)
 	w, sys, x, pl := placingWith(t, &perDay, func(p map[string]any) {
 		p["repo"] = map[string]any{"url": src, "base_ref": "refs/heads/main"}
+		if edit != nil {
+			edit(p)
+		}
 	})
 	pl.d.Images, pl.d.Credentials = fakeImages{images}, fakeCredentials{}
 	x.Placer = pl

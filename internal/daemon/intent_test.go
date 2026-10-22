@@ -3,11 +3,15 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/buildinfo"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
@@ -45,9 +49,14 @@ func TestTheBuildersIntentIsRecordedAtLaunch(t *testing.T) {
 // P22a-5c-2b-1: the fold refuses an intent that is not what the launch
 // records, and the launch with it starts nothing: one stated as a
 // reviewer's, one of another task or of none, one whose included positions
-// skip (knowledge.CheckIntent), and one naming the brief under no
-// restriction (Mythos 22a-5c-3 M1: not the input its record names). A
-// second intent for an attempt that recorded one is refused too.
+// skip (knowledge.CheckIntent), one naming the brief under no restriction
+// (Mythos 22a-5c-3 M1: not the input its record names), and each that
+// misstates what the log holds (Opus 22a-5c-2b-1 M1, M2, L1): no inputs,
+// the brief omitted, another executor, another rendered digest or size,
+// another data policy digest, reported routing or a destination the
+// brief's restriction does not allow, tokens over the lease's reservation,
+// and included bytes over the budget. A second intent for an attempt that
+// recorded one is refused too.
 func TestAForgedIntentIsRefused(t *testing.T) {
 	other := types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2zz")
 	for name, edit := range map[string]func(*types.ManifestIntent){
@@ -55,6 +64,23 @@ func TestAForgedIntentIsRefused(t *testing.T) {
 		"of another task":                  func(m *types.ManifestIntent) { m.Task = &other },
 		"of no task":                       func(m *types.ManifestIntent) { m.Task = nil },
 		"its brief included at position 1": func(m *types.ManifestIntent) { m.Included[0].Order = 1 },
+		"no inputs": func(m *types.ManifestIntent) {
+			m.Inputs, m.Included, m.Omitted = []types.Ref{}, []types.ManifestIntentIncludedItem{}, []types.ManifestIntentOmittedItem{}
+		},
+		"the brief omitted": func(m *types.ManifestIntent) {
+			m.Omitted = []types.ManifestIntentOmittedItem{{Ref: m.Included[0].Ref, Reason: types.ManifestIntentOmittedItemReasonBudget}}
+			m.Included = []types.ManifestIntentIncludedItem{}
+		},
+		"another executor":        func(m *types.ManifestIntent) { m.Consumer.Executor = types.ExecutorID(newID(t, "exe")) },
+		"another rendered digest": func(m *types.ManifestIntent) { m.RenderedDigest = types.Digest("sha256:" + strings.Repeat("0", 64)) },
+		"another rendered size":   func(m *types.ManifestIntent) { m.Included[0].Bytes++ },
+		"another policy digest": func(m *types.ManifestIntent) {
+			m.Policy.DataPolicyDigest = "sha256:" + strings.Repeat("1", 64)
+		},
+		"reported routing":          func(m *types.ManifestIntent) { m.Routing = types.ManifestIntentRoutingReported },
+		"a destination not allowed": func(m *types.ManifestIntent) { m.Destination = "elsewhere" },
+		"tokens of 2^40":            func(m *types.ManifestIntent) { m.Budget.Tokens = 1 << 40 },
+		"included over its budget":  func(m *types.ManifestIntent) { m.Budget.Bytes = m.Included[0].Bytes - 1 },
 		"the brief under no restriction": func(m *types.ManifestIntent) {
 			r := m.Inputs[0]
 			r.Restrictions = []types.Restriction{}
@@ -125,5 +151,57 @@ func TestALaunchWithARefusedIntentStartsNothing(t *testing.T) {
 	}
 	if st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State; st.State != types.NodeStateStateHeld {
 		t.Errorf("the build after a refused intent: %s", st.State)
+	}
+}
+
+// Opus 22a-5c-2b-1 M1: the intent's call is the attempt's: an intent
+// recorded under another call than the one the builder runs under is
+// accepted at the launch (no fact of the call is recorded yet), but the
+// attempt's result, submitted under its real call, is refused, so the
+// attempt records no result of its own.
+func TestTheIntentsCallIsTheAttempts(t *testing.T) {
+	rw := newRunWorld(t, true, builder(func(ws string) {
+		_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+	}, false, nil))
+	recordIntent = func(mi types.ManifestIntent) (eventstore.Event, error) {
+		mi.Call = types.CallID(newID(t, "cal"))
+		return intent.Record(mi)
+	}
+	t.Cleanup(func() { recordIntent = intent.Record })
+	rw.untilRun(t)
+	a, _ := rw.attemptOf(t)
+	rw.w.view(func(tx *eventstore.Tx) error {
+		if _, byAttempt, err := graph.AttemptResult(tx, a.ID); err != nil || byAttempt {
+			t.Errorf("the attempt under another call than its intent's recorded its result: %v", err)
+		}
+		return nil
+	})
+}
+
+// Opus 22a-5c-2b-1 L1-L3: the intent's sizes, routing and harness: the
+// brief included at the prompt's size, within the prompt's bound; routing
+// as the registry verifies the destination; the adapter at adcd's release.
+func TestTheIntentsSizesAndHarness(t *testing.T) {
+	rw := newRunWorld(t, true, builder(nil, false, nil))
+	rw.untilRun(t)
+	a, _ := rw.attemptOf(t)
+	mi, ok := recordedIntent(t, rw.w, a.ID)
+	if !ok || mi.Budget.Bytes != maxPrompt || mi.Included[0].Bytes >= mi.Budget.Bytes || mi.Routing != types.ManifestIntentRoutingVerified ||
+		!strings.HasSuffix(mi.Consumer.HarnessVersion, "@"+buildinfo.Get("adcd").Version) {
+		t.Errorf("the intent's sizes, routing and harness: %+v", mi)
+	}
+}
+
+// Opus 22a-5c-2b-1 L2: the intent's routing is the destination's, as the
+// registry verifies it, not the profile's permission: under reported_ok,
+// a verified destination's intent says verified.
+func TestTheIntentsRoutingIsTheDestinations(t *testing.T) {
+	rw := newRunWorldWith(t, true, builder(nil, false, nil), func(p map[string]any) {
+		p["data_policy"].(map[string]any)["routing"] = "reported_ok"
+	})
+	rw.untilRun(t)
+	a, _ := rw.attemptOf(t)
+	if mi, ok := recordedIntent(t, rw.w, a.ID); !ok || mi.Routing != types.ManifestIntentRoutingVerified {
+		t.Errorf("the intent under reported_ok to a verified destination: %v %s", ok, mi.Routing)
 	}
 }

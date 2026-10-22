@@ -68,6 +68,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/brief"
+	"github.com/ekaynac/auto-dev-cycle/internal/buildinfo"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
@@ -171,13 +172,12 @@ func (r *runner) Wait() { r.runs.Wait() }
 
 // plan is what an attempt runs over, read in one snapshot.
 type plan struct {
-	view       graph.NodeView
-	profile    types.ProjectProfile
-	lease      types.Lease
-	executor   types.RegistryExecutor
-	pin        *types.GitID // the unit's first attempt's base, if any
-	prompt     []byte
-	briefBytes int64 // the brief's size, the intent's included bytes
+	view     graph.NodeView
+	profile  types.ProjectProfile
+	lease    types.Lease
+	executor types.RegistryExecutor
+	pin      *types.GitID // the unit's first attempt's base, if any
+	prompt   []byte
 }
 
 // attempt is one run of node under l. A panic anywhere in it is recovered
@@ -300,15 +300,22 @@ func guarded(f func() error) (err error) {
 // builderIntent is the manifest.intent of node's attempt aid, its call cid
 // (P22a-5c-2b-1; W17): intent.Builder over the build's rendered context
 // (the plan's brief) and the task's records, so its I18 walk runs again
-// here, and its fold runs it once more as the launch records it. It names:
+// here, and its fold runs it once more as the launch records it, bound to
+// the log (intent.Projector). It names:
 //   - the consumer: the builder, the lease's executor, its model, its
-//     adapter (the harness version is described only once the session
-//     runs), and its family as its capability profile;
+//     adapter at adcd's release ("http-chat@<version>": the adapter is the
+//     release's own, P22a-5c-2a-w), and the executor's family standing in
+//     for its capability profile (stated: no capability profile is
+//     registered yet; the builder's tools are the edit loop's,
+//     adapterhost.EditLoopTools, for every builder);
 //   - the policy: the project's usage profile and its data policy's
 //     digest (authority.PolicyDigest), no renderer;
-//   - the budget: the lease's token reservation and the prompt's bytes;
-//   - the rendered digest: the prompt's;
-//   - the destination and its routing, as the profile's policy states it.
+//   - the budget: the lease's token reservation, and maxPrompt bytes, the
+//     prompt's bound, which a longer prompt is refused at;
+//   - its one input, the brief, included at the prompt's size, and the
+//     rendered digest, the prompt's;
+//   - the destination, and its routing as the registry verifies it
+//     (verified or attested: verified; reported: reported).
 func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID) (types.ManifestIntent, error) {
 	mid, err := ids.New("cmf")
 	if err != nil {
@@ -318,8 +325,11 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 	if o := pl.profile.UsageProfileOverride; o != nil {
 		usage = types.ManifestIntentPolicyUsageProfile(*o)
 	}
+	if int64(len(pl.prompt)) > maxPrompt {
+		return types.ManifestIntent{}, fmt.Errorf("%w: the prompt is over %d bytes", errContent, maxPrompt)
+	}
 	routing := types.ManifestIntentRoutingVerified
-	if pl.profile.DataPolicy.Routing != types.ProjectProfileDataPolicyRoutingVerified {
+	if pl.executor.Destination.Verification == types.RegistryDestinationVerificationReported {
 		routing = types.ManifestIntentRoutingReported
 	}
 	var tokens int64
@@ -331,9 +341,9 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 	sum := sha256.Sum256(pl.prompt)
 	task := pl.view.Task
 	call := types.ManifestIntent{ID: types.ManifestID(mid), Call: cid, Task: &task, Attempt: &aid,
-		Consumer: types.ManifestIntentConsumer{Executor: pl.lease.Executor, ModelSnapshot: pl.executor.Model, HarnessVersion: string(pl.executor.Adapter),
+		Consumer: types.ManifestIntentConsumer{Executor: pl.lease.Executor, ModelSnapshot: pl.executor.Model, HarnessVersion: string(pl.executor.Adapter) + "@" + buildinfo.Get("adcd").Version,
 			CapabilityProfile: pl.executor.Family},
-		Budget:         types.ManifestIntentBudget{Tokens: tokens, Bytes: int64(len(pl.prompt))},
+		Budget:         types.ManifestIntentBudget{Tokens: tokens, Bytes: maxPrompt},
 		RenderedDigest: types.Digest("sha256:" + hex.EncodeToString(sum[:])), Destination: string(pl.executor.Destination.ID), Routing: routing}
 	var mi types.ManifestIntent
 	err = r.store.View(context.WithoutCancel(ctx), func(tx *eventstore.Tx) error {
@@ -355,13 +365,17 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 		}
 		sizes := map[types.Digest]int64{}
 		for _, in := range rendered.Included {
-			sizes[in.IdentityDigest] = pl.briefBytes
+			sizes[in.IdentityDigest] = int64(len(pl.prompt)) // the brief is all the prompt renders
 		}
 		mi, err = intent.Builder(intent.In{Call: call, Context: rendered, Bytes: sizes, Records: recs})
 		return err
 	})
 	return mi, err
 }
+
+// maxPrompt bounds a builder's prompt: 09's text bound
+// (adapterhost.BoundText), its intent's byte budget.
+const maxPrompt = adapterhost.BoundText
 
 // newRunIDs are a fresh attempt's id and its call's.
 func newRunIDs() (types.AttemptID, types.CallID, error) {
@@ -435,7 +449,7 @@ func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (
 	if err != nil {
 		return pl, err
 	}
-	pl.prompt, pl.briefBytes = brief.Prompt(pb), int64(len(b))
+	pl.prompt = brief.Prompt(pb)
 	return pl, nil
 }
 
