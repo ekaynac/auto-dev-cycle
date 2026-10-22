@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -88,6 +89,25 @@ func TestContainerNeedsACommandARemovalAndADeadline(t *testing.T) {
 	}
 	if _, err := StartContainer(&Container{Command: []string{"true"}, Remove: rm}, 0); err == nil {
 		t.Error("a container with no deadline started")
+	}
+}
+
+// Opus 22a-5d-4 M1: a client that cannot be started is ErrSpawn, through
+// Open too, and the removal still runs once, so the caller can reclaim the
+// attempt; a removal that fails is joined, ErrSpawn kept.
+func TestContainerThatCannotSpawn(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		rm := &removal{}
+		if fail {
+			rm.err = errors.New("podman is missing too")
+		}
+		c := &Container{Command: []string{filepath.Join(t.TempDir(), "no-podman")}, Remove: rm.remove}
+		if _, err := StartContainer(c, time.Minute); !errors.Is(err, ErrSpawn) || rm.calls.Load() != 1 || fail != errors.Is(err, rm.err) {
+			t.Errorf("removal failing %v: %v, %d removals", fail, err, rm.calls.Load())
+		}
+		if _, err := Open(Config{Container: c, Deadline: time.Minute}); !errors.Is(err, ErrSpawn) || rm.calls.Load() != 2 {
+			t.Errorf("removal failing %v, through Open: %v, %d removals", fail, err, rm.calls.Load())
+		}
 	}
 }
 

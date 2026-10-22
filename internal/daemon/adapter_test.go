@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
@@ -214,6 +215,15 @@ func TestTheAdapterContainerRefuses(t *testing.T) {
 	}
 	if err != nil || !errors.Is(s.Within(), sandbox.ErrLeft) {
 		t.Errorf("a run past its bound: %v; Within %v", err, s.Within())
+	}
+}
+
+// Opus 22a-5d-4 L2: the sandbox bounds a run's out/ at exactly what one
+// cleanup of the adapter's host removes, so a run's output is never left
+// half removed.
+func TestTheOutBoundIsTheHostsCleanup(t *testing.T) {
+	if sandbox.MaxOutEntries != adapterhost.MaxWork {
+		t.Fatalf("sandbox.MaxOutEntries %d, adapterhost.MaxWork %d", sandbox.MaxOutEntries, adapterhost.MaxWork)
 	}
 }
 

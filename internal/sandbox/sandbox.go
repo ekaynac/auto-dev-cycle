@@ -137,7 +137,9 @@ func (h Host) ownDisk() error {
 // and can be stat'ed: a path under a directory the controller cannot search
 // (/run/podman, root's 0700; Opus #393 M3) is measured as that directory's
 // device, which is conservative: what lies under it shares it unless it is
-// a mount point.
+// a mount point. The one case the climb misses is a mount strictly below an
+// unsearchable directory that shares the runs filesystem while the
+// directory does not. Any other error (ENOTDIR, ELOOP, EIO) is kept.
 func devOf(p string, up bool) (uint64, error) {
 	var st syscall.Stat_t
 	err := syscall.Stat(p, &st)

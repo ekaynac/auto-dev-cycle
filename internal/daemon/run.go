@@ -251,7 +251,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	}
 	base := types.AttemptBase{Tree: ws.Base, ContractRevision: buildContractRevision}
 	p, err := r.host.Prepare(adapterhost.Spec{Lease: l, Attempt: aid, Base: base, Call: cid, Adapter: sess.Config, Prompt: pl.prompt, Bounds: runBounds,
-		Tools: adapterhost.EditLoopTools(), Path: sess.Path,
+		Tools: adapterhost.EditLoopTools(), Path: sess.Path, Check: sess.Within,
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: pl.lease.Executor, Model: types.AdapterLabel(pl.executor.Model),
 			Workspace: types.AdapterPrepareParamsWorkspace{Path: sess.Path(ws.Path()), Writable: true},
 			Limits: types.AdapterPrepareParamsLimits{MaxTurns: max(pl.lease.Footprint.ExpectedTurns, 1), MaxOutputTokens: builderOutputTokens,
@@ -297,14 +297,25 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	r.mu.Unlock()
 	out, runErr := runPrepared(p, ctx)
 	unverified = errors.Is(out.Session, session.ErrUnverified) || errors.Is(runErr, session.ErrUnverified)
-	over := "" // the run left more than its disk bound (Opus #393 M2): its output, torn down, never kept
-	if !unverified && sess.Within != nil {
-		if werr := sess.Within(); werr != nil {
-			over = "the run left more than its disk bound, or what cannot be measured"
-			r.logf("adcd: the attempt %s: %v", aid, werr)
-		}
-	}
 	endErr := endGateway()
+	if errors.Is(out.Session, session.ErrSpawn) {
+		// The adapter never ran (its container's client could not start):
+		// the host's fault, never the candidate's. Nothing ran, so nothing
+		// is diffed or kept, and the build is matched again (Opus 22a-5d-4 M1).
+		unverified = false
+		r.logf("adcd: the attempt %s: %v", aid, out.Session)
+		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed, "the adapter could not be started on the controller's host"))
+	}
+	over := "" // the run left more than its disk bound (Opus #393 M2): its output, torn down, never kept
+	switch werr := out.Checked; {
+	case unverified, werr == nil:
+	case errors.Is(werr, sandbox.ErrLeft): // measured before the exchange was removed (Opus 22a-5d-4 L2)
+		over = "the run left more than its disk bound, or what cannot be measured"
+		r.logf("adcd: the attempt %s: %v", aid, werr)
+	default: // anything else is a container that may still run: kept, never diffed (L1)
+		unverified = true
+		r.logf("adcd: the attempt %s: %v", aid, werr)
+	}
 	if !unverified && errors.Is(runErr, adapterhost.ErrRecord) && r.otherCall(ctx, aid, cid) {
 		// The fold refused the attempt's facts (intent.ErrUnbound): what it
 		// made is not under its intent's call, so no diff of it is sealed

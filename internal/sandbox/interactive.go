@@ -52,10 +52,12 @@ type Interactive struct {
 	// podman client's exit does not mean the container's has (conmon runs
 	// it).
 	Remove func(ctx context.Context) error
-	// Within checks, once Remove has succeeded, that what the run left, its
-	// exchange's out/ included, is within Limits.Disk: ErrLeft when it is
-	// not, or cannot be measured (Opus #393 M2: a breach is the run's
-	// output, not a container that may still run).
+	// Within checks, once Remove has succeeded and before the exchange is
+	// removed (adapterhost's Spec.Check), that what the run left, its
+	// exchange's out/ included (at most MaxOutEntries entries), is within
+	// Limits.Disk: ErrLeft when it is not, or cannot be measured (Opus #393
+	// M2: a breach is the run's output, not a container that may still run);
+	// ErrSpec alone when Remove has not succeeded.
 	Within func() error
 }
 

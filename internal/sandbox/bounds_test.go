@@ -201,4 +201,12 @@ func TestDevOfAnUnsearchableDirectory(t *testing.T) {
 	if _, err := devOf(sock, false); !errors.Is(err, syscall.EACCES) {
 		t.Errorf("devOf without climbing: %v, want EACCES", err)
 	}
+	// Opus 22a-5d-4 L3: only a path that is missing or under an unsearchable
+	// directory climbs; any other error is kept (here a path under a regular
+	// file: ENOTDIR).
+	file := filepath.Join(t.TempDir(), "file")
+	must(t, os.WriteFile(file, nil, 0o600))
+	if _, err := devOf(filepath.Join(file, "podman.sock"), true); !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("devOf under a regular file: %v, want ENOTDIR", err)
+	}
 }

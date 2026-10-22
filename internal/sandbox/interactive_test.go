@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -232,11 +233,29 @@ func TestInteractiveWithinBoundsTheExchange(t *testing.T) {
 	if err := it.Within(); !errors.Is(err, ErrLeft) {
 		t.Fatalf("an out/ past the bound: %v, want ErrLeft", err)
 	}
-	// The session's host removes the exchange once it has ingested it: a
-	// removed out/ holds nothing (the live row found this order).
+	// Within runs before the host removes the exchange (adapterhost's
+	// Spec.Check; Opus 22a-5d-4 L2): a missing out/ cannot be measured.
+	must(t, os.Remove(filepath.Join(r.Exchange, "out", "big")))
+	must(t, it.Within())
+	old := maxOutEntries
+	maxOutEntries = 4
+	t.Cleanup(func() { maxOutEntries = old })
+	for i := range maxOutEntries + 1 {
+		must(t, os.WriteFile(filepath.Join(r.Exchange, "out", fmt.Sprint(i)), nil, 0o600))
+	}
+	if err := it.Within(); !errors.Is(err, ErrLeft) {
+		t.Fatalf("an out/ over maxOutEntries entries: %v, want ErrLeft", err)
+	}
 	must(t, os.RemoveAll(r.Exchange))
-	if err := it.Within(); err != nil {
-		t.Fatalf("Within after the exchange's removal: %v", err)
+	if err := it.Within(); !errors.Is(err, ErrLeft) {
+		t.Fatalf("Within with no out/: %v, want ErrLeft", err)
+	}
+	// Opus 22a-5d-4 L5: a missing attempt directory cannot be measured either.
+	must(t, os.MkdirAll(filepath.Join(r.Exchange, "out"), 0o700))
+	must(t, it.Within())
+	must(t, os.RemoveAll(r.Attempt.Dir))
+	if err := it.Within(); !errors.Is(err, ErrLeft) {
+		t.Fatalf("Within with no attempt directory: %v, want ErrLeft", err)
 	}
 }
 

@@ -62,8 +62,12 @@ func StartContainer(c *Container, deadline time.Duration) (*Process, error) {
 	closeAll(pipes[0], pipes[3], pipes[5]) // the child's ends
 	if err != nil {
 		closeAll(pipes[1], pipes[2], pipes[4])
+		// No client ran, so no container was made: the removal finds no cid
+		// file, checks only that the name is gone, and so lets the caller
+		// reclaim what the run would have used (Opus 22a-5d-4 M1). Its own
+		// failure is joined: the caller still knows the adapter never ran.
 		// exec's error names the client's path, never the adapter's argv or env.
-		return nil, fmt.Errorf("adapterhost: spawn: %w", err)
+		return nil, errors.Join(fmt.Errorf("%w: %w", ErrSpawn, err), c.Remove(context.Background()))
 	}
 	// Removals never run under the caller's context: they must run whatever
 	// the session does. The early one starts at most once, and never once the

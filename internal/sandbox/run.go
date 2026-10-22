@@ -188,24 +188,25 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 }
 
 // within refuses an attempt that holds more than disk bytes, maxEntries
-// entries or maxDepth levels, or one that cannot be measured. also are
-// directories the run wrote besides the attempt's (an interactive run's
-// exchange out/), counted against the same bound with it; one already
-// removed (the exchange, once the session's host has ingested it) holds
-// nothing.
+// entries or maxDepth levels, or one that cannot be measured, a missing
+// directory among them. also are directories the run wrote besides the
+// attempt's (an interactive run's exchange out/, measured before its host
+// removes it), counted against the same bound with it, each within
+// maxOutEntries entries: no more than one cleanup of the host removes
+// (adapterhost.MaxWork; Opus 22a-5d-4 L2).
 func (a *Attempt) within(disk int64, also ...string) error {
 	var size int64
 	var err error
 	for i, dir := range append([]string{a.Dir}, also...) {
 		var root *os.Root
 		if root, err = os.OpenRoot(dir); err != nil {
-			if i > 0 && errors.Is(err, fs.ErrNotExist) {
-				err = nil
-				continue
-			}
 			break
 		}
-		err = walk(root.FS(), ".", maxEntries, func(p string, d fs.DirEntry) error {
+		limit := maxEntries
+		if i > 0 {
+			limit = maxOutEntries
+		}
+		err = walk(root.FS(), ".", limit, func(p string, d fs.DirEntry) error {
 			info, err := d.Info()
 			if err != nil {
 				return err
@@ -258,7 +259,7 @@ func walk(fsys fs.FS, dir string, limit int, fn func(p string, d fs.DirEntry) er
 			batch, err := rd.ReadDir(maxBatch)
 			for _, d := range batch {
 				if entries++; limit > 0 && entries > limit {
-					return fmt.Errorf("%w: more than %d entries", ErrSpec, maxEntries)
+					return fmt.Errorf("%w: more than %d entries", ErrSpec, limit)
 				}
 				p := path.Join(dir, d.Name())
 				ferr := fn(p, d)
@@ -324,6 +325,14 @@ func (a *Attempt) CopyTree(dst string, maxBytes int64) error {
 }
 
 var maxEntries, maxDepth, maxBatch = 100_000, 64, 1024 // var: tests lower them
+
+// MaxOutEntries bounds the entries an interactive run may leave in its
+// exchange's out/: what one cleanup of the adapter's host removes
+// (adapterhost.MaxWork, which a daemon row pins equal), so a run's output
+// is never left half removed. maxOutEntries is it; tests lower it.
+const MaxOutEntries = 1 << 16
+
+var maxOutEntries = MaxOutEntries
 
 // copy copies src to dst, which must not exist, at most maxBytes,
 // maxEntries entries and maxDepth levels. A run's files are read only

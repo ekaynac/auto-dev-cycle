@@ -107,6 +107,9 @@ type peerStarter struct {
 	refuse   error
 	notReady error
 	within   error // what the session's Within returns
+	// noClient: the session's adapter is a container whose client does not
+	// exist (a podman that is not installed): it never spawns.
+	noClient bool
 	mu       sync.Mutex
 	runs     []AdapterRun
 }
@@ -118,7 +121,12 @@ func (p *peerStarter) Start(_ context.Context, run AdapterRun) (AdapterSession, 
 	if p.refuse != nil {
 		return AdapterSession{}, p.refuse
 	}
-	return AdapterSession{Config: session.Config{InProcess: p.peer, Deadline: run.Deadline}, Path: func(s string) string { return s },
+	cfg := session.Config{InProcess: p.peer, Deadline: run.Deadline}
+	if p.noClient {
+		cfg = session.Config{Container: &session.Container{Command: []string{"/nonexistent/podman", "run"}, Remove: func(context.Context) error { return nil }},
+			Deadline: run.Deadline}
+	}
+	return AdapterSession{Config: cfg, Path: func(s string) string { return s },
 		Ready: func() error { return p.notReady }, Within: func() error { return p.within }}, nil
 }
 
@@ -671,6 +679,42 @@ func TestARunPastItsBoundIsTornDown(t *testing.T) {
 		if !empty(dir) {
 			t.Errorf("%s left behind", dir)
 		}
+	}
+}
+
+// Opus 22a-5d-4 M1: an adapter whose container's client cannot start (a
+// podman that is not installed) never ran: the build's result is
+// could_not_run/precondition_failed with no attempt, never the candidate's,
+// the node is not completed (the next pass matches it again), and nothing
+// is kept.
+func TestAnAdapterThatNeverSpawnedIsTheHosts(t *testing.T) {
+	rw := newRunWorld(t, true, builder(nil, false, nil))
+	rw.r.adapters.(*peerStarter).noClient = true
+	rw.untilRun(t)
+	rw.endedNotRun(t, vocab.ReasonPreconditionFailed)
+	if st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State.State; st == types.NodeStateStateCompleted {
+		t.Errorf("the build node is %s", st)
+	}
+	for _, dir := range []string{rw.r.clones, rw.exch, filepath.Join(rw.r.box.Root, "runs")} {
+		if !empty(dir) {
+			t.Errorf("%s left behind", dir)
+		}
+	}
+}
+
+// Opus 22a-5d-4 L1: only a breach of the bound (sandbox.ErrLeft) is the
+// run's output; any other Within error is a container that may still run:
+// its tree is never diffed, the result is could_not_run/ambiguous_state,
+// and its attempt directory is kept.
+func TestAnyOtherWithinErrorKeepsTheAttempt(t *testing.T) {
+	rw := newRunWorld(t, true, builder(func(ws string) {
+		_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+	}, false, nil))
+	rw.r.adapters.(*peerStarter).within = fmt.Errorf("%w: the run's container may still be running", sandbox.ErrSpec)
+	rw.untilRun(t)
+	rw.endedNotRun(t, vocab.ReasonAmbiguousState)
+	if empty(filepath.Join(rw.r.box.Root, "runs")) {
+		t.Error("the attempt directory was torn down")
 	}
 }
 

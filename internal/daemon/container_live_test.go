@@ -14,10 +14,13 @@ package daemon
 // The image is loaded into a private storage under a fresh sandbox root
 // (its runs/ on /dev/shm, a filesystem of its own); nothing of the user's
 // Podman is read or written. The stub provider listens on loopback; the
-// gateway is adcd's own, on the attempt's socket. With
-// ADC_LIVE_ADAPTER_RELEASE (a release's lib/adc, e.g. dist/linux-ARCH/lib/adc
-// of the image's commit), the image's adapter must be that release's;
-// otherwise the image's own label stands for the installed release.
+// gateway is adcd's own, on the attempt's socket. ADC_LIVE_ADAPTER_RELEASE
+// is required: a release's lib/adc (dist/linux-ARCH/lib/adc of the image's
+// commit), which stands for the installed release, so the image's adapter
+// must be that release's, not merely its own label's (Opus 22a-5d-4 L4).
+//
+//	ADC_LIVE_PODMAN_ARCHIVE=/path/prepared.oci.tar ADC_LIVE_ADAPTER=1 \
+//	ADC_LIVE_ADAPTER_RELEASE=/path/dist/linux-ARCH/lib/adc go test -count=1 -run LiveContainer ./internal/daemon/
 
 import (
 	"bufio"
@@ -28,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -75,6 +77,10 @@ func newLiveBox(t *testing.T) liveBox {
 	if archive == "" || os.Getenv("ADC_LIVE_ADAPTER") == "" {
 		t.Skip("set ADC_LIVE_PODMAN_ARCHIVE (a prepared image with the adapter) and ADC_LIVE_ADAPTER to run the end-to-end live row")
 	}
+	rel := os.Getenv("ADC_LIVE_ADAPTER_RELEASE")
+	if rel == "" {
+		t.Fatal("ADC_LIVE_ADAPTER_RELEASE (the dist lib/adc of the image's commit) is required: without it the image's label is checked against itself")
+	}
 	root, err := os.MkdirTemp("", "adcl") // short: Podman's runroot limit
 	if err != nil {
 		t.Fatal(err)
@@ -110,11 +116,11 @@ func newLiveBox(t *testing.T) liveBox {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.want = img.Manifest.Adapter[runtime.GOOS+"/"+runtime.GOARCH]
-	if rel := os.Getenv("ADC_LIVE_ADAPTER_RELEASE"); rel != "" {
-		if b.want, err = sandbox.AdapterDigest(rel); err != nil {
-			t.Fatal(err)
-		}
+	if b.want, err = sandbox.AdapterDigest(rel); err != nil {
+		t.Fatal(err)
+	}
+	if err := img.CheckAdapter(b.want); err != nil {
+		t.Fatalf("the image's adapter is not ADC_LIVE_ADAPTER_RELEASE's: %v", err)
 	}
 	return b
 }
@@ -264,6 +270,9 @@ func TestLiveContainerRunsTheBuild(t *testing.T) {
 		if !empty(dir) {
 			t.Errorf("%s left behind", dir)
 		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(box.h.Root, "runs", "a*")); len(left) != 0 { // the attempt directories
+		t.Errorf("attempt directories left: %q", left)
 	}
 	if left := containersIn(t, box); left != "" {
 		t.Errorf("containers left: %q", left)
