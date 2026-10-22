@@ -176,10 +176,33 @@ func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, families Famil
 // SupersedeMoving is Supersede, with the answer inputs of moves replaced;
 // auth tells which questions moved.
 func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
+	req, err := loadNode(tx, requirement)
+	if err != nil {
+		return nil, err
+	}
+	return supersedeOnto(tx, pred, req.Recorded.Node, families, moves, auth)
+}
+
+// SupersedeOnto records requirement, a review_requirement node of pred's
+// subject at pred's requirement's next revision with another roster
+// (RecordReview), and supersedes pred onto it, in one command: no revision
+// is ever recorded without the supersession that moves to it (P22a-6a,
+// Opus 22a-6a H1).
+func SupersedeOnto(tx *eventstore.Tx, pred types.NodeID, requirement types.NodeRecorded, families Families) ([]eventstore.Event, error) {
+	recorded, err := RecordReview(requirement, families)
+	if err != nil {
+		return nil, err
+	}
+	evs, err := supersedeOnto(tx, pred, requirement.Node, families, nil, nil)
+	return append(recorded, evs...), err
+}
+
+// supersedeOnto is SupersedeMoving onto req, the requirement node.
+func supersedeOnto(tx *eventstore.Tx, pred types.NodeID, req types.Node, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
+	requirement := req.ID
 	rec, err := loadNode(tx, pred)
-	req, rerr := loadNode(tx, requirement)
 	id, ierr := ids.New("nod")
-	if err = errors.Join(err, rerr, ierr); err != nil {
+	if err = errors.Join(err, ierr); err != nil {
 		return nil, err
 	}
 	if err := superseded(rec); err != nil && !mutation.Is(mutation.SupersedeTwice) {
@@ -188,8 +211,8 @@ func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, families
 	if err := errors.Join(unclaimed(tx, rec), revisionFenced(tx, rec)); err != nil { // as the fold refuses it, before any attempt is stopped
 		return nil, err
 	}
-	p, err := req.Recorded.Node.ParamsAsReviewRequirement()
-	if err != nil || req.Recorded.Node.Kind != types.NodeKindReviewRequirement {
+	p, err := req.ParamsAsReviewRequirement()
+	if err != nil || req.Kind != types.NodeKindReviewRequirement {
 		return nil, errors.Join(err, fmt.Errorf("graph: %s is no review requirement", requirement))
 	}
 	n := rec.Recorded.Node
@@ -393,7 +416,53 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 		return nil
 	}
 	rec.State.State, rec.State.WaitingOn, rec.State.Holds, rec.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, []types.NodeHold{}, &p.Replacement.ID
-	return putNode(tx, rec)
+	if err := putNode(tx, rec); err != nil {
+		return err
+	}
+	return retire(tx, rec.Recorded.Node, p.Replacement)
+}
+
+// retire supersedes the requirement pred took by the one its replacement
+// takes, once no review that is not superseded takes it and it is held or
+// open (Opus 22a-6a re-check L1): no requirement no review takes is left
+// held or open in its task. A completed one is its revision's record; a
+// claimed one is not retired (adcd moves off a requirement only once it
+// completed, or while it is held: stated).
+func retire(tx *eventstore.Tx, pred, replacement types.Node) error {
+	from, to := takenRequirement(pred), takenRequirement(replacement)
+	if from == "" || from == to {
+		return nil
+	}
+	old, err := loadNode(tx, from)
+	if err != nil {
+		return err
+	}
+	switch old.State.State {
+	case types.NodeStateStateHeld, types.NodeStateStateRunnable, types.NodeStateStateWaiting:
+	default:
+		return nil
+	}
+	nodes, err := TaskNodes(tx, old.Recorded.Task)
+	if err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		if n.Node.Kind == types.NodeKindReview && n.State.State != types.NodeStateStateSuperseded && takenRequirement(n.Node) == from {
+			return nil
+		}
+	}
+	old.State.State, old.State.WaitingOn, old.State.Holds, old.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, []types.NodeHold{}, &to
+	return putNode(tx, old)
+}
+
+// takenRequirement is the review_requirement node review takes ("": none).
+func takenRequirement(review types.Node) types.NodeID {
+	for _, in := range review.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+			return src.Producer
+		}
+	}
+	return ""
 }
 
 // stoppedAttempts: p lists exactly the predecessor's attempt that this

@@ -94,10 +94,14 @@ const (
 	// RunAction is the attempt run's own commands (adcd's runner, P22a-5c-2a):
 	// ending a lease never launched, and the build's completion.
 	RunAction = "reconcile.run"
+	// ReviewAction records a task's review nodes, commits a review
+	// requirement's result, and re-derives a held review's roster
+	// (P22a-6a).
+	ReviewAction = "reconcile.review"
 )
 
 // Actions are the loop's system actions.
-var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction, RunAction}
+var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction, RunAction, ReviewAction}
 
 // Placed are the node kinds Match places on an executor: a build (P22a-5c-1).
 // A review is the review capability's (22a-6); a plan, accept and gate run
@@ -122,6 +126,10 @@ type Gates struct {
 	Admits bool
 	// Evaluates: the admitted task's nodes may be evaluated (launch active).
 	Evaluates bool
+	// Reviews: the admitted task's review is recorded, its requirement
+	// committed and its review matched (review active; P22a-6a). It acts
+	// only with Evaluates.
+	Reviews bool
 }
 
 // Snapshot is what Decide reads.
@@ -152,6 +160,15 @@ type Snapshot struct {
 	// Unsealed are its claimed accept nodes whose input's build attempt is
 	// not sealed yet: the seal the controller re-runs (P22a-5c-2c).
 	Unsealed []Versioned
+	// Reviewable is the admitted task's completed gate when the task has no
+	// review node yet (ID "": none): its review is recorded (RecordReview).
+	// Requirements are its claimed review_requirement nodes a review that
+	// is not superseded takes, and ReviewHeld its review nodes held
+	// reviewer_unavailable, and the requirement nodes so held that such a
+	// review takes (P22a-6a; Opus 22a-6a re-check H1).
+	Reviewable   Versioned
+	Requirements []Versioned
+	ReviewHeld   []Held
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
 	Next Versioned
@@ -233,6 +250,37 @@ func (Gate) action() string    { return RunAction }
 func (g Gate) subject() string { return g.Node.ID }
 func (Gate) expected() []eventstore.Expectation {
 	return nil
+}
+
+// RecordReview records the admitted task's review nodes once its gate
+// Gate completed: its requirement and its review, the roster the registry
+// derives now (Reviews.Record).
+type RecordReview struct{ Gate Versioned }
+
+func (RecordReview) action() string    { return ReviewAction }
+func (r RecordReview) subject() string { return r.Gate.ID }
+func (r RecordReview) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: r.Gate.ID, Version: r.Gate.Version}}
+}
+
+// Require commits a claimed review_requirement node's result: its params
+// as its conclusions (Reviews.Require).
+type Require struct{ Node Versioned }
+
+func (Require) action() string    { return ReviewAction }
+func (r Require) subject() string { return r.Node.ID }
+func (r Require) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: r.Node.ID, Version: r.Node.Version}}
+}
+
+// ReviewUnblock re-derives a review's roster held reviewer_unavailable
+// (Reviews.Unheld).
+type ReviewUnblock struct{ Held Held }
+
+func (ReviewUnblock) action() string    { return ReviewAction }
+func (r ReviewUnblock) subject() string { return r.Held.Node.ID }
+func (r ReviewUnblock) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: r.Held.Node.ID, Version: r.Held.Node.Version}}
 }
 
 // Reseal starts the controller's seals of the build attempts claimed
@@ -335,12 +383,45 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	}
 	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
 	day := graph.RailSignal(graph.RailDayUSD)
+	reviews := g.Evaluates && g.Reviews
+	var gate Versioned
+	reviewed := false                   // the task has a review node, in any state
+	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
+	var claimedReqs []Versioned
+	var heldReqs []Held
 	for _, n := range nodes {
 		if err != nil || n.Task != admitted {
 			continue
 		}
 		v := Versioned{ID: string(n.Node.ID)}
+		reviewed = reviewed || n.Node.Kind == types.NodeKindReview
+		if n.Node.Kind == types.NodeKindReview && n.State.State != types.NodeStateStateSuperseded {
+			for _, in := range n.Node.Inputs {
+				if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+					required[src.Producer] = true
+				}
+			}
+		}
 		switch st := n.State.State; {
+		case st == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindGate:
+			gate.ID = v.ID
+		case st == types.NodeStateStateClaimed && reviews && n.Node.Kind == types.NodeKindReviewRequirement:
+			v.Version, err = tx.SubjectVersion(v.ID)
+			claimedReqs = append(claimedReqs, v)
+		case st == types.NodeStateStateHeld && reviews && (n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement) &&
+			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewerUnavailable }):
+			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
+				break
+			}
+			for _, h := range n.State.Holds {
+				switch {
+				case h.Hold != vocab.HoldReviewerUnavailable:
+				case n.Node.Kind == types.NodeKindReview:
+					s.ReviewHeld = append(s.ReviewHeld, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
+				default:
+					heldReqs = append(heldReqs, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
+				}
+			}
 		case st == types.NodeStateStateRunnable || st == types.NodeStateStateWaiting:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Open = append(s.Open, v)
@@ -360,19 +441,20 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindPlan:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Plans = append(s.Plans, v)
-		case st == types.NodeStateStateClaimed && g.Evaluates && slices.Contains(Placed, n.Node.Kind):
+		case st == types.NodeStateStateClaimed && g.Evaluates && (slices.Contains(Placed, n.Node.Kind) || reviews && n.Node.Kind == types.NodeKindReview):
 			var free bool
 			if free, err = dispatch.Unplaced(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
 				v.Version, err = tx.SubjectVersion(v.ID)
 				s.Unplaced = append(s.Unplaced, v)
-			} else if err == nil {
+			} else if err == nil && slices.Contains(Placed, n.Node.Kind) { // a granted review's run is 22a-6c's
 				var l types.LeaseID
 				if l, free, err = granted(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
 					v.Version, err = tx.SubjectVersion(v.ID)
 					s.Granted = append(s.Granted, Granted{Node: v, Lease: l})
 				}
 			}
-		case st == types.NodeStateStateHeld && g.Evaluates && (slices.Contains(Placed, n.Node.Kind) || slices.Contains(ControllerRun, n.Node.Kind)):
+		case st == types.NodeStateStateHeld && g.Evaluates && (slices.Contains(Placed, n.Node.Kind) || slices.Contains(ControllerRun, n.Node.Kind) ||
+			reviews && n.Node.Kind == types.NodeKindReview):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
 				break
 			}
@@ -385,6 +467,20 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 				}
 			}
 		}
+	}
+	for _, v := range claimedReqs { // only one a live review takes, never an orphan (Opus 22a-6a M1)
+		if required[types.NodeID(v.ID)] {
+			s.Requirements = append(s.Requirements, v)
+		}
+	}
+	for _, h := range heldReqs { // a held requirement a live review waits on (Opus 22a-6a re-check H1)
+		if required[types.NodeID(h.Node.ID)] {
+			s.ReviewHeld = append(s.ReviewHeld, h)
+		}
+	}
+	if err == nil && reviews && gate.ID != "" && !reviewed {
+		gate.Version, err = tx.SubjectVersion(gate.ID)
+		s.Reviewable = gate
 	}
 	return s, err
 }
@@ -433,6 +529,15 @@ func Decide(s Snapshot) []Action {
 		for _, n := range s.Gated {
 			out = append(out, Gate{Node: n})
 		}
+		if s.Reviewable.ID != "" {
+			out = append(out, RecordReview{Gate: s.Reviewable})
+		}
+		for _, n := range s.Requirements {
+			out = append(out, Require{Node: n})
+		}
+		for _, h := range s.ReviewHeld {
+			out = append(out, ReviewUnblock{Held: h})
+		}
 		if len(s.Unsealed) > 0 {
 			out = append(out, Reseal{Nodes: slices.Clone(s.Unsealed)})
 		}
@@ -461,6 +566,23 @@ type Executor struct {
 	// Acceptor starts accept nodes' runs (adcd's); nil starts none: Accept
 	// changes nothing.
 	Acceptor Acceptor
+	// Reviews records and re-derives the review nodes (adcd's); nil
+	// records none: RecordReview, Require and ReviewUnblock change nothing.
+	Reviews Reviews
+}
+
+// Reviews is what RecordReview, Require and ReviewUnblock do, in the
+// action's command (P22a-6a).
+type Reviews interface {
+	// Record records the review nodes of gate's task: a review_requirement
+	// and a review, rostered by the registry now.
+	Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Event, error)
+	// Require commits node's result, a claimed review requirement's.
+	Require(tx *eventstore.Tx, node types.NodeID) error
+	// Unheld clears node's reviewer_unavailable hold (hold, on signal), or
+	// supersedes node onto an independent roster, once the registry now
+	// gives one: nothing otherwise.
+	Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error)
 }
 
 // Acceptor is what Accept and Gate do, outside any command: the
@@ -578,6 +700,27 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 				return nil, errNoPlacer
 			}
 			return x.Placer.Reopened(tx, types.NodeID(a.Held.Node.ID), a.Held.Hold)
+		}
+	case RecordReview:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if x.Reviews == nil {
+				return nil, errNothing
+			}
+			return x.Reviews.Record(tx, types.NodeID(a.Gate.ID))
+		}
+	case Require:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if x.Reviews == nil {
+				return nil, errNothing
+			}
+			return nil, x.Reviews.Require(tx, types.NodeID(a.Node.ID))
+		}
+	case ReviewUnblock:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if x.Reviews == nil {
+				return nil, errNothing
+			}
+			return x.Reviews.Unheld(tx, types.NodeID(a.Held.Node.ID), a.Held.Hold, a.Held.Signal)
 		}
 	case Unblock:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {

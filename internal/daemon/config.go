@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -215,12 +216,26 @@ func (c Config) Validate() error {
 	if _, err := capacity.NewReservations(c.Groups); err != nil {
 		return configError("the resource groups break a capacity rule or use one not wired yet")
 	}
+	var reg registry.Registry
 	if c.Registry != nil {
-		if _, err := registry.New(*c.Registry, c.Groups); err != nil {
+		var err error
+		if reg, err = registry.New(*c.Registry, c.Groups); err != nil {
 			return configError(err.Error()) // fixed text: a rule and an index
 		}
 	}
+	if reviewActive() && len(reg.Executors(types.RegistryExecutorRoleReviewer)) == 0 {
+		// Mythos #337 L2: with no registry every executor's family is
+		// unknown, so every review would hold reviewer_not_independent.
+		return configError("review is active: --registry is required, with a reviewer registered")
+	}
 	return nil
+}
+
+// reviewActive reports whether the review capability is active; a test
+// makes it so.
+var reviewActive = func() bool {
+	c, _ := capability.Of("review")
+	return c.Active()
 }
 
 // readGroups reads a JSON array of resource groups, each checked against

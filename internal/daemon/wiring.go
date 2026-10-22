@@ -73,14 +73,19 @@ const reconcileEvery = 5 * time.Second
 // reconciler is adcd's reconcile loop, a pass every every (0:
 // reconcileEvery): it admits only while the admission capability is active
 // (Opus #312 L4), and evaluates the admitted task's nodes only once launch
-// is active, under adcd's Env (env).
+// is active, under adcd's Env (env), and records and places its review only
+// once review is active too (P22a-6a).
 func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, creds dispatch.Credentials, run *runner, every time.Duration, logw io.Writer) *reconcile.Loop {
 	admission, _ := capability.Of("admission")
 	launch, _ := capability.Of("launch")
 	if every == 0 {
 		every = reconcileEvery
 	}
-	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+	if len(reg.Executors(types.RegistryExecutorRoleReviewer)) == 0 { // Mythos #337 L2, while review is inactive: stated at start
+		fmt.Fprintln(logw, "adcd: reviews hold until a registry with a reviewer is given (--registry)")
+	}
+	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active(), Reviews: reviewActive()},
+		every, logw)
 	if run != nil {
 		run.done = l.Nudge
 	}
@@ -100,6 +105,7 @@ func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 	if run != nil {
 		x.Runner, x.Acceptor = run, run
 	}
+	x.Reviews = reviews{reg: reg, env: x.Env}
 	return x
 }
 
@@ -146,13 +152,17 @@ func env(d *Daemon, reg registry.Registry) graph.Env {
 }
 
 // noRequirement are the inputs M1(a) resolves with no requirement, by the
-// consuming node's kind and the kind of result the input takes: the build
+// consuming node's kind and the kinds of result its inputs take: the build
 // takes the plan, accept the build's patch, the gate accept's tree, each
 // whole (P14a); the plan takes none (Opus #325 L6).
-var noRequirement = map[types.NodeKind]types.ResultKind{
-	types.NodeKindBuild:  types.ResultKindPlan,
-	types.NodeKindAccept: types.ResultKindPatch,
-	types.NodeKindGate:   types.ResultKindTree,
+var noRequirement = map[types.NodeKind][]types.ResultKind{
+	types.NodeKindBuild:  {types.ResultKindPlan},
+	types.NodeKindAccept: {types.ResultKindPatch},
+	types.NodeKindGate:   {types.ResultKindTree},
+	// The review (P22a-6a): the plan (the requirement review.Prompt
+	// renders) and the candidate's patch, each its task's selected result;
+	// its requirement is bound by graph.bindsRequirement, never here.
+	types.NodeKindReview: {types.ResultKindPlan, types.ResultKindPatch},
 }
 
 // needs are M1(a)'s requirements, an allow-list: an input noRequirement
@@ -160,7 +170,7 @@ var noRequirement = map[types.NodeKind]types.ResultKind{
 // requirement left out. The review capability (22a-6) adds its inputs.
 func needs(n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
 	if src, ok := in.Source.Variant.(*types.ResultSource); ok {
-		if kind, known := noRequirement[n.Kind]; known && src.ResultKind == kind {
+		if slices.Contains(noRequirement[n.Kind], src.ResultKind) {
 			return nil, nil
 		}
 	}

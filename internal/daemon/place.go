@@ -135,7 +135,7 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	if err != nil {
 		return dispatch.Card{}, "", err
 	}
-	if !slices.Contains(reconcile.Placed, v.Node.Kind) {
+	if !slices.Contains(reconcile.Placed, v.Node.Kind) && v.Node.Kind != types.NodeKindReview {
 		return dispatch.Card{}, "", fmt.Errorf("daemon: a %s node is not placed on an executor", v.Node.Kind)
 	}
 	prof, ok, err := authority.ProjectProfile(tx, v.Project)
@@ -156,6 +156,13 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	}
 	card := dispatch.Card{Node: node, Project: v.Project, Policy: prof.DataPolicy, PolicyDigest: pd, Image: image, Priority: prof.Priority,
 		Deadline: types.Time(tx.Now().Add(attemptBound).UTC().Format(time.RFC3339))}
+	if v.Node.Kind == types.NodeKindReview { // its pinned roster member, the reviewer the registry derived when it was recorded (P22a-6a)
+		params, err := v.Node.ParamsAsReviewNodeParams()
+		if err != nil || len(params.Roster) == 0 {
+			return card, "", errors.Join(err, fmt.Errorf("daemon: review %s has no roster", node))
+		}
+		return card, params.Roster[0].Executor, nil
+	}
 	builders := p.d.Registry.Executors(types.RegistryExecutorRoleBuilder)
 	if len(builders) == 0 {
 		return card, "", &placeConfig{"registry", "no builder is registered (adcd run --registry)"}
