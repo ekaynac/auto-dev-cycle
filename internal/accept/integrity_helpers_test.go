@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -379,6 +380,54 @@ func TestAlias2(t *testing.T) {
 }
 `
 
+// regFile is Astra #384 H1's input: assertions registered through blank
+// package initializers.
+const regFile = `package pkg
+
+import "testing"
+
+var checks []func(*testing.T)
+
+func register(f func(*testing.T)) bool {
+	checks = append(checks, f)
+	return true
+}
+
+var _ = register(func(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("first")
+	}
+	if Add(2, 2) != 4 {
+		t.Fatal("second")
+	}
+})
+
+var _ = register(func(t *testing.T) {
+	if Add(3, 2) != 5 {
+		t.Fatal("third")
+	}
+})
+
+var (
+	_ = register(func(t *testing.T) {
+		if Add(5, 0) != 5 {
+			t.Fatal("g1")
+		}
+	})
+	_ = register(func(t *testing.T) {
+		if Add(6, 0) != 6 {
+			t.Fatal("g2")
+		}
+	})
+)
+
+func TestRegistered(t *testing.T) {
+	for _, check := range checks {
+		check(t)
+	}
+}
+`
+
 // TestIntegrityHelpers (P14d-w1b, #226 entries 122, 129, 134): a function of
 // the test files whose own direct assertions the head reduces blocks,
 // whether a test reaches it or not; an assertion under a branch a constant
@@ -389,7 +438,7 @@ func TestAlias2(t *testing.T) {
 func TestIntegrityHelpers(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/alias_test.go": aliasFile, "pkg/cycle_test.go": cycleFile, "pkg/more_test.go": moreFile,
+		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/alias_test.go": aliasFile, "pkg/cycle_test.go": cycleFile, "pkg/more_test.go": moreFile, "pkg/reg_test.go": regFile,
 			"pkg/race_h_test.go": raceNeedX("race", 2), "pkg/norace_h_test.go": raceNeedX("!race", 1), "pkg/race_r_test.go": raceTestR("race"), "pkg/norace_r_test.go": raceTestR("!race")})
 		plain(t, src, "add", "--all")
 	})
@@ -407,6 +456,7 @@ func TestIntegrityHelpers(t *testing.T) {
 	}
 	inner2Base := "func outer2(t *testing.T) {\n\tinner2(t)\n\trenRun(t)\n}\n\nfunc inner2(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"in1\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"in2\")\n\t}\n}\n"
 	inner2Head := "func outer2(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"in1\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"in2\")\n\t}\n\trenRun(t)\n}\n"
+	regBlanks := regFile[strings.Index(regFile, "var _ = "):strings.Index(regFile, "func TestRegistered")]
 	fives := []string{"\tif Add(5, 0) != 5 {\n\t\tt.Fatal(\"five\")\n\t}\n", "\tif Add(5, 1) != 6 {\n\t\tt.Fatal(\"six\")\n\t}\n", "\tif Add(5, 2) != 7 {\n\t\tt.Fatal(\"seven\")\n\t}\n"}
 	one := "\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n"
 	weakened := "a helper's assertions weakened"
@@ -449,6 +499,15 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a helper renamed weaker, a t.Run name (accepted, stated)":    {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renRun(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"run\")\n\t}\n}\n", "func renRun2(t *testing.T) {}\n", "t.Run(\"a\", renRun)", "t.Run(\"a\", renRun2)", "\trenRun(t)\n", "\trenRun2(t)\n").Replace(moreFile)}, stated},
 		"a helper renamed weaker, a direct call (accepted, stated)":   {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renTwo(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"two\")\n\t}\n", "func renOne(t *testing.T) {\n", "renTwo(t) }", "renOne(t) }").Replace(moreFile)}, stated},
 		"a helper inlined beside an existing one and deleted (clean)": {in("pkg/more_test.go", moreFile, inner2Base, inner2Head), ""},
+		// Astra #384 H1: a package's blank initializers, one entry, their sum.
+		"one of a group of blank initializers removed": {in("pkg/reg_test.go", regFile, "\t\tif Add(5, 0) != 5 {\n\t\t\tt.Fatal(\"g1\")\n\t\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"every blank initializer removed":              {in("pkg/reg_test.go", regFile, regBlanks, ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 0)"},
+		"a blank initializer's assertion removed":      {in("pkg/reg_test.go", regFile, "\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"one of two blank initializers removed":        {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"two blank initializers reordered (clean)":     {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n"), ""},
+		// Astra #384 L3: a clause reached by fallthrough from a non-constant
+		// clause, read as dead by main's markDead: a stated false block.
+		"a clause fallen into from a non-constant clause (stated false block)": {edit("func checkCase(t *testing.T) {\n"+one, "func checkCase(t *testing.T) {\n\tswitch {\n\tcase Add(1, 2) != 3:\n\t\tfallthrough\n\tcase false:\n\t\tt.Fatal(\"bad\")\n\t}\n"), "pkg:pkg.checkCase " + weakened + " (1 → 0)"},
 		// Stated (P14d-w2): renames, fields and embeddings, a default never
 		// selected (main's markDead, unchanged).
 		"a helper renamed weaker two hops down, behind a var (accepted, stated)": {in("pkg/more_test.go", moreFile, "func hop(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"hop\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"hop2\")\n\t}\n}\n\nfunc hopWrap(t *testing.T) { hop(t) }\n\nvar hopVar = hopWrap\n", "func hop2(t *testing.T) {}\n\nfunc hopWrap2(t *testing.T) { hop2(t) }\n\nvar hopVar = hopWrap2\n"), stated},
@@ -494,6 +553,11 @@ func TestIntegrityHelpers(t *testing.T) {
 		if v := f.guarded(t, files); !v.Accepted() || !finds(v.Warnings, "pkg:pkg."+name+" an assertion, its condition or a test case changed") {
 			t.Errorf("%s's helper call inlined weaker: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	// A blank initializer gaining an assertion: no block of this layer's
+	// (main's initialization layer refuses the new call it cannot resolve).
+	if v := f.guarded(t, in("pkg/reg_test.go", regFile, "\t\tt.Fatal(\"third\")\n\t}\n", "\t\tt.Fatal(\"third\")\n\t}\n\tif Add(4, 2) != 6 {\n\t\tt.Fatal(\"fourth\")\n\t}\n")); finds(v.Blocks, "blank package initializers") {
+		t.Errorf("a blank initializer gains an assertion: %q", whats(v.Blocks))
 	}
 	// A helper with no assertions of its own removed while its name is still
 	// used: no block (its calls are not followed).
@@ -591,5 +655,66 @@ func TestIntegrityHelpersDeterministic(t *testing.T) {
 		} else if !slices.Equal(got, first) {
 			t.Errorf("run %d differs from run 0: %q, %q", run, got, first)
 		}
+	}
+}
+
+// TestIntegrityHelpersNamespace (Astra #384 M2): a package and platform's
+// namespace is built once a scan, its declarations keyed within it by
+// their short identities: a long package name and many helpers charge
+// linearly, by a deterministic count.
+func TestIntegrityHelpersNamespace(t *testing.T) {
+	charged := func(length, n int, helper ...string) int64 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "package p%s\n\nimport \"testing\"\n", strings.Repeat("a", length))
+		for i := range n {
+			fmt.Fprintf(&b, "\nfunc h%s%d(t *testing.T) {}\n", strings.Join(helper, ""), i)
+		}
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{"big/big_test.go": b.String()})
+			plain(t, src, "add", "--all")
+		})
+		before := caseCharged.Load()
+		if v := f.guarded(t, map[string]string{"big/big_test.go": b.String() + "\n// x\n"}); !v.Accepted() {
+			t.Errorf("length %d, %d helpers: %q", length, n, whats(v.Blocks))
+		}
+		return caseCharged.Load() - before
+	}
+	small, large := charged(25_000, 2_500), charged(100_000, 10_000)
+	if large > 5*small {
+		t.Errorf("charged %d, then %d at four times the name and the helpers: not linear", small, large)
+	}
+	// The namespace is charged once a scan: a longer package name, by its
+	// bytes at least.
+	if d := charged(100_000, 1) - charged(1, 1); d < 100_000 {
+		t.Errorf("a 100,000-byte package name charged %d more", d)
+	}
+	// So is each declaration's short identity: ten 10,000-byte names.
+	if d := charged(1, 10, strings.Repeat("b", 10_000)) - charged(1, 10); d < 100_000 {
+		t.Errorf("ten 10,000-byte helper names charged %d more", d)
+	}
+}
+
+// TestIntegrityHelpersFindingCharge (Astra #384 M2): each entry compared,
+// and each finding's bytes, are charged; past the bound, the namespace is
+// unverifiable.
+func TestIntegrityHelpersFindingCharge(t *testing.T) {
+	old := maxCaseWork
+	t.Cleanup(func() { maxCaseWork = old })
+	ns, msg := "p d:n", "a helper's assertions weakened (1 → 0)"
+	b := pkgFacts{helpers: map[string]map[string][]fnStat{ns: {"h": {{live: 1, short: "h"}}}}}
+	a := pkgFacts{helpers: map[string]map[string][]fnStat{ns: {"h": {{short: "h"}}}}}
+	add := func(bs *[]Block, k, w string) { *bs = append(*bs, Block{Path: k, What: w}) }
+	maxCaseWork = 1 << 30
+	r := &run{ctx: context.Background()}
+	r.compareHelpers(add, b, a)
+	if want := 1 + len(ns) + len("h") + len(msg); r.caseWork != want || !finds(r.blocks, ns+".h "+msg) {
+		t.Errorf("charged %d, want %d; blocks %q", r.caseWork, want, whats(r.blocks))
+	}
+	maxCaseWork = 1
+	r = &run{ctx: context.Background()}
+	r.compareHelpers(add, b, a)
+	if !finds(r.blocks, ns+" unverifiable: test helpers' findings past the guard's work bound") || finds(r.blocks, msg) {
+		t.Errorf("past the bound: %q", whats(r.blocks))
 	}
 }

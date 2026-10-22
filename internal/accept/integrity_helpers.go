@@ -31,6 +31,9 @@ import (
 //   - A helper with assertions at the base that the head no longer
 //     declares blocks while its name is still used in the directory's test
 //     files ("a helper with assertions removed while still used").
+//   - A package's blank initializers (var _ = …) are one entry, their sum
+//     (Astra #384 H1): a fall blocks ("blank package initializers'
+//     assertions fell").
 //   - Each test file's declarations are read in one pass, each node charged
 //     to the case layer's bound (r.caseWork) before it is read; past it, or
 //     cancelled, the file is unverifiable.
@@ -40,9 +43,11 @@ import (
 // parameter ([T testing.TB]); assertions under a default clause never
 // selected; totals across calls; testify's. False blocks (main accepts
 // them): a body extracted into a new helper; an unused helper weakened; a
-// helper moved whole, under its name, into a package (non-test) file, or
-// between pkg and its external pkg_test; a value derived from t (main's
-// tval) whose Error method call is removed.
+// blank initializer moved to another package; a clause reached by
+// fallthrough from any reachable predecessor, read as dead by main's
+// markDead; a helper moved whole, under its name, into a package
+// (non-test) file, or between pkg and its external pkg_test; a value
+// derived from t (main's tval) whose Error method call is removed.
 
 // fnStat is one declaration's own direct assertions on one platform: live,
 // and dead (under branches never taken); the name a use of it spells (a
@@ -53,14 +58,30 @@ type fnStat struct {
 	plat, short string
 }
 
+// blankKey is a package's blank initializers (var _ = …), one entry, their
+// sum (Astra #384 H1). A space: no identifier spells it.
+const blankKey = "var _"
+
 // helperFacts records d, a declaration of a test file, on platform plat:
 // each function's own direct assertions, each package var's (its whole
-// value), and every name d uses.
+// value), the blank initializers' sum, and every name d uses. The
+// package and platform's namespace is built once a scan and charged; a
+// declaration is keyed in it by its short identity (Astra #384 M2).
 func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.Decl) {
 	if s.cs.dead == nil {
 		s.cs.dead = map[ast.Node]bool{}
 	}
-	key := func(short string) string { return plat + " " + dir + ":" + name + "." + short }
+	if s.helperNS == "" {
+		s.helperNS = plat + " " + dir + ":" + name
+		s.caseCharge(len(s.helperNS))
+	}
+	if fa.helpers[s.helperNS] == nil {
+		fa.helpers[s.helperNS] = map[string][]fnStat{}
+	}
+	if fa.names[plat] == nil {
+		fa.names[plat] = map[string]bool{}
+	}
+	fns, names := fa.helpers[s.helperNS], fa.names[plat]
 	var walk func(root ast.Node, dead bool, st *fnStat)
 	walk = func(root ast.Node, dead bool, st *fnStat) {
 		ast.Inspect(root, func(n ast.Node) bool {
@@ -75,7 +96,7 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 			switch x := n.(type) {
 			case *ast.Ident:
 				if s.info.Defs[x] == nil {
-					fa.names[plat+" "+x.Name] = true
+					names[x.Name] = true
 				}
 			case *ast.CallExpr:
 				if s.direct(x) {
@@ -85,13 +106,13 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 			return true
 		})
 	}
-	stats := map[string]fnStat{}
+	stats, blank := map[string]fnStat{}, fnStat{plat: plat, short: "_"}
 	switch x := d.(type) {
 	case *ast.FuncDecl:
 		st := fnStat{plat: plat, short: x.Name.Name, test: x.Recv == nil && goTest(x.Name.Name)}
 		walk(x, false, &st)
-		if x.Body != nil {
-			stats[key(declKey(x))] = st
+		if short := declKey(x); x.Body != nil && s.caseCharge(len(short)) {
+			stats[short] = st
 		}
 	case *ast.GenDecl:
 		for _, sp := range x.Specs {
@@ -104,10 +125,17 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 				walk(v, false, &sts[i])
 			}
 			for i, id := range vs.Names {
-				if len(sts) > 0 && id.Name != "_" { // var a, b = f(): each name the one value's
-					st := sts[min(i, len(sts)-1)]
+				st := fnStat{}
+				if len(sts) > 0 { // var a, b = f(): each name the one value's
+					st = sts[min(i, len(sts)-1)]
+				}
+				switch {
+				case len(sts) == 0:
+				case id.Name == "_":
+					blank.live, blank.dead = blank.live+st.live, blank.dead+st.dead
+				default:
 					st.plat, st.short = plat, id.Name
-					stats[key(id.Name)] = st
+					stats[id.Name] = st
 				}
 			}
 		}
@@ -119,7 +147,14 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 		return
 	}
 	for _, k := range keys(stats) {
-		fa.helpers[k] = append(fa.helpers[k], stats[k])
+		fns[k] = append(fns[k], stats[k])
+	}
+	if blank.live+blank.dead > 0 { // summed over the package's files on plat
+		if fns[blankKey] == nil {
+			fns[blankKey] = []fnStat{{plat: plat, short: "_"}}
+		}
+		fns[blankKey][0].live += blank.live
+		fns[blankKey][0].dead += blank.dead
 	}
 }
 
@@ -135,25 +170,55 @@ func liveDead(sts []fnStat) (live, dead int) {
 
 // compareHelpers blocks a function of the test files whose own live
 // assertions the head reduced, or that the head removed while its name is
-// still used; a test whose own assertions the head made dead.
-func compareHelpers(add func(*[]Block, string, string), blocks *[]Block, b, a pkgFacts) {
-	for _, k := range keys(b.helpers) {
-		bs := b.helpers[k]
-		bl, bd := liveDead(bs)
-		as, ok := a.helpers[k]
-		switch {
-		case !ok:
-			if !bs[0].test && bl > 0 && a.names[bs[0].plat+" "+bs[0].short] {
-				add(blocks, k, "a helper with assertions removed while still used")
-			}
-		case bs[0].test:
-			if al, ad := liveDead(as); ad > bd && al < bl {
-				add(blocks, k, fmt.Sprintf("a test's assertions made dead (%d → %d live)", bl, al))
-			}
-		default:
-			if al, _ := liveDead(as); al < bl {
-				add(blocks, k, fmt.Sprintf("a helper's assertions weakened (%d → %d)", bl, al))
+// still used; a test whose own assertions the head made dead; a package's
+// blank initializers whose live assertions fell. Each entry, and each
+// finding's bytes, are charged to the case layer's bound; past it, or
+// cancelled, the namespace is unverifiable.
+func (r *run) compareHelpers(add func(*[]Block, string, string), b, a pkgFacts) {
+	charge := func(n int) bool {
+		r.caseWork += n
+		caseCharged.Add(int64(n))
+		return r.caseWork <= maxCaseWork && r.ctx.Err() == nil
+	}
+	for _, ns := range keys(b.helpers) {
+		bh, ah := b.helpers[ns], a.helpers[ns]
+		for _, short := range keys(bh) {
+			if msg := helperFinding(short, bh[short], ah, a.names); !charge(1) || msg != "" && !charge(len(ns)+len(short)+len(msg)) {
+				add(&r.blocks, ns, "unverifiable: test helpers' findings past the guard's work bound")
+				return
+			} else if msg != "" {
+				add(&r.blocks, ns+"."+short, msg)
 			}
 		}
 	}
+}
+
+// helperFinding is what bs, a function's base declarations, show against
+// the head's ah ("": nothing).
+func helperFinding(short string, bs []fnStat, ah map[string][]fnStat, names map[string]map[string]bool) string {
+	bl, bd := liveDead(bs)
+	as, ok := ah[short]
+	switch {
+	case short == blankKey: // all of them gone: none
+		al := 0
+		if ok {
+			al, _ = liveDead(as)
+		}
+		if al < bl {
+			return fmt.Sprintf("blank package initializers' assertions fell (%d → %d)", bl, al)
+		}
+	case !ok:
+		if !bs[0].test && bl > 0 && names[bs[0].plat][bs[0].short] {
+			return "a helper with assertions removed while still used"
+		}
+	case bs[0].test:
+		if al, ad := liveDead(as); ad > bd && al < bl {
+			return fmt.Sprintf("a test's assertions made dead (%d → %d live)", bl, al)
+		}
+	default:
+		if al, _ := liveDead(as); al < bl {
+			return fmt.Sprintf("a helper's assertions weakened (%d → %d)", bl, al)
+		}
+	}
+	return ""
 }

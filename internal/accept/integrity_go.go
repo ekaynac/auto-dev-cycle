@@ -324,6 +324,7 @@ type pkgScan struct {
 	aliasMemo map[types.Object]int8     // possiblyTesting's memo per alias: 1 testing, 2 not, 3 being followed
 	skipBad   string                    // why the skip layer's facts are unknown (its bound): its tests unverifiable
 	skipNames map[string]bool           // the skipping helpers' names: an unbound use counts (Astra #356 H1)
+	helperNS  string                    // P14d-w1b: this package and platform's namespace, built once (Astra #384 M2)
 	skipErr   error                     // a done context, seen in the signatures' classification
 	skipSteps int                       // classification steps, for the context's check
 }
