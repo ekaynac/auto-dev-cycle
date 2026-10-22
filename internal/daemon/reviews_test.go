@@ -245,3 +245,64 @@ func TestTheRosterIsIndependentOfTheContributors(t *testing.T) {
 		t.Errorf("the roster with a contributor's family among the reviewers: %+v (%v)", p.Roster, err)
 	}
 }
+
+// Opus 22a-6a H1: two restarts with other families, the second right after
+// the first's supersession (its replacement recorded, not yet claimed):
+// each re-derivation records the next revision of the review's own
+// requirement and supersedes onto it in one command, so the replacement is
+// claimed on the last roster, and no pass refuses a review action.
+func TestTwoRestartsSupersedeOntoTheLastRoster(t *testing.T) {
+	rw := gateCompleted(t)
+	rw.reviewing(stubRegistry(t, nil, nil))
+	rw.passesFor(t, 2, 0)
+	rw.reviewing(stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-b"}))
+	rw.passesFor(t, 2, 0) // held, then superseded onto revision 2: its replacement waits for it
+	var log bytes.Buffer
+	rw.reviewing(stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-c"}))
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, &log)
+	rw.passesFor(t, 10, 0)
+	review := reviewNodes(rw)[types.NodeKindReview]
+	p, err := review.Node.ParamsAsReviewNodeParams()
+	if err != nil || len(p.Roster) != 1 || p.Roster[0].Family != "fam-c" || review.State.State != types.NodeStateStateClaimed {
+		t.Fatalf("the review after two restarts: %s, roster %+v (%v), holds %+v", review.State.State, p.Roster, err, review.State.Holds)
+	}
+	if strings.Contains(log.String(), "reconcile.review refused") {
+		t.Errorf("a review action was refused: %s", log.String())
+	}
+}
+
+// Opus 22a-6a M1: the loop commits only a requirement a review that is not
+// superseded takes: a claimed requirement node no review takes (an orphan)
+// is never given to Require.
+func TestAnOrphanRequirementIsNotCommitted(t *testing.T) {
+	rw := gateCompleted(t)
+	reg := stubRegistry(t, nil, nil)
+	rw.reviewing(reg)
+	rw.passesFor(t, 2, 0)
+	roster, err := graph.Roster([]types.ExecutorID{stubReviewer}, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := reviews{reg: reg}.requirement(rw.task, graphProject, roster, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.w.try(rw.w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) { return graph.RecordReview(orphan, reg) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.ClaimReview(tx, orphan.Node.ID, map[string]graph.Resolved{}, 1, reg)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var s reconcile.Snapshot
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		s, err = reconcile.Observe(tx, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true})
+		return err
+	})
+	for _, v := range s.Requirements {
+		if v.ID == string(orphan.Node.ID) {
+			t.Errorf("the orphan requirement is given to Require: %+v", s.Requirements)
+		}
+	}
+}

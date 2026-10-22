@@ -29,8 +29,11 @@ package daemon
 // exactly its params. A review held reviewer_unavailable clears by itself
 // (Unheld, each pass, the Unblock pattern): with the registry now
 // (a restart's), the same roster independent clears the hold; another
-// independent roster is recorded as the requirement's next revision, then
-// the review superseded onto it (graph.Supersede), each in its own pass.
+// independent roster is recorded as the next revision of the review's own
+// requirement and the review superseded onto it, in one command
+// (graph.SupersedeOnto; Opus 22a-6a H1). A roster that changes after the
+// claim is caught at the commit (graph.reviewIndependent, 22a-6c; stated,
+// Opus 22a-6a L2).
 
 import (
 	"encoding/json"
@@ -207,27 +210,27 @@ func (r reviews) Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID,
 	if slices.Equal(now, p.Roster) {
 		return graph.Clear(tx, node, hold, signal)
 	}
-	nodes, err := graph.TaskNodes(tx, v.Task)
+	was, err := heldRequirement(tx, v.Node)
 	if err != nil {
 		return nil, err
 	}
-	var revision int64
-	for _, n := range nodes {
-		if n.Node.Kind != types.NodeKindReviewRequirement {
-			continue
-		}
-		q, err := n.Node.ParamsAsReviewRequirement()
-		if err != nil {
-			return nil, err
-		}
-		if slices.Equal(q.Roster, now) {
-			return graph.Supersede(tx, node, n.Node.ID, r.reg) // its requirement recorded: supersede onto it
-		}
-		revision = max(revision, q.Revision)
-	}
-	req, err := r.requirement(v.Task, v.Project, now, revision+1)
+	req, err := r.requirement(v.Task, v.Project, now, was.Revision+1) // its own revision's next, never the task's highest (Opus 22a-6a H1)
 	if err != nil {
 		return nil, err
 	}
-	return graph.RecordReview(req, r.reg)
+	return graph.SupersedeOnto(tx, node, req, r.reg) // one command: no requirement revision is recorded without its review
+}
+
+// heldRequirement is the requirement review takes.
+func heldRequirement(tx *eventstore.Tx, review types.Node) (types.ReviewRequirement, error) {
+	for _, in := range review.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+			n, err := graph.ViewOf(tx, src.Producer)
+			if err != nil {
+				return types.ReviewRequirement{}, err
+			}
+			return n.Node.ParamsAsReviewRequirement()
+		}
+	}
+	return types.ReviewRequirement{}, fmt.Errorf("daemon: review %s takes no requirement", review.ID)
 }

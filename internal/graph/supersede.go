@@ -176,10 +176,33 @@ func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, families Famil
 // SupersedeMoving is Supersede, with the answer inputs of moves replaced;
 // auth tells which questions moved.
 func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
+	req, err := loadNode(tx, requirement)
+	if err != nil {
+		return nil, err
+	}
+	return supersedeOnto(tx, pred, req.Recorded.Node, families, moves, auth)
+}
+
+// SupersedeOnto records requirement, a review_requirement node of pred's
+// subject at pred's requirement's next revision with another roster
+// (RecordReview), and supersedes pred onto it, in one command: no revision
+// is ever recorded without the supersession that moves to it (P22a-6a,
+// Opus 22a-6a H1).
+func SupersedeOnto(tx *eventstore.Tx, pred types.NodeID, requirement types.NodeRecorded, families Families) ([]eventstore.Event, error) {
+	recorded, err := RecordReview(requirement, families)
+	if err != nil {
+		return nil, err
+	}
+	evs, err := supersedeOnto(tx, pred, requirement.Node, families, nil, nil)
+	return append(recorded, evs...), err
+}
+
+// supersedeOnto is SupersedeMoving onto req, the requirement node.
+func supersedeOnto(tx *eventstore.Tx, pred types.NodeID, req types.Node, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
+	requirement := req.ID
 	rec, err := loadNode(tx, pred)
-	req, rerr := loadNode(tx, requirement)
 	id, ierr := ids.New("nod")
-	if err = errors.Join(err, rerr, ierr); err != nil {
+	if err = errors.Join(err, ierr); err != nil {
 		return nil, err
 	}
 	if err := superseded(rec); err != nil && !mutation.Is(mutation.SupersedeTwice) {
@@ -188,8 +211,8 @@ func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, families
 	if err := errors.Join(unclaimed(tx, rec), revisionFenced(tx, rec)); err != nil { // as the fold refuses it, before any attempt is stopped
 		return nil, err
 	}
-	p, err := req.Recorded.Node.ParamsAsReviewRequirement()
-	if err != nil || req.Recorded.Node.Kind != types.NodeKindReviewRequirement {
+	p, err := req.ParamsAsReviewRequirement()
+	if err != nil || req.Kind != types.NodeKindReviewRequirement {
 		return nil, errors.Join(err, fmt.Errorf("graph: %s is no review requirement", requirement))
 	}
 	n := rec.Recorded.Node

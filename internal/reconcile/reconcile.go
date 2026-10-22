@@ -162,8 +162,9 @@ type Snapshot struct {
 	Unsealed []Versioned
 	// Reviewable is the admitted task's completed gate when the task has no
 	// review node yet (ID "": none): its review is recorded (RecordReview).
-	// Requirements are its claimed review_requirement nodes, and
-	// ReviewHeld its review nodes held reviewer_unavailable (P22a-6a).
+	// Requirements are its claimed review_requirement nodes a review that
+	// is not superseded takes, and ReviewHeld its review nodes held
+	// reviewer_unavailable (P22a-6a).
 	Reviewable   Versioned
 	Requirements []Versioned
 	ReviewHeld   []Held
@@ -383,19 +384,28 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	day := graph.RailSignal(graph.RailDayUSD)
 	reviews := g.Evaluates && g.Reviews
 	var gate Versioned
-	reviewed := false // the task has a review node, in any state
+	reviewed := false                   // the task has a review node, in any state
+	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
+	var claimedReqs []Versioned
 	for _, n := range nodes {
 		if err != nil || n.Task != admitted {
 			continue
 		}
 		v := Versioned{ID: string(n.Node.ID)}
 		reviewed = reviewed || n.Node.Kind == types.NodeKindReview
+		if n.Node.Kind == types.NodeKindReview && n.State.State != types.NodeStateStateSuperseded {
+			for _, in := range n.Node.Inputs {
+				if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+					required[src.Producer] = true
+				}
+			}
+		}
 		switch st := n.State.State; {
 		case st == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindGate:
 			gate.ID = v.ID
 		case st == types.NodeStateStateClaimed && reviews && n.Node.Kind == types.NodeKindReviewRequirement:
 			v.Version, err = tx.SubjectVersion(v.ID)
-			s.Requirements = append(s.Requirements, v)
+			claimedReqs = append(claimedReqs, v)
 		case st == types.NodeStateStateHeld && reviews && n.Node.Kind == types.NodeKindReview &&
 			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewerUnavailable }):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
@@ -450,6 +460,11 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 					s.PlacingHeld = append(s.PlacingHeld, held)
 				}
 			}
+		}
+	}
+	for _, v := range claimedReqs { // only one a live review takes, never an orphan (Opus 22a-6a M1)
+		if required[types.NodeID(v.ID)] {
+			s.Requirements = append(s.Requirements, v)
 		}
 	}
 	if err == nil && reviews && gate.ID != "" && !reviewed {
