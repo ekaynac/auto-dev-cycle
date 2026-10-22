@@ -150,9 +150,11 @@ func reviewNode(task types.TaskID, project types.ProjectID, plan, build, gate, r
 //   - its accept and gate (graph.Checked, the template's);
 //   - and their review, recorded now, before that gate completes (Opus
 //     22a-6c L1): it takes the requirement node's review takes, on its
-//     roster, so no requirement revision is recorded again. shortcut: a
-//     roster the registry no longer derives refuses the command (logged
-//     each start); a restart's registry decides it, as at the claim.
+//     roster, so no requirement revision is recorded again. A roster the
+//     registry no longer derives is recorded all the same
+//     (graph.RecordRoundReview): the review is held reviewer_unavailable at
+//     its claim, and Unheld clears it or supersedes it onto an independent
+//     roster, so the task is never left stuck unheld (Main, 6d).
 //
 // The task's round rail (rounds_per_task) holds the successor before its
 // claim (graph's roundRail).
@@ -195,7 +197,7 @@ func (r reviews) Repair(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Even
 	if err != nil {
 		return nil, err
 	}
-	more, err := graph.RecordReview(review, r.reg)
+	more, err := graph.RecordRoundReview(tx, review, r.reg) // a roster the registry no longer gives: held at its claim, never a stalled repair
 	return append(evs, more...), err
 }
 

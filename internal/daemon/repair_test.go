@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // round is the task's nodes of one build round: the build, the accept and
@@ -199,4 +201,69 @@ func TestAnUnreviewableVerdictRepairsTheBuild(t *testing.T) {
 	if p := string(prompt); !strings.Contains(p, "It could not be reviewed:") || !strings.Contains(p, "over 524288 bytes") {
 		t.Errorf("the repair builder's prompt: %s", p)
 	}
+}
+
+// Main (6d): a registry change between a no_go and its repair never leaves
+// the task stuck unheld. The repair records at once, its review on its
+// requirement's roster, which the registry no longer gives
+// (graph.RecordRoundReview); round 2 runs, its review is held
+// reviewer_unavailable at its claim (graph.HoldNotIndependent), and
+// reviews.Unheld supersedes it onto the registry's independent roster,
+// which is claimed and run. No review action is refused in any pass.
+func TestARegistryChangeBeforeARepairIsHeldNotStuck(t *testing.T) {
+	rw, _ := reviewRun(t, noGoDecision)
+	rw.reviewRunning(stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-b"}), reviewer(noGoDecision, false, nil))
+	var log bytes.Buffer
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, &log)
+	rw.passesFor(t, 1, 0)
+	if two := roundOf(t, rw, 2); two.build.Node.ID == "" || two.review.Node.ID == "" {
+		t.Fatalf("the repair did not record: %+v", two)
+	}
+	held, onB := false, false
+	for range 30 {
+		rw.passesFor(t, 1, 0)
+		two := roundOf(t, rw, 2)
+		held = held || slices.ContainsFunc(two.review.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewerUnavailable })
+		p, _ := two.review.Node.ParamsAsReviewNodeParams()
+		if onB = len(p.Roster) == 1 && p.Roster[0].Family == "fam-b" &&
+			(two.review.State.State == types.NodeStateStateClaimed || two.review.State.State == types.NodeStateStateCompleted); onB {
+			break
+		}
+	}
+	if !held || !onB {
+		t.Fatalf("round 2's review: held %v, then on fam-b %v (%s)", held, onB, roundOf(t, rw, 2).review.State.State)
+	}
+	if strings.Contains(log.String(), "refused") {
+		t.Errorf("an action was refused: %s", log.String())
+	}
+}
+
+// graph.RecordRoundReview records an unregistered roster only when it is
+// its recorded requirement's: a round review on another roster is refused.
+func TestARoundReviewOnAnotherRosterIsRefused(t *testing.T) {
+	rw, _ := reviewRun(t, noGoDecision)
+	one := roundOf(t, rw, 1)
+	plan, _ := producerOfView(t, rw, one.review.Node.ID, types.ResultKindPlan)
+	required, _ := producerOfView(t, rw, one.review.Node.ID, types.ResultKindReviewRequirement)
+	other := []types.RosterMember{{Executor: stubReviewer, Family: "fam-x"}}
+	r, err := reviewNode(rw.task, graphProject, plan, one.build.Node.ID, one.gate.Node.ID, required, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.RecordRoundReview(tx, r, rw.r.env.Families)
+	}); err == nil || !strings.Contains(err.Error(), "not its recorded requirement") {
+		t.Errorf("a round review on another roster: %v", err)
+	}
+}
+
+// producerOfView is producerOf in a view of rw's store.
+func producerOfView(t *testing.T, rw *runWorld, node types.NodeID, kind types.ResultKind) (types.NodeID, error) {
+	t.Helper()
+	var p types.NodeID
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		p, err = producerOf(tx, node, kind)
+		return err
+	})
+	return p, nil
 }
