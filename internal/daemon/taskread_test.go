@@ -374,6 +374,16 @@ func (c *commanded) adcWithin(d time.Duration, tok string, args ...string) (int,
 // for, 5 when its timeout passes first, 1 for a task not read and 64 for a
 // state that is none or no task given; adc task show of no task is
 // refused.
+//
+// The cancel may find the private socket's bearer verifications full
+// (defaultLimits.private.verify, 2): a read holds its slot through its
+// Argon2id hash and its whole read, the background wait reads every 100 ms,
+// and a read a timed-out wait abandoned holds its slot until its hash
+// ends. A full gate refuses at once, never queued: HTTP 503 with
+// Retry-After and nothing decided (#226 entry 125), which adc reports as
+// could_not_run with the key to repeat. So the cancel is repeated with the
+// same idempotency key, after its Retry-After, at most cancelTries times,
+// and only on that refusal: it is decided once.
 func TestTaskShowAndWait(t *testing.T) {
 	var running, done, ready types.TaskID
 	var attempt types.AttemptID
@@ -413,13 +423,27 @@ func TestTaskShowAndWait(t *testing.T) {
 	}
 	waited := make(chan int, 1)
 	go func() {
-		code, _, _ := c.adcWithin(5*time.Second, op, "task", "wait", string(ready), "--until", "closed", "--every", "100ms")
+		code, _, _ := c.adcWithin(15*time.Second, op, "task", "wait", string(ready), "--until", "closed", "--every", "100ms")
 		waited <- code
 	}()
 	time.Sleep(300 * time.Millisecond)
 	scope := fmt.Sprintf(`{"task":%q}`, ready)
-	if code, out, errb := c.adc(op, "task", "cancel", "--expect", fmt.Sprint(readyAt), "--reason", "r", "--json", "--scope", scope); code != entry.ExitOK {
-		t.Fatalf("the cancel: %d %s %s", code, out, errb)
+	const cancelTries = 5
+	key := "cancel-" + newID(t, "cmd")
+	for try := 1; ; try++ {
+		code, out, errb := c.adc(op, "task", "cancel", "--expect", fmt.Sprint(readyAt), "--reason", "r", "--json", "--scope", scope, "--idempotency-key", key)
+		if code == entry.ExitOK {
+			// Never a replay: a refusal that decided nothing left nothing to replay.
+			if a, ok := response(t, out).(*types.CommandApplied); !ok || a.Disposition != "applied" || a.Replayed {
+				t.Fatalf("the cancel, try %d: %s", try, out)
+			}
+			break
+		}
+		if try == cancelTries || code != entry.ExitCouldNotRun || !strings.Contains(errb, "HTTP 503 without a command response") {
+			t.Fatalf("the cancel, try %d of %d: %d %s %s\nthe controller's log:\n%s", try, cancelTries, code, out, errb, c.logs.String())
+		}
+		t.Logf("the cancel, try %d: HTTP 503 without a command response; repeating it with its key", try)
+		time.Sleep(time.Second) // the refusal's Retry-After
 	}
 	if code := <-waited; code != entry.ExitOK {
 		t.Errorf("a wait the task closes during: %d", code)
