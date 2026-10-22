@@ -300,8 +300,8 @@ func (e *evaluation) receipts(rec nodeRecord, answered map[string]Resolved) (hel
 		e.evs = append(e.evs, evs...)
 	}
 	for _, m := range missing {
-		if s := receiptSignal(m); want[s] {
-			if err := e.holdReceipt(rec, s); err != nil {
+		if want[receiptSignal(m)] {
+			if err := e.holdReceipt(rec, m); err != nil {
 				return true, err
 			}
 			held = true
@@ -310,12 +310,14 @@ func (e *evaluation) receipts(rec nodeRecord, answered map[string]Resolved) (hel
 	return held, nil
 }
 
-// holdReceipt raises awaiting_receipt on rec, on signal.
-func (e *evaluation) holdReceipt(rec nodeRecord, signal string) error {
+// holdReceipt raises awaiting_receipt on rec for m, a refused input, on its
+// receiptSignal.
+func (e *evaluation) holdReceipt(rec nodeRecord, m Missing) error {
 	id, err := ids.New("hld")
 	if err != nil {
 		return err
 	}
+	signal := receiptSignal(m)
 	evs, err := Raise(e.tx, rec.Recorded.Node.ID, types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldAwaitingReceipt, SignalInstance: signal,
 		Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
 	e.evs = append(e.evs, evs...)
@@ -326,8 +328,8 @@ func (e *evaluation) holdReceipt(rec nodeRecord, signal string) error {
 // awaiting_receipt for each result input refused (receipts).
 func (e *evaluation) await(rec nodeRecord, missing []Missing) error {
 	for _, m := range missing {
-		if s := receiptSignal(m); s != "" {
-			if err := e.holdReceipt(rec, s); err != nil {
+		if receiptSignal(m) != "" {
+			if err := e.holdReceipt(rec, m); err != nil {
 				return err
 			}
 			continue
