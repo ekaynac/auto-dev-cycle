@@ -85,6 +85,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/node.json`](records-node.md) | Node |
 | [`records/note.json`](records-note.md) | Note |
 | [`records/owed-input.json`](records-owed-input.md) | OwedInput |
+| [`records/plan-brief.json`](records-plan-brief.md) | PlanBrief |
 | [`records/proposal.json`](records-proposal.md) | Proposal |
 | [`records/rail-raised.json`](records-rail-raised.md) | RailRaised |
 | [`records/receipt.json`](records-receipt.md) | Receipt |

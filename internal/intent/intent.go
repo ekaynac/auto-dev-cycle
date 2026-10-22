@@ -73,6 +73,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/brief"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -93,6 +94,10 @@ var (
 	// ErrConsumer: a recorded intent's task, attempt or role is not its
 	// consumer's.
 	ErrConsumer = errors.New("intent: a recorded intent's task, attempt or role is not its consumer's")
+	// ErrNotTheBrief: a plan node's ref that is not the plan brief of the
+	// task's own spec, a root (#226 entry 117): refused as an input, or as
+	// an ancestor, whatever the walk.
+	ErrNotTheBrief = fmt.Errorf("%w: a plan node's ref is not its task's own brief", ErrAcceptanceInput)
 )
 
 // The walk's bounds, per intent (var: tests lower them).
@@ -113,11 +118,13 @@ type Records struct {
 	reviewed   map[types.Digest]bool
 	acceptance []types.Digest // nil: not read
 	safe       func(graph.RefRecord) (bool, error)
+	brief      func(graph.RefRecord) error // a plan node's ref: nil when it is the task's own brief
 }
 
 // Load is task's Records in tx: graph.Records (with the controller's extra
-// refs), the acceptance its own record holds, and blobs, which hold the
-// declassified outputs verify reads.
+// refs), the acceptance its own record holds, the task's own plan brief
+// (its digest and its project's restriction), and blobs, which hold the
+// declassified outputs verify reads. A task with no record is an error.
 func Load(tx *eventstore.Tx, blobs receipt.Blobs, task types.TaskID, extra ...types.Ref) (Records, error) {
 	rec, err := graph.Records(tx, task, extra...)
 	if err != nil {
@@ -134,11 +141,94 @@ func Load(tx *eventstore.Tx, blobs receipt.Blobs, task types.TaskID, extra ...ty
 	for d, ok := range rec.Reviewed {
 		reviewed[d] = ok
 	}
-	return Records{resolve: rec.Resolve, reviewed: reviewed, acceptance: append([]types.Digest{}, acc...), safe: verifier(blobs, rec.Resolve)}, nil
+	b, err := ownBrief(tx, task)
+	if err != nil {
+		return Records{}, err
+	}
+	return Records{resolve: rec.Resolve, reviewed: reviewed, acceptance: append([]types.Digest{}, acc...), safe: verifier(blobs, rec.Resolve),
+		brief: b.check(blobs)}, nil
 }
 
 // loaded is whether r are Load's.
-func (r Records) loaded() bool { return r.resolve != nil && r.acceptance != nil && r.safe != nil }
+func (r Records) loaded() bool {
+	return r.resolve != nil && r.acceptance != nil && r.safe != nil && r.brief != nil
+}
+
+// own is the task's own plan brief (#226 entry 117; Opus 22a-5c-3 H1, M1;
+// r2 M1, L2): its project, the restriction its ref must carry (the
+// project's data policy now, brief.Restriction over the recorded bytes),
+// and its digest (brief.Of over the task's record and that policy, which
+// binds the task, its spec digest, title and requirement and the policy's
+// digest, as bytes). With no adopted profile (noPolicy), or a task record
+// that makes no brief, a record of no spec (noBrief), there is no own
+// brief: refused only once a plan node's ref is met.
+type own struct {
+	project     types.ProjectID
+	digest      types.Digest
+	restriction types.Restriction
+	noPolicy    error
+	noBrief     error
+}
+
+// ownBrief is task's own brief in tx: a task with no record, and a record
+// or a profile the store cannot read or decode, is an error (r2 L1).
+func ownBrief(tx *eventstore.Tx, task types.TaskID) (own, error) {
+	t, err := authority.TaskOf(tx, task)
+	if err != nil {
+		return own{}, err
+	}
+	o := own{project: t.Project}
+	policy, ok, err := authority.ProjectDataPolicy(tx, t.Project)
+	switch {
+	case err != nil:
+		return own{}, err
+	case !ok:
+		o.noPolicy = fmt.Errorf("project %s has no adopted profile", t.Project)
+		return o, nil
+	}
+	if o.restriction, err = brief.Restriction(t.Project, policy); err != nil {
+		return own{}, err
+	}
+	_, o.digest, o.noBrief = brief.Of(t, o.restriction.PolicyDigest)
+	return o, nil
+}
+
+// check is the plan-brief check of the task's records: a plan node's ref
+// is honoured only as the task's own brief, a root blob in the task's
+// project's scope whose id is its content digest and whose content digest
+// is the own brief's (so its bytes are exactly the brief of the task's spec
+// under the project's data policy now: never another task's, another
+// spec's, a requirement that differs, another policy's, or other bytes of
+// the same fields), with exactly that policy as its one restriction. A
+// policy changed since the plan refuses the brief; no re-plan exists, so
+// the recovery today is to revoke the task's approval, which abandons it.
+// The bytes are read as an integrity check.
+func (o own) check(blobs receipt.Blobs) func(graph.RefRecord) error {
+	return func(rec graph.RefRecord) error {
+		switch {
+		case rec.Type != types.RefTypeBlob || len(rec.Lineage) != 0 || rec.ID != string(rec.ContentDigest):
+			return fmt.Errorf("%w: %s is not a root blob", ErrNotTheBrief, rec.ID)
+		case rec.Project != o.project || rec.Framework:
+			return fmt.Errorf("%w: %s is not in the task's project's scope alone", ErrNotTheBrief, rec.ID)
+		case o.noPolicy != nil:
+			return fmt.Errorf("%w: %s: no data policy to check it against: %w", ErrNotTheBrief, rec.ID, o.noPolicy)
+		case o.noBrief != nil:
+			return fmt.Errorf("%w: %s: the task's record makes no brief: %w", ErrNotTheBrief, rec.ID, o.noBrief)
+		case rec.ContentDigest != o.digest:
+			return fmt.Errorf("%w: %s is not the brief of the task's spec under its project's data policy", ErrNotTheBrief, rec.ID)
+		case len(rec.Restrictions) != 1 || !graph.SameRestriction(rec.Restrictions[0], o.restriction):
+			return fmt.Errorf("%w: %s does not carry its project's data policy as its restriction", ErrNotTheBrief, rec.ID)
+		}
+		_, ok, err := readBlob(blobs, rec.ContentDigest)
+		switch {
+		case err != nil:
+			return err
+		case !ok:
+			return fmt.Errorf("%w: %s's bytes are not its digest's, or over %d bytes", ErrNotTheBrief, rec.ID, maxSafeBytes)
+		}
+		return nil
+	}
+}
 
 // Resolve is id's record, its declassifications the verified ones only.
 func (r Records) Resolve(id string) (graph.RefRecord, bool, error) {
@@ -387,6 +477,7 @@ type walk struct {
 	role              string
 	records           graph.RefRecords
 	safe              func(graph.RefRecord) (bool, error) // a declassification candidate verified
+	brief             func(graph.RefRecord) error         // a plan node's ref checked as the task's brief
 	hidden            map[string]bool                     // acceptance digests
 	walked            map[string]bool                     // ids scheduled: queued or resolved, each counted once
 	shallow           map[string]bool                     // inputs declassified, so not expanded: expanded when reached as an ancestor
@@ -396,7 +487,7 @@ type walk struct {
 }
 
 func newWalk(r Records, role string) *walk {
-	w := &walk{role: role, records: r.resolve, safe: r.safe, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
+	w := &walk{role: role, records: r.resolve, safe: r.safe, brief: r.brief, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
 	for _, d := range r.acceptance {
 		w.hidden[string(d)] = true
 	}
@@ -418,7 +509,11 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 			return rec, err
 		}
 	}
-	if rec.ContentDigest != r.ContentDigest || !slices.Equal(rec.Lineage, r.Lineage) {
+	// The input as listed is its record: its bytes, lineage, scope and
+	// restrictions, so no copy of a record under fewer restrictions or
+	// another scope passes as it (Mythos 22a-5c-3 M1).
+	if rec.ContentDigest != r.ContentDigest || !slices.Equal(rec.Lineage, r.Lineage) || rec.Project != graph.ScopeProject(r.Scope) ||
+		rec.Framework != r.Scope.Framework || !slices.EqualFunc(rec.Restrictions, r.Restrictions, graph.SameRestriction) {
 		return rec, fmt.Errorf("%w: %s is not the input its record names", ErrAncestryUnresolved, r.ID)
 	}
 	if done {
@@ -460,6 +555,10 @@ func (w *walk) resolve(input, id string) (graph.RefRecord, error) {
 		return rec, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
 	case w.hidden[string(rec.ContentDigest)]:
 		return rec, fmt.Errorf("%w: %s (ancestor %s holds acceptance %s)", ErrAcceptanceInput, input, id, rec.ContentDigest)
+	case rec.Producer == types.NodeKindPlan:
+		if err := w.brief(rec); err != nil {
+			return rec, fmt.Errorf("%s (ancestor %s): %w", input, id, err)
+		}
 	}
 	w.resolved[id] = rec
 	return rec, nil

@@ -44,14 +44,17 @@ func (s *store) resolve(id string) (graph.RefRecord, bool, error) {
 	return r, ok, nil
 }
 
+// project is the scope of every ref of these tests.
+const project = types.ProjectID("prj_01m3250vkwffc979nzjw0gpym1")
+
 func rec(id, d string, producer types.NodeKind, lineage ...string) graph.RefRecord {
-	return graph.RefRecord{ID: id, ContentDigest: digest(d), Lineage: append([]string{}, lineage...), Producer: producer}
+	return graph.RefRecord{ID: id, ContentDigest: digest(d), Lineage: append([]string{}, lineage...), Producer: producer, Project: project}
 }
 
 // ref is r's sealed ref, as a context renders it.
 func ref(t *testing.T, r graph.RefRecord) types.Ref {
 	t.Helper()
-	p := types.ProjectID("prj_01m3250vkwffc979nzjw0gpym1")
+	p := project
 	s, err := knowledge.Seal(types.Ref{Type: types.RefTypeBlob, ID: r.ID, Scope: types.RefScope{Project: &p},
 		Lineage: r.Lineage, Restrictions: []types.Restriction{}, ContentDigest: r.ContentDigest})
 	if err != nil {
@@ -82,7 +85,8 @@ func in(t *testing.T, s *store, inputs ...graph.RefRecord) In {
 // declassification candidate verified (verifier's own rows are the
 // fixtures').
 func (s *store) records() Records {
-	return Records{resolve: s.resolve, reviewed: s.reviewed, acceptance: []types.Digest{digest(acceptance)}, safe: func(graph.RefRecord) (bool, error) { return true, nil }}
+	return Records{resolve: s.resolve, reviewed: s.reviewed, acceptance: []types.Digest{digest(acceptance)}, safe: func(graph.RefRecord) (bool, error) { return true, nil },
+		brief: func(graph.RefRecord) error { return nil }}
 }
 
 // roles are both intents, by role.

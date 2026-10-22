@@ -126,6 +126,14 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	if err != nil || !ok {
 		return dispatch.Card{}, "", errors.Join(err, fmt.Errorf("daemon: node %s's project %s has no profile", node, v.Project))
 	}
+	policy, _, err := authority.ProjectDataPolicy(tx, v.Project)
+	if err != nil {
+		return dispatch.Card{}, "", err
+	}
+	pd, err := authority.PolicyDigest(policy)
+	if err != nil {
+		return dispatch.Card{}, "", err
+	}
 	if len(prof.Toolchain.Images) != 1 {
 		return dispatch.Card{}, "", &placeConfig{"profile " + string(v.Project), fmt.Sprintf("project %s pins %d toolchain images; M1 places on exactly one", v.Project, len(prof.Toolchain.Images))}
 	}
@@ -133,7 +141,7 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	for _, img := range prof.Toolchain.Images {
 		image = string(img)
 	}
-	card := dispatch.Card{Node: node, Project: v.Project, Policy: prof.DataPolicy, Image: image, Priority: prof.Priority,
+	card := dispatch.Card{Node: node, Project: v.Project, Policy: prof.DataPolicy, PolicyDigest: pd, Image: image, Priority: prof.Priority,
 		Deadline: types.Time(tx.Now().Add(attemptBound).UTC().Format(time.RFC3339))}
 	builders := p.d.Registry.Executors(types.RegistryExecutorRoleBuilder)
 	if len(builders) == 0 {
