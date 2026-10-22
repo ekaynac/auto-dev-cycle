@@ -33,7 +33,6 @@ import (
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
-	"github.com/ekaynac/auto-dev-cycle/internal/brief"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -89,11 +88,11 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 			if err != nil {
 				return PromptContext{}, err
 			}
-			pb, err := brief.Decode(b)
+			p, err := briefPrompt(v[0], b)
 			if err != nil {
 				return PromptContext{}, err
 			}
-			in.Requirement = string(brief.Prompt(pb))
+			in.Requirement = string(p)
 		case k == types.ResultKindPatch && len(v) == 0: // patch/empty: no diff, and no ref (Astra chunk 3 M2)
 			empty = true
 		case k == types.ResultKindPatch && len(v) == 1:

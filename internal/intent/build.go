@@ -62,11 +62,10 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 			if err != nil {
 				return PromptContext{}, err
 			}
-			pb, err := brief.Decode(b)
-			if err != nil { // its bytes are its digest's (readBlob): no brief, the content's (Astra chunk 4b M1)
-				return PromptContext{}, fmt.Errorf("%w: %s: %w", ErrNotTheBrief, v[0].ID, err)
+			p, err := briefPrompt(v[0], b)
+			if err != nil {
+				return PromptContext{}, err
 			}
-			p := brief.Prompt(pb)
 			prompt.Write(p)
 			out.Included, out.Bytes[v[0].IdentityDigest] = append(out.Included, v[0]), int64(len(p))
 			listed[v[0].IdentityDigest] = string(names[i])
@@ -127,6 +126,17 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		return PromptContext{}, fmt.Errorf("%w: the prompt is over %d bytes", ErrUnbound, MaxPrompt)
 	}
 	return out, nil
+}
+
+// briefPrompt is the prompt of ref's brief, b its bytes (readBlob's: its
+// digest's). Bytes that do not decode are no brief: the content's,
+// ErrNotTheBrief, held at once, never the host's (Astra chunk 4b M1).
+func briefPrompt(ref types.Ref, b []byte) ([]byte, error) {
+	pb, err := brief.Decode(b)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrNotTheBrief, ref.ID, err)
+	}
+	return brief.Prompt(pb), nil
 }
 
 // roundOf is the round an input named findings-<n> or candidate-<n> is of
