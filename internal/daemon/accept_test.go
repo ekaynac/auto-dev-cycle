@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -429,21 +432,91 @@ func TestASealThatNeverLandsIsHeld(t *testing.T) {
 	}
 }
 
-// Astra chunk 1 H2: the guard that did not run (here, a go list run the
-// sandbox did not start) is the controller's, never the candidate's
-// refusal: could_not_run/controller_run_failed recorded with no attempt,
-// nothing selected, and the node held for a bounded retry.
-func TestAGuardThatDidNotRunCouldNotRun(t *testing.T) {
-	rw := goTestWorld(t)
-	v := rw.accepting(t, func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
-		return nil, fmt.Errorf("%w: go list did not run in the sandbox: %w", accept.ErrGuardRun, sandbox.ErrHost)
-	})
-	got := resultsOn(t, rw.w, v.Node.ID)
-	if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 ||
-		!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) ||
-		len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonControllerRunFailed ||
-		!strings.Contains(got[0].Result.Detail, "did not run") {
-		t.Errorf("accept after its guard did not run: %s, holds %+v, results %+v", v.State.State, v.State.Holds, got)
+// podmanStub is the sandbox's podman: run ends with run, rm with rm.
+type podmanStub struct{ run, rm error }
+
+func (p podmanStub) Run(_ context.Context, _ string, args, _ []string) ([]byte, error) {
+	switch {
+	case slices.Contains(args, "run"):
+		return nil, p.run
+	case slices.Contains(args, "rm"):
+		return nil, p.rm
+	}
+	return nil, nil
+}
+
+// exitOf is a real exit error: code, or -1 for a process killed.
+func exitOf(t *testing.T, code int) error {
+	t.Helper()
+	script := fmt.Sprintf("exit %d", code)
+	if code < 0 {
+		script = "kill -KILL $$"
+	}
+	err := exec.Command("sh", "-c", script).Run()
+	if err == nil {
+		t.Fatalf("no exit error for %d", code)
+	}
+	return err
+}
+
+// Astra chunk 1 H2 and round 2 (Lead decision, #226 entry 147): the
+// guard's go list runs through the real sandbox (accept.SandboxLister,
+// sandbox.Host.Start) on a podman stub. Only positive evidence against the
+// candidate is its refusal: go list exiting 1 on its code is
+// failed/test_integrity_violation, selected. Everything else is the
+// controller's: could_not_run/controller_run_failed with no attempt and a
+// bounded retry hold, never the profile's:
+//   - the run's attempt not made (its runs/ not writable, as ENOSPC);
+//   - a mount the sandbox refuses (a comma in its path: sandbox.ErrSpec);
+//   - podman's client killed (-1);
+//   - a good run whose container's removal exits 1 (sandbox.ErrCleanup).
+func TestOnlyTheCandidatesOwnFailureIsItsRefusal(t *testing.T) {
+	for name, c := range map[string]struct {
+		root    string // under its /dev/shm directory
+		podman  podmanStub
+		lockRun bool // runs/ not writable
+		refusal bool
+	}{
+		"go list exited 1 on its code": {root: "sbx", podman: podmanStub{run: exitOf(t, 1)}, refusal: true},
+		"the attempt not made":         {root: "sbx", lockRun: true},
+		"a mount the sandbox refuses":  {root: "s,bx"},
+		"its client killed":            {root: "sbx", podman: podmanStub{run: exitOf(t, -1)}},
+		"a good run, rm exiting 1":     {root: "sbx", podman: podmanStub{rm: exitOf(t, 1)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rw := goTestWorld(t)
+			shm, err := os.MkdirTemp("/dev/shm", "adclist")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(filepath.Join(shm, c.root, "runs"), 0o700); os.RemoveAll(shm) })
+			h := sandbox.Host{Podman: "/usr/bin/podman", Root: filepath.Join(shm, c.root), Home: "/home/adc-gate-test", Runner: c.podman}
+			if err := os.MkdirAll(filepath.Join(h.Root, "runs"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if c.lockRun {
+				if err := os.Chmod(filepath.Join(h.Root, "runs"), 0o500); err != nil {
+					t.Fatal(err)
+				}
+			}
+			img := sandbox.Image{Pinned: "localhost/adc/go@sha256:" + strings.Repeat("1", 64), ID: strings.Repeat("b", 64), OS: runtime.GOOS, Arch: runtime.GOARCH}
+			lister := accept.SandboxLister(h, img, listLimits)
+			v := rw.accepting(t, lister)
+			got := resultsOn(t, rw.w, v.Node.ID)
+			if c.refusal {
+				if v.State.State != types.NodeStateStateCompleted || len(got) != 1 || got[0].Result.Outcome != types.OutcomeFailed ||
+					got[0].Result.Reason != vocab.ReasonTestIntegrityViolation {
+					t.Errorf("go list failing on the candidate: %s, results %+v", v.State.State, got)
+				}
+				return
+			}
+			if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 ||
+				!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) ||
+				len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun ||
+				got[0].Result.Reason != vocab.ReasonControllerRunFailed {
+				t.Errorf("accept after its guard did not run: %s, holds %+v, results %+v", v.State.State, v.State.Holds, got)
+			}
+		})
 	}
 }
 

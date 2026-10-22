@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -26,6 +27,41 @@ var ErrSpec = errors.New("sandbox: run refused")
 // ErrLeft marks a run that ran and left more than its bounds, or what
 // cannot be measured (within): what it did, not a refusal to start it.
 var ErrLeft = errors.New("sandbox: the run left more than its bounds")
+
+// ErrBound marks a copy-out or walk refused at its bound (bytes, entries,
+// levels): what the run wrote is past it.
+var ErrBound = errors.New("sandbox: past its bound")
+
+// ErrCleanup marks the removal of a run's container failing after the run
+// (podman rm): the controller's, reported apart from the run's own end.
+var ErrCleanup = errors.New("sandbox: the run's container was not removed")
+
+// WorkloadExit is a run's workload's own exit status, observed (Lead
+// decision, #226 entry 147): podman run returned it as its own status,
+// 1-124, or 128 and above for a signal the workload's process got, within
+// the run's timeout. The client's own termination (killed: -1; podman's
+// failures: 125-127), a run cut at its timeout, and cleanup are never one.
+// Err is podman's exit error.
+type WorkloadExit struct {
+	Code int
+	Err  error
+}
+
+func (e *WorkloadExit) Error() string { return fmt.Sprintf("sandbox: the workload exited %d", e.Code) }
+func (e *WorkloadExit) Unwrap() error { return e.Err }
+
+// workload is err, podman run's, as a WorkloadExit when it is one (cut:
+// the run's timeout ended it).
+func workload(err error, cut bool) error {
+	var exit *exec.ExitError
+	if cut || !errors.As(err, &exit) {
+		return err
+	}
+	if c := exit.ExitCode(); c >= 1 && c <= 124 || c >= 128 && c <= 255 {
+		return &WorkloadExit{Code: c, Err: err}
+	}
+	return err
+}
 
 // Limits bound one run.
 type Limits struct {
@@ -182,9 +218,12 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 	defer cancelRm()
 	_, rmErr := h.podman(rm, "rm", "--force", "--ignore", "--time=0", name)
 	r.Attempt.unsafe = rmErr != nil
+	if rmErr != nil { // reported apart: never the workload's status
+		rmErr = fmt.Errorf("%w: %w", ErrCleanup, rmErr)
+	}
 	// What a run left is bounded whatever its outcome: a failed or
 	// timed-out run fills runs/ as well as a clean one.
-	return out, errors.Join(err, run.Err(), rmErr, r.Attempt.within(r.Limits.Disk))
+	return out, errors.Join(workload(err, run.Err() != nil), run.Err(), rmErr, r.Attempt.within(r.Limits.Disk))
 }
 
 // within refuses an attempt that holds more than disk bytes, maxEntries
@@ -252,7 +291,7 @@ func walk(fsys fs.FS, dir string, limit int, fn func(p string, d fs.DirEntry) er
 			batch, err := rd.ReadDir(maxBatch)
 			for _, d := range batch {
 				if entries++; limit > 0 && entries > limit {
-					return fmt.Errorf("%w: more than %d entries", ErrSpec, maxEntries)
+					return fmt.Errorf("%w: %w: more than %d entries", ErrSpec, ErrBound, maxEntries)
 				}
 				p := path.Join(dir, d.Name())
 				ferr := fn(p, d)
@@ -376,7 +415,7 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 	return walk(root.FS(), ".", maxEntries, func(p string, d fs.DirEntry) error {
 		switch {
 		case strings.Count(p, "/") >= maxDepth:
-			return fmt.Errorf("%w: more than %d levels", ErrSpec, maxDepth)
+			return fmt.Errorf("%w: %w: more than %d levels", ErrSpec, ErrBound, maxDepth)
 		case skip != nil && skip(d.Name()):
 			return fs.SkipDir // a .git directory or file: neither is copied
 		case d.IsDir():
@@ -409,7 +448,7 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 		}
 		n, err := io.Copy(out, io.LimitReader(in, budget+1))
 		if budget -= n; err == nil && budget < 0 {
-			err = fmt.Errorf("%w: more than %d bytes", ErrSpec, maxBytes)
+			err = fmt.Errorf("%w: %w: more than %d bytes", ErrSpec, ErrBound, maxBytes)
 		}
 		return errors.Join(err, out.Close())
 	})

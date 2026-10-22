@@ -623,6 +623,8 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 	case !dirs:
 	case errors.Is(cause, errImageMissing):
 		signal = runnerImage
+	case errors.Is(cause, accept.ErrGuardRun): // a guard that did not run: a bounded retry, whatever it wraps (a sandbox.ErrSpec included; #226 entry 147)
+		n, signal = r.retrySignal(tx, node)
 	case configFault(cause):
 		d, _, err := authority.ProjectProfileDigest(tx, v.Project)
 		if err != nil {
@@ -632,14 +634,7 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 	case contentFault(cause):
 		signal = runnerFailed
 	default:
-		r.mu.Lock()
-		n = r.tries[node] + 1
-		r.mu.Unlock()
-		signal = runnerFailed
-		if n < maxTries {
-			until := tx.Now().Add(retryBase << (n - 1)).UTC().Format(time.RFC3339Nano)
-			signal = reconcile.RunnerSignal(fmt.Sprintf("retry %d until %s", n, until))
-		}
+		n, signal = r.retrySignal(tx, node)
 	}
 	id, err := ids.New("hld")
 	if err != nil {
@@ -680,6 +675,19 @@ func (r *runner) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) 
 		return rerr == nil, nil
 	}
 	return false, nil
+}
+
+// retrySignal is node's next bounded retry: its count, and "retry <n>
+// until <time>", or "failed" once maxTries are spent.
+func (r *runner) retrySignal(tx *eventstore.Tx, node types.NodeID) (int, string) {
+	r.mu.Lock()
+	n := r.tries[node] + 1
+	r.mu.Unlock()
+	if n >= maxTries {
+		return n, runnerFailed
+	}
+	until := tx.Now().Add(retryBase << (n - 1)).UTC().Format(time.RFC3339Nano)
+	return n, reconcile.RunnerSignal(fmt.Sprintf("retry %d until %s", n, until))
 }
 
 // raise is graph.Raise; a test makes it fail.

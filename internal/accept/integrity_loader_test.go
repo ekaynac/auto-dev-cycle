@@ -562,6 +562,10 @@ func (b *localBox) Start(ctx context.Context, r sandbox.Run) ([]byte, error) {
 	if err == nil && b.mutate != nil {
 		b.mutate(r.Attempt.Results())
 	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) { // as sandbox.Host.Start reports the workload's own status
+		err = &sandbox.WorkloadExit{Code: exit.ExitCode(), Err: err}
+	}
 	return out, err
 }
 
@@ -609,39 +613,43 @@ func TestSandboxLister(t *testing.T) {
 			_ = os.WriteFile(filepath.Join(r, "list"), regexp.MustCompile(re).ReplaceAll(b, []byte(to)), 0o600)
 		}
 	}
+	// A listing whose output is wrong with no bound broken is no evidence
+	// against the candidate: the guard did not run (ErrGuardRun; #226 entry
+	// 147). A bound its run broke is the candidate's: a block.
 	for name, c := range map[string]struct {
 		mutate func(results string)
 		why    string
+		noRun  bool
 	}{
 		"another release": {func(r string) { _ = os.WriteFile(filepath.Join(r, "version"), []byte("go1.0\n"), 0o600) },
-			"the toolchain is \"go1.0\", not the guard's " + runtime.Version()},
-		"export data not copied out": {relist(`\t/[^\t]*-d\t`, "\t/etc/passwd\t"), "its export data not copied out"},
-		"a listed path elsewhere":    {relist(`\t/[^\t]*/([^/\t]*-d)\t`, "\t/nonexistent/$1\t"), ""},
-		"an unreadable list":         {func(r string) { _ = os.WriteFile(filepath.Join(r, "list"), []byte("fmt\n"), 0o600) }, "an unreadable list"},
+			"the toolchain is \"go1.0\", not the guard's " + runtime.Version(), true},
+		"export data not copied out": {relist(`\t/[^\t]*-d\t`, "\t/etc/passwd\t"), "its export data not copied out", false},
+		"a listed path elsewhere":    {relist(`\t/[^\t]*/([^/\t]*-d)\t`, "\t/nonexistent/$1\t"), "", false},
+		"an unreadable list":         {func(r string) { _ = os.WriteFile(filepath.Join(r, "list"), []byte("fmt\n"), 0o600) }, "an unreadable list", true},
 		// Astra #287 H2 (A): an error beside a valid archive; a package
 		// listed twice; (B) an archive not named by its content.
-		"an error beside an archive": {relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"cache failure\""), "(fmt: cache failure)"},
-		"a package listed twice":     {relist(`(?m)^(fmt\t[^\n]*\n)`, "$1$1"), "(fmt: listed twice)"},
+		"an error beside an archive": {relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"cache failure\""), "(fmt: cache failure)", false},
+		"a package listed twice":     {relist(`(?m)^(fmt\t[^\n]*\n)`, "$1$1"), "(fmt: listed twice)", false},
 		"a corrupted archive": {func(r string) {
 			xs, _ := os.ReadDir(filepath.Join(r, "x"))
 			f, _ := os.OpenFile(filepath.Join(r, "x", xs[0].Name()), os.O_APPEND|os.O_WRONLY, 0)
 			_, _ = f.Write([]byte{0})
 			_ = f.Close()
-		}, "an archive not named by its content"},
+		}, "an archive not named by its content", true},
 		// M6: an unexpected output; a list past maxList (Astra's 500 MiB
 		// list, just past the bound: long lines, fewer than maxListEntries),
 		// refused before it is read; one past maxListEntries; and archives
 		// the run already holds, delivered again.
-		"an unexpected output": {func(r string) { _ = os.WriteFile(filepath.Join(r, "extra"), nil, 0o600) }, "an unexpected output"},
+		"an unexpected output": {func(r string) { _ = os.WriteFile(filepath.Join(r, "extra"), nil, 0o600) }, "an unexpected output", true},
 		"a list past maxList": {func(r string) {
 			pad := bytes.Repeat([]byte("example.org/"+strings.Repeat("p", 2000)+"\t\t\n"), int(maxList)/2000)
 			b, _ := os.ReadFile(filepath.Join(r, "list"))
 			_ = os.WriteFile(filepath.Join(r, "list"), append(b, pad...), 0o600)
-		}, "a list over its bound"},
+		}, "a list over its bound", false},
 		"a list past maxListEntries": {func(r string) {
 			b, _ := os.ReadFile(filepath.Join(r, "list"))
 			_ = os.WriteFile(filepath.Join(r, "list"), append(b, bytes.Repeat([]byte("example.org/p\t\t\n"), maxListEntries)...), 0o600)
-		}, "a list over its bound"},
+		}, "a list over its bound", false},
 		"archives delivered again": {func(r string) {
 			b, _ := os.ReadFile(filepath.Join(r, "list"))
 			for line := range strings.Lines(string(b)) {
@@ -650,19 +658,25 @@ func TestSandboxLister(t *testing.T) {
 					_ = os.WriteFile(filepath.Join(r, "x", filepath.Base(e)), src, 0o600)
 				}
 			}
-		}, "an archive the run holds"},
+		}, "an archive the run holds", true},
 		// Astra #287 r2: #4 an error column present and empty; #7 one
 		// record past maxListEntries, the last with no final newline.
-		"an empty error listed": {relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"\""), "(fmt: an empty error listed)"},
+		"an empty error listed": {relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"\""), "(fmt: an empty error listed)", false},
 		"maxListEntries+1 records, no final newline": {func(r string) {
 			var b strings.Builder
 			for i := range maxListEntries + 1 {
 				fmt.Fprintf(&b, "%sexample.org/p%d\t\t", map[bool]string{true: "\n"}[i > 0], i)
 			}
 			_ = os.WriteFile(filepath.Join(r, "list"), []byte(b.String()), 0o600)
-		}, "a list over its bound"},
+		}, "a list over its bound", false},
 	} {
 		box.mutate = c.mutate
+		if c.noRun {
+			if _, err := f.loadedErr(t, list, change); !didNotRunErr(err, c.why) {
+				t.Errorf("%s: %v", name, err)
+			}
+			continue
+		}
 		if v := f.loaded(t, list, change); c.why == "" && !typed(v) || c.why != "" && !finds(v.Blocks, c.why) {
 			t.Errorf("%s: %q", name, whats(v.Blocks))
 		}

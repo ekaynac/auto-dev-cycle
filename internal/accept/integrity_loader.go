@@ -13,7 +13,6 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -105,9 +104,24 @@ var (
 // its bounds and its consistency, not its provenance: the pinned image and
 // go.sum are trusted. Every listing's copy is charged to the run's ledger,
 // kept or not; past maxRunCopy, a listing fails.
+//
+// What its failure is (Lead decision, #226 entry 147): the candidate's
+// (errRefused, a block) only on positive evidence: its input refused
+// (listable), go list's own exit status observed and nonzero
+// (sandbox.WorkloadExit), or a bound its run broke (sandbox.ErrLeft,
+// sandbox.ErrBound, the run's copy bound, the list's bounds). Everything
+// else is ErrGuardRun, at its source or by default: the attempt's
+// directories and files, the copy's and the ledger's I/O, a teardown, a
+// client killed or failing itself, no status, a cleanup error joined, and
+// any error not classified.
 func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, dir string, pl [2]string, gomod, gosum []byte, paths []string) (_ map[string]Listed, err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, ErrGuardRun) && !errors.Is(err, errRefused) {
+			err = fmt.Errorf("%w: %w", ErrGuardRun, err)
+		}
+	}()
 	if err := listable(gomod, paths); err != nil {
-		return nil, err
+		return nil, refused(err)
 	}
 	x, ledger := filepath.Join(dir, "x"), filepath.Join(dir, "copied") // the run's export data, by name; what its listings copied out
 	if err := os.MkdirAll(x, 0o700); err != nil {
@@ -126,7 +140,7 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err != nil {
 		return nil, err
 	} else if charged >= maxRunCopy() {
-		return nil, errors.New("over the guard run's export data bound")
+		return nil, refused(errors.New("over the guard run's export data bound"))
 	}
 	held := map[string]bool{}
 	for _, e := range have {
@@ -136,7 +150,11 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err != nil {
 		return nil, err
 	}
-	defer func() { err = errors.Join(err, a.Teardown()) }()
+	defer func() {
+		if terr := a.Teardown(); terr != nil { // the controller's, whatever the run's end was
+			err = errors.Join(err, fmt.Errorf("%w: the run's teardown: %w", ErrGuardRun, terr))
+		}
+	}()
 	if gomod == nil {
 		gomod = []byte("module adc.invalid/guard\n")
 	}
@@ -152,25 +170,30 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	}
 	argv := slices.Concat([]string{"env", "-i"}, goImage, GoEnv, []string{"GOOS=" + pl[0], "GOARCH=" + pl[1], "sh", "-c", listScript, "sh", sandbox.ResultsDir}, paths)
 	if _, err := h.Start(ctx, sandbox.Run{Image: img, Mode: sandbox.Gate, Attempt: a, Limits: lim, Argv: argv}); err != nil {
-		if didNotRun(err) {
-			return nil, fmt.Errorf("%w: go list did not run in the sandbox: %w", ErrGuardRun, err)
+		if workloadFailed(err) {
+			return nil, refused(err)
 		}
-		return nil, err
+		return nil, fmt.Errorf("%w: go list did not run to its own end in the sandbox: %w", ErrGuardRun, err)
 	}
 	out, err := os.MkdirTemp(dir, "list-")
 	if err != nil {
 		return nil, err
 	}
 	out = filepath.Join(out, "r")
-	err = a.CopyOut(out, maxRunCopy()-charged)
+	cerr := a.CopyOut(out, maxRunCopy()-charged)
 	_ = filepath.WalkDir(out, func(_ string, d fs.DirEntry, _ error) error { // charged, whatever comes of it
 		if fi, err := d.Info(); err == nil && !d.IsDir() {
 			charged += fi.Size()
 		}
 		return nil
 	})
-	if err = errors.Join(err, os.WriteFile(ledger, []byte(strconv.FormatInt(charged, 10)), 0o600)); err != nil {
+	if err := os.WriteFile(ledger, []byte(strconv.FormatInt(charged, 10)), 0o600); err != nil {
 		return nil, err
+	}
+	if errors.Is(cerr, sandbox.ErrBound) {
+		return nil, refused(cerr)
+	} else if cerr != nil {
+		return nil, cerr
 	}
 	if err := checkOut(out, x, held); err != nil {
 		return nil, err
@@ -178,24 +201,27 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	return readListing(out, x)
 }
 
-// didNotRun reports whether err, a sandbox run's, is a run that did not
-// run (Astra chunk 1 H2): the sandbox refused it (sandbox.ErrSpec,
-// sandbox.ErrHost) before it ran, podman failed itself (exit status
-// 125-127), or no status came back at all (the client not started). A run
-// that ran and exited with its own status, was cut by its timeout or a
-// signal, or left more than its bounds (sandbox.ErrLeft) is go list's on
-// the candidate's code: a finding.
-func didNotRun(err error) bool {
-	var exit *exec.ExitError
+// errRefused marks a listing's failure the candidate caused, on positive
+// evidence (boxList): a block, never ErrGuardRun.
+var errRefused = errors.New("the listing failed on the candidate")
+
+// refused is err, the candidate's (errRefused).
+func refused(err error) error { return fmt.Errorf("%w: %w", errRefused, err) }
+
+// workloadFailed reports whether err, a sandbox run's, is positive
+// evidence against the candidate: go list's own exit status observed
+// (sandbox.WorkloadExit), or a bound its run broke (sandbox.ErrLeft); never
+// with its container's removal failing (sandbox.ErrCleanup), which is the
+// controller's whatever the run did.
+func workloadFailed(err error) bool {
+	var w *sandbox.WorkloadExit
 	switch {
-	case errors.Is(err, sandbox.ErrLeft), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+	case errors.Is(err, sandbox.ErrCleanup):
 		return false
-	case errors.Is(err, sandbox.ErrSpec), errors.Is(err, sandbox.ErrHost):
+	case errors.Is(err, sandbox.ErrLeft):
 		return true
-	case errors.As(err, &exit):
-		return exit.ExitCode() >= 125 && exit.ExitCode() <= 127
 	}
-	return true
+	return errors.As(err, &w)
 }
 
 // readListing reads a listing's version and list, each bounded before it
@@ -204,7 +230,10 @@ func didNotRun(err error) bool {
 func readListing(out, x string) (map[string]Listed, error) {
 	for name, bound := range map[string]int64{"version": maxVersion, "list": maxList} {
 		if st, err := os.Stat(filepath.Join(out, name)); err != nil || st.Size() > bound {
-			return nil, errors.Join(err, fmt.Errorf("a %s over its bound", name))
+			if err != nil {
+				return nil, err
+			}
+			return nil, refused(fmt.Errorf("a %s over its bound", name))
 		}
 	}
 	v, err := os.ReadFile(filepath.Join(out, "version"))
@@ -222,7 +251,7 @@ func readListing(out, x string) (map[string]Listed, error) {
 		ip, rest, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
 		exp, col, ok2 := strings.Cut(rest, "\t")
 		if n++; n > maxListEntries {
-			return nil, errors.New("a list over its bound")
+			return nil, refused(errors.New("a list over its bound"))
 		} else if !ok || !ok2 || strings.Contains(col, "\t") {
 			return nil, errors.New("an unreadable list")
 		}

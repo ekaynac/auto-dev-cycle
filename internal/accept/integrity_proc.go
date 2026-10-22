@@ -265,11 +265,13 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 }
 
 // ErrGuardRun is a guard that did not run to its verdict (Astra chunk 1
-// H2): its process not dispatched, not started, ended without its result
-// or past its whole-run deadline, or a sandbox run of go list that did not
-// run (didNotRun). It is no finding on the candidate: the caller records
-// it as one that could not run, and retries. What the guard found, go
-// list's own failure on the candidate's code included, is a block.
+// H2; Lead decision, #226 entry 147): its process not dispatched, not
+// started, ended without its result or past its whole-run deadline, a
+// listing that failed with no positive evidence against the candidate
+// (boxList), and any other error of its run. It is no finding on the
+// candidate: the caller records it as one that could not run, and
+// retries. What the guard found is a block: a listing's failure only on
+// positive evidence (go list's own exit status, a bound its run broke).
 var ErrGuardRun = errors.New("accept: the integrity guard did not run")
 
 // guardRun is ErrGuardRun for why.
@@ -292,6 +294,8 @@ func Integrity(repo sandbox.Repo, base string, list Lister, scratch string) Guar
 			return nil, nil, ctx.Err()
 		case runCtx.Err() != nil: // a result past it, too
 			return nil, nil, guardRun("the guard did not finish by its whole-run deadline")
+		case err != nil && !errors.Is(err, ErrGuardRun): // an error is never a verdict: the guard did not run to one (#226 entry 147)
+			return nil, nil, fmt.Errorf("%w: %w", ErrGuardRun, err)
 		}
 		return blocks, warnings, err
 	}
