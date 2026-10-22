@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package daemon
+
+// The start sweep (P22a-5c-2c; I8, X3 "Late output"; #226 entries 81, 83):
+// adcd runs it once with a runner, after restart recovery (recoverAtStart:
+// every running attempt lost, sealed, its lease revoked and settled) and
+// before the loop's first Run, so no run of this start exists yet:
+//  1. RemoveStale removes every container a crashed controller left: every
+//     batch run's, and every attempt's interactive one (no attempt is kept:
+//     none runs);
+//  2. a run directory a session whose end was unverified kept (keptName,
+//     workspace.Keep) is torn down only when RemoveStale named its attempt,
+//     so its container is gone: one whose removal failed stays, with its
+//     cid, for a later sweep;
+//  3. recovery.RefuseOrphans refuses the output each cut attempt left in
+//     its exchange root (stale_attempt), and clears the exchange
+//     directory;
+//  4. each attempt left finishing (its result admitted, the run cut before
+//     it was ended), or sealed or completed with its lease not yet ended,
+//     is ended as the run would have: its own recorded result kept, its diff sealed (the
+//     patch its result holds); with none, could_not_run/ambiguous_state is
+//     recorded with no attempt and no diff. Its lease then completes or is
+//     revoked, and settles; the node is matched again unless a result was
+//     selected.
+//
+// Every step runs whatever an earlier one returned, and none blocks the
+// start: its failures are the start's note, and the next start resumes
+// them. A kept directory whose container is gone without this sweep naming
+// it (removed by hand) stays: the rule keeps it, and it is the operator's.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
+)
+
+// removeStale is sandbox.Host.RemoveStale; a test removes in place.
+var removeStale = func(r *runner, ctx context.Context) ([]string, error) {
+	return r.box.RemoveStale(ctx, func(string) bool { return false })
+}
+
+// sweep is the start sweep (the file's comment): every step's failure,
+// joined.
+func (r *runner) sweep(ctx context.Context) error {
+	removed, err := removeStale(r, ctx)
+	errs := []error{err, r.tearDownKept(removed)}
+	errs = append(errs, recovery.Recovery{Store: r.store, Actor: r.system.Actor(), Units: graph.Units{}, Blobs: r.blobs, Exchanges: r.host.Root,
+		Principal: r.system}.RefuseOrphans(ctx))
+	errs = append(errs, r.endLeft(ctx))
+	return errors.Join(errs...)
+}
+
+// tearDownKept tears down each kept run directory whose attempt is in
+// removed.
+func (r *runner) tearDownKept(removed []string) error {
+	dirs, err := r.box.Runs()
+	errs := []error{err}
+	for _, dir := range dirs {
+		f, err := os.Open(filepath.Join(dir, keptName))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // not kept: its run's own teardown is the run's
+		}
+		var b []byte
+		if err == nil {
+			b, err = io.ReadAll(io.LimitReader(f, 64))
+			err = errors.Join(err, f.Close())
+		}
+		if err != nil || ids.Check(string(b), "att") != nil || !slices.Contains(removed, string(b)) {
+			errs = append(errs, err) // its container may still exist: kept for a later sweep
+			continue
+		}
+		a, err := r.box.Kept(dir)
+		if err == nil {
+			err = a.Teardown()
+		}
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// left is an attempt the restart left to end: finishing, or sealed or
+// completed with its lease not yet ended (active or settling).
+type left struct {
+	attempt types.Attempt
+	node    types.NodeID
+	result  *types.Result // its own recorded result, if any
+}
+
+// endLeft ends every attempt the restart left (the file's comment, 4).
+func (r *runner) endLeft(ctx context.Context) error {
+	var todo []left
+	err := r.store.View(ctx, func(tx *eventstore.Tx) error {
+		keys, err := tx.Keys(lease.AttemptProjection, "")
+		for _, k := range keys {
+			a, _, ok, aerr := lease.AttemptAt(tx, types.AttemptID(k))
+			if aerr != nil || !ok {
+				err = errors.Join(err, aerr)
+				continue
+			}
+			if a.Status != types.AttemptStatusFinishing && a.Status != types.AttemptStatusSealed && a.Status != types.AttemptStatusCompleted {
+				continue
+			}
+			l, _, ok, lerr := lease.LeaseOf(tx, a.Lease)
+			ending := ok && (l.State == types.LeaseStateActive || l.State == types.LeaseStateSettling)
+			if lerr != nil || !ok || a.Status != types.AttemptStatusFinishing && !ending {
+				err = errors.Join(err, lerr)
+				continue
+			}
+			n, ok, nerr := graph.AttemptNode(tx, a.ID)
+			if nerr != nil || !ok {
+				err = errors.Join(err, nerr, fmt.Errorf("attempt %s ran for no node", a.ID))
+				continue
+			}
+			lf := left{attempt: a, node: n.Node.ID}
+			if res, byAttempt, rerr := graph.AttemptResult(tx, a.ID); rerr != nil {
+				err = errors.Join(err, rerr)
+				continue
+			} else if byAttempt {
+				lf.result = &res
+			}
+			todo = append(todo, lf)
+		}
+		return err
+	})
+	errs := []error{err}
+	for _, lf := range todo {
+		errs = append(errs, r.endOne(ctx, lf))
+	}
+	return errors.Join(errs...)
+}
+
+// endOne ends lf as the run would have: sealed (a finishing attempt; its
+// result's patch the diff), its result kept or could_not_run recorded with
+// no attempt, then its lease ended (endAttempt).
+func (r *runner) endOne(ctx context.Context, lf left) error {
+	if lf.attempt.Status == types.AttemptStatusCompleted { // only its lease's end is left
+		return r.endActive(ctx, lf.attempt.Lease, lease.LeaseEvent{Kind: lease.Completed})
+	}
+	var errs []error
+	recorded := lf.result
+	if lf.attempt.Status == types.AttemptStatusFinishing {
+		var diff *types.Digest
+		if recorded != nil && recorded.Kind == types.ResultKindPatch && len(recorded.Value) > 0 {
+			d := recorded.Value[0].ContentDigest
+			diff = &d
+		}
+		errs = append(errs, r.command(ctx, r.sealStep(lf.attempt.ID, diff, nil)))
+	}
+	if recorded == nil {
+		errs = append(errs, r.command(ctx, r.commitStep(lf.node, nil, func(key types.ComputationKey) (types.Result, error) {
+			id, err := ids.New("res")
+			return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindPatch, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
+				Reason: vocab.ReasonAmbiguousState, Detail: "the controller restarted before it recorded the attempt's result"}, err
+		}, &recorded)))
+	}
+	return errors.Join(append(errs, r.endAttempt(ctx, lf.attempt.Lease, lf.attempt.ID, recorded))...)
+}
+
+// resealAfter is how long a claimed accept node waits on its input's seal
+// before the runner seals that attempt itself (Reseal).
+var resealAfter = 2 * time.Minute
+
+// Reseal seals the build attempt node, a claimed accept node, waits on
+// (reconcile.Reseal), once it has waited resealAfter, as the start sweep
+// ends an attempt left finishing (endOne): a seal that never landed while
+// adcd runs (Opus 22a-5c-2b-3, Main's obligation for 5c-2c). Its tries are
+// bounded (maxTries, one a pass); when they are spent, node is held
+// "runner: failed" with the cause. True when it started a seal.
+func (r *runner) Reseal(node types.NodeID) bool {
+	now := time.Now()
+	r.mu.Lock()
+	if r.waiting == nil {
+		r.waiting = map[types.NodeID]time.Time{}
+	}
+	since, seen := r.waiting[node]
+	if !seen {
+		r.waiting[node], since = now, now
+	}
+	r.mu.Unlock()
+	if now.Sub(since) < resealAfter {
+		return false
+	}
+	return r.start(node, func() error { return r.reseal(node) })
+}
+
+// reseal is one try of Reseal.
+func (r *runner) reseal(node types.NodeID) error {
+	lf, ok, err := r.unsealedInput(r.ctx, node)
+	if err == nil && ok {
+		err = r.endOne(r.ctx, lf)
+	}
+	r.mu.Lock()
+	n := r.resealTries[node] + 1
+	if err == nil {
+		delete(r.waiting, node)
+		delete(r.resealTries, node)
+	} else {
+		if r.resealTries == nil {
+			r.resealTries = map[types.NodeID]int{}
+		}
+		r.resealTries[node] = n
+	}
+	r.mu.Unlock()
+	if err != nil && n >= maxTries {
+		cause := fmt.Errorf("%w: the build's attempt %s could not be sealed: %w", errContent, lf.attempt.ID, err)
+		return errors.Join(err, r.hold(node, cause))
+	}
+	return err
+}
+
+// unsealedInput is the build attempt accept node's input waits on: left
+// finishing with its own result; false when there is none to seal.
+func (r *runner) unsealedInput(ctx context.Context, node types.NodeID) (left, bool, error) {
+	var lf left
+	ok := false
+	err := r.store.View(ctx, func(tx *eventstore.Tx) error {
+		ins, _, err := graph.ClaimInputs(tx, node)
+		if err != nil || len(ins) != 1 || ins[0].Result == nil {
+			return err
+		}
+		raw, found, err := tx.Get(graph.ResultProjection, string(*ins[0].Result))
+		var rr types.ResultRecorded
+		if err == nil && found {
+			err = json.Unmarshal(raw, &rr)
+		}
+		if err != nil || !found || rr.Attempt == nil {
+			return err
+		}
+		a, _, found, err := lease.AttemptAt(tx, *rr.Attempt)
+		if err != nil || !found || a.Checkpoint != nil || a.Status != types.AttemptStatusFinishing {
+			return err
+		}
+		res := rr.Result
+		lf, ok = left{attempt: a, node: rr.Node, result: &res}, true
+		return nil
+	})
+	return lf, ok, err
+}

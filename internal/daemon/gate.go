@@ -32,7 +32,12 @@ package daemon
 // decides it. A gate the profile does not let gate run (gate.ErrSpec:
 // another result adapter, environment or platform) holds the node on the
 // configuration; a failure before the run records nothing and holds it.
-// Inert until launch is active: the loop decides no Gate until then.
+// A base that is not green is held at once ("runner: failed"): its gate
+// does not change. The gate's own could_not_run (results it cannot read)
+// is held in its result's command, a bounded retry. A shutdown during a
+// gate run records nothing and holds nothing (the daemon's context ended):
+// the next start runs the gate again (stated, Opus 22a-5c-2b-3 L2). Inert
+// until launch is active: the loop decides no Gate until then.
 
 import (
 	"bytes"
@@ -138,8 +143,14 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		return errors.Join(err, r.hold(node, err))
 	case err != nil:
 		return notRun(err.Error(), err)
-	case measured.Outcome != vocab.Empty:
-		cause := fmt.Errorf("the base tree's gate is not green: %s", measured.Why)
+	case measured.Outcome != vocab.Empty && len(measured.Results.Results) > 0 && !measured.Results.Green():
+		// A red base: it does not change, so no retry helps; it is held at
+		// once ("runner: failed"), the measure's why its detail (Opus
+		// 22a-5c-2b-3 M2).
+		cause := fmt.Errorf("%w: the base tree's gate is not green: %s", errContent, measured.Why)
+		return notRun(cause.Error(), cause)
+	case measured.Outcome != vocab.Empty: // no results, or a run that did not end on its own: the sandbox's, a bounded retry
+		cause := fmt.Errorf("the base tree's gate did not measure: %s", measured.Why)
 		return notRun(cause.Error(), cause)
 	}
 	in.Tree, in.Baseline = g.tree, &base

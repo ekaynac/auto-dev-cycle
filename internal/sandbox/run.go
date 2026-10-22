@@ -289,18 +289,55 @@ func (h Host) NewAttempt() (*Attempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &Attempt{Dir: dir, unshare: func(dir string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		_, err := h.podman(ctx, "unshare", "rm", "-rf", "--", dir)
-		return err
-	}}
+	a := &Attempt{Dir: dir, unshare: h.unshareRemove}
 	for _, d := range []string{a.Workspace(), a.Results()} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			return nil, errors.Join(err, a.Teardown())
 		}
 	}
 	return a, nil
+}
+
+// unshareRemove removes dir in the rootless user namespace: what a run's
+// other uids left.
+func (h Host) unshareRemove(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := h.podman(ctx, "unshare", "rm", "-rf", "--", dir)
+	return err
+}
+
+// Runs are the run directories under the root's runs/, by path.
+func (h Host) Runs() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(h.Root, "runs"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() && e.Type()&fs.ModeSymlink == 0 {
+			dirs = append(dirs, filepath.Join(h.Root, "runs", e.Name()))
+		}
+	}
+	return dirs, err
+}
+
+// Kept is dir, a run directory under the root's runs/ that an earlier run
+// kept (its container's end unverified), as an Attempt to tear down only:
+// the start sweep's, once that container is removed. Nothing is copied out
+// of it.
+func (h Host) Kept(dir string) (*Attempt, error) {
+	if filepath.Dir(dir) != filepath.Join(h.Root, "runs") {
+		return nil, fmt.Errorf("%w: %s is no run directory", ErrSpec, dir)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("%w: %s is no run directory", ErrSpec, dir)
+	}
+	return &Attempt{Dir: dir, unsafe: true, unshare: h.unshareRemove}, nil
 }
 
 func (a *Attempt) Workspace() string { return filepath.Join(a.Dir, "workspace") }

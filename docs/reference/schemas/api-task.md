@@ -33,6 +33,19 @@ No other fields are allowed.
 | `outcome` | yes | null or [Outcome](common-defs.md#outcome) | The outcome of the result this attempt itself recorded; null while it has recorded none. Never another attempt's result, nor one recorded with no attempt. |
 | `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) | That result's reason; null while it has recorded none. |
 | `tokens` | yes | null or [Tokens](#tokens) | The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call, and null unless the reader also reads model calls (the model_call read kind) in the task's project. |
+| `charge` | yes | null or [Charge](#charge) | What the model calls bound to the attempt's lease cost, at the lease's registry price (Lease.Price, ledger.PriceMicros); null with no call, and null unless the reader also reads model calls in the task's project. |
+
+No other fields are allowed.
+
+### Charge
+
+#### Fields of Charge
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `settled_usd_micros` | yes | null or integer (minimum `0`, maximum `9007199254740991`) | The settled calls' usage at the lease's price, in USD micros; null when it is unknown (the lease records no price, or a settled call's usage is unknown, saturated or inconsistent), never zero for unknown. |
+| `outstanding_usd_micros` | yes | null or integer (minimum `0`, maximum `9007199254740991`) | The calls not settled yet, listed apart: their usage so far at the lease's price; null when any of them has no usage reported yet or the lease records no price. |
+| `outstanding_calls` | yes | integer (minimum `0`, maximum `9007199254740991`) | How many calls are not settled yet. |
 
 No other fields are allowed.
 

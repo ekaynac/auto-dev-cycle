@@ -17,11 +17,13 @@ package api
 //     and the input and output tokens of the model calls bound to its
 //     lease, as the call ledger stands them, null with no call and null
 //     unless the reader also reads model calls there (model_call).
-//   - The charge is not here yet. P17b's `Lease.Price` is on main, but a
-//     charge is known only once a call settles, and an unknown charge must
-//     read as unknown, never zero, with outstanding liabilities apart (slice
-//     plan §4.3); no attempt incurs one before the launch runs. 22a-5c adds
-//     it (Astra #335 L3).
+//   - its charge (P22a-5c-2c; Astra #335 L3; slice plan §4.3), with its
+//     tokens: the settled calls' usage at the lease's registry price
+//     (Lease.Price, ledger.PriceMicros), unknown (null), never zero, when
+//     the lease records no price or a settled call's usage is unknown,
+//     saturated or inconsistent; the calls not settled yet listed apart,
+//     their count and their usage so far at that price (null while one has
+//     none). A reported cost is never read (#226 entry 62).
 //
 // Its work is bounded by what the board reads and the task's own nodes:
 // the first attempt is read from each node's first-attempt index
@@ -153,13 +155,37 @@ func metrics(tx *eventstore.Tx, t authority.TaskRecord, f started, tokens bool) 
 	if err != nil {
 		return nil, err
 	}
+	l, _, _, err := lease.LeaseOf(tx, f.attempt.Lease)
+	if err != nil {
+		return nil, err
+	}
 	slices.Sort(calls)
+	var settled, outstanding int64
+	settledKnown, outstandingKnown := l.Price != nil, l.Price != nil
 	for _, c := range calls {
 		ms, err := ledger.Measurements(tx, c)
 		if err != nil {
 			return nil, err
 		}
 		s := ledger.StandingOf(ms, c)
+		if m.Charge == nil {
+			m.Charge = &types.Charge{}
+		}
+		if !s.Settled {
+			m.Charge.OutstandingCalls++
+		}
+		priced := int64(0)
+		known := s.Usage != nil && !s.Saturated && !s.Inconsistent && l.Price != nil
+		if known {
+			if priced, err = ledger.PriceMicros(*s.Usage, *l.Price); err != nil {
+				known = false
+			}
+		}
+		if s.Settled {
+			settled, settledKnown = settled+priced, settledKnown && known
+		} else {
+			outstanding, outstandingKnown = outstanding+priced, outstandingKnown && known
+		}
 		if s.Usage == nil {
 			continue
 		}
@@ -167,6 +193,14 @@ func metrics(tx *eventstore.Tx, t authority.TaskRecord, f started, tokens bool) 
 			m.Tokens = &types.Tokens{}
 		}
 		m.Tokens.In, m.Tokens.Out = m.Tokens.In+s.Usage.In, m.Tokens.Out+s.Usage.Out
+	}
+	if m.Charge != nil {
+		if settledKnown {
+			m.Charge.SettledUsdMicros = &settled
+		}
+		if outstandingKnown {
+			m.Charge.OutstandingUsdMicros = &outstanding
+		}
 	}
 	return m, nil
 }

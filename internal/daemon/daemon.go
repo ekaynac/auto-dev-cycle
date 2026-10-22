@@ -244,6 +244,11 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 		_ = d.Close()
 		return err
 	}
+	if run != nil { // before the loop's first Run (sweep.go); its failures never block the start
+		if err := run.sweep(ctx); err != nil {
+			fmt.Fprintf(logw, "adcd: the start sweep left work for the next start: %v\n", err)
+		}
+	}
 	loop := reconciler(d, reg, images, eg.gw, run, cfg.reconcileEvery, logw)
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})

@@ -229,6 +229,10 @@ func (r *runner) acceptance(ctx context.Context, node types.NodeID, claimed bool
 	return a, err
 }
 
+// errImageMissing: the profile's pinned image did not resolve; its hold
+// ("runner: image") clears once it does (cleared).
+var errImageMissing = errors.New("the pinned image is not present")
+
 // errNotSealed: the build's attempt recorded its result and is not sealed
 // yet (its seal is the next command): nothing to hold.
 var errNotSealed = errors.New("the build's attempt is not sealed yet")
@@ -252,9 +256,12 @@ func (r *runner) readBlob(d types.Digest, max int64) ([]byte, error) {
 }
 
 // checkout is the controller's clone of profile's repository under dir,
-// and its one pinned image resolved. Each failure is the configuration's
-// (errConfig; Opus 22a-5c-2b-2 M2, L2): a profile pinning other than one
-// image, a repository the clone cannot reach, an image not present.
+// and its one pinned image resolved. A profile pinning other than one
+// image is the configuration's (errConfig; Opus 22a-5c-2b-2 L2); a clone
+// failure is classed by holdOn (Opus 22a-5c-2b-3 M1): a repository the
+// controller refuses (sandbox.ErrSpec) the configuration's, a network
+// failure (sandbox.ErrGit) a bounded retry; an image not present is held
+// until it resolves (errImageMissing).
 func (r *runner) checkout(ctx context.Context, profile types.ProjectProfile, dir string) (sandbox.Repo, sandbox.Image, error) {
 	if len(profile.Toolchain.Images) != 1 {
 		return sandbox.Repo{}, sandbox.Image{}, fmt.Errorf("%w: the profile pins %d images, not one", errConfig, len(profile.Toolchain.Images))
@@ -265,11 +272,11 @@ func (r *runner) checkout(ctx context.Context, profile types.ProjectProfile, dir
 	}
 	repo, err := cloneRepo(r.box, ctx, profile.Repo.Url, profile.Repo.BaseRef, filepath.Join(dir, "clone"))
 	if err != nil {
-		return repo, sandbox.Image{}, fmt.Errorf("%w: the repository: %w", errConfig, err)
+		return repo, sandbox.Image{}, fmt.Errorf("the repository: %w", err)
 	}
 	img, err := r.place.d.Images.Resolve(ctx, image)
 	if err != nil {
-		return repo, img, fmt.Errorf("%w: the pinned image: %w", errConfig, err)
+		return repo, img, fmt.Errorf("%w: %w", errImageMissing, err)
 	}
 	return repo, img, nil
 }

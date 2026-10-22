@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -148,7 +149,7 @@ func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 		held    string
 	}{
 		"a hanging guard":       {detail: "integrity is unverifiable", held: "retry 1 until "},
-		"the image not present": {noImage: true, detail: "accept could not run", held: "profile "},
+		"the image not present": {noImage: true, detail: "accept could not run", held: "image"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := goTestWorld(t)
@@ -296,6 +297,7 @@ type countAccepts struct {
 
 func (c *countAccepts) Accept(node types.NodeID) bool { c.n.Add(1); return c.r.Accept(node) }
 func (c *countAccepts) Gate(node types.NodeID) bool   { c.n.Add(1); return c.r.Gate(node) }
+func (c *countAccepts) Reseal(node types.NodeID) bool { return c.r.Reseal(node) }
 
 // Opus 22a-5c-2b-3 H2 (and 22a-5c-2b-2 M1, L1): while the build attempt
 // that recorded accept's input is not sealed, the loop decides no Accept:
@@ -316,5 +318,113 @@ func TestAnUnsealedInputIsNotAccepted(t *testing.T) {
 	rw.passesFor(t, 5, 0)
 	if v := nodesOf(rw.w, rw.task)[types.NodeKindAccept]; c.n.Load() != 0 || v.State.State != types.NodeStateStateClaimed || len(v.State.Holds) != 0 {
 		t.Errorf("accept on an unsealed input: %d runs, %s, holds %+v", c.n.Load(), v.State.State, v.State.Holds)
+	}
+}
+
+// Opus 22a-5c-2b-3 M1: a node held because its pinned image was not present
+// ("runner: image") is released once the image resolves, and its next run
+// completes it.
+func TestAnImageHoldClearsOnceItResolves(t *testing.T) {
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	rw.r.place.d.Images = fakeImages{false}
+	if v := rw.accepting(t, nil); len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerImage {
+		t.Fatalf("the accept node after its image missed: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	rw.passesFor(t, 2, 0)
+	if v := nodesOf(rw.w, rw.task)[types.NodeKindAccept]; len(v.State.Holds) != 1 {
+		t.Fatalf("the image hold cleared while the image was absent: %+v", v.State.Holds)
+	}
+	rw.r.place.d.Images = fakeImages{true}
+	var v graph.NodeView
+	for range 6 {
+		rw.passesFor(t, 1, 0)
+		if v = nodesOf(rw.w, rw.task)[types.NodeKindAccept]; v.State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	if v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the accept node once its image resolved: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+}
+
+// Opus 22a-5c-2b-3 M1: a clone the network failed (sandbox.ErrGit) is a
+// bounded retry; a repository the controller refuses (sandbox.ErrSpec) is
+// the configuration's, held on the profile.
+func TestACloneFailureIsClassed(t *testing.T) {
+	for name, c := range map[string]struct {
+		err  error
+		held string
+	}{
+		"a network failure":    {sandbox.ErrGit, reconcile.RunnerSignal("retry 1 until ")},
+		"a refused repository": {sandbox.ErrSpec, reconcile.RunnerSignal("profile ")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+			rw.untilRun(t)
+			cloneRepo = func(sandbox.Host, context.Context, string, string, string) (sandbox.Repo, error) {
+				return sandbox.Repo{}, fmt.Errorf("%w: the clone", c.err)
+			}
+			t.Cleanup(func() { cloneRepo = sandbox.Host.Clone })
+			v := rw.accepting(t, nil)
+			if len(v.State.Holds) != 1 || !strings.HasPrefix(v.State.Holds[0].SignalInstance, c.held) {
+				t.Errorf("the accept node after its clone failed: %s, holds %+v", v.State.State, v.State.Holds)
+			}
+		})
+	}
+}
+
+// Main's obligation for 5c-2c (after Opus 22a-5c-2b-3 H2): a build seal
+// that failed while adcd runs is re-run by the loop once the accept node
+// has waited resealAfter: the seal fails once, then works; the attempt is
+// sealed, and accept runs and completes.
+func TestAFailedSealIsRedone(t *testing.T) {
+	failed := false
+	sealWith = func(tx *eventstore.Tx, id types.AttemptID, rev int64, u lease.Units, p lease.Publisher, d *types.Digest, ig []string, a types.ActorID) ([]eventstore.Event, error) {
+		if !failed {
+			failed = true
+			return nil, errors.New("the seal's blob could not be published")
+		}
+		return lease.SealWith(tx, id, rev, u, p, d, ig, a)
+	}
+	t.Cleanup(func() { sealWith = lease.SealWith })
+	resealAfter = 0
+	t.Cleanup(func() { resealAfter = 2 * time.Minute })
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	if a, _ := rw.attemptOf(t); a.Checkpoint != nil {
+		t.Fatalf("the build's attempt was sealed: %+v", a)
+	}
+	rw.x.Acceptor = rw.r
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	var v graph.NodeView
+	for range 8 {
+		rw.passesFor(t, 1, 0)
+		if v = nodesOf(rw.w, rw.task)[types.NodeKindAccept]; v.State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	if a, _ := rw.attemptOf(t); a.Checkpoint == nil || v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("after the redone seal: the attempt %s (checkpoint %v), accept %s, holds %+v", a.Status, a.Checkpoint, v.State.State, v.State.Holds)
+	}
+}
+
+// The redone seal's tries are bounded: a seal that never lands holds the
+// accept node "runner: failed" with its cause once maxTries are spent.
+func TestASealThatNeverLandsIsHeld(t *testing.T) {
+	sealWith = func(*eventstore.Tx, types.AttemptID, int64, lease.Units, lease.Publisher, *types.Digest, []string, types.ActorID) ([]eventstore.Event, error) {
+		return nil, errors.New("the seal's blob could not be published")
+	}
+	t.Cleanup(func() { sealWith = lease.SealWith })
+	resealAfter = 0
+	t.Cleanup(func() { resealAfter = 2 * time.Minute })
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	rw.x.Acceptor = rw.r
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	rw.passesFor(t, maxTries+2, 0)
+	v := nodesOf(rw.w, rw.task)[types.NodeKindAccept]
+	if len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed {
+		t.Errorf("the accept node after its input's seal never landed: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 }

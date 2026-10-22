@@ -60,7 +60,7 @@ func startedTask(t *testing.T, w *seeder, res []types.LeaseReservationsItem, cal
 		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
 	})
 	ls := w.lease(4)
-	ls.Unit, ls.Reservations = graph.UnitOf(plan), res
+	ls.Unit, ls.Reservations, ls.Price = graph.UnitOf(plan), res, startedPrice
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
@@ -86,6 +86,9 @@ func startedTask(t *testing.T, w *seeder, res []types.LeaseReservationsItem, cal
 	})
 	return running, done, plan, attempt
 }
+
+// startedPrice is the price startedTask's lease records (nil: none).
+var startedPrice *types.RegistryPrice
 
 // taskReadAs is task's record as actor reads it, the zero record when it
 // reads none.
@@ -163,7 +166,8 @@ func TestTaskReadMetrics(t *testing.T) {
 	f := rec.FirstAttempt
 	if err != nil || contract.Validate("api/task", raw) != nil || card == nil || !card.Admitted || card.Column != types.BoardPlacedCardColumnRunning ||
 		f == nil || f.Attempt != attempt || f.Node != plan || f.Status != string(types.AttemptStatusRunning) || (f.SecondsAfterApproval == nil || *f.SecondsAfterApproval > 60) ||
-		f.Outcome != nil || f.Reason != nil || f.Tokens == nil || f.Tokens.In != 300 || f.Tokens.Out != 200 {
+		f.Outcome != nil || f.Reason != nil || f.Tokens == nil || f.Tokens.In != 300 || f.Tokens.Out != 200 ||
+		f.Charge == nil || f.Charge.OutstandingCalls != 1 || f.Charge.SettledUsdMicros != nil || f.Charge.OutstandingUsdMicros != nil {
 		t.Fatalf("the running task's record: %s, %v", raw, err)
 	}
 	commitPlan(t, w, plan, &attempt)
@@ -426,5 +430,26 @@ func TestTaskShowAndWait(t *testing.T) {
 	}
 	if code, out, errb := c.adc(op, "task", "show", newID(t, "tsk")); code != entry.ExitRefused {
 		t.Errorf("task show of no task: %d %s %s", code, out, errb)
+	}
+}
+
+// P22a-5c-2c (Astra #335 L3; slice plan §4.3): the first attempt's charge
+// is priced at its lease's registry price, never from a reported cost: its
+// call not settled yet is listed apart, its usage so far at that price
+// (300 in at 2 USD/Mtok and 200 out at 10 USD/Mtok: 2600 micros), and the
+// settled charge is 0 with no settled call. With no price on the lease
+// (TestTaskReadMetrics) both are unknown (null), never zero.
+func TestTaskReadCharge(t *testing.T) {
+	startedPrice = &types.RegistryPrice{InputUsdMicrosPerMtok: 2_000_000, OutputUsdMicrosPerMtok: 10_000_000}
+	t.Cleanup(func() { startedPrice = nil })
+	w := seed(t, stateDir(t), daemonProjection(t, tokens(10)))
+	fullHistory(t, w)
+	running, _, _, _ := startedTask(t, w, w.lease(4).Reservations, true)
+	rec := taskReadAs(t, w, w.op, running)
+	raw, err := json.Marshal(rec)
+	c := rec.FirstAttempt.Charge
+	if err != nil || contract.Validate("api/task", raw) != nil || c == nil || c.OutstandingCalls != 1 || c.OutstandingUsdMicros == nil ||
+		*c.OutstandingUsdMicros != 2600 || c.SettledUsdMicros == nil || *c.SettledUsdMicros != 0 {
+		t.Fatalf("the priced first attempt's charge: %s, %v", raw, err)
 	}
 }
