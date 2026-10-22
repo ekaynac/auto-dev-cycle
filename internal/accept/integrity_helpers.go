@@ -127,22 +127,24 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 			if !ok {
 				continue
 			}
-			sts := make([]fnStat, len(vs.Values))
-			for i, v := range vs.Values {
-				walk(v, false, &sts[i])
-			}
-			for i, id := range vs.Names {
-				st := fnStat{}
-				if len(sts) > 0 { // var a, b = f(): each name the one value's
-					st = sts[min(i, len(sts)-1)]
+			for i, v := range vs.Values { // each value once (Astra #384 r2 H1)
+				var st fnStat
+				walk(v, false, &st)
+				ids := vs.Names[min(i, len(vs.Names)-1):][:1]
+				if len(vs.Values) != len(vs.Names) { // var a, _ = f(): one value, its results bound to every name
+					ids = vs.Names
 				}
-				switch {
-				case len(sts) == 0:
-				case id.Name == "_":
+				blankOnly := true // the value counted under its named entries, or once in the blank sum
+				for _, id := range ids {
+					if id.Name != "_" {
+						blankOnly = false
+						named := st
+						named.plat, named.short = plat, id.Name
+						stats[id.Name] = named
+					}
+				}
+				if blankOnly {
 					blank.live, blank.dead = blank.live+st.live, blank.dead+st.dead
-				default:
-					st.plat, st.short = plat, id.Name
-					stats[id.Name] = st
 				}
 			}
 		}
@@ -190,7 +192,7 @@ func (r *run) compareHelpers(add func(*[]Block, string, string), b, a pkgFacts) 
 	for _, ns := range keys(b.helpers) {
 		bh, ah := b.helpers[ns], a.helpers[ns]
 		for _, short := range keys(bh) {
-			if msg := helperFinding(short, bh[short], ah, a.names); !charge(1) || msg != "" && !charge(len(ns)+len(short)+len(msg)) {
+			if msg := helperFinding(short, bh[short], ah, a.names); !charge(1) || msg != "" && !charge(len(ns)+1+len(short)+len(msg)) { // the path and the message built
 				add(&r.blocks, ns, "unverifiable: test helpers' findings past the guard's work bound")
 				return
 			} else if msg != "" {

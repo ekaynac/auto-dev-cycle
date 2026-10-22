@@ -421,6 +421,23 @@ var (
 	})
 )
 
+func registerPair(f func(*testing.T)) (bool, bool) {
+	checks = append(checks, f)
+	return true, true
+}
+
+var pairNamed, _ = registerPair(func(t *testing.T) {
+	if Add(7, 2) != 9 {
+		t.Fatal("named")
+	}
+})
+
+var _, pairSecond = registerPair(func(t *testing.T) {
+	if Add(8, 2) != 10 {
+		t.Fatal("second named")
+	}
+})
+
 func TestRegistered(t *testing.T) {
 	for _, check := range checks {
 		check(t)
@@ -500,11 +517,17 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a helper renamed weaker, a direct call (accepted, stated)":   {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renTwo(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"two\")\n\t}\n", "func renOne(t *testing.T) {\n", "renTwo(t) }", "renOne(t) }").Replace(moreFile)}, stated},
 		"a helper inlined beside an existing one and deleted (clean)": {in("pkg/more_test.go", moreFile, inner2Base, inner2Head), ""},
 		// Astra #384 H1: a package's blank initializers, one entry, their sum.
-		"one of a group of blank initializers removed": {in("pkg/reg_test.go", regFile, "\t\tif Add(5, 0) != 5 {\n\t\t\tt.Fatal(\"g1\")\n\t\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
-		"every blank initializer removed":              {in("pkg/reg_test.go", regFile, regBlanks, ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 0)"},
-		"a blank initializer's assertion removed":      {in("pkg/reg_test.go", regFile, "\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
-		"one of two blank initializers removed":        {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
-		"two blank initializers reordered (clean)":     {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n"), ""},
+		// Astra #384 r2 H1: a value counted once, however many blank names
+		// share its results; under its named entry, or the blank sum, never both.
+		"register to registerPair, one assertion fewer": {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n", "var _, _ = registerPair(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n})\n"), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"a named and blank pair's value weakened":       {in("pkg/reg_test.go", regFile, "\t\tt.Fatal(\"named\")\n", "\t\t_ = t\n"), "linux/amd64 pkg:pkg.pairNamed " + weakened + " (1 → 0)"},
+		"a blank and named pair's value weakened":       {in("pkg/reg_test.go", regFile, "\t\tt.Fatal(\"second named\")\n", "\t\t_ = t\n"), "linux/amd64 pkg:pkg.pairSecond " + weakened + " (1 → 0)"},
+		"a named and blank pair made all blank (clean)": {in("pkg/reg_test.go", regFile, "var pairNamed, _ = registerPair(", "var _, _ = registerPair("), ""},
+		"one of a group of blank initializers removed":  {in("pkg/reg_test.go", regFile, "\t\tif Add(5, 0) != 5 {\n\t\t\tt.Fatal(\"g1\")\n\t\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"every blank initializer removed":               {in("pkg/reg_test.go", regFile, regBlanks, ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 0)"},
+		"a blank initializer's assertion removed":       {in("pkg/reg_test.go", regFile, "\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"one of two blank initializers removed":         {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"two blank initializers reordered (clean)":      {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n"), ""},
 		// Astra #384 L3: a clause reached by fallthrough from a non-constant
 		// clause, read as dead by main's markDead: a stated false block.
 		"a clause fallen into from a non-constant clause (stated false block)": {edit("func checkCase(t *testing.T) {\n"+one, "func checkCase(t *testing.T) {\n\tswitch {\n\tcase Add(1, 2) != 3:\n\t\tfallthrough\n\tcase false:\n\t\tt.Fatal(\"bad\")\n\t}\n"), "pkg:pkg.checkCase " + weakened + " (1 → 0)"},
@@ -553,6 +576,11 @@ func TestIntegrityHelpers(t *testing.T) {
 		if v := f.guarded(t, files); !v.Accepted() || !finds(v.Warnings, "pkg:pkg."+name+" an assertion, its condition or a test case changed") {
 			t.Errorf("%s's helper call inlined weaker: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	// A named and blank pair's value is counted under the named entry only:
+	// its weakening is no blank sum's (Astra #384 r2 H1).
+	if v := f.guarded(t, in("pkg/reg_test.go", regFile, "\t\tt.Fatal(\"named\")\n", "\t\t_ = t\n")); finds(v.Blocks, "blank package initializers") {
+		t.Errorf("a named and blank pair's value weakened: %q", whats(v.Blocks))
 	}
 	// A blank initializer gaining an assertion: no block of this layer's
 	// (main's initialization layer refuses the new call it cannot resolve).
@@ -695,25 +723,28 @@ func TestIntegrityHelpersNamespace(t *testing.T) {
 	}
 }
 
-// TestIntegrityHelpersFindingCharge (Astra #384 M2): each entry compared,
-// and each finding's bytes, are charged; past the bound, the namespace is
-// unverifiable.
+// TestIntegrityHelpersFindingCharge (Astra #384 M2, r2 M2): each entry
+// compared, and each finding's path and message as built, are charged,
+// through the production comparison and its dedup (keyed without a copy);
+// past the bound, the namespace is unverifiable.
 func TestIntegrityHelpersFindingCharge(t *testing.T) {
 	old := maxCaseWork
 	t.Cleanup(func() { maxCaseWork = old })
 	ns, msg := "p d:n", "a helper's assertions weakened (1 → 0)"
-	b := pkgFacts{helpers: map[string]fnStats{ns: {"h": {{live: 1, short: "h"}}}}}
-	a := pkgFacts{helpers: map[string]fnStats{ns: {"h": {{short: "h"}}}}}
-	add := func(bs *[]Block, k, w string) { *bs = append(*bs, Block{Path: k, What: w}) }
+	facts := func(live int) pkgFacts {
+		n := len(platforms)
+		return pkgFacts{ambient: make([]int, n), forged: make([]int, n), twentyTwos: make([]int, n),
+			helpers: map[string]fnStats{ns: {"h": {{live: live, short: "h"}}}}}
+	}
 	maxCaseWork = 1 << 30
 	r := &run{ctx: context.Background()}
-	r.compareHelpers(add, b, a)
-	if want := 1 + len(ns) + len("h") + len(msg); r.caseWork != want || !finds(r.blocks, ns+".h "+msg) {
+	r.compare("d", facts(1), facts(0))
+	if want := 1 + len(ns+".h") + len(msg); r.caseWork != want || !finds(r.blocks, ns+".h "+msg) {
 		t.Errorf("charged %d, want %d; blocks %q", r.caseWork, want, whats(r.blocks))
 	}
 	maxCaseWork = 1
 	r = &run{ctx: context.Background()}
-	r.compareHelpers(add, b, a)
+	r.compare("d", facts(1), facts(0))
 	if !finds(r.blocks, ns+" unverifiable: test helpers' findings past the guard's work bound") || finds(r.blocks, msg) {
 		t.Errorf("past the bound: %q", whats(r.blocks))
 	}

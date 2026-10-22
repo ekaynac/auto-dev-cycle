@@ -374,9 +374,9 @@ func keys[V any](ms ...map[string]V) []string {
 // compare blocks what one package directory lost, or gained, between the
 // base (b) and the candidate (a), and warns of what the reviewer must see.
 func (r *run) compare(dir string, b, a pkgFacts) {
-	seen := map[string]bool{} // keys per platform: each finding reported once
+	seen := map[[2]string]bool{} // keys per platform: each finding reported once, keyed without a copy (Astra #384 r2 M2)
 	add := func(to *[]Block, p, what string) {
-		if k := p + "\x00" + what; !seen[k] {
+		if k := [2]string{p, what}; !seen[k] {
 			seen[k] = true
 			add(to, p, what)
 		}
