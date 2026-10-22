@@ -5,7 +5,6 @@ package accept
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 )
 
 // P14d-w1b (#226 entries 122, 129, 134; supersedes #369 and #376):
@@ -18,7 +17,7 @@ import (
 // assertions, base against head:
 //   - Its own direct assertions are the assertion calls in its body, read
 //     from the syntax (direct: a failing method on an identifier bound to
-//     a testing value, main's tval; or testify's). A call to a helper is
+//     a testing value, main's tval). A call to a helper, or testify's, is
 //     none here, and main's asserting fixed point is never read: no
 //     totals, no call graph.
 //   - An assertion under a branch a constant condition never takes
@@ -91,18 +90,13 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 			if !ok {
 				continue
 			}
-			var sum fnStat // var a, b = f(): each name the whole spec's
 			sts := make([]fnStat, len(vs.Values))
 			for i, v := range vs.Values {
 				walk(v, false, &sts[i])
-				sum.live, sum.dead = sum.live+sts[i].live, sum.dead+sts[i].dead
 			}
 			for i, id := range vs.Names {
-				st := sum
-				if len(sts) == len(vs.Names) {
-					st = sts[i]
-				}
-				if x.Tok == token.VAR && len(sts) > 0 && id.Name != "_" {
+				if len(sts) > 0 && id.Name != "_" { // var a, b = f(): each name the one value's
+					st := sts[min(i, len(sts)-1)]
 					st.plat, st.short = plat, id.Name
 					stats[key(id.Name)] = st
 				}

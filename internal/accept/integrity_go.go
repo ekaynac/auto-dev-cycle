@@ -393,16 +393,17 @@ func (s *pkgScan) alias(e ast.Expr) (rhs ast.Expr) {
 
 func (s *pkgScan) assertion(call *ast.CallExpr) bool {
 	passes := slices.ContainsFunc(call.Args, func(a ast.Expr) bool { t := s.tval(a); return t != "" && t != "testing.M" })
-	return s.direct(call) || passes && s.asserting[s.callee(call)]
+	q := s.qual(ast.Unparen(call.Fun))
+	return s.direct(call) ||
+		q != "" && slices.Contains(testify, q[:strings.LastIndex(q, ".")]) ||
+		passes && s.asserting[s.callee(call)]
 }
 
-// direct: call is an assertion itself, read from the syntax: a testing
-// value's failing method, or testify's.
+// direct: call is a failing method on an identifier bound to a testing
+// value (t.Fatal), read from the syntax.
 func (s *pkgScan) direct(call *ast.CallExpr) bool {
 	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	q := s.qual(ast.Unparen(call.Fun))
-	return ok && slices.Contains(goFails, sel.Sel.Name) && s.tval(sel.X) != "" && s.tval(sel.X) != "testing.M" ||
-		q != "" && slices.Contains(testify, q[:strings.LastIndex(q, ".")])
+	return ok && slices.Contains(goFails, sel.Sel.Name) && s.tval(sel.X) != "" && s.tval(sel.X) != "testing.M"
 }
 
 // mRun: call is os.Exit(m.Run()) on a testing.M, TestMain's one allowed exit.
