@@ -66,6 +66,8 @@ type pkgFacts struct {
 	untyped                     map[string]string   // per package: why its real types are not read (P14e)
 	typed                       map[string]int      // "file\x00function\x00fact" the real types show (P14e)
 	cases                       map[string]caseAlts // per test, its cases per build constraint (P14d-b)
+	helpers                     map[string][]fnStat // per function of the test files, its assertions per declaration (P14d-w1b)
+	names                       map[string]bool     // "platform name": the names the test files use (P14d-w1b)
 	tree                        *tree               // the version read
 }
 
@@ -335,7 +337,8 @@ func (r *run) goMod() error {
 func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
 		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
-		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, cases: map[string]caseAlts{}, tree: t}
+		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, cases: map[string]caseAlts{},
+		helpers: map[string][]fnStat{}, names: map[string]bool{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" {
@@ -403,7 +406,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, "a test skipped (a skipping helper used)")
 		}
 	}
-	r.compareCases(add, b, a) // P14d-b: the tests' cases
+	r.compareCases(add, b, a)            // P14d-b: the tests' cases
+	compareHelpers(add, &r.blocks, b, a) // P14d-w1b: the test files' functions' own assertions
 
 	more := func(a, b []int) bool { // on some platform: none is traded across them
 		return slices.ContainsFunc(platforms, func(pl [2]string) bool { return a[slices.Index(platforms, pl)] > b[slices.Index(platforms, pl)] })
