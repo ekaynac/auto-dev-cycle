@@ -164,7 +164,8 @@ type Snapshot struct {
 	// review node yet (ID "": none): its review is recorded (RecordReview).
 	// Requirements are its claimed review_requirement nodes a review that
 	// is not superseded takes, and ReviewHeld its review nodes held
-	// reviewer_unavailable (P22a-6a).
+	// reviewer_unavailable, and the requirement nodes so held that such a
+	// review takes (P22a-6a; Opus 22a-6a re-check H1).
 	Reviewable   Versioned
 	Requirements []Versioned
 	ReviewHeld   []Held
@@ -387,6 +388,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	reviewed := false                   // the task has a review node, in any state
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
+	var heldReqs []Held
 	for _, n := range nodes {
 		if err != nil || n.Task != admitted {
 			continue
@@ -406,14 +408,18 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		case st == types.NodeStateStateClaimed && reviews && n.Node.Kind == types.NodeKindReviewRequirement:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			claimedReqs = append(claimedReqs, v)
-		case st == types.NodeStateStateHeld && reviews && n.Node.Kind == types.NodeKindReview &&
+		case st == types.NodeStateStateHeld && reviews && (n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement) &&
 			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewerUnavailable }):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
 				break
 			}
 			for _, h := range n.State.Holds {
-				if h.Hold == vocab.HoldReviewerUnavailable {
+				switch {
+				case h.Hold != vocab.HoldReviewerUnavailable:
+				case n.Node.Kind == types.NodeKindReview:
 					s.ReviewHeld = append(s.ReviewHeld, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
+				default:
+					heldReqs = append(heldReqs, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
 				}
 			}
 		case st == types.NodeStateStateRunnable || st == types.NodeStateStateWaiting:
@@ -465,6 +471,11 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	for _, v := range claimedReqs { // only one a live review takes, never an orphan (Opus 22a-6a M1)
 		if required[types.NodeID(v.ID)] {
 			s.Requirements = append(s.Requirements, v)
+		}
+	}
+	for _, h := range heldReqs { // a held requirement a live review waits on (Opus 22a-6a re-check H1)
+		if required[types.NodeID(h.Node.ID)] {
+			s.ReviewHeld = append(s.ReviewHeld, h)
 		}
 	}
 	if err == nil && reviews && gate.ID != "" && !reviewed {

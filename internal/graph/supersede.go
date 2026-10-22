@@ -416,7 +416,53 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 		return nil
 	}
 	rec.State.State, rec.State.WaitingOn, rec.State.Holds, rec.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, []types.NodeHold{}, &p.Replacement.ID
-	return putNode(tx, rec)
+	if err := putNode(tx, rec); err != nil {
+		return err
+	}
+	return retire(tx, rec.Recorded.Node, p.Replacement)
+}
+
+// retire supersedes the requirement pred took by the one its replacement
+// takes, once no review that is not superseded takes it and it is held or
+// open (Opus 22a-6a re-check L1): no requirement no review takes is left
+// held or open in its task. A completed one is its revision's record; a
+// claimed one is not retired (adcd moves off a requirement only once it
+// completed, or while it is held: stated).
+func retire(tx *eventstore.Tx, pred, replacement types.Node) error {
+	from, to := takenRequirement(pred), takenRequirement(replacement)
+	if from == "" || from == to {
+		return nil
+	}
+	old, err := loadNode(tx, from)
+	if err != nil {
+		return err
+	}
+	switch old.State.State {
+	case types.NodeStateStateHeld, types.NodeStateStateRunnable, types.NodeStateStateWaiting:
+	default:
+		return nil
+	}
+	nodes, err := TaskNodes(tx, old.Recorded.Task)
+	if err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		if n.Node.Kind == types.NodeKindReview && n.State.State != types.NodeStateStateSuperseded && takenRequirement(n.Node) == from {
+			return nil
+		}
+	}
+	old.State.State, old.State.WaitingOn, old.State.Holds, old.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, []types.NodeHold{}, &to
+	return putNode(tx, old)
+}
+
+// takenRequirement is the review_requirement node review takes ("": none).
+func takenRequirement(review types.Node) types.NodeID {
+	for _, in := range review.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+			return src.Producer
+		}
+	}
+	return ""
 }
 
 // stoppedAttempts: p lists exactly the predecessor's attempt that this

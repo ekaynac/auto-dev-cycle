@@ -273,7 +273,8 @@ func TestTwoRestartsSupersedeOntoTheLastRoster(t *testing.T) {
 
 // Opus 22a-6a M1: the loop commits only a requirement a review that is not
 // superseded takes: a claimed requirement node no review takes (an orphan)
-// is never given to Require.
+// is never given to Require, and a held one never to ReviewUnblock (re-check
+// H1).
 func TestAnOrphanRequirementIsNotCommitted(t *testing.T) {
 	rw := gateCompleted(t)
 	reg := stubRegistry(t, nil, nil)
@@ -295,6 +296,22 @@ func TestAnOrphanRequirementIsNotCommitted(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	held, err := reviews{reg: reg}.requirement(rw.task, graphProject, roster, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hid := types.HoldID(newID(t, "hld"))
+	for _, step := range []func(*eventstore.Tx) ([]eventstore.Event, error){
+		func(*eventstore.Tx) ([]eventstore.Event, error) { return graph.RecordReview(held, reg) },
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Raise(tx, held.Node.ID, types.NodeHold{ID: hid, Hold: vocab.HoldReviewerUnavailable, SignalInstance: "registry:" + string(stubReviewer),
+				Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+		},
+	} {
+		if err := rw.w.try(rw.w.sys, step); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var s reconcile.Snapshot
 	rw.w.view(func(tx *eventstore.Tx) (err error) {
 		s, err = reconcile.Observe(tx, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true})
@@ -305,4 +322,211 @@ func TestAnOrphanRequirementIsNotCommitted(t *testing.T) {
 			t.Errorf("the orphan requirement is given to Require: %+v", s.Requirements)
 		}
 	}
+	for _, h := range s.ReviewHeld {
+		if h.Node.ID == string(held.Node.ID) {
+			t.Errorf("the held orphan requirement is given to ReviewUnblock: %+v", s.ReviewHeld)
+		}
+	}
+}
+
+// the review state table's registries (Opus 22a-6a re-check: the state
+// table): A the stub's; N its build's executor unknown (no reviewer
+// independent: the review's claim refused); NB that, and the reviewer of
+// another family (the requirement's claim refused, none independent); NX
+// that with a third family; B and C the reviewer of another family,
+// independent.
+type tableRegistry int
+
+const (
+	regA tableRegistry = iota
+	regN
+	regNB
+	regNX
+	regB
+	regC
+)
+
+func (k tableRegistry) of(t *testing.T, unknown types.ExecutorID) registry.Registry {
+	builders := map[types.ExecutorID]types.Name{unknown: "stub-builder"}
+	switch k {
+	case regN:
+		return stubRegistry(t, builders, nil)
+	case regNB:
+		return stubRegistry(t, builders, map[types.ExecutorID]types.Name{stubReviewer: "fam-b"})
+	case regNX:
+		return stubRegistry(t, builders, map[types.ExecutorID]types.Name{stubReviewer: "fam-x"})
+	case regB:
+		return stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-b"})
+	case regC:
+		return stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-c"})
+	}
+	return stubRegistry(t, nil, nil)
+}
+
+// tableStep is a start (a restart) under a registry, then passes.
+type tableStep struct {
+	reg    tableRegistry
+	passes int
+}
+
+// cellOf is the live requirement's and the live review's states.
+func cellOf(rw *runWorld) string {
+	got := reviewNodes(rw)
+	return string(got[types.NodeKindReviewRequirement].State.State) + "/" + string(got[types.NodeKindReview].State.State)
+}
+
+// heldChain is the reviewer_unavailable hold on the live review or the
+// requirement it waits on ("": none).
+func heldChain(rw *runWorld) types.HoldID {
+	got := reviewNodes(rw)
+	for _, k := range []types.NodeKind{types.NodeKindReview, types.NodeKindReviewRequirement} {
+		for _, h := range got[k].State.Holds {
+			if h.Hold == vocab.HoldReviewerUnavailable {
+				return h.ID
+			}
+		}
+	}
+	return ""
+}
+
+// The review state table (Opus 22a-6a re-check H1, L1; pr-6a.md): from
+// each reachable cell (the live requirement × the live review), each
+// registry event (a restart to no independent roster, back to the
+// original, to another independent roster) ends with the review claimed
+// on the registry's independent roster, or held while none exists and
+// claimed on it once a restart restores it; a review claimed before the
+// event stays claimed (its commit's, 22a-6c: L2); no review action is
+// refused in any pass; and no requirement node is left held or open that
+// no live review takes, nor a committed one retired.
+func TestTheReviewStateTable(t *testing.T) {
+	starts := []struct {
+		name  string
+		steps []tableStep
+		cell  string
+	}{
+		{"requirement recorded, review waiting", []tableStep{{regA, 1}}, "runnable/waiting"},
+		{"requirement held, review waiting", []tableStep{{regA, 1}, {regNB, 3}}, "held/waiting"},
+		{"requirement claimed, review waiting", []tableStep{{regA, 2}}, "claimed/waiting"},
+		{"requirement completed, review waiting", []tableStep{{regA, 3}}, "completed/waiting"},
+		{"requirement completed, review held", []tableStep{{regA, 2}, {regN, 3}}, "completed/held"},
+		{"requirement completed, review claimed", []tableStep{{regA, 6}}, "completed/claimed"},
+		{"a replacement held, its requirement held", []tableStep{{regA, 2}, {regN, 3}, {regB, 1}, {regNX, 3}}, "held/held"},
+		{"requirement held, another roster independent", []tableStep{{regA, 1}, {regB, 1}}, "held/waiting"},
+		{"a replacement waiting on its requirement, moved off a held one", []tableStep{{regA, 1}, {regB, 2}}, "runnable/waiting"},
+		{"requirement completed, review held, another roster independent", []tableStep{{regA, 2}, {regB, 2}}, "completed/held"},
+	}
+	events := []struct {
+		name    string
+		reg     tableRegistry
+		family  types.Name // the claimed roster's; "": held, until a restart to A
+		claimed bool
+	}{
+		{"to no independent roster", regN, "", false},
+		{"restored", regA, "stub-reviewer", true},
+		{"to another independent roster", regC, "fam-c", true},
+	}
+	for _, s := range starts {
+		for _, e := range events {
+			t.Run(s.name+", "+e.name, func(t *testing.T) {
+				rw := gateCompleted(t)
+				unknown := types.ExecutorID(newID(t, "exe"))
+				for _, st := range s.steps {
+					rw.reviewing(st.reg.of(t, unknown))
+					rw.passesFor(t, st.passes, 0)
+				}
+				start := cellOf(rw)
+				if s.cell != "" && start != s.cell {
+					t.Fatalf("the start: %s, want %s", start, s.cell)
+				}
+				before := reviewNodes(rw)[types.NodeKindReview]
+				var log bytes.Buffer
+				event := func(k tableRegistry) {
+					rw.reviewing(k.of(t, unknown))
+					rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, &log)
+					rw.passesFor(t, 10, 0)
+				}
+				event(e.reg)
+				want := e.family
+				if before.State.State == types.NodeStateStateClaimed { // L2: the commit's
+					if after := reviewNodes(rw)[types.NodeKindReview]; after.Node.ID != before.Node.ID || after.State.State != types.NodeStateStateClaimed {
+						t.Fatalf("the claimed review after the event: %s %s", after.Node.ID, after.State.State)
+					}
+					return
+				}
+				if want == "" {
+					held := heldChain(rw)
+					if held == "" {
+						t.Fatalf("no independent roster, nothing held: %s", cellOf(rw))
+					}
+					rw.passesFor(t, 4, 0)
+					if heldChain(rw) != held {
+						t.Fatalf("the hold did not stay: %s, was %s", heldChain(rw), held)
+					}
+					event(regA)
+					want = "stub-reviewer"
+				}
+				review := reviewNodes(rw)[types.NodeKindReview]
+				p, err := review.Node.ParamsAsReviewNodeParams()
+				if err != nil || len(p.Roster) != 1 || p.Roster[0].Family != want || review.State.State != types.NodeStateStateClaimed {
+					t.Fatalf("from %s: %s, roster %+v (%v), want claimed on %s", start, cellOf(rw), p.Roster, err, want)
+				}
+				if log.Len() != 0 {
+					t.Errorf("the loop logged: %s", log.String())
+				}
+				rw.w.view(func(tx *eventstore.Tx) error {
+					nodes, err := graph.TaskNodes(tx, rw.task)
+					for _, n := range nodes {
+						switch {
+						case n.Node.Kind != types.NodeKindReviewRequirement:
+						case n.State.Result != nil && n.State.State != types.NodeStateStateCompleted:
+							t.Errorf("committed requirement %s %s: a supersession moving off it retired it", n.Node.ID, n.State.State)
+						case n.State.State != types.NodeStateStateCompleted && n.State.State != types.NodeStateStateSuperseded:
+							t.Errorf("requirement %s left %s", n.Node.ID, n.State.State)
+						}
+					}
+					return err
+				})
+			})
+		}
+	}
+}
+
+// Opus 22a-6a re-check L1: a supersession that moves a review off its
+// requirement retires that requirement only when no other review that is
+// not superseded takes it: one a second review takes stays open.
+func TestARequirementAnotherReviewTakesIsNotRetired(t *testing.T) {
+	rw := gateCompleted(t)
+	reg := stubRegistry(t, nil, nil)
+	rw.reviewing(reg)
+	rw.passesFor(t, 1, 0)
+	got := reviewNodes(rw)
+	review, req := got[types.NodeKindReview], got[types.NodeKindReviewRequirement]
+	second := review.Node
+	second.ID = types.NodeID(newID(t, "nod"))
+	if err := rw.w.try(rw.w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.RecordReview(types.NodeRecorded{Type: "node_recorded", Task: rw.task, Project: graphProject, Node: second}, reg)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	other := stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-b"})
+	roster, err := graph.Roster([]types.ExecutorID{stubReviewer}, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := reviews{reg: other}.requirement(rw.task, graphProject, roster, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.SupersedeOnto(tx, review.Node.ID, next, other)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rw.w.view(func(tx *eventstore.Tx) error {
+		v, err := graph.ViewOf(tx, req.Node.ID)
+		if err == nil && v.State.State == types.NodeStateStateSuperseded {
+			t.Errorf("the requirement a second review takes was retired")
+		}
+		return err
+	})
 }

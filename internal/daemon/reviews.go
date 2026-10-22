@@ -26,14 +26,17 @@ package daemon
 //
 // The requirement is the controller's: claimed by the evaluator
 // (graph.ClaimReview), its result committed by Require, its conclusions
-// exactly its params. A review held reviewer_unavailable clears by itself
-// (Unheld, each pass, the Unblock pattern): with the registry now
-// (a restart's), the same roster independent clears the hold; another
-// independent roster is recorded as the next revision of the review's own
-// requirement and the review superseded onto it, in one command
-// (graph.SupersedeOnto; Opus 22a-6a H1). A roster that changes after the
-// claim is caught at the commit (graph.reviewIndependent, 22a-6c; stated,
-// Opus 22a-6a L2).
+// exactly its params. A review held reviewer_unavailable, or the
+// requirement a live review waits on so held (its claim refused: its
+// roster's family no longer the registry's), clears by itself (Unheld,
+// each pass, the Unblock pattern): with the registry now (a restart's),
+// the same roster independent clears the hold; another independent roster
+// is recorded as the next revision of the review's own requirement and the
+// review superseded onto it, in one command (graph.SupersedeOnto; Opus
+// 22a-6a H1, re-check H1); a held requirement it moves off is retired with
+// it (the supersession's fold). No independent roster: the hold stays. A
+// roster that changes after the review's claim is caught at the commit
+// (graph.reviewIndependent, 22a-6c; stated, Opus 22a-6a L2).
 
 import (
 	"encoding/json"
@@ -189,16 +192,33 @@ func (r reviews) Require(tx *eventstore.Tx, node types.NodeID) error {
 		Completed: true}, r.env) // found: a result carrying conclusions (records/result)
 }
 
-// Unheld re-derives node's roster, a review held reviewer_unavailable
-// (hold, on signal), from the registry now (the file's comment).
+// Unheld re-derives node's roster, a review or the requirement a review
+// waits on held reviewer_unavailable (hold, on signal), from the registry
+// now (the file's comment).
 func (r reviews) Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error) {
 	v, err := graph.ViewOf(tx, node)
-	if err != nil || v.Node.Kind != types.NodeKindReview {
-		return nil, errors.Join(err, fmt.Errorf("daemon: node %s is no review", node))
+	if err != nil || v.State.State == types.NodeStateStateSuperseded {
+		return nil, err // superseded (a requirement retired) by an action of this pass: nothing to re-derive
 	}
-	p, err := v.Node.ParamsAsReviewNodeParams()
-	if err != nil {
-		return nil, err
+	review, roster := node, []types.RosterMember(nil)
+	switch v.Node.Kind {
+	case types.NodeKindReview:
+		p, err := v.Node.ParamsAsReviewNodeParams()
+		if err != nil {
+			return nil, err
+		}
+		roster = p.Roster
+	case types.NodeKindReviewRequirement: // the claim refused it: its roster's family is no longer the registry's
+		p, err := v.Node.ParamsAsReviewRequirement()
+		if err == nil {
+			review, err = waitingOn(tx, v.Task, node)
+		}
+		if err != nil {
+			return nil, err
+		}
+		roster = p.Roster
+	default:
+		return nil, fmt.Errorf("daemon: node %s is no review or review requirement", node)
 	}
 	now, ok, err := r.roster(tx, v.Task, v.Project)
 	if err != nil || !ok || len(now) != 1 {
@@ -207,10 +227,14 @@ func (r reviews) Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID,
 	if independent, err := r.independent(tx, v.Task, now[0].Executor); err != nil || !independent {
 		return nil, err // no independent reviewer yet: the hold stays
 	}
-	if slices.Equal(now, p.Roster) {
+	if slices.Equal(now, roster) {
 		return graph.Clear(tx, node, hold, signal)
 	}
-	was, err := heldRequirement(tx, v.Node)
+	rv, err := graph.ViewOf(tx, review)
+	if err != nil {
+		return nil, err
+	}
+	was, err := heldRequirement(tx, rv.Node)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +242,27 @@ func (r reviews) Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID,
 	if err != nil {
 		return nil, err
 	}
-	return graph.SupersedeOnto(tx, node, req, r.reg) // one command: no requirement revision is recorded without its review
+	return graph.SupersedeOnto(tx, review, req, r.reg) // one command: no requirement revision is recorded without its review
+}
+
+// waitingOn is the review of task that is not superseded and takes
+// requirement.
+func waitingOn(tx *eventstore.Tx, task types.TaskID, requirement types.NodeID) (types.NodeID, error) {
+	nodes, err := graph.TaskNodes(tx, task)
+	if err != nil {
+		return "", err
+	}
+	for _, n := range nodes {
+		if n.Node.Kind != types.NodeKindReview || n.State.State == types.NodeStateStateSuperseded {
+			continue
+		}
+		for _, in := range n.Node.Inputs {
+			if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement && src.Producer == requirement {
+				return n.Node.ID, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("daemon: no review takes requirement %s", requirement)
 }
 
 // heldRequirement is the requirement review takes.
