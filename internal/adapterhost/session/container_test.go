@@ -184,6 +184,10 @@ func TestOpenRunsAContainer(t *testing.T) {
 		if fail != errors.Is(err, ErrUnverified) || !fail && err != nil || rm.calls.Load() < 1 {
 			t.Errorf("removal failing %v: Wait %v, %d removals", fail, err, rm.calls.Load())
 		}
+		// An unverified Wait does not wait for the session's end (the tree
+		// may still hold the output open); here the client is gone, so the
+		// end comes: wait on it, never read Err before it.
+		<-s.Done()
 		wantEnd(t, s, s.Err(), KindClosed, vocab.ReasonAttemptStopped)
 	}
 }
