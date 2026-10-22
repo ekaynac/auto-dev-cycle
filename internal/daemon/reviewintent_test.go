@@ -29,9 +29,15 @@ const hiddenTest = "TestHiddenSecretKey"
 // world, the intent and prompt built, the attempt, and the launch's error.
 func reviewLaunch(t *testing.T, edit func(*types.ManifestIntent)) (*runWorld, types.ManifestIntent, []byte, types.AttemptID, error) {
 	t.Helper()
-	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}, nil)
-	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted || v.Outcome == nil || *v.Outcome != types.OutcomeFound {
-		t.Fatalf("the red gate: %s %v, holds %+v", v.State.State, v.Outcome, v.State.Holds)
+	return reviewLaunchOn(t, map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}, edit)
+}
+
+// reviewLaunchOn is reviewLaunch over a build that writes files.
+func reviewLaunchOn(t *testing.T, files map[string]string, edit func(*types.ManifestIntent)) (*runWorld, types.ManifestIntent, []byte, types.AttemptID, error) {
+	t.Helper()
+	rw := gateWorld(t, goEvents("TestA=pass"), files, nil)
+	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the gate: %s %v, holds %+v", v.State.State, v.Outcome, v.State.Holds)
 	}
 	rw.reviewing(stubRegistry(t, nil, nil))
 	rw.passesFor(t, 6, 0)
@@ -197,4 +203,22 @@ func TestAReviewersContextFromTheAcceptanceIsRefused(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// Astra chunk 3 M2: an empty candidate (a build that changes nothing:
+// patch/empty, no ref) is reviewed: its reviewer's intent lists the brief
+// and the gate's report included and its receipt omitted, no patch, and
+// the prompt says there is no change.
+func TestAnEmptyCandidateIsReviewed(t *testing.T) {
+	rw, _, prompt, aid, err := reviewLaunchOn(t, map[string]string{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mi, ok := recordedIntent(t, rw.w, aid)
+	if !ok || len(mi.Inputs) != 3 || len(mi.Included) != 2 || len(mi.Omitted) != 1 || mi.Omitted[0].Ref.Type != types.RefTypeReceipt {
+		t.Fatalf("the intent: %v, inputs %+v, included %+v", ok, mi.Inputs, mi.Included)
+	}
+	if !strings.Contains(string(prompt), "No changes: the candidate's diff against its base is empty.") || strings.Contains(string(prompt), "```") {
+		t.Errorf("the prompt: %s", prompt)
+	}
 }
