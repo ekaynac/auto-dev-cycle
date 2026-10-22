@@ -103,6 +103,12 @@ type Spec struct {
 	// and out/) to the adapter's view of it; nil is the identity (an adapter
 	// on the host). A contained adapter's starter sets it (22a-5d).
 	Path func(string) string
+	// Check, when set, runs once the session has ended and its process
+	// tree was seen gone, before the exchange is removed: what the run left
+	// there is still in place (a contained adapter's disk bound, its
+	// exchange's out/ included; Opus 22a-5d-4 L2). Its error is
+	// Outcome.Checked; it never runs after an unverified end.
+	Check func() error
 }
 
 // Outcome is what an attempt left.
@@ -123,6 +129,8 @@ type Outcome struct {
 	// in the order they first arrived: the exit map's input
 	// (internal/vocab/exitmap).
 	Hints []string
+	// Checked is Spec.Check's error, nil when it passed or did not run.
+	Checked error
 }
 
 // Seams for tests: the prelaunch check, the staging copy, and a hook at
@@ -216,7 +224,11 @@ func (p *Prepared) Run(ctx context.Context) (out Outcome, err error) {
 		return Outcome{}, ErrNotStarted
 	}
 	r := &attemptRun{h: p.h, spec: p.spec, token: a.FencingToken, x: p.x}
-	return r.run(ctx)
+	out, err = r.run(ctx)
+	if p.spec.Check != nil && !errors.Is(out.Session, session.ErrUnverified) && !errors.Is(err, session.ErrUnverified) {
+		out.Checked = p.spec.Check() // before the deferred removal of the exchange
+	}
+	return out, err
 }
 
 // attemptRun is one started attempt's state.

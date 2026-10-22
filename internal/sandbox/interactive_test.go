@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -210,18 +211,81 @@ func TestInteractiveRefusesACidFile(t *testing.T) {
 }
 
 // What the run wrote to its exchange's out/ counts against Limits.Disk with
-// the attempt's directory: past the bound, Remove fails (#374 M1).
-func TestInteractiveRemoveBoundsTheExchange(t *testing.T) {
+// the attempt's directory (#374 M1). The breach is Within's, a distinct
+// error, never Remove's, which says only whether the container was seen
+// gone (Opus #393 M2); Within before the container is seen gone refuses.
+func TestInteractiveWithinBoundsTheExchange(t *testing.T) {
 	h := testHost(t, podmanFake(nil, nil, nil))
 	att := newAttemptID(t)
 	r := testRun(t, h, Build)
 	r.Exchange = exchange(t, h, att)
 	it, err := h.Interactive(r, att)
 	must(t, err)
+	if err := it.Within(); !errors.Is(err, ErrSpec) || errors.Is(err, ErrLeft) {
+		t.Fatalf("Within before the removal: %v, want ErrSpec", err)
+	}
 	must(t, it.Remove(context.Background()))
+	must(t, it.Within())
 	must(t, os.WriteFile(filepath.Join(r.Exchange, "out", "big"), make([]byte, r.Limits.Disk+1), 0o600))
-	if err := it.Remove(context.Background()); !errors.Is(err, ErrLeft) {
+	if err := it.Remove(context.Background()); err != nil {
+		t.Fatalf("Remove with an out/ past the bound: %v, want nil (the container is gone)", err)
+	}
+	if err := it.Within(); !errors.Is(err, ErrLeft) {
 		t.Fatalf("an out/ past the bound: %v, want ErrLeft", err)
+	}
+	// Within runs before the host removes the exchange (adapterhost's
+	// Spec.Check; Opus 22a-5d-4 L2): a missing out/ cannot be measured.
+	must(t, os.Remove(filepath.Join(r.Exchange, "out", "big")))
+	must(t, it.Within())
+	// out/ holds what one cleanup visits less the exchange's other entries
+	// (the root, in/, out/ and in/'s: here one), exactly (Mythos chunk 2 L2).
+	old := maxOutEntries
+	maxOutEntries = 8
+	t.Cleanup(func() { maxOutEntries = old })
+	must(t, os.WriteFile(filepath.Join(r.Exchange, "in", "prompt.md"), nil, 0o600))
+	for i := range maxOutEntries - 1 - exchangeOwn {
+		must(t, os.WriteFile(filepath.Join(r.Exchange, "out", fmt.Sprint(i)), nil, 0o600))
+	}
+	must(t, it.Within())
+	must(t, os.WriteFile(filepath.Join(r.Exchange, "out", "one-more"), nil, 0o600))
+	if err := it.Within(); !errors.Is(err, ErrLeft) {
+		t.Fatalf("an out/ one past the exchange's budget: %v, want ErrLeft", err)
+	}
+	if err := it.Within(); errors.Is(err, ErrUnmeasured) {
+		t.Fatalf("a breach of out/'s entries: %v, not ErrUnmeasured", err)
+	}
+	for i := range maxOutEntries - 1 - exchangeOwn {
+		must(t, os.Remove(filepath.Join(r.Exchange, "out", fmt.Sprint(i))))
+	}
+	must(t, os.Remove(filepath.Join(r.Exchange, "out", "one-more")))
+	must(t, it.Within())
+	// Mythos chunk 2 L3: a tree that cannot be measured is no known breach
+	// (ErrUnmeasured), unless the candidate made it so: a directory it made
+	// unreadable in its workspace is its own (ErrLeft alone).
+	locked := filepath.Join(r.Attempt.Workspace(), "locked")
+	must(t, os.Mkdir(locked, 0))
+	if err := it.Within(); !errors.Is(err, ErrLeft) || errors.Is(err, ErrUnmeasured) {
+		t.Errorf("the candidate's unreadable directory: %v, want ErrLeft alone", err)
+	}
+	must(t, os.Remove(locked))
+	locked = filepath.Join(r.Exchange, "out", "locked")
+	must(t, os.Mkdir(locked, 0))
+	if err := it.Within(); !errors.Is(err, ErrLeft) || !errors.Is(err, ErrUnmeasured) {
+		t.Errorf("an unreadable out/: %v, want ErrUnmeasured", err)
+	}
+	must(t, os.Remove(locked))
+	must(t, os.RemoveAll(r.Exchange))
+	if err := it.Within(); !errors.Is(err, ErrLeft) || !errors.Is(err, ErrUnmeasured) {
+		t.Fatalf("Within with no out/: %v, want ErrUnmeasured", err)
+	}
+	// Opus 22a-5d-4 L5: a missing attempt directory cannot be measured either.
+	for _, d := range []string{"in", "out"} {
+		must(t, os.MkdirAll(filepath.Join(r.Exchange, d), 0o700))
+	}
+	must(t, it.Within())
+	must(t, os.RemoveAll(r.Attempt.Dir))
+	if err := it.Within(); !errors.Is(err, ErrLeft) || !errors.Is(err, ErrUnmeasured) {
+		t.Fatalf("Within with no attempt directory: %v, want ErrUnmeasured", err)
 	}
 }
 

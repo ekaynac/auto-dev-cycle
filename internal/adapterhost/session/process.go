@@ -129,7 +129,7 @@ func Spawn(spec ProcessSpec) (*Process, error) {
 	}
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		return nil, fmt.Errorf("adapterhost: bubblewrap: %w", err)
+		return nil, fmt.Errorf("%w: bubblewrap: %w", ErrSpawn, err)
 	}
 	var pipes [8]*os.File // stdin, stdout, stderr, info: read end, write end
 	for i := 0; i < 8; i += 2 {
@@ -149,7 +149,7 @@ func Spawn(spec ProcessSpec) (*Process, error) {
 	if err != nil {
 		closeAll(pipes[1], pipes[2], pipes[4], pipes[6])
 		// exec's error names bubblewrap's path, never the adapter's argv or env.
-		return nil, fmt.Errorf("adapterhost: spawn: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrSpawn, err)
 	}
 	p := &Process{cmd: cmd, stdin: pipes[1], stdout: pipes[2], exited: make(chan struct{}), bwrapFD: bwrapFD, initFD: -1}
 	drained := make(chan struct{})
@@ -238,6 +238,11 @@ func verified(initFD int) bool { return initFD >= 0 && awaitExit(initFD) }
 
 // poll is unix.Poll; a test replaces it to make polling fail.
 var poll = unix.Poll
+
+// ErrSpawn marks an adapter that could not be started at all (its process,
+// or a container's client, never ran): the host's fault, never the
+// candidate's (Opus 22a-5d-4 M1).
+var ErrSpawn = errors.New("adapterhost: the adapter could not be spawned")
 
 // ErrUnverified is Wait's error when the namespace's init was not seen to
 // exit (its pidfd missing or its poll failed), or a container's removal

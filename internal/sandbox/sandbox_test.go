@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -223,10 +224,12 @@ func TestResolve(t *testing.T) {
 	host := `"Os":"` + runtime.GOOS + `","Architecture":"` + runtime.GOARCH + `",`
 	inspect := func(digests string) func(context.Context, []string) ([]byte, error) { return inspectOn(digests, host) }
 	foreign := map[string]string{"amd64": "arm64", "arm64": "amd64"}[runtime.GOARCH]
-	h := testHost(t, &fake{fn: inspect(`"` + ref + `"`)})
+	once := &fake{fn: inspect(`"` + ref + `"`)}
+	h := testHost(t, once)
 	img, err := h.Resolve(context.Background(), ref)
-	if err != nil || img.ID != testID || img.OS != runtime.GOOS || img.Arch != runtime.GOARCH || img.Manifest.Toolchain != "go" || img.Manifest.Lockfiles["go.sum"] != "sha256:1" {
-		t.Fatalf("Resolve = %+v, %v", img, err)
+	if err != nil || img.ID != testID || img.OS != runtime.GOOS || img.Arch != runtime.GOARCH || img.Manifest.Toolchain != "go" || img.Manifest.Lockfiles["go.sum"] != "sha256:1" ||
+		len(once.calls) != 1 {
+		t.Fatalf("Resolve = %+v, %v; podman calls %q", img, err, once.calls)
 	}
 	// The F fault for images: another digest under the same name.
 	other := "docker.io/library/debian@sha256:" + strings.Repeat("b", 64)
@@ -242,6 +245,51 @@ func TestResolve(t *testing.T) {
 		if _, err := h.Resolve(context.Background(), ref); !errors.Is(err, ErrImage) {
 			t.Errorf("%s: %v, want ErrImage", name, err)
 		}
+	}
+	// Opus #397 L1: a host holding several platforms' images under an
+	// index pin may inspect the pin as another platform's (podman 4.9):
+	// Resolve takes the host platform's among the images whose RepoDigests
+	// hold the pin, and refuses none or two.
+	hostID, otherID, twinID := strings.Repeat("1", 64), strings.Repeat("2", 64), strings.Repeat("3", 64)
+	object := func(id, arch string, digests ...string) string {
+		d, _ := json.Marshal(digests)
+		return `{"Id":"` + id + `","RepoDigests":` + string(d) + `,"Os":"` + runtime.GOOS + `","Architecture":"` + arch + `","Labels":{}}`
+	}
+	objects := map[string]string{hostID: object(hostID, runtime.GOARCH, other, ref), otherID: object(otherID, foreign, ref), twinID: object(twinID, runtime.GOARCH, ref)}
+	listedAs := func(ids ...string) func(context.Context, []string) ([]byte, error) {
+		return func(_ context.Context, args []string) ([]byte, error) {
+			if slices.Contains(args, "images") {
+				var rows []string
+				for _, id := range ids {
+					rows = append(rows, `{"Id":"`+id+`","RepoDigests":["`+ref+`"]}`)
+				}
+				rows = append(rows, object(strings.Repeat("4", 64), runtime.GOARCH, other)) // another pin's
+				return []byte("[" + strings.Join(rows, ",") + "]"), nil
+			}
+			names := args[slices.Index(args, "--")+1:]
+			if names[0] == ref {
+				return []byte("[" + objects[otherID] + "]"), nil
+			}
+			var out []string
+			for _, n := range names {
+				out = append(out, objects[n])
+			}
+			return []byte("[" + strings.Join(out, ",") + "]"), nil
+		}
+	}
+	both := &fake{fn: listedAs(otherID, hostID, hostID)} // the host's image listed once per name
+	if img, err := testHost(t, both).Resolve(context.Background(), ref); err != nil || img.ID != hostID || img.Arch != runtime.GOARCH ||
+		len(both.calls) != 3 || !slices.Contains(both.calls[2], hostID) || !slices.Contains(both.calls[2], otherID) || len(both.calls[2]) != len(both.calls[0])+1 {
+		t.Errorf("both platforms' images under the pin: %+v, %v; podman calls %q", img, err, both.calls)
+	}
+	for name, ids := range map[string][]string{"only another platform's": {otherID}, "two of the host's": {otherID, hostID, twinID}} {
+		if _, err := testHost(t, &fake{fn: listedAs(ids...)}).Resolve(context.Background(), ref); !errors.Is(err, ErrImage) {
+			t.Errorf("%s: %v, want ErrImage", name, err)
+		}
+	}
+	objects[hostID] = object(hostID, runtime.GOARCH, other) // listed under the pin, inspected without it
+	if _, err := testHost(t, &fake{fn: listedAs(otherID, hostID)}).Resolve(context.Background(), ref); !errors.Is(err, ErrImage) {
+		t.Errorf("an image inspected without the pin: %v, want ErrImage", err)
 	}
 	f := &fake{}
 	h = testHost(t, f)

@@ -56,12 +56,13 @@ func TestGoMiniProfile(t *testing.T) {
 }
 
 // goMiniImage is go-mini's own prepared image (#226 entry 97): built from
-// main 842dde6 by scripts/prepare-go-image.sh build go-mini, tag
-// go1.27.1-2026-10-21, and goMiniLabel its dev.adc.prepared label as
-// pushed (podman image inspect).
+// main 84fe598 by scripts/prepare-go-image.sh build go-mini, tag
+// go1.27.1-2026-10-22, and goMiniLabel its dev.adc.prepared label as
+// pushed (podman image inspect): the recipe's lockfile part and each
+// platform's adapter digest, the release of 84fe598's.
 const (
-	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d"
-	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"}}`
+	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:0050a01ec7bd87bb6e7e6bd991be22d323687862a40487d522820dc08e066319"
+	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"},"adapter":{"linux/amd64":"sha256:6774ae79914477829bc749b305e2bf210071b23b1602a44fb3d728807c91156a","linux/arm64":"sha256:60e800f3946147f78b02b747d0ac8edf0c07f9ffe0f5cc3bc6264b4477856146"}}`
 )
 
 // go-mini's prepared image (#226 entry 97): the recipe's label for go-mini
@@ -95,7 +96,13 @@ func TestGoMiniPreparedManifest(t *testing.T) {
 		t.Errorf("go-mini's label for go-mini: %v", err)
 	}
 	var pushed sandbox.Image
-	if err := json.Unmarshal([]byte(goMiniLabel), &pushed.Manifest); err != nil || !reflect.DeepEqual(pushed.Manifest, goMini.Manifest) {
+	// The recipe's manifest is the label's lockfile part; the pushed label
+	// adds each platform's adapter digest (P22a-5d).
+	err = json.Unmarshal([]byte(goMiniLabel), &pushed.Manifest)
+	lockPart := pushed.Manifest
+	lockPart.Adapter = nil
+	if err != nil || !reflect.DeepEqual(lockPart, goMini.Manifest) || len(pushed.Manifest.Adapter) != 2 ||
+		pushed.Manifest.Adapter["linux/amd64"] == "" || pushed.Manifest.Adapter["linux/arm64"] == "" {
 		t.Errorf("the pinned image's label %+v, the recipe's %+v: %v", pushed.Manifest, goMini.Manifest, err)
 	}
 	if err := pushed.CheckManifest("go", repo, lockfiles); err != nil {

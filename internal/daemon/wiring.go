@@ -118,12 +118,14 @@ func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 // keeps apart from the state directory and the controller's sockets. The
 // adapter runs in the attempt's container (containerAdapter, 22a-5d), which
 // mounts the attempt's workspace, exchange and socket, and nothing of the
-// state directory; its image's adapter must be the installed release's.
+// state directory; its image's adapter must be the installed release's,
+// whose digest is computed here: adcd does not start without its release's
+// lib/adc (releaseAdapter; Opus #393 L1).
 func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry, eg *egress, logw io.Writer) (*runner, error) {
 	if cfg.Sandbox == nil {
 		return nil, nil
 	}
-	lib, err := releaseLib()
+	want, err := releaseAdapter()
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +138,7 @@ func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry,
 	return &runner{ctx: ctx, store: d.store, system: d.system, blobs: d.blobs, place: placerOf(reg, *cfg.Sandbox, eg.gw), env: env(d, reg),
 		host: &adapterhost.Host{Store: d.store, Blobs: d.blobs, Actor: string(d.system.Actor()), Principal: d.system, Root: exchanges},
 		box:  *cfg.Sandbox, clones: clones, sockets: sockets, gateway: eg.open,
-		adapters: &containerAdapter{Box: *cfg.Sandbox, Release: lib}, log: logw}, nil
+		adapters: &containerAdapter{Box: *cfg.Sandbox, Want: want}, log: logw}, nil
 }
 
 // placerOf is adcd's placer over reg: the task's rails (authority.Rails)
