@@ -230,23 +230,26 @@ func (o own) check(blobs receipt.Blobs) func(graph.RefRecord) error {
 	}
 }
 
-// Resolve is id's record, its declassifications the verified ones only.
-func (r Records) Resolve(id string) (graph.RefRecord, bool, error) {
+// Resolve is id's records (graph.RefRecords), their declassifications the
+// verified ones only.
+func (r Records) Resolve(id string) ([]graph.RefRecord, bool, error) {
 	if !r.loaded() {
-		return graph.RefRecord{}, false, fmt.Errorf("%w: the records are not Load's", ErrAncestryUnresolved)
+		return nil, false, fmt.Errorf("%w: the records are not Load's", ErrAncestryUnresolved)
 	}
-	rec, ok, err := r.resolve(id)
+	recs, ok, err := r.resolve(id)
 	if err != nil || !ok {
-		return rec, ok, err
+		return nil, ok, err
 	}
-	if rec.Sanitised || rec.BuilderSafe {
-		safe, err := r.safe(rec)
-		if err != nil {
-			return rec, false, err
+	for i, rec := range recs {
+		if rec.Sanitised || rec.BuilderSafe {
+			safe, err := r.safe(rec)
+			if err != nil {
+				return nil, false, err
+			}
+			recs[i].Sanitised, recs[i].BuilderSafe = rec.Sanitised && safe, rec.BuilderSafe && safe
 		}
-		rec.Sanitised, rec.BuilderSafe = rec.Sanitised && safe, rec.BuilderSafe && safe
 	}
-	return rec, true, nil
+	return recs, true, nil
 }
 
 // Acceptance is a copy of the task's acceptance blobs' digests (nil: not
@@ -289,46 +292,59 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 		case !rec.BuilderSafe || rec.Type != types.RefTypeView || rec.Producer != types.NodeKindReview || len(rec.Lineage) != 1:
 			return false, nil
 		}
-		dec, ok, err := resolve(rec.Lineage[0])
-		if err != nil || !ok || dec.ID != rec.Lineage[0] || dec.Producer != types.NodeKindReview || dec.Type != types.RefTypeBlob || dec.BuilderSafe || dec.Sanitised {
+		decs, ok, err := resolve(rec.Lineage[0])
+		if err != nil || !ok {
 			return false, err
-		}
-		gateIDs := []string{}
-		for _, p := range dec.Lineage {
-			pr, ok, err := resolve(p)
-			if err != nil {
-				return false, err
-			}
-			if !ok {
-				return false, nil
-			}
-			if !pr.Sanitised || pr.Type != types.RefTypeBlob {
-				continue
-			}
-			b, ok, err := report(pr)
-			if err != nil || !ok {
-				return false, err
-			}
-			ids, err := gate.ReportIDs(b)
-			if err != nil {
-				return false, nil
-			}
-			for _, id := range ids {
-				if !slices.Contains(gateIDs, id) {
-					gateIDs = append(gateIDs, id)
-				}
-			}
 		}
 		view, ok, err := readBlob(blobs, rec.ContentDigest, maxSafeBytes)
 		if err != nil || !ok {
 			return false, err
 		}
-		decision, ok, err := readBlob(blobs, dec.ContentDigest, maxSafeBytes)
+		for _, dec := range decs { // a decision repeated by rounds: the view must be every record's (#226 entry 161, fail closed)
+			if safe, err := viewOf(blobs, resolve, report, view, dec, rec.Lineage[0]); err != nil || !safe {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+}
+
+// viewOf is whether view is the findings view of dec, one record of the
+// decision id names, redacted of the ids of the gate reports dec's lineage
+// holds, each resolved.
+func viewOf(blobs receipt.Blobs, resolve graph.RefRecords, report func(graph.RefRecord) ([]byte, bool, error), view []byte, dec graph.RefRecord, id string) (bool, error) {
+	if dec.ID != id || dec.Producer != types.NodeKindReview || dec.Type != types.RefTypeBlob || dec.BuilderSafe || dec.Sanitised {
+		return false, nil
+	}
+	gateIDs := []string{}
+	for _, p := range dec.Lineage {
+		prs, ok, err := resolve(p)
 		if err != nil || !ok {
 			return false, err
 		}
-		return review.CheckView(view, decision, dec.ID, gateIDs) == nil, nil
+		pr := prs[0] // a report's records differ in their lineage alone: one content
+		if !pr.Sanitised || pr.Type != types.RefTypeBlob {
+			continue
+		}
+		b, ok, err := report(pr)
+		if err != nil || !ok {
+			return false, err
+		}
+		ids, err := gate.ReportIDs(b)
+		if err != nil {
+			return false, nil
+		}
+		for _, id := range ids {
+			if !slices.Contains(gateIDs, id) {
+				gateIDs = append(gateIDs, id)
+			}
+		}
 	}
+	decision, ok, err := readBlob(blobs, dec.ContentDigest, maxSafeBytes)
+	if err != nil || !ok {
+		return false, err
+	}
+	return review.CheckView(view, decision, dec.ID, gateIDs) == nil, nil
 }
 
 // readBlob is blob d's bytes, at most limit+1 of them kept, false when
@@ -492,61 +508,77 @@ type walk struct {
 	hidden            map[string]bool                     // acceptance digests
 	walked            map[string]bool                     // ids scheduled: queued or resolved, each counted once
 	shallow           map[string]bool                     // inputs declassified, so not expanded: expanded when reached as an ancestor
-	resolved          map[string]graph.RefRecord          // ids resolved and expanded
+	resolved          map[string][]graph.RefRecord        // ids resolved and expanded: each id's records
 	n, edges, idBytes int                                 // n: the ids scheduled
 	peak              int                                 // the queue's longest
 }
 
 func newWalk(r Records, role string) *walk {
-	w := &walk{role: role, records: r.resolve, safe: r.safe, brief: r.brief, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
+	w := &walk{role: role, records: r.resolve, safe: r.safe, brief: r.brief, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string][]graph.RefRecord{}}
 	for _, d := range r.acceptance {
 		w.hidden[string(d)] = true
 	}
 	return w
 }
 
-// start resolves r's own record, which must be r (its content digest and
-// lineage), then walks its ancestry. An r already walked (an ancestor of
-// an earlier input) is compared with its record only.
+// start resolves r's own records, one of which must be r (its content
+// digest and lineage), then walks the ancestry of each (#226 entry 161:
+// every record of an id, fail closed). An r already walked (an ancestor of
+// an earlier input) is compared with its records only.
 func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
-	rec, done := w.resolved[r.ID]
+	recs, done := w.resolved[r.ID]
 	if !done {
 		w.idBytes += len(r.ID)
 		var err error
 		if err = w.schedule(r.ID, r.ID); err == nil {
-			rec, err = w.resolve(r.ID, r.ID)
+			recs, err = w.resolve(r.ID, r.ID)
 		}
 		if err != nil {
-			return rec, err
+			return graph.RefRecord{}, err
 		}
 	}
+	rec := recs[0] // its records differ in their lineage alone
 	// The input as listed is its record: its bytes, lineage, scope and
 	// restrictions, so no copy of a record under fewer restrictions or
 	// another scope passes as it (Mythos 22a-5c-3 M1).
-	if rec.ContentDigest != r.ContentDigest || !slices.Equal(rec.Lineage, r.Lineage) || rec.Project != graph.ScopeProject(r.Scope) ||
-		rec.Framework != r.Scope.Framework || !slices.EqualFunc(rec.Restrictions, r.Restrictions, graph.SameRestriction) {
+	if rec.ContentDigest != r.ContentDigest || !slices.ContainsFunc(recs, func(x graph.RefRecord) bool { return slices.Equal(x.Lineage, r.Lineage) }) ||
+		rec.Project != graph.ScopeProject(r.Scope) || rec.Framework != r.Scope.Framework || !slices.EqualFunc(rec.Restrictions, r.Restrictions, graph.SameRestriction) {
 		return rec, fmt.Errorf("%w: %s is not the input its record names", ErrAncestryUnresolved, r.ID)
 	}
 	if done {
 		return rec, nil
 	}
 	if w.role == "reviewer" && rec.Sanitised || w.role == "builder" && rec.BuilderSafe {
-		safe, err := w.safe(rec)
-		if err != nil {
-			return rec, err
+		safe := true
+		for _, x := range recs { // every record verified
+			ok, err := w.safe(x)
+			if err != nil {
+				return rec, err
+			}
+			safe = safe && ok
 		}
 		if safe {
 			w.shallow[r.ID] = true
 			return rec, nil // declassified for this consumer, verified: its own identity checked, its ancestry not walked
 		}
 	}
-	queue, err := w.enqueue(r.ID, nil, rec.Lineage)
+	var queue []string
+	var err error
+	for _, x := range recs {
+		if queue, err = w.enqueue(r.ID, queue, x.Lineage); err != nil {
+			return rec, err
+		}
+	}
 	for err == nil && len(queue) > 0 {
 		id := queue[0]
 		queue = queue[1:]
-		var parent graph.RefRecord
-		if parent, err = w.resolve(r.ID, id); err == nil {
-			queue, err = w.enqueue(r.ID, queue, parent.Lineage)
+		var parents []graph.RefRecord
+		if parents, err = w.resolve(r.ID, id); err == nil {
+			for _, p := range parents {
+				if queue, err = w.enqueue(r.ID, queue, p.Lineage); err != nil {
+					break
+				}
+			}
 		}
 	}
 	return rec, err
@@ -554,25 +586,31 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 
 // resolve is id's record, its identity checked against the acceptance
 // blobs: a digest check, apart from walking. It is cached.
-func (w *walk) resolve(input, id string) (graph.RefRecord, error) {
+func (w *walk) resolve(input, id string) ([]graph.RefRecord, error) {
 	if w.hidden[id] { // an acceptance blob, which has no record: refused, never unresolved
-		return graph.RefRecord{}, fmt.Errorf("%w: %s (ancestor %s is an acceptance blob)", ErrAcceptanceInput, input, id)
+		return nil, fmt.Errorf("%w: %s (ancestor %s is an acceptance blob)", ErrAcceptanceInput, input, id)
 	}
-	rec, ok, err := w.records(id)
-	switch {
-	case err != nil:
-		return rec, err
-	case !ok || rec.ID != id:
-		return rec, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
+	recs, ok, err := w.records(id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || len(recs) == 0 {
+		return nil, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
+	}
+	// An id's records differ in their lineage alone (graph.RefRecords), so
+	// its first stands for each here; each lineage is walked (start).
+	switch rec := recs[0]; {
+	case rec.ID != id:
+		return nil, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
 	case w.hidden[string(rec.ContentDigest)]:
-		return rec, fmt.Errorf("%w: %s (ancestor %s holds acceptance %s)", ErrAcceptanceInput, input, id, rec.ContentDigest)
+		return nil, fmt.Errorf("%w: %s (ancestor %s holds acceptance %s)", ErrAcceptanceInput, input, id, rec.ContentDigest)
 	case rec.Producer == types.NodeKindPlan:
 		if err := w.brief(rec); err != nil {
-			return rec, fmt.Errorf("%s (ancestor %s): %w", input, id, err)
+			return nil, fmt.Errorf("%s (ancestor %s): %w", input, id, err)
 		}
 	}
-	w.resolved[id] = rec
-	return rec, nil
+	w.resolved[id] = recs
+	return recs, nil
 }
 
 // schedule counts id, a new one, against the inclusive record bound before

@@ -802,10 +802,12 @@ var errContent = errors.New("daemon: the build's input")
 var errHost = errors.New("daemon: the runner's host")
 
 // contentFault reports whether cause is a refusal of what the build takes:
-// the I18 walk's (intent.ErrAcceptanceInput: a forged brief among them) or
-// its input's shape (errContent).
+// the I18 walk's (intent.ErrAcceptanceInput: a forged brief among them),
+// its rendered context's (intent.ErrUnbound: a brief over its bound, a
+// findings view that is not one; Opus 22a-6d L3) or its input's shape
+// (errContent).
 func contentFault(cause error) bool {
-	return errors.Is(cause, intent.ErrAcceptanceInput) || errors.Is(cause, errContent)
+	return errors.Is(cause, intent.ErrAcceptanceInput) || errors.Is(cause, intent.ErrUnbound) || errors.Is(cause, errContent)
 }
 
 // configFault reports whether cause is errConfig's: its profile missing,

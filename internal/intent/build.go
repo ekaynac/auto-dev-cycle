@@ -10,11 +10,12 @@ package intent
 //     size (the first round's prompt is it alone, as before);
 //   - a repair round's findings-n: the review's builder-safe findings view
 //     (graph.Context renders a review's result for a build as it alone),
-//     listed under "Review of your previous candidate", included at its
-//     blob's size; an unreviewable verdict (graph.Unreviewable: no view)
+//     listed under "The review of your round n candidate (findings-n)"
+//     (Opus 22a-6d L2), included at its blob's size; an unreviewable verdict (graph.Unreviewable: no view)
 //     its detail, the controller's text;
-//   - its candidate-n: the previous candidate's diff (review.Fenced),
-//     included at its blob's size, or omitted for budget past
+//   - its candidate-n: round n's candidate's diff (review.Fenced), under
+//     "Your round n candidate", included at its blob's size (once: a diff a
+//     later round repeated is named as the same), or omitted for budget past
 //     review.MaxDiff (shortcut: the repair builder then sees the
 //     unreviewable verdict, not its diff; a bound for it is 22a-7's), or
 //     "changed nothing" for an empty candidate.
@@ -37,7 +38,7 @@ import (
 
 // Build is build node's PromptContext in tx, rendered its graph.Context.
 func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered graph.Rendered) (PromptContext, error) {
-	results, err := claimedResults(tx, node)
+	results, names, err := claimedResults(tx, node)
 	if err != nil {
 		return PromptContext{}, err
 	}
@@ -49,6 +50,7 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		}
 		return b, ok, err
 	}
+	listed := map[types.Digest]string{} // each ref listed once, under the first input that takes it (a candidate repeated by rounds)
 	var prompt strings.Builder
 	var whole []types.Ref // the context as graph.Context renders it
 	for i, rr := range results {
@@ -57,6 +59,7 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 			v = slices.DeleteFunc(slices.Clone(v), func(r types.Ref) bool { return !graph.BuilderSafe(types.NodeKindReview, rr, r) })
 		}
 		whole = append(whole, v...)
+		round := roundOf(names[i]) // its section's round (Opus 22a-6d L2)
 		switch k := rr.Result.Kind; {
 		case i == 0 && k == types.ResultKindPlan && len(v) == 1:
 			b, ok, err := read(v[0], MaxBrief)
@@ -73,8 +76,9 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 			p := brief.Prompt(pb)
 			prompt.Write(p)
 			out.Included, out.Bytes[v[0].IdentityDigest] = append(out.Included, v[0]), int64(len(p))
+			listed[v[0].IdentityDigest] = string(names[i])
 		case i > 0 && k == types.ResultKindReview:
-			prompt.WriteString("\n## Review of your previous candidate\n\n")
+			fmt.Fprintf(&prompt, "\n## The review of your round %s candidate (%s)\n\n", round, names[i])
 			switch {
 			case graph.Unreviewable(rr.Result) && len(v) == 0:
 				prompt.WriteString("It could not be reviewed: " + rr.Result.Detail + "\n")
@@ -91,23 +95,32 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 					return PromptContext{}, err
 				}
 				prompt.WriteString("Its reviewer decided no_go, with these findings:\n\n" + list)
+				if first, dup := listed[v[0].IdentityDigest]; dup {
+					return PromptContext{}, fmt.Errorf("%w: %s's findings view is %s's", ErrUnbound, names[i], first) // a view names its round: never two rounds'
+				}
 				out.Included, out.Bytes[v[0].IdentityDigest] = append(out.Included, v[0]), int64(len(b))
+				listed[v[0].IdentityDigest] = string(names[i])
 			default:
 				return PromptContext{}, fmt.Errorf("%w: build %s's findings are %d refs, not a findings view", ErrUnbound, node, len(v))
 			}
 		case i > 0 && k == types.ResultKindPatch && len(v) == 0:
-			prompt.WriteString("\n## Your previous candidate\n\nIt changed nothing.\n")
+			fmt.Fprintf(&prompt, "\n## Your round %s candidate (%s)\n\nIt changed nothing.\n", round, names[i])
 		case i > 0 && k == types.ResultKindPatch && len(v) == 1:
+			if first, dup := listed[v[0].IdentityDigest]; dup { // the same diff again: listed once (Opus 22a-6d H1's identical patch)
+				fmt.Fprintf(&prompt, "\n## Your round %s candidate (%s)\n\nIts diff is the same as %s's.\n", round, names[i], first)
+				continue
+			}
+			listed[v[0].IdentityDigest] = string(names[i])
 			b, ok, err := read(v[0], review.MaxDiff)
 			if err != nil {
 				return PromptContext{}, err
 			}
 			if !ok {
-				prompt.WriteString(fmt.Sprintf("\n## Your previous candidate\n\nIts diff is over %d bytes: not shown.\n", review.MaxDiff))
+				fmt.Fprintf(&prompt, "\n## Your round %s candidate (%s)\n\nIts diff is over %d bytes: not shown.\n", round, names[i], review.MaxDiff)
 				out.Omitted = append(out.Omitted, types.ManifestIntentOmittedItem{Ref: v[0], Reason: types.ManifestIntentOmittedItemReasonBudget})
 				continue
 			}
-			prompt.WriteString("\n## Your previous candidate (unified diff)\n\n" + review.Fenced(string(b)) + "\n")
+			fmt.Fprintf(&prompt, "\n## Your round %s candidate (%s, unified diff)\n\n%s\n", round, names[i], review.Fenced(string(b)))
 			out.Included, out.Bytes[v[0].IdentityDigest] = append(out.Included, v[0]), int64(len(b))
 		default:
 			return PromptContext{}, fmt.Errorf("%w: build %s's input %d is a %s of %d refs, not what a build renders", ErrUnbound, node, i, k, len(v))
@@ -121,4 +134,15 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		return PromptContext{}, fmt.Errorf("%w: the prompt is over %d bytes", ErrUnbound, MaxPrompt)
 	}
 	return out, nil
+}
+
+// roundOf is the round an input named findings-<n> or candidate-<n> is of
+// (graph.Repair's names), its name when it is neither.
+func roundOf(name types.Name) string {
+	for _, p := range []string{"findings-", "candidate-"} {
+		if n, ok := strings.CutPrefix(string(name), p); ok {
+			return n
+		}
+	}
+	return string(name)
 }

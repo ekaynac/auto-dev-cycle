@@ -64,7 +64,7 @@ func (c PromptContext) Rendered() graph.Rendered {
 
 // Review is node's PromptContext in tx, rendered its graph.Context.
 func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered graph.Rendered) (PromptContext, error) {
-	results, err := claimedResults(tx, node)
+	results, _, err := claimedResults(tx, node)
 	if err != nil {
 		return PromptContext{}, err
 	}
@@ -144,16 +144,18 @@ func b2i(b bool) int {
 }
 
 // claimedResults are the results node's claim took, in its declared
-// order: every input a result (a review's and a build's are).
-func claimedResults(tx *eventstore.Tx, node types.NodeID) ([]types.ResultRecorded, error) {
+// order, and the inputs' names: every input a result (a review's and a
+// build's are).
+func claimedResults(tx *eventstore.Tx, node types.NodeID) ([]types.ResultRecorded, []types.Name, error) {
 	ins, ok, err := graph.ClaimInputs(tx, node)
 	if err != nil || !ok {
-		return nil, errors.Join(err, fmt.Errorf("%w: %s is not claimed", ErrUnbound, node))
+		return nil, nil, errors.Join(err, fmt.Errorf("%w: %s is not claimed", ErrUnbound, node))
 	}
 	var out []types.ResultRecorded
+	var names []types.Name
 	for _, c := range ins {
 		if c.Result == nil {
-			return nil, fmt.Errorf("%w: %s's input %s is no result", ErrUnbound, node, c.Name)
+			return nil, nil, fmt.Errorf("%w: %s's input %s is no result", ErrUnbound, node, c.Name)
 		}
 		var raw types.ResultRecorded
 		b, found, err := tx.Get(graph.ResultProjection, string(*c.Result))
@@ -161,11 +163,11 @@ func claimedResults(tx *eventstore.Tx, node types.NodeID) ([]types.ResultRecorde
 			err = json.Unmarshal(b, &raw)
 		}
 		if err != nil || !found {
-			return nil, errors.Join(err, fmt.Errorf("%w: %s's input %s names no recorded result", ErrUnbound, node, c.Name))
+			return nil, nil, errors.Join(err, fmt.Errorf("%w: %s's input %s names no recorded result", ErrUnbound, node, c.Name))
 		}
-		out = append(out, raw)
+		out, names = append(out, raw), append(names, c.Name)
 	}
-	return out, nil
+	return out, names, nil
 }
 
 // isReceipt is whether r is a receipt.

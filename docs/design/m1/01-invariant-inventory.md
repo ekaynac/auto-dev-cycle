@@ -56,7 +56,7 @@ and is never edited apart from it.
 | I2 Answer binding and delivery | enforced | P5, P6 | `answers`: all |
 | I3 Moved questions | enforced | P6 | `answers`: all |
 | I4 Reuse | enforced | P6 | `answers`: all |
-| I5 Consumption | enforced | P15, P16, P22a (P22a-6d) | `launch`: admission; `review`: all |
+| I5 Consumption | partial | P15, P16, P22a (P22a-6d: consumption kept; admission is launch's activation) | `launch`: admission; `review`: all |
 | I6 Effect intent | partial | P18, P20 (merge half), P22a, P27 (P12a, P12b and P20's `model_call` half done) | `launch`: the `model_call` rows; `merge-local`, `merge-github`: the merge rows, including P20's GitHub settlement for `merge-github` |
 | I7 Review independence | enforced | P22a (P22a-6d; P7, P8b, P16b, P31a), P31 (the live record: review's Pending) | `launch`: consumption; `review`: all |
 | I8 Fencing and attempt binding | partial | P22a (P8a done; P21a, P21b done, inert) | `launch`: all |
@@ -64,7 +64,7 @@ and is never edited apart from it.
 | I10 Egress, data policy, context | partial | P16, P22a (P7, P8b, P11, P11b done, inert) | `launch`: all |
 | I11 Restart and replay | enforced | P4a, P21a, P22a-1 | `launch`: all |
 | I12 Build facts and accept | partial | P14b-out, P14c-2a, P14c-2a-allow, P14c-2a2, P14c-2a3, P14c-2b, P14d, P22a (P14a, P14b, P14c-1 done, inert) | `launch`: all |
-| I13 Gate verdict and receipts | enforced | P15, P22a (P22a-6d) | `review`: all |
+| I13 Gate verdict and receipts | partial | P15, P22a (admission: launch's activation) | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
 | I15 Deferred surfaces | enforced | P22a | `intake`: admission (the guard); every other capability: all |
 | I16 Rails | partial | P17b, P22a (P17a done, inert) | `launch`: all |
@@ -124,7 +124,7 @@ implementation item.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.Claim` → `claimNode` (`graph/events.go`) over `graph.Resolve` → `applies` → `receipt.Applies`; `graph.ClaimReview` against the registry. `dispatch.Match` (P8b, #247) is the one entry point: before it reserves, it re-checks that the lease's unit is the claimed node's, of the card's project, and the roster against the registry (13:106; `graph.Units.Placement`). Kept in code, inert until P22a's reconcile loop | kept | P22a-6d: kept; inert until `launch` and `review` activate (their gates), adcd's `Env` carries `Need` and `Blobs` |
+| admission | `graph.Claim` → `claimNode` (`graph/events.go`) over `graph.Resolve` → `applies` → `receipt.Applies`; `graph.ClaimReview` against the registry. `dispatch.Match` (P8b, #247) is the one entry point: before it reserves, it re-checks that the lease's unit is the claimed node's, of the card's project, and the roster against the registry (13:106; `graph.Units.Placement`). Kept in code, inert until P22a's reconcile loop | kept + GAP | P22a (P22a-5: before `launch` is active, the reconcile loop's `graph.Env` in `adcd` carries `Need`, the gate's requirements, and `Blobs`, the receipt blobs, without which every evaluation is refused; Opus #312 L5) |
 | fold/replay | `claimed`, `resultRecorded`, `selected` (`graph/events.go`, `graph/lifecycle.go`) refuse a result whose claimed result inputs are no longer selected; approvals are I1 | kept | — |
 | consumption | `graph.Commit` → `revalidate` (`graph/evaluate.go`); `CarryOver`, `carryInputs`, `roleInput` (`graph/queue.go`). `graph.Requirements` read the log (P22a-6a′: `Requirements(tx, node, input)`). adcd's review takes its gate's result under the gate requirement the log derives (`daemon/gateneed.go`): the tree the gate's claim took, `gate.Contract` over the project's gate in the image its result was measured in (`gate.measured/v1`, recorded in the result's own command; the image must be the project's pinned one), and the demand key of the recorded baseline's digest, a baseline measured on the build attempt's base; never read off the receipt it checks. One that cannot be derived is a `receipt.Refusal` (`Requirements` may return one: `Resolve` makes it a Missing input), so the review waits and the task still evaluates. The merge's requirement is P18's | kept | P22a-6d: kept for review (the gate requirement, P22a-6a′; the review's requirement bound, P16); the merge's requirement is merge-local's and merge-github's (their Pending, P18 through P20) |
 | effect | merge only: `graph.Operate` → `revalidate`; `inputsFenced`, `subjectFenced` (`graph/fence.go`) | kept | — |
@@ -220,7 +220,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `receipt.Check`, `Derive` (`receipt/receipt.go`). The gate's contract (`gate.Contract`) and its go_test_json adapter exist (P15); adcd runs the gate (P22a-5c-2b-3) and records what each result was measured against (`gate.measured/v1`, P22a-6a′; its fold admits one per gate result, under its gate node, in the command that records the result). Inert until launch is active | kept | P22a-6d: kept; inert until `launch` activates |
+| admission | `receipt.Check`, `Derive` (`receipt/receipt.go`). The gate's contract (`gate.Contract`) and its go_test_json adapter exist (P15); adcd runs the gate (P22a-5c-2b-3) and records what each result was measured against (`gate.measured/v1`, P22a-6a′; its fold admits one per gate result, under its gate node, in the command that records the result). Inert until launch is active | kept + GAP | P22a (launch's activation) |
 | fold/replay | `refreshed` (`graph/resolve.go`), `resultSemantics` (`graph/queue.go`) | kept | — |
 | consumption | `graph.Resolve` → `receipt.Applies` (subject, tree, environment, demand) | kept | — |
 | effect | `mergeInputs` (`graph/queue.go`): the merge takes exactly its generation's refreshed checks on the prospective tree | kept | — |

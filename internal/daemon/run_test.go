@@ -1089,3 +1089,18 @@ func TestTheIgnoredFilesAreSealed(t *testing.T) {
 		t.Errorf("the sealed record's ignored files: %v (%v)", rec.IgnoredFiles, err)
 	}
 }
+
+// Opus 22a-6d L3: a refusal of the build's rendered context
+// (intent.ErrUnbound: a brief over its bound, a forged findings view) is
+// the content's, held "runner: failed" at once, as the I18 walk's is, never
+// a bounded retry.
+func TestARenderedContextRefusalIsContent(t *testing.T) {
+	for _, cause := range []error{fmt.Errorf("%w: the brief is over its bound", intent.ErrUnbound), intent.ErrNotTheBrief, fmt.Errorf("%w: x", errContent)} {
+		if !contentFault(cause) {
+			t.Errorf("%v: not the content's", cause)
+		}
+	}
+	if contentFault(errors.New("a store's error")) {
+		t.Error("a store's error is the content's")
+	}
+}

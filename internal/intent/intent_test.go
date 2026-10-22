@@ -26,22 +26,26 @@ const acceptance = "e" // the task's acceptance blob's digest character
 // store is a resolver over records by id, counting its lookups.
 type store struct {
 	recs     map[string]graph.RefRecord
+	more     map[string][]graph.RefRecord // further records of an id: other lineages (#226 entry 161)
 	lookups  map[string]int
 	reviewed map[types.Digest]bool
 }
 
 func newStore(recs ...graph.RefRecord) *store {
-	s := &store{recs: map[string]graph.RefRecord{}, lookups: map[string]int{}, reviewed: map[types.Digest]bool{}}
+	s := &store{recs: map[string]graph.RefRecord{}, more: map[string][]graph.RefRecord{}, lookups: map[string]int{}, reviewed: map[types.Digest]bool{}}
 	for _, r := range recs {
 		s.recs[r.ID] = r
 	}
 	return s
 }
 
-func (s *store) resolve(id string) (graph.RefRecord, bool, error) {
+func (s *store) resolve(id string) ([]graph.RefRecord, bool, error) {
 	s.lookups[id]++
 	r, ok := s.recs[id]
-	return r, ok, nil
+	if !ok {
+		return nil, false, nil
+	}
+	return append([]graph.RefRecord{r}, s.more[id]...), true, nil
 }
 
 // project is the scope of every ref of these tests.
@@ -488,5 +492,42 @@ func TestReadBlob(t *testing.T) {
 	}
 	if _, _, err := readBlob(blobs, digest("2"), maxSafeBytes); err == nil {
 		t.Error("a missing blob read")
+	}
+}
+
+// #226 entry 161: an id a task's rounds record again (a repeated tree or
+// decision: several records of one producer kind, differing in lineage
+// alone) is walked through every record: clean in each, the intent is
+// given; one record of it with an acceptance-derived ancestor refuses it;
+// and the input as listed must be one of its records.
+func TestIntentRepeatedRecords(t *testing.T) {
+	decision := rec("tree-1", "1", "accept", "patch-1")
+	again := rec("tree-1", "1", "accept", "patch-2")
+	clean := newStore(decision, rec("patch-1", "2", "build"), rec("patch-2", "3", "build"))
+	clean.more["tree-1"] = []graph.RefRecord{again}
+	for role, intent := range roles {
+		if _, err := intent(in(t, clean, decision)); err != nil {
+			t.Errorf("%s: a repeated id, each record clean: %v", role, err)
+		}
+		if _, err := intent(in(t, clean, again)); err != nil {
+			t.Errorf("%s: a repeated id, as its other record: %v", role, err)
+		}
+	}
+	accepted := "sha256:" + strings.Repeat(acceptance, 64)
+	tainted := newStore(decision, rec("patch-1", "2", "build"), rec("patch-2", "3", "build", accepted))
+	tainted.more["tree-1"] = []graph.RefRecord{again}
+	view := rec("view-1", "4", "accept", "tree-1") // the repeated id an ancestor, not the input
+	tainted.recs["view-1"] = view
+	for role, intent := range roles {
+		if _, err := intent(in(t, tainted, decision)); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s: one record's ancestor is acceptance-derived: %v", role, err)
+		}
+		if _, err := intent(in(t, tainted, view)); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s: one record of an ancestor has an acceptance-derived ancestor: %v", role, err)
+		}
+	}
+	other := rec("tree-1", "1", "accept", "patch-3")
+	if _, err := Builder(in(t, clean, other)); !errors.Is(err, ErrAncestryUnresolved) {
+		t.Errorf("an input listed with a lineage none of its records has: %v", err)
 	}
 }

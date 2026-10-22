@@ -138,8 +138,8 @@ func TestANoGoRepairsTheBuild(t *testing.T) {
 		t.Fatalf("the repair builder's intent: inputs %+v", mi.Inputs)
 	}
 	p := string(prompt)
-	findings, candidate, _ := strings.Cut(p, "## Your previous candidate (unified diff)") // the candidate's own diff holds what it wrote
-	if !strings.Contains(findings, "Its reviewer decided no_go") || !strings.Contains(findings, "- [high]") || !strings.Contains(findings, "wrong refund") ||
+	findings, candidate, _ := strings.Cut(p, "## Your round 1 candidate (candidate-1, unified diff)") // the candidate's own diff holds what it wrote
+	if !strings.Contains(findings, "## The review of your round 1 candidate (findings-1)") || !strings.Contains(findings, "Its reviewer decided no_go") || !strings.Contains(findings, "- [high]") || !strings.Contains(findings, "wrong refund") ||
 		strings.Contains(findings, hiddenTest) || !strings.Contains(candidate, "```diff") {
 		t.Errorf("the repair builder's prompt: %s", p)
 	}
@@ -168,9 +168,53 @@ func TestANoGoRepairsTheBuild(t *testing.T) {
 		}
 		return err
 	})
-	if strings.Contains(log.String(), "reconcile.review refused") {
-		t.Errorf("a review action was refused: %s", log.String())
+	// Opus 22a-6d H1 (#226 entry 161): the reviewer repeats its decision
+	// and the builder its patch (the same bytes, so the same
+	// content-addressed ids, each round's decision of another lineage), and
+	// the rounds go on: round 3 runs (its attempt starts on the findings of
+	// two rounds), and the rounds rail (5) holds round 6, the repeats'
+	// only stop.
+	untilAttempt(t, rw, roundOf(t, rw, 3).build.Node.ID)
+	one, two = roundOf(t, rw, 1), roundOf(t, rw, 2)
+	if one.build.State.Result == nil || two.build.State.Result == nil || one.review.State.Result == nil || two.review.State.Result == nil {
+		t.Fatal("rounds 1 and 2 hold no results")
 	}
+	pa, pb, da, db := selectedRef(t, rw, one.build), selectedRef(t, rw, two.build), selectedRef(t, rw, one.review), selectedRef(t, rw, two.review)
+	if pa.ID != pb.ID || da.ID != db.ID || slices.Equal(da.Lineage, db.Lineage) {
+		t.Fatalf("the rounds do not repeat their patch and their decision under another lineage: %+v %+v / %+v %+v", pa, pb, da, db)
+	}
+	var six round
+	for range 120 {
+		if six = roundOf(t, rw, 6); six.build.Node.ID != "" && slices.ContainsFunc(six.build.State.Holds, func(h types.NodeHold) bool {
+			return h.Hold == vocab.HoldBudgetRail && h.SignalInstance == graph.RailSignal(graph.RailRounds)
+		}) {
+			break
+		}
+		rw.passesFor(t, 1, 0)
+	}
+	if six.build.Node.ID == "" || len(six.build.State.Holds) == 0 {
+		t.Fatalf("round 6: %+v", six.build.State)
+	}
+	for n := int64(3); n <= 5; n++ {
+		if r := roundOf(t, rw, n); r.review.State.State != types.NodeStateStateCompleted {
+			t.Errorf("round %d's review: %s", n, r.review.State.State)
+		}
+	}
+	if strings.Contains(log.String(), "refused") || strings.Contains(log.String(), "runner: failed") {
+		t.Errorf("an action was refused: %s", log.String())
+	}
+}
+
+// selectedRef is the first ref of v's selected result.
+func selectedRef(t *testing.T, rw *runWorld, v graph.NodeView) types.Ref {
+	t.Helper()
+	for _, rr := range reviewResults(rw, v.Node.ID) {
+		if v.State.Result != nil && rr.Result.ID == *v.State.Result && len(rr.Result.Value) > 0 {
+			return rr.Result.Value[0]
+		}
+	}
+	t.Fatalf("%s (%s, %s) selects no result with a ref: %v, results %+v", v.Node.ID, v.Node.Kind, v.State.State, v.State.Result, reviewResults(rw, v.Node.ID))
+	return types.Ref{}
 }
 
 // Opus 22a-6c L4: an unreviewable verdict (failed/unsafe_output) repairs

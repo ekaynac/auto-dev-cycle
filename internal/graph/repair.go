@@ -19,6 +19,13 @@ func Unreviewable(r types.Result) bool {
 	return r.Kind == types.ResultKindReview && r.Outcome == types.OutcomeFailed && r.Reason == vocab.ReasonUnsafeOutput
 }
 
+// RepairVerdict is whether a review's selected result, of outcome and
+// reason, asks for a repair: no_go (found), or Unreviewable. The one rule,
+// Repair's and the loop's (reconcile.Observe; Opus 22a-6d M1).
+func RepairVerdict(outcome types.Outcome, reason types.ReasonCode) bool {
+	return outcome == types.OutcomeFound || Unreviewable(types.Result{Kind: types.ResultKindReview, Outcome: outcome, Reason: reason})
+}
+
 // Repair is the events recording round n+1 of build, a repair (13
 // "Successor rounds": "round n is a new build node whose inputs include
 // round n−1's review findings and candidate tree"). It is build's
@@ -55,7 +62,7 @@ func Repair(tx *eventstore.Tx, build, review types.NodeID, auth Authority) ([]ev
 			return nil, err
 		case why != "":
 			return nil, fmt.Errorf("graph: no repair of %s: %s", build, why)
-		case src == findings && sel.Result.Outcome != types.OutcomeFound && !Unreviewable(sel.Result):
+		case src == findings && !RepairVerdict(sel.Result.Outcome, sel.Result.Reason):
 			return nil, fmt.Errorf("graph: no repair of %s: %s's verdict is not no_go (%s)", build, review, sel.Result.Outcome)
 		case src == candidate && !slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool { return in.Result != nil && *in.Result == sel.Result.ID }):
 			// The review's claim fixed another patch, or none of build's

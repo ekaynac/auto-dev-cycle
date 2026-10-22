@@ -129,10 +129,13 @@ func TestTable(t *testing.T) {
 	if waiting := (Capability{Rows: of("I2", Admission), Pending: []string{"a prerequisite"}}); waiting.Active() {
 		t.Error("a capability with a pending prerequisite is active")
 	}
-	// P22a-6d: review misses no row; it stays inactive on its P31 Pending
-	// (the qualification on record).
+	// P22a-6d: review misses only I5's and I13's admission, which enforce
+	// under launch alone and are kept by launch's activation (Opus 22a-6d
+	// L1), and stays inactive on its P31 Pending (the qualification on
+	// record).
 	review, _ := Of("review")
-	if review.Active() || len(review.Missing()) != 0 || !slices.Equal(review.Pending, []string{"P31's qualification on record"}) {
+	if review.Active() || !slices.Equal(review.Missing(), []Row{{"I5", Admission}, {"I13", Admission}}) ||
+		!slices.Equal(review.Pending, []string{"P31's qualification on record"}) {
 		t.Errorf("review: missing %v, pending %v", review.Missing(), review.Pending)
 	}
 }

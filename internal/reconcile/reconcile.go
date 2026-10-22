@@ -439,7 +439,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			round[n.Node.ID], lastBuild = n.Node.Round, max(lastBuild, n.Node.Round)
 		}
 		if reviews && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
-			(*n.Outcome == types.OutcomeFound || *n.Outcome == types.OutcomeFailed) { // no_go, or unreviewable (graph.Unreviewable)
+			graph.RepairVerdict(*n.Outcome, *n.Reason) { // no_go, or unreviewable: Repair's rule
 			verdicts = append(verdicts, n)
 		}
 		for _, in := range n.Node.Inputs {

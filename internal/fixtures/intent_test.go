@@ -268,8 +268,8 @@ func TestIntentViewRounds(t *testing.T) {
 			return err
 		}
 		for i, v := range views {
-			if rec, ok, err := recs.Resolve(v.ID); err != nil || !ok || !rec.BuilderSafe {
-				t.Errorf("round %d's view: %+v %v %v", i+1, rec, ok, err)
+			if rs, ok, err := recs.Resolve(v.ID); err != nil || !ok || len(rs) != 1 || !rs[0].BuilderSafe {
+				t.Errorf("round %d's view: %+v %v %v", i+1, rs, ok, err)
 			}
 		}
 		_, err = intent.Builder(intent.In{Call: call, Context: graph.Rendered{Included: []types.Ref{views[1]}}, Bytes: map[types.Digest]int64{views[1].IdentityDigest: 10}, Records: recs})

@@ -67,9 +67,14 @@ func GateShape(value []types.Ref) (ok, full bool) {
 	return receipts <= 1 && blobs <= 1, receipts == 1 && blobs == 1
 }
 
-// RefRecords resolves a ref id to its record; ok false when the id is
-// unknown or ambiguous.
-type RefRecords func(id string) (RefRecord, bool, error)
+// RefRecords resolves a ref id to its records: one, or several that differ
+// in their lineage alone, recorded by producers of one kind (a
+// content-addressed id a task's rounds record again: a review's decision
+// repeated round after round; #226 entry 161). Every check over an id's
+// record checks each (fail closed). ok false when the id is unknown or
+// ambiguous: recorded with another type, digest, producer kind, scope,
+// restrictions or declassification.
+type RefRecords func(id string) ([]RefRecord, bool, error)
 
 // Recorded is what Records read of one task: its resolver, and the content
 // digests a review's result holds (a reviewer's input never has one, under
@@ -103,10 +108,11 @@ var maxTaskResults = 100_000
 // Records is task's Recorded, from the event store: every ref a recorded
 // result of the task holds, with its producer's kind, and the extra refs
 // the controller rendered from its authority (Context's approvals). An id
-// recorded with two identities, lineages or producers is ambiguous and
-// resolves to nothing. It reads the task's results only, at the call.
+// recorded again with another lineage, all else equal, is several records
+// (RefRecords); recorded with another identity, producer kind, scope or
+// restrictions, it is ambiguous and resolves to nothing. It reads the task's results only, at the call.
 func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded, error) {
-	byID, ambiguous, reviewed := map[string]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
+	byID, ambiguous, reviewed := map[string][]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
 	n, lineage, idBytes := 0, 0, 0
 	var read int64
 	add := func(r types.Ref, producer types.NodeKind, sanitised, safe bool) error {
@@ -119,14 +125,22 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		}
 		rec := RefRecord{ID: r.ID, Type: r.Type, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Restrictions: cloneRestrictions(r.Restrictions),
 			Project: ScopeProject(r.Scope), Framework: r.Scope.Framework, Producer: producer, Sanitised: sanitised, BuilderSafe: safe}
-		if prior, ok := byID[r.ID]; ok && (prior.Type != rec.Type || prior.ContentDigest != rec.ContentDigest || !slices.Equal(prior.Lineage, rec.Lineage) || prior.Producer != rec.Producer ||
-			prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe || prior.Project != rec.Project || prior.Framework != rec.Framework || !slices.EqualFunc(prior.Restrictions, rec.Restrictions, SameRestriction)) {
-			ambiguous[r.ID] = true
+		recs := byID[r.ID]
+		if len(recs) > 0 {
+			prior := recs[0]
+			if prior.Type != rec.Type || prior.ContentDigest != rec.ContentDigest || prior.Producer != rec.Producer ||
+				prior.Producer == "" && !slices.Equal(prior.Lineage, rec.Lineage) || // the controller's own refs: one lineage
+				prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe || prior.Project != rec.Project || prior.Framework != rec.Framework ||
+				!slices.EqualFunc(prior.Restrictions, rec.Restrictions, SameRestriction) {
+				ambiguous[r.ID] = true
+			}
 		}
 		if producer == types.NodeKindReview {
 			reviewed[r.ContentDigest] = true
 		}
-		byID[r.ID] = rec
+		if !slices.ContainsFunc(recs, func(o RefRecord) bool { return slices.Equal(o.Lineage, rec.Lineage) }) {
+			byID[r.ID] = append(recs, rec)
+		}
 		return nil
 	}
 	prefix := string(task) + "/"
@@ -177,10 +191,17 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 			return Recorded{}, err
 		}
 	}
-	return Recorded{Resolve: func(id string) (RefRecord, bool, error) {
-		rec, ok := byID[id]
-		rec.Lineage, rec.Restrictions = slices.Clone(rec.Lineage), cloneRestrictions(rec.Restrictions)
-		return rec, ok && !ambiguous[id], nil
+	return Recorded{Resolve: func(id string) ([]RefRecord, bool, error) {
+		recs, ok := byID[id]
+		if !ok || ambiguous[id] {
+			return nil, false, nil
+		}
+		out := make([]RefRecord, len(recs))
+		for i, rec := range recs {
+			rec.Lineage, rec.Restrictions = slices.Clone(rec.Lineage), cloneRestrictions(rec.Restrictions)
+			out[i] = rec
+		}
+		return out, true, nil
 	}, Reviewed: reviewed}, nil
 }
 
