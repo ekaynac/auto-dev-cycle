@@ -194,6 +194,26 @@ func RunnerSignal(what string) string { return runnerPrefix + what }
 // IsRunnerSignal: signal is a runner hold's (RunnerSignal).
 func IsRunnerSignal(signal string) bool { return strings.HasPrefix(signal, runnerPrefix) }
 
+// Offered reports whether the loop offers a node's hold of kind on signal
+// to the code that clears it, the one rule Observe collects holds by
+// (#226 entry 156; Opus #400 M1): budget_rail on the day's USD rail
+// (ClearRail: Placer.Reopened); source_invalid_config on a placement or a
+// runner signal, and wrong_owner on a launch's missing image (Unblock:
+// Placer.Unblocked); reviewer_unavailable (ReviewUnblock: Reviewer.Unheld).
+// The loop leaves every other hold to its own clearer (an answer,
+// task.raise_rail) or to its stated terminal state.
+func Offered(kind, signal string) bool {
+	switch kind {
+	case vocab.HoldBudgetRail:
+		return signal == graph.RailSignal(graph.RailDayUSD)
+	case vocab.HoldSourceInvalidConfig:
+		return dispatch.IsPlacementSignal(signal) || IsRunnerSignal(signal)
+	case vocab.HoldWrongOwner:
+		return dispatch.IsImageSignal(signal)
+	}
+	return kind == vocab.HoldReviewerUnavailable
+}
+
 // Granted is a placed node and its granted lease.
 type Granted struct {
 	Node  Versioned     `json:"node"`
@@ -384,7 +404,6 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		return s, err
 	}
 	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
-	day := graph.RailSignal(graph.RailDayUSD)
 	reviews := g.Evaluates && g.Reviews
 	var gate Versioned
 	reviewed := false                   // the task has a review node, in any state
@@ -417,7 +436,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			}
 			for _, h := range n.State.Holds {
 				switch {
-				case h.Hold != vocab.HoldReviewerUnavailable:
+				case h.Hold != vocab.HoldReviewerUnavailable || !Offered(h.Hold, h.SignalInstance):
 				case n.Node.Kind == types.NodeKindReview:
 					s.ReviewHeld = append(s.ReviewHeld, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
 				default:
@@ -462,10 +481,10 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			}
 			for _, h := range n.State.Holds {
 				switch held := (Held{Node: v, Hold: h.ID, Signal: h.SignalInstance}); {
-				case h.Hold == vocab.HoldBudgetRail && h.SignalInstance == day:
+				case !Offered(h.Hold, h.SignalInstance), h.Hold == vocab.HoldReviewerUnavailable: // not the loop's; a review's is collected above
+				case h.Hold == vocab.HoldBudgetRail:
 					s.DayHeld = append(s.DayHeld, held)
-				case h.Hold == vocab.HoldSourceInvalidConfig && (dispatch.IsPlacementSignal(h.SignalInstance) || IsRunnerSignal(h.SignalInstance)),
-					h.Hold == vocab.HoldWrongOwner && dispatch.IsImageSignal(h.SignalInstance):
+				default:
 					s.PlacingHeld = append(s.PlacingHeld, held)
 				}
 			}

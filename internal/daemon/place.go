@@ -99,7 +99,10 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 // then places it, or raises the rail it reaches. A runner's hold clears
 // once the runner's preconditions hold again (ready); a launch's image
 // hold once the project's pinned image resolves (imageReady; #226 entry
-// 156).
+// 156). Stated (Opus #400 L2): a credentialed executor's placement hold
+// stays, naming its own cause, while the gateway lacks the credential,
+// even once that cause is fixed: Configured asks for both, as the launch
+// would miss on the credential anyway.
 func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error) {
 	var ready func(*eventstore.Tx, types.NodeID, string) (bool, error)
 	switch {
@@ -130,6 +133,31 @@ func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldI
 		return nil, err
 	}
 	return graph.Clear(tx, node, hold, signal)
+}
+
+// imageReady reports whether node's project's one pinned image resolves
+// now, within dispatch.ReadinessBound (the writer's command): its image
+// hold clears, the runner's (Opus 22a-5c-2b-3 M1) and the launch's
+// wrong_owner one (#226 entry 156). No image store resolves none. It
+// resolves the profile's pin, not the image a hold names (Opus #400 L3):
+// the two are one while placer.card takes card.Image from that one pin; a
+// card whose image is not the profile's would need the hold's own.
+func (p placer) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) {
+	v, err := graph.ViewOf(tx, node)
+	if err != nil || p.d.Images == nil {
+		return false, err
+	}
+	prof, ok, err := authority.ProjectProfile(tx, v.Project)
+	if err != nil || !ok || len(prof.Toolchain.Images) != 1 {
+		return false, err
+	}
+	for _, ref := range prof.Toolchain.Images {
+		ctx, cancel := context.WithTimeout(context.Background(), dispatch.ReadinessBound)
+		_, rerr := p.d.Images.Resolve(ctx, string(ref))
+		cancel()
+		return rerr == nil, nil
+	}
+	return false, nil
 }
 
 // card is node's card and executor: its project's data policy, pinned

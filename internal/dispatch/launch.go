@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -53,6 +54,11 @@ type Readiness struct {
 
 var errNoGateway = errors.New("dispatch: no gateway confirms credentials (P11)")
 
+// ReadinessBound bounds each readiness check made in the writer's command
+// (Configured's credential; daemon's image check for a hold), as Observe's
+// are outside it (Opus #400 M2).
+const ReadinessBound = 5 * time.Second
+
 // Observe probes, outside the writer transaction, what the launch of card
 // on executor needs from the host and the gateway.
 func (d Dispatcher) Observe(ctx context.Context, card Card, executor types.ExecutorID) Readiness {
@@ -62,25 +68,35 @@ func (d Dispatcher) Observe(ctx context.Context, card Card, executor types.Execu
 	} else if _, err := d.Images.Resolve(ctx, card.Image); err != nil {
 		r.image = err
 	}
-	e, ok := d.Registry.Executor(executor)
+	e, _ := d.Registry.Executor(executor)
 	r.destination = e.Destination.ID
 	if e.CredentialRef != nil {
 		r.hasCredential, r.credentialRef = true, *e.CredentialRef
 	}
+	r.credential = d.credentialReady(ctx, executor)
+	return r
+}
+
+// credentialReady is why executor's launch lacks its credential, nil when
+// it needs none or the gateway holds it: the one answer the launch's
+// readiness (Observe) and the placement holds' clear (Configured) take
+// (Opus #400 M2). An unregistered executor, no gateway and the gateway's
+// error are all not ready.
+func (d Dispatcher) credentialReady(ctx context.Context, executor types.ExecutorID) error {
+	e, ok := d.Registry.Executor(executor)
 	switch {
 	case !ok:
-		r.credential = fmt.Errorf("dispatch: executor %s is not registered", executor)
-	case !r.hasCredential: // a local endpoint has none
+		return fmt.Errorf("dispatch: executor %s is not registered", executor)
+	case e.CredentialRef == nil: // a local endpoint has none
+		return nil
 	case d.Credentials == nil:
-		r.credential = errNoGateway
-	default:
-		held, err := d.Credentials.Holds(ctx, r.destination, r.credentialRef)
-		if err == nil && !held {
-			err = fmt.Errorf("dispatch: the gateway holds no credential %s for destination %s", r.credentialRef, r.destination)
-		}
-		r.credential = err
+		return errNoGateway
 	}
-	return r
+	held, err := d.Credentials.Holds(ctx, e.Destination.ID, *e.CredentialRef)
+	if err == nil && !held {
+		err = fmt.Errorf("dispatch: the gateway holds no credential %s for destination %s", *e.CredentialRef, e.Destination.ID)
+	}
+	return err
 }
 
 // boundTo: r was observed for exactly e's destination and credential

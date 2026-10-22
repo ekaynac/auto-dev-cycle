@@ -101,10 +101,13 @@ func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.Exec
 	if _, _, blocks := blocked(d.checks(card, executor, roster)); blocks {
 		return false, nil
 	}
-	e, _ := d.Registry.Executor(executor)
-	if held, err := d.credentialHeld(e); err != nil || !held {
-		return false, err
+	ctx, cancel := context.WithTimeout(context.Background(), ReadinessBound)
+	ready := d.credentialReady(ctx, executor) // the launch's own answer: an error is not ready, as there
+	cancel()
+	if ready != nil {
+		return false, nil
 	}
+	e, _ := d.Registry.Executor(executor)
 	if e.Destination.Kind == types.RegistryDestinationKindLocalEndpoint {
 		return true, nil
 	}
@@ -116,24 +119,6 @@ func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.Exec
 	}
 	b, err := d.budget(tx, card)
 	return err == nil && !b.unrailed, err
-}
-
-// credentialBound bounds the credential check Configured makes, in the
-// writer's command, as the launch's readiness (Observe) does outside it.
-const credentialBound = 5 * time.Second
-
-// credentialHeld: e's destination needs no credential, or the gateway
-// holds it now. No gateway holds none.
-func (d Dispatcher) credentialHeld(e types.RegistryExecutor) (bool, error) {
-	if e.CredentialRef == nil {
-		return true, nil
-	}
-	if d.Credentials == nil {
-		return false, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), credentialBound)
-	defer cancel()
-	return d.Credentials.Holds(ctx, e.Destination.ID, *e.CredentialRef)
 }
 
 // RoomToday: the day's USD rail leaves card's node at least one turn on
