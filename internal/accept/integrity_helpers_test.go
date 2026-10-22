@@ -143,7 +143,11 @@ var pairA, pairB = func(t *testing.T) {
 	if Add(8, 0) != 8 {
 		t.Fatal("pair")
 	}
-}, func(t *testing.T) {}
+}, func(t *testing.T) {
+	if Add(9, 0) != 9 {
+		t.Fatal("pairB")
+	}
+}
 
 func TestPair(t *testing.T) {
 	pairA(t)
@@ -418,6 +422,7 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a dead switch clause":                                 {edit("\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"add2\")\n\t}\n", "\tswitch {\n\tcase false:\n\t\tt.Fatal(\"add2\")\n\t}\n"), "pkg:pkg.checkTwo " + weakened + " (2 → 1)"},
 		"a method helper's assertion removed":                  {edit("\tif Add(0, 0) != 0 {\n\t\tt.Error(\"zero\")\n\t}\n", "\t_ = t\n"), "pkg:pkg.env.check " + weakened + " (1 → 0)"},
 		"the first of a var pair weakened":                     {edit("\t\tt.Fatal(\"pair\")\n", "\t\t_ = t\n"), "pkg:pkg.pairA " + weakened + " (1 → 0)"},
+		"the second of a var pair weakened":                    {edit("\t\tt.Fatal(\"pairB\")\n", "\t\t_ = t\n"), "pkg:pkg.pairB " + weakened + " (1 → 0)"},
 		"a var's function literal weakened":                    {edit("\tif Add(7, 0) != 7 {\n\t\tt.Fatal(\"var\")\n\t}\n", "\t_ = t\n"), "pkg:pkg.checkVar " + weakened + " (1 → 0)"},
 		"a test's own assertion made dead":                     {map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "if Add(1, 2) != 3", "if false", 1)}, "a test's assertions made dead (1 → 0 live)"},
 		"a helper removed while still used":                    {map[string]string{"pkg/helpers_test.go": strings.NewReplacer("func checkCase(t *testing.T) {\n"+one+"}\n", "", "t.Run(\"a\", checkCase)", "checkCase := checkTwo\n\tt.Run(\"a\", checkCase)").Replace(helpersBase)}, "pkg:pkg.checkCase a helper with assertions removed while still used"},
