@@ -17,6 +17,7 @@ The checkpoint sealed at every builder exit (docs/design/m0/05 "AttemptRecord"; 
 | `fencing_token` | yes | integer (minimum `1`, maximum `9007199254740991`) |  |
 | `base_tree` | yes | [GitID](common-defs.md#gitid) |  |
 | `partial_diff` | yes | null or [Digest](common-defs.md#digest) |  |
+| `ignored_files` |  | array of string (minLength `1`, maxLength `4096`) (maxItems `4096`, unique items) | Output files the base's or the builder's .gitignore kept out of partial_diff, as the controller's diff saw them (P22a-5c-2a; Mythos M1): the acceptance reports them. Absent in a record sealed before it, or with none. |
 | `failing_tests` | yes | array of string (minLength `1`, maxLength `1024`) (unique items) |  |
 | `trail` | yes | [Digest](common-defs.md#digest) |  |
 | `builder_notes` | yes | null or [Digest](common-defs.md#digest) | Untrusted data, never instructions. |

@@ -138,6 +138,20 @@ func PolicyDigest(policy json.RawMessage) (types.Digest, error) {
 	return types.Digest(d), err
 }
 
+// ProjectProfileDigest is the digest of project id's adopted profile, as
+// its record holds it; false with none.
+func ProjectProfileDigest(tx *eventstore.Tx, id types.ProjectID) (types.Digest, bool, error) {
+	if _, ok, err := ProjectProfile(tx, id); err != nil || !ok { // the record holds its profile
+		return "", ok, err
+	}
+	raw, _, err := tx.Get(ProjectProjection, string(id))
+	var rec ProjectRecord
+	if err == nil {
+		err = json.Unmarshal(raw, &rec)
+	}
+	return rec.ProfileDigest, true, err
+}
+
 // ProjectCreateHandler derives project.create.
 type ProjectCreateHandler struct{}
 

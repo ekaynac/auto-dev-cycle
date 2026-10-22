@@ -36,6 +36,10 @@ type BuildFacts struct {
 	Exit exitmap.Exit
 	// Project scopes the diff's ref (10).
 	Project types.ProjectID
+	// Ignored are the output files .gitignore kept out of Diff (accept.Diff's
+	// ignored), which the acceptance reports (P22a-5c-2b); Build reads
+	// none of them.
+	Ignored []string
 }
 
 // Completed reports whether the executor completed.

@@ -62,7 +62,8 @@ var cloneRepo = sandbox.Host.Clone
 type workspace struct {
 	run   *sandbox.Attempt
 	clone string
-	Base  types.GitID // the base tree, checked out
+	repo  sandbox.Repo // the clone: what the build's diff is taken against
+	Base  types.GitID  // the base tree, checked out
 }
 
 // Path is the adapter's workspace: the checked-out tree.
@@ -71,6 +72,12 @@ func (w *workspace) Path() string { return w.run.Workspace() }
 // Close removes the run directory and the clone.
 func (w *workspace) Close() error {
 	return errors.Join(w.run.Teardown(), os.RemoveAll(w.clone))
+}
+
+// Keep removes the clone and keeps the run directory: a session whose end
+// is unverified may still use it (run.go).
+func (w *workspace) Keep() error {
+	return os.RemoveAll(w.clone)
 }
 
 // openWorkspace makes attempt's workspace from p's repository, cloned
@@ -100,7 +107,7 @@ func openWorkspace(ctx context.Context, host sandbox.Host, clones string, p type
 	if err != nil {
 		return nil, err
 	}
-	w := &workspace{run: run, clone: dst}
+	w := &workspace{run: run, clone: dst, repo: repo}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, run.Teardown())

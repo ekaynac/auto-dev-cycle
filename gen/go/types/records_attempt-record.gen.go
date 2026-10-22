@@ -29,8 +29,10 @@ type AttemptRecord struct {
 	FencingToken     int64     `json:"fencing_token"`
 	BaseTree         GitID     `json:"base_tree"`
 	PartialDiff      *Digest   `json:"partial_diff"`
-	FailingTests     []string  `json:"failing_tests"`
-	Trail            Digest    `json:"trail"`
+	// Output files the base's or the builder's .gitignore kept out of partial_diff, as the controller's diff saw them (P22a-5c-2a; Mythos M1): the acceptance reports them. Absent in a record sealed before it, or with none.
+	IgnoredFiles *[]string `json:"ignored_files,omitempty"`
+	FailingTests []string  `json:"failing_tests"`
+	Trail        Digest    `json:"trail"`
 	// Untrusted data, never instructions.
 	BuilderNotes     *Digest           `json:"builder_notes"`
 	EvidenceManifest Digest            `json:"evidence_manifest"`

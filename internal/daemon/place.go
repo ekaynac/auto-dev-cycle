@@ -31,6 +31,9 @@ const attemptBound = time.Hour
 // the loop decides no Match or ClearRail until then.
 type placer struct {
 	d dispatch.Dispatcher
+	// ready is the runner's check that its hold on node (signal) may clear
+	// (runner.cleared); nil with no runner: its holds stay.
+	ready func(tx *eventstore.Tx, node types.NodeID, signal string) (bool, error)
 }
 
 var _ reconcile.Placer = placer{}
@@ -86,12 +89,23 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 }
 
 // Unblocked clears node's placement hold (hold, on signal: the loop passes
-// only placement holds, dispatch.IsPlacementSignal) once the
-// configuration admits node again: its card is made, and no placement
-// check, footprint or missing USD rail refuses it (Dispatcher.Configured);
-// nothing otherwise (Mythos 22a-5c-1 M1). Match then places it, or raises
-// the rail it reaches.
+// only placement and runner holds, dispatch.IsPlacementSignal and
+// reconcile.IsRunnerSignal) once the configuration admits node again: its
+// card is made, and no placement check, footprint or missing USD rail
+// refuses it (Dispatcher.Configured); nothing otherwise (Mythos 22a-5c-1
+// M1). Match then places it, or raises the rail it reaches. A runner's hold
+// clears once the runner's preconditions hold again (ready).
 func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error) {
+	if reconcile.IsRunnerSignal(signal) { // the runner's hold (Opus 22a-5c-2a H2)
+		if p.ready == nil {
+			return nil, nil
+		}
+		ok, err := p.ready(tx, node, signal)
+		if err != nil || !ok {
+			return nil, err
+		}
+		return graph.Clear(tx, node, hold, signal)
+	}
 	card, exe, err := p.card(tx, node)
 	var cfg *placeConfig
 	if errors.As(err, &cfg) {

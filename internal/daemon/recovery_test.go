@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -219,7 +220,7 @@ func TestSystemActions(t *testing.T) {
 	}
 	for _, a := range []string{recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
 		modelcall.Action, modelcall.Counted, "model_call.reconcile", reconcile.AdmitAction, reconcile.AbandonAction, reconcile.EvaluateAction,
-		reconcile.MatchAction, reconcile.ClearRailAction, reconcile.LaunchAction} {
+		reconcile.MatchAction, reconcile.ClearRailAction, reconcile.LaunchAction, reconcile.RunAction, adapterhost.FinishAction} {
 		if !slices.Contains(systemActions, a) {
 			t.Errorf("%s is not a system action", a)
 		}

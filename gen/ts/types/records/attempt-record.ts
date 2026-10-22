@@ -23,6 +23,12 @@ export interface AttemptRecord {
    */
   base_tree: string;
   partial_diff: null | string;
+  /**
+   * Output files the base's or the builder's .gitignore kept out of partial_diff, as the controller's diff saw them (P22a-5c-2a; Mythos M1): the acceptance reports them. Absent in a record sealed before it, or with none.
+   *
+   * @maxItems 4096
+   */
+  ignored_files?: string[];
   failing_tests: string[];
   /**
    * Content digest: sha256 over the bytes, lowercase hex.
