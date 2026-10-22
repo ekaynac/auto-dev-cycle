@@ -32,6 +32,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -68,6 +69,29 @@ func (e ErrNotIndependent) Error() string {
 // Reason is the refusal's reason code; the evaluator holds the node on
 // reviewer_unavailable instead of claiming it.
 func (ErrNotIndependent) Reason() vocab.Reason { return vocab.ReasonReviewerNotIndependent }
+
+// HoldNotIndependent is the event holding node reviewer_unavailable on
+// ni's signal, owner system: the one hold a review's independence refused
+// (at its claim, the evaluator's; at its commit, adcd's run) waits on
+// (Opus 22a-6c M1).
+func HoldNotIndependent(tx *eventstore.Tx, node types.NodeID, ni ErrNotIndependent) ([]eventstore.Event, error) {
+	id, err := ids.New("hld")
+	if err != nil {
+		return nil, err
+	}
+	return Raise(tx, node, types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldReviewerUnavailable, SignalInstance: ni.SignalInstance(),
+		Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+}
+
+// TakesGate is whether review, a review node, takes gate's result: the one
+// rule for "a review takes gate g" (reconcile.Observe, adcd's
+// reviews.Record; Opus 22a-6c M1).
+func TakesGate(review types.Node, gate types.NodeID) bool {
+	return review.Kind == types.NodeKindReview && slices.ContainsFunc(review.Inputs, func(in types.InputSpec) bool {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		return ok && src.ResultKind == types.ResultKindGateResult && src.Producer == gate
+	})
+}
 
 // Roster is the roster of executors, sorted, each with the family the
 // registry derives for it.

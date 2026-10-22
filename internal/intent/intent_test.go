@@ -475,13 +475,15 @@ func TestReadBlob(t *testing.T) {
 	sum := func(b []byte) types.Digest { return types.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256(b))) }
 	good, big := []byte("a report"), bytes.Repeat([]byte("x"), maxSafeBytes+1)
 	at := bytes.Repeat([]byte("x"), maxSafeBytes)
-	blobs := blobMap{string(sum(good)): good, string(sum(big)): big, string(sum(at)): at, string(digest("1")): good}
+	blobs := blobMap{string(sum(good)): good, string(sum(big)): big, string(sum(at)): at, string(digest("1")): good, string(digest("3")): big}
 	for name, c := range map[string]struct {
-		d  types.Digest
-		ok bool
-	}{"its content": {sum(good), true}, "at the bound": {sum(at), true}, "past the bound": {sum(big), false}, "another digest's content": {digest("1"), false}} {
-		if _, ok, err := readBlob(blobs, c.d, maxSafeBytes); err != nil || ok != c.ok {
-			t.Errorf("%s: %v %v", name, ok, err)
+		d     types.Digest
+		ok    bool
+		bytes bool // bytes returned: d's own, whatever their size (Opus 22a-6c L2)
+	}{"its content": {sum(good), true, true}, "at the bound": {sum(at), true, true}, "past the bound": {sum(big), false, true},
+		"another digest's content": {digest("1"), false, false}, "past the bound, another digest's": {digest("3"), false, false}} {
+		if b, ok, err := readBlob(blobs, c.d, maxSafeBytes); err != nil || ok != c.ok || (b != nil) != c.bytes {
+			t.Errorf("%s: %v %v, bytes %d", name, ok, err, len(b))
 		}
 	}
 	if _, _, err := readBlob(blobs, digest("2"), maxSafeBytes); err == nil {

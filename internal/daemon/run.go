@@ -302,8 +302,10 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 				WallSeconds: int64(runBounds.Result / time.Second)},
 			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: adapterhost.EditLoopTools(), Mediated: []types.AdapterLabel{}},
 			Gateway:    &gv}}
-	if review { // as qualify's reviewer (qualify.Route.Review): no tool, a read-only workspace, the qualified limits
-		spec.Tools, spec.Prepare.Role, spec.Prepare.Workspace.Writable = nil, "reviewer", false
+	if review { // as qualify's reviewer (qualify.Route.Review): no tool allowed, a read-only workspace, the qualified limits
+		// The host's allowance (spec.Tools) stays the edit loop's, which http-chat describes whatever the role (it learns the
+		// role at prepare); the reviewer is prepared with none (ToolPolicy.Allowed), and a tool it requests is refused (Opus 22a-6c H1).
+		spec.Prepare.Role, spec.Prepare.Workspace.Writable = "reviewer", false
 		spec.Prepare.Limits.MaxTurns, spec.Prepare.Limits.MaxOutputTokens = qualify.MaxTurns, qualify.MaxOutputTokens
 		spec.Prepare.ToolPolicy.Allowed = []types.AdapterLabel{}
 	}
@@ -464,13 +466,12 @@ func (r *runner) unreviewable(ctx context.Context, l types.LeaseID, node types.N
 
 // candidateRound is the round of the build whose patch review takes.
 func candidateRound(tx *eventstore.Tx, review types.Node) (int64, error) {
-	for _, in := range review.Inputs {
-		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindPatch {
-			v, err := graph.ViewOf(tx, src.Producer)
-			return v.Node.Round, err
-		}
+	build, err := producerOf(tx, review.ID, types.ResultKindPatch)
+	if err != nil {
+		return 0, err
 	}
-	return 0, fmt.Errorf("review %s takes no patch", review.ID)
+	v, err := graph.ViewOf(tx, build)
+	return v.Node.Round, err
 }
 
 // otherCall reports whether attempt's recorded intent names another call
@@ -1086,6 +1087,9 @@ func (r *runner) commitStep(node types.NodeID, attempt *types.AttemptID, result 
 		var evs []eventstore.Event
 		if ni := (graph.ErrNotIndependent{}); errors.As(err, &ni) && attempt != nil {
 			res, evs, err = r.notIndependent(tx, node, *attempt, *v.State.Key, ni)
+		} else if errors.As(err, &ni) { // with no attempt (unreviewable's verdict): held, nothing recorded (Opus 22a-6c L2)
+			evs, err = graph.HoldNotIndependent(tx, node, ni)
+			return evs, err
 		}
 		if err == nil {
 			*recorded = &res
@@ -1102,8 +1106,7 @@ func (r *runner) commitStep(node types.NodeID, attempt *types.AttemptID, result 
 // refusal does, so reviews.Unheld re-derives its roster.
 func (r *runner) notIndependent(tx *eventstore.Tx, node types.NodeID, attempt types.AttemptID, key types.ComputationKey, ni graph.ErrNotIndependent) (types.Result, []eventstore.Event, error) {
 	id, err := ids.New("res")
-	hid, herr := ids.New("hld")
-	if err = errors.Join(err, herr); err != nil {
+	if err != nil {
 		return types.Result{}, nil, err
 	}
 	res := types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindReview, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
@@ -1111,8 +1114,7 @@ func (r *runner) notIndependent(tx *eventstore.Tx, node types.NodeID, attempt ty
 	if err := graph.CommitAttempt(tx, node, res, attempt, r.env); err != nil {
 		return types.Result{}, nil, err
 	}
-	evs, err := graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(hid), Hold: vocab.HoldReviewerUnavailable, SignalInstance: ni.SignalInstance(),
-		Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+	evs, err := graph.HoldNotIndependent(tx, node, ni)
 	return res, evs, err
 }
 

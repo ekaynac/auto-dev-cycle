@@ -23,6 +23,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
+// httpChatTools is the tool surface adapters/http-chat describes, whatever
+// its role (adapter.ts: the edit loop's).
+const httpChatTools = `"read_file","list_dir","write_file","delete_file"`
+
 // Decisions a reviewer peer submits.
 const (
 	goDecision   = `{"decision":"go","summary":"meets the task","findings":[]}`
@@ -41,8 +45,10 @@ type reviewerSeen struct {
 // reviewer is a reviewer adapter in this process: as builder, but on run
 // it writes decision to its exchange's out/ and submits it (kind decision),
 // as adapters/http-chat's reviewer does; it sends what it was prepared with
-// on seen. tools is the tool surface it describes ("": none).
-func reviewer(decision, tools string, seen chan<- reviewerSeen) *inproc.Peer {
+// on seen. It describes http-chat's tool surface (httpChatTools: it learns
+// its role only at prepare); with requestTool, it requests read_file on run
+// (a tool.request) before it submits.
+func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen) *inproc.Peer {
 	return inproc.New(func(in io.Reader, out io.Writer) {
 		r, w := wire.NewReader(in), wire.NewWriter(out)
 		var prep types.AdapterPrepareParams
@@ -56,7 +62,7 @@ func reviewer(decision, tools string, seen chan<- reviewerSeen) *inproc.Peer {
 			switch req.Method {
 			case "describe":
 				d := strings.Replace(builderDescribe, `"capabilities":["patch"]`, `"capabilities":["decision"]`, 1)
-				res = json.RawMessage(strings.Replace(d, `"tool_surface":[]`, `"tool_surface":[`+tools+`]`, 1))
+				res = json.RawMessage(strings.Replace(d, `"tool_surface":[]`, `"tool_surface":[`+httpChatTools+`]`, 1))
 			case "prepare":
 				if json.Unmarshal(req.Params, &prep) != nil {
 					return
@@ -69,6 +75,17 @@ func reviewer(decision, tools string, seen chan<- reviewerSeen) *inproc.Peer {
 			case "run":
 				if os.WriteFile(filepath.Join(prep.Exchange.Out, "decision.json"), []byte(decision), 0o600) != nil {
 					return
+				}
+				var params types.AdapterRunParams
+				if json.Unmarshal(req.Params, &params) != nil {
+					return
+				}
+				if requestTool {
+					ev, err := wire.Encode(map[string]any{"jsonrpc": wire.Version, "method": "adapter.event", "params": map[string]any{"event": "tool.request",
+						"attempt": params.Attempt, "fencing_token": params.FencingToken, "call": params.Call, "turn": 1, "tool": "read_file", "request": params.Prompt}})
+					if err != nil || w.Write(ev) != nil {
+						return
+					}
 				}
 				sum := sha256.Sum256([]byte(decision))
 				run := types.AdapterRunResult{Outcome: types.OutcomeFound, Reason: vocab.ReasonCompletedWithFindings, Detail: "the reviewer's decision",
@@ -96,7 +113,7 @@ func reviewRun(t *testing.T, decision string) (*runWorld, reviewerSeen) {
 		t.Fatalf("the gate: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 	seen := make(chan reviewerSeen, 4)
-	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(decision, "", seen))
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(decision, false, seen))
 	for range 12 {
 		rw.passesFor(t, 1, 0)
 		if v := reviewNodes(rw)[types.NodeKindReview]; v.State.State != types.NodeStateStateClaimed && v.State.State != types.NodeStateStateWaiting && v.State.State != types.NodeStateStateRunnable {
@@ -212,7 +229,7 @@ func TestAReviewerOfTheBuildersFamilyIsRefusedAtCommit(t *testing.T) {
 	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
 		t.Fatalf("the gate: %s", v.State.State)
 	}
-	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, "", nil))
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil))
 	rw.r.env.Families = builderFamily{stubRegistry(t, nil, nil)} // at commit only
 	var review graph.NodeView
 	var rs []types.ResultRecorded
@@ -227,7 +244,7 @@ func TestAReviewerOfTheBuildersFamilyIsRefusedAtCommit(t *testing.T) {
 		t.Fatalf("its results: %+v", rs)
 	}
 	if review.State.State != types.NodeStateStateHeld || review.State.Result != nil || len(review.State.Holds) != 1 ||
-		review.State.Holds[0].Hold != vocab.HoldReviewerUnavailable {
+		review.State.Holds[0].Hold != vocab.HoldReviewerUnavailable || !strings.HasPrefix(review.State.Holds[0].SignalInstance, "contributor:") {
 		t.Errorf("the review: %s, holds %+v", review.State.State, review.State.Holds)
 	}
 }
@@ -254,7 +271,7 @@ func TestAnUnreviewableCandidateIsTheReviewsVerdict(t *testing.T) {
 		t.Fatalf("the gate: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 	seen := make(chan reviewerSeen, 4)
-	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, "", seen))
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, seen))
 	rw.passesFor(t, 8, 0)
 	review := reviewNodes(rw)[types.NodeKindReview]
 	rs := reviewResults(rw, review.Node.ID)
@@ -270,23 +287,63 @@ func TestAnUnreviewableCandidateIsTheReviewsVerdict(t *testing.T) {
 	}
 }
 
-// P22a-6c: a reviewer is given no tool: an adapter describing one
-// (read_file) is refused before it is prepared (adapterhost's exclusive
-// tool surface), and no decision is recorded.
-func TestAReviewerAdapterWithAToolIsRefused(t *testing.T) {
+// Opus 22a-6c H1: the production reviewer adapter describes http-chat's
+// tool surface (the edit loop's) whatever its role, so the host allows it
+// (Spec.Tools), as qualify's reviewer does: it is prepared, with no tool
+// allowed, and its go completes the review. (Every row's reviewer peer
+// describes that surface.)
+func TestAReviewerDescribingHTTPChatsToolsIsPrepared(t *testing.T) {
+	rw, seen := reviewRun(t, goDecision)
+	review := reviewNodes(rw)[types.NodeKindReview]
+	if review.State.State != types.NodeStateStateCompleted || len(seen.prep.ToolPolicy.Allowed) != 0 {
+		t.Fatalf("the review: %s, allowed %v", review.State.State, seen.prep.ToolPolicy.Allowed)
+	}
+}
+
+// Opus 22a-6c H1: a reviewer that requests a tool during its run is
+// refused (the host serves no tool: unserve): its decision is never taken,
+// and the review is not completed.
+func TestAReviewerRequestingAToolIsRefused(t *testing.T) {
 	rw := gateCompleted(t)
-	seen := make(chan reviewerSeen, 4)
-	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, `"read_file"`, seen))
+	seen := make(chan reviewerSeen, 8)
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, true, seen))
 	rw.passesFor(t, 8, 0)
 	review := reviewNodes(rw)[types.NodeKindReview]
 	rs := reviewResults(rw, review.Node.ID)
-	if len(seen) != 0 || review.State.State == types.NodeStateStateCompleted || len(rs) == 0 {
+	if len(seen) == 0 || review.State.State == types.NodeStateStateCompleted || len(rs) == 0 {
 		t.Fatalf("the review: %s, prepared %d, results %+v", review.State.State, len(seen), rs)
 	}
 	for _, rr := range rs {
 		if rr.Result.Outcome != types.OutcomeCouldNotRun || rr.Result.Kind != types.ResultKindReview {
 			t.Errorf("a result: %+v", rr.Result)
 		}
+	}
+}
+
+// Opus 22a-6c L2: an unreviewable verdict whose commit is refused for
+// independence records nothing and holds the review reviewer_unavailable
+// (graph.HoldNotIndependent), its lease ended unlaunched.
+func TestAnUnreviewableVerdictOfADependentReviewerIsHeld(t *testing.T) {
+	big := strings.Repeat("a long line of the candidate's own text\n", 16<<10)
+	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"big.txt": big}, nil)
+	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the gate: %s", v.State.State)
+	}
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil))
+	rw.r.env.Families = builderFamily{stubRegistry(t, nil, nil)} // at commit only
+	var review graph.NodeView
+	for range 8 {
+		rw.passesFor(t, 1, 0)
+		if review = reviewNodes(rw)[types.NodeKindReview]; review.State.State == types.NodeStateStateHeld {
+			break
+		}
+	}
+	if rs := reviewResults(rw, review.Node.ID); len(rs) != 0 || review.State.State != types.NodeStateStateHeld ||
+		review.State.Holds[0].Hold != vocab.HoldReviewerUnavailable {
+		t.Fatalf("the review: %s, holds %+v, results %+v", review.State.State, review.State.Holds, rs)
+	}
+	if _, live := leaseOn(rw.w, review.Node.ID); live {
+		t.Error("its lease is live")
 	}
 }
 
@@ -301,7 +358,7 @@ func TestAnUnverifiedReviewIsAbandoned(t *testing.T) {
 		return out, err
 	}
 	t.Cleanup(func() { runPrepared = (*adapterhost.Prepared).Run })
-	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, "", nil))
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil))
 	rw.passesFor(t, 8, 0)
 	review := reviewNodes(rw)[types.NodeKindReview]
 	rs := reviewResults(rw, review.Node.ID)

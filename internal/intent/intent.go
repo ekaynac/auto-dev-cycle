@@ -331,20 +331,28 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 	}
 }
 
-// readBlob is blob d's bytes, read to at most limit+1 bytes, false when
-// they are over limit or are not d's content: the one bounded,
-// digest-checked reader of the package (Opus 22a-6b M3).
+// readBlob is blob d's bytes, at most limit+1 of them kept, false when
+// they are over limit or are not d's content (then none: its digest is
+// taken over the whole stream first); the one bounded, digest-checked
+// reader of the package (Opus 22a-6b M3, 22a-6c L2).
 func readBlob(blobs receipt.Blobs, d types.Digest, limit int64) ([]byte, bool, error) {
 	rc, err := blobs.Open(string(d))
 	if err != nil {
 		return nil, false, err
 	}
-	b, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	h := sha256.New() // over the whole stream: a blob past limit is still checked to be d's (Opus 22a-6c L2)
+	b, err := io.ReadAll(io.LimitReader(io.TeeReader(rc, h), limit+1))
+	if err == nil {
+		_, err = io.Copy(h, rc)
+	}
 	if err = errors.Join(err, rc.Close()); err != nil {
 		return nil, false, err
 	}
-	sum := sha256.Sum256(b)
-	return b, int64(len(b)) <= limit && bytes.Equal([]byte(d), fmt.Appendf(nil, "sha256:%x", sum)), nil
+	sum := h.Sum(nil)
+	if !bytes.Equal([]byte(d), fmt.Appendf(nil, "sha256:%x", sum)) {
+		return nil, false, nil // not d's: no bytes, whatever their size
+	}
+	return b, int64(len(b)) <= limit, nil
 }
 
 // In is what an intent is built from: the call's record (id, call,
