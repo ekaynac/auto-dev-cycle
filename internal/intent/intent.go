@@ -89,9 +89,10 @@ var (
 	// ErrAncestryUnresolved: an input's ancestry is not fully known, so it
 	// cannot be shown free of acceptance; it refuses as ErrAcceptanceInput.
 	ErrAncestryUnresolved = fmt.Errorf("%w: its ancestry is not resolvable", ErrAcceptanceInput)
-	// ErrBlobDamaged: a blob's stored bytes are not its digest's. The
-	// host's store, never the content: the run retries it, bounded, then
-	// holds visibly, never "runner: failed" (Opus 22a-6d H1 re-check L2).
+	// ErrBlobDamaged: a blob's stored bytes are not its digest's
+	// (readBlob's, the one rule). The host's store, never the content: the
+	// run retries it, bounded, then holds it visibly, never at once as the
+	// content's (Opus 22a-6d H1 re-check L2; Astra chunk 4b H1).
 	ErrBlobDamaged = errors.New("intent: a blob's stored bytes are not its digest's")
 	// ErrNotFresh: a reviewer's context would carry a review's result.
 	ErrNotFresh = errors.New("intent: a review's result among a reviewer's inputs (a fresh context per round)")
@@ -228,7 +229,7 @@ func (o own) check(blobs receipt.Blobs) func(graph.RefRecord) error {
 		case err != nil:
 			return err
 		case !ok:
-			return fmt.Errorf("%w: %s's bytes are not its digest's, or over %d bytes", ErrNotTheBrief, rec.ID, maxSafeBytes)
+			return fmt.Errorf("%w: %s is over %d bytes", ErrNotTheBrief, rec.ID, maxSafeBytes)
 		}
 		return nil
 	}
@@ -352,9 +353,10 @@ func viewOf(blobs receipt.Blobs, resolve graph.RefRecords, report func(graph.Ref
 }
 
 // readBlob is blob d's bytes, at most limit+1 of them kept, false when
-// they are over limit or are not d's content (then none: its digest is
-// taken over the whole stream first); the one bounded, digest-checked
-// reader of the package (Opus 22a-6b M3, 22a-6c L2). It reads the blob to
+// they are over limit; ErrBlobDamaged, and none, when they are not d's
+// content (its digest is taken over the whole stream first: Astra chunk
+// 4b H1, the one damage rule of the package); the one bounded,
+// digest-checked reader of the package (Opus 22a-6b M3, 22a-6c L2). It reads the blob to
 // its end: a blob is bounded where it is published (the store's upload
 // bound), never by this read.
 func readBlob(blobs receipt.Blobs, d types.Digest, limit int64) ([]byte, bool, error) {
@@ -372,7 +374,7 @@ func readBlob(blobs receipt.Blobs, d types.Digest, limit int64) ([]byte, bool, e
 	}
 	sum := h.Sum(nil)
 	if !bytes.Equal([]byte(d), fmt.Appendf(nil, "sha256:%x", sum)) {
-		return nil, false, nil // not d's: no bytes, whatever their size
+		return nil, false, fmt.Errorf("%w: blob %s", ErrBlobDamaged, d) // not d's: no bytes, whatever their size
 	}
 	return b, int64(len(b)) <= limit, nil
 }
@@ -542,11 +544,16 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 		}
 	}
 	rec := recs[0] // its records differ in their lineage alone
-	// The input as listed is its record: its bytes, lineage, scope and
-	// restrictions, so no copy of a record under fewer restrictions or
-	// another scope passes as it (Mythos 22a-5c-3 M1).
-	if rec.ContentDigest != r.ContentDigest || !slices.ContainsFunc(recs, func(x graph.RefRecord) bool { return slices.Equal(x.Lineage, r.Lineage) }) ||
-		rec.Project != graph.ScopeProject(r.Scope) || rec.Framework != r.Scope.Framework || !slices.EqualFunc(rec.Restrictions, r.Restrictions, graph.SameRestriction) {
+	// The input as listed is its record: its every canonical field but its
+	// lineage (bytes, revision, scope, restrictions: the comparison
+	// graph.Records makes, Astra chunk 4b H2), and one record's lineage, so
+	// no copy of a record under fewer restrictions or another scope passes
+	// as it (Mythos 22a-5c-3 M1).
+	identity, err := knowledge.IdentityApartFromLineage(r)
+	if err != nil {
+		return rec, err
+	}
+	if rec.Identity != identity || !slices.ContainsFunc(recs, func(x graph.RefRecord) bool { return slices.Equal(x.Lineage, r.Lineage) }) {
 		return rec, fmt.Errorf("%w: %s is not the input its record names", ErrAncestryUnresolved, r.ID)
 	}
 	if done {
@@ -567,7 +574,6 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 		}
 	}
 	var queue []string
-	var err error
 	for _, x := range recs {
 		if queue, err = w.enqueue(r.ID, queue, x.Lineage); err != nil {
 			return rec, err

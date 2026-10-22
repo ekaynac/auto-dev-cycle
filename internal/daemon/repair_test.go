@@ -4,6 +4,8 @@ package daemon
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -208,13 +210,114 @@ func TestANoGoRepairsTheBuild(t *testing.T) {
 // selectedRef is the first ref of v's selected result.
 func selectedRef(t *testing.T, rw *runWorld, v graph.NodeView) types.Ref {
 	t.Helper()
+	refs := selectedRefs(t, rw, v)
+	if len(refs) == 0 {
+		t.Fatalf("%s selects a result with no ref", v.Node.ID)
+	}
+	return refs[0]
+}
+
+// Astra chunk 4b H1: a blob a repair builder's intent reads whose stored
+// bytes are not its digest's (the no_go's decision, or the gate's report
+// its lineage holds) is the host's store damaged: the round's build is held
+// on a bounded retry, never refused as acceptance-derived nor held as the
+// content's. Repaired within the retry window, the repair runs; left
+// damaged, the retries are spent and it is held "runner: failed", visibly.
+func TestADamagedBlobUnderARepairIsRetried(t *testing.T) {
+	retryBase = 50 * time.Millisecond
+	t.Cleanup(func() { retryBase = time.Minute })
+	decision := func(refs []types.Ref) types.Digest { // the one the findings view names
+		for _, v := range refs {
+			for _, x := range refs {
+				if v.Type == types.RefTypeView && len(v.Lineage) == 1 && x.ID == v.Lineage[0] {
+					return x.ContentDigest
+				}
+			}
+		}
+		return ""
+	}
+	report := func(refs []types.Ref) types.Digest {
+		for _, x := range refs {
+			if x.Type == types.RefTypeBlob {
+				return x.ContentDigest
+			}
+		}
+		return ""
+	}
+	for _, c := range []struct {
+		name     string
+		of       func(round) graph.NodeView // the node whose selected result holds the blob
+		blob     func([]types.Ref) types.Digest
+		repaired bool
+	}{
+		{"a damaged decision, repaired", func(r round) graph.NodeView { return r.review }, decision, true},
+		{"a damaged report, left so", func(r round) graph.NodeView { return r.gate }, report, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rw, _ := reviewRun(t, noGoDecision)
+			d := c.blob(selectedRefs(t, rw, c.of(roundOf(t, rw, 1))))
+			if d == "" {
+				t.Fatal("no such blob")
+			}
+			hex := strings.TrimPrefix(string(d), "sha256:")
+			p := filepath.Join(rw.w.dir, "blobs", "sha256", hex[:2], hex[2:4], hex)
+			good, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			write := func(b []byte) {
+				if err := os.Chmod(p, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(append(slices.Clone(good), '\n'))
+			var two round
+			for range 12 {
+				if rw.passesFor(t, 1, 0); len(roundOf(t, rw, 2).build.State.Holds) > 0 {
+					break
+				}
+			}
+			if two = roundOf(t, rw, 2); len(two.build.State.Holds) != 1 || !strings.HasPrefix(two.build.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) {
+				t.Fatalf("round 2's build over a damaged blob: %s, holds %+v", two.build.State.State, two.build.State.Holds)
+			}
+			if c.repaired {
+				write(good)
+				for range 40 {
+					rw.passesFor(t, 1, 25*time.Millisecond)
+					started := false
+					rw.w.view(func(tx *eventstore.Tx) (err error) {
+						_, started, err = lease.FirstOn(tx, graph.UnitOf(two.build.Node.ID))
+						return err
+					})
+					if started {
+						return
+					}
+				}
+				t.Fatalf("the repair never ran once its blob was repaired: %+v", roundOf(t, rw, 2).build.State.Holds)
+			}
+			for range 60 {
+				if rw.passesFor(t, 1, 50*time.Millisecond); slices.ContainsFunc(roundOf(t, rw, 2).build.State.Holds, func(h types.NodeHold) bool { return h.SignalInstance == runnerFailed }) {
+					return
+				}
+			}
+			t.Fatalf("a damaged blob never held visibly: %+v", roundOf(t, rw, 2).build.State.Holds)
+		})
+	}
+}
+
+// selectedRefs are v's selected result's refs.
+func selectedRefs(t *testing.T, rw *runWorld, v graph.NodeView) []types.Ref {
+	t.Helper()
 	for _, rr := range reviewResults(rw, v.Node.ID) {
-		if v.State.Result != nil && rr.Result.ID == *v.State.Result && len(rr.Result.Value) > 0 {
-			return rr.Result.Value[0]
+		if v.State.Result != nil && rr.Result.ID == *v.State.Result {
+			return rr.Result.Value
 		}
 	}
-	t.Fatalf("%s (%s, %s) selects no result with a ref: %v, results %+v", v.Node.ID, v.Node.Kind, v.State.State, v.State.Result, reviewResults(rw, v.Node.ID))
-	return types.Ref{}
+	t.Fatalf("%s selects no result", v.Node.ID)
+	return nil
 }
 
 // Opus 22a-6c L4: an unreviewable verdict (failed/unsafe_output) repairs

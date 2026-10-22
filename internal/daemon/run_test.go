@@ -595,16 +595,23 @@ func TestOneRunPerBuild(t *testing.T) {
 // refuses it (intent.ErrNotTheBrief), before any workspace (P22a-6d: the
 // plan no longer reads the brief).
 func TestTheRunRefusesAForgedBrief(t *testing.T) {
-	w, x, _, build := forgedPlan(t, ofTask(func(x *types.Task) { x.Spec.Requirement = "CANARY-ACCEPTANCE" }))
-	r := &runner{store: w.s, blobs: w.blobs, env: x.Env}
-	var pl plan
-	w.view(func(tx *eventstore.Tx) (err error) {
-		pl.view, err = graph.ViewOf(tx, build)
-		return err
-	})
-	if _, prompt, err := r.builderIntent(context.Background(), pl, build, types.AttemptID(newID(t, "att")), types.CallID(newID(t, "cal"))); !errors.Is(err, intent.ErrNotTheBrief) ||
-		strings.Contains(err.Error(), "CANARY") || prompt != nil {
-		t.Errorf("the run's intent over a forged brief: %v, a prompt of %d bytes", err, len(prompt))
+	malformed := func(t *testing.T, _ types.Task, policy types.Restriction) ([]byte, types.Ref) { // Astra chunk 4b M1: hashed right, no brief
+		return []byte("{}"), briefRef(t, []byte("{}"), policy)
+	}
+	for name, forge := range map[string]forgery{"an acceptance in its requirement": ofTask(func(x *types.Task) { x.Spec.Requirement = "CANARY-ACCEPTANCE" }),
+		"malformed ({})": malformed} {
+		w, x, _, build := forgedPlan(t, forge)
+		r := &runner{store: w.s, blobs: w.blobs, env: x.Env}
+		var pl plan
+		w.view(func(tx *eventstore.Tx) (err error) {
+			pl.view, err = graph.ViewOf(tx, build)
+			return err
+		})
+		// The content's: held "runner: failed" at once (contentFault), never retried.
+		if _, prompt, err := r.builderIntent(context.Background(), pl, build, types.AttemptID(newID(t, "att")), types.CallID(newID(t, "cal"))); !errors.Is(err, intent.ErrNotTheBrief) ||
+			!contentFault(err) || strings.Contains(err.Error(), "CANARY") || prompt != nil {
+			t.Errorf("%s: the run's intent over a forged brief: %v, a prompt of %d bytes", name, err, len(prompt))
+		}
 	}
 }
 

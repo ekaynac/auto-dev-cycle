@@ -10,6 +10,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
@@ -37,6 +38,7 @@ type RefRecord struct {
 	Producer      types.NodeKind
 	Sanitised     bool
 	BuilderSafe   bool
+	Identity      types.Digest // knowledge.IdentityApartFromLineage of the ref: its every canonical field but its lineage (Astra chunk 4b H2)
 }
 
 // BuilderSafe is whether r, a ref of rr, a result of a producer of kind,
@@ -68,7 +70,7 @@ func GateShape(value []types.Ref) (ok, full bool) {
 }
 
 // RefRecords resolves a ref id to its records: one, or several that differ
-// in their lineage alone, recorded by producers of one kind (a
+// in their lineage alone (RefRecord.Identity), recorded by producers of one kind (a
 // content-addressed id a task's rounds record again: a review's decision
 // repeated round after round; #226 entry 161). Every check over an id's
 // record checks each (fail closed). ok false when the id is unknown or
@@ -123,15 +125,18 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		if n > maxTaskRefs || lineage > maxTaskLineage || idBytes > maxTaskIDBytes {
 			return fmt.Errorf("graph: task %s holds over %d refs, %d lineage entries or %d bytes of ids", task, maxTaskRefs, maxTaskLineage, maxTaskIDBytes)
 		}
+		identity, err := knowledge.IdentityApartFromLineage(r)
+		if err != nil {
+			return err
+		}
 		rec := RefRecord{ID: r.ID, Type: r.Type, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Restrictions: cloneRestrictions(r.Restrictions),
-			Project: ScopeProject(r.Scope), Framework: r.Scope.Framework, Producer: producer, Sanitised: sanitised, BuilderSafe: safe}
+			Project: ScopeProject(r.Scope), Framework: r.Scope.Framework, Producer: producer, Sanitised: sanitised, BuilderSafe: safe, Identity: identity}
 		recs := byID[r.ID]
 		if len(recs) > 0 {
 			prior := recs[0]
-			if prior.Type != rec.Type || prior.ContentDigest != rec.ContentDigest || prior.Producer != rec.Producer ||
+			if prior.Identity != rec.Identity || prior.Producer != rec.Producer || // every canonical field but the lineage, one shared comparison (Astra chunk 4b H2)
 				prior.Producer == "" && !slices.Equal(prior.Lineage, rec.Lineage) || // the controller's own refs: one lineage
-				prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe || prior.Project != rec.Project || prior.Framework != rec.Framework ||
-				!slices.EqualFunc(prior.Restrictions, rec.Restrictions, SameRestriction) {
+				prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe {
 				ambiguous[r.ID] = true
 			}
 		}

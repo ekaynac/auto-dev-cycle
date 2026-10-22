@@ -56,6 +56,17 @@ func TestRecords(t *testing.T) {
 	g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{derived("apr_2", "8")})
 	decision := derived("decision-1", "9")
 	g.completedWith(types.NodeKindReview, types.ResultKindReview, []types.Ref{decision})
+	// Astra chunk 4b H2: the same id, producer kind, digest and scope, its
+	// revisions "1" and "2", under other lineages: another identity.
+	for _, rev := range []string{"1", "2"} {
+		r := derived("revisions", "b", "patch-"+rev)
+		r.Revision = &rev
+		sealed, err := knowledge.Seal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{sealed})
+	}
 	approval := derived("apr_1", "5")
 	rs, err := g.records(tskID, approval, derived("apr_2", "8"), derived("apr_3", "a"), derived("apr_3", "a", "apr_1"))
 	if err != nil {
@@ -79,7 +90,7 @@ func TestRecords(t *testing.T) {
 		t.Errorf("an id two lineages recorded, of one producer kind: %+v %v", recs, ok)
 	}
 	for name, id := range map[string]string{"another digest": "twice", "another producer": "producers",
-		"a result's ref and an extra ref": "apr_2", "an extra ref under two lineages": "apr_3", "an unknown id": "unknown"} {
+		"a result's ref and an extra ref": "apr_2", "an extra ref under two lineages": "apr_3", "two revisions (Astra chunk 4b H2)": "revisions", "an unknown id": "unknown"} {
 		if _, ok, _ := rs.Resolve(id); ok {
 			t.Errorf("%s: %s resolved", name, id)
 		}
@@ -93,24 +104,24 @@ func TestRecords(t *testing.T) {
 		t.Errorf("another task's ref resolved")
 	}
 	defer func(n, l, b int) { maxTaskRefs, maxTaskLineage, maxTaskIDBytes = n, l, b }(maxTaskRefs, maxTaskLineage, maxTaskIDBytes)
-	maxTaskRefs = 10 // the task's results hold 10 refs
+	maxTaskRefs = 12 // the task's results hold 12 refs
 	if _, err := g.records(tskID); err != nil {
 		t.Errorf("exactly the ref bound: %v", err)
 	}
 	if _, err := g.records(tskID, approval); err == nil {
 		t.Error("one ref past the bound")
 	}
-	// The task's results hold 2 lineage entries and 90 bytes of ids, their
+	// The task's results hold 4 lineage entries and 122 bytes of ids, their
 	// lineage's included.
 	maxTaskRefs = 100
 	for name, c := range map[string]struct {
 		lineage, bytes int
 		ok             bool
 	}{
-		"exactly the lineage bound": {2, 1 << 20, true},
-		"one entry past it":         {1, 1 << 20, false},
-		"exactly the byte bound":    {1 << 20, 90, true},
-		"one byte past it":          {1 << 20, 89, false},
+		"exactly the lineage bound": {4, 1 << 20, true},
+		"one entry past it":         {3, 1 << 20, false},
+		"exactly the byte bound":    {1 << 20, 122, true},
+		"one byte past it":          {1 << 20, 121, false},
 	} {
 		maxTaskLineage, maxTaskIDBytes = c.lineage, c.bytes
 		if _, err := g.records(tskID); (err == nil) != c.ok {

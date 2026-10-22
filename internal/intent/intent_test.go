@@ -52,7 +52,15 @@ func (s *store) resolve(id string) ([]graph.RefRecord, bool, error) {
 const project = types.ProjectID("prj_01m3250vkwffc979nzjw0gpym1")
 
 func rec(id, d string, producer types.NodeKind, lineage ...string) graph.RefRecord {
-	return graph.RefRecord{ID: id, ContentDigest: digest(d), Lineage: append([]string{}, lineage...), Producer: producer, Project: project}
+	r := graph.RefRecord{ID: id, Type: types.RefTypeBlob, ContentDigest: digest(d), Lineage: append([]string{}, lineage...), Producer: producer, Project: project,
+		Restrictions: []types.Restriction{}}
+	p := project
+	identity, err := knowledge.IdentityApartFromLineage(types.Ref{Type: r.Type, ID: id, Scope: types.RefScope{Project: &p}, ContentDigest: r.ContentDigest})
+	if err != nil {
+		panic(err)
+	}
+	r.Identity = identity
+	return r
 }
 
 // ref is r's sealed ref, as a context renders it.
@@ -474,7 +482,8 @@ func (m blobMap) Open(d string) (io.ReadCloser, error) {
 }
 
 // TestReadBlob (Astra #321 H1): a declassified output's bytes are its
-// digest's content, within maxSafeBytes, or no safe output.
+// digest's content, within maxSafeBytes, or no safe output: past the
+// bound, false; another digest's bytes, ErrBlobDamaged (Astra chunk 4b H1).
 func TestReadBlob(t *testing.T) {
 	sum := func(b []byte) types.Digest { return types.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256(b))) }
 	good, big := []byte("a report"), bytes.Repeat([]byte("x"), maxSafeBytes+1)
@@ -486,20 +495,16 @@ func TestReadBlob(t *testing.T) {
 		bytes bool // bytes returned: d's own, whatever their size (Opus 22a-6c L2)
 	}{"its content": {sum(good), true, true}, "at the bound": {sum(at), true, true}, "past the bound": {sum(big), false, true},
 		"another digest's content": {digest("1"), false, false}, "past the bound, another digest's": {digest("3"), false, false}} {
-		if b, ok, err := readBlob(blobs, c.d, maxSafeBytes); err != nil || ok != c.ok || (b != nil) != c.bytes {
+		// Astra chunk 4b H1: another digest's bytes are the host's store
+		// damaged (ErrBlobDamaged), never the content's (ErrUnbound), nor
+		// a blob that is simply not the one sought.
+		b, ok, err := readBlob(blobs, c.d, maxSafeBytes)
+		if damaged := !c.bytes; damaged != errors.Is(err, ErrBlobDamaged) || errors.Is(err, ErrUnbound) || (!damaged && err != nil) || ok != c.ok || (b != nil) != c.bytes {
 			t.Errorf("%s: %v %v, bytes %d", name, ok, err, len(b))
 		}
 	}
 	if _, _, err := readBlob(blobs, digest("2"), maxSafeBytes); err == nil {
 		t.Error("a missing blob read")
-	}
-	// Opus 22a-6d H1 re-check L2: another digest's bytes are the host's
-	// store damaged (ErrBlobDamaged), never the content's (ErrUnbound).
-	if _, _, err := readRef(blobs, types.Ref{ContentDigest: digest("1")}, maxSafeBytes); !errors.Is(err, ErrBlobDamaged) || errors.Is(err, ErrUnbound) {
-		t.Errorf("a damaged blob: %v", err)
-	}
-	if b, ok, err := readRef(blobs, types.Ref{ContentDigest: sum(good)}, maxSafeBytes); err != nil || !ok || !bytes.Equal(b, good) {
-		t.Errorf("a blob: %q %v %v", b, ok, err)
 	}
 }
 
@@ -550,6 +555,20 @@ func TestIntentRepeatedRecords(t *testing.T) {
 		if _, err := intent(x); !errors.Is(err, ErrNotTheBrief) {
 			t.Errorf("%s: a plan id's second record no root: %v", role, err)
 		}
+	}
+	// Astra chunk 4b H2: an input under a revision its record has not is
+	// not the input its record names (the comparison graph.Records makes).
+	revised := in(t, clean, decision)
+	rev := "1"
+	r := revised.Context.Included[0]
+	r.Revision = &rev
+	r, err := knowledge.Seal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revised.Context.Included[0], revised.Bytes[r.IdentityDigest] = r, 10
+	if _, err := Builder(revised); !errors.Is(err, ErrAncestryUnresolved) {
+		t.Errorf("an input under another revision: %v", err)
 	}
 	other := rec("tree-1", "1", "accept", "patch-3")
 	if _, err := Builder(in(t, clean, other)); !errors.Is(err, ErrAncestryUnresolved) {

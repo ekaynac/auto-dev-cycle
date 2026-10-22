@@ -74,12 +74,8 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 	empty := false // an empty candidate: review.Prompt renders no change
 	include := func(ref types.Ref, limit int64) ([]byte, error) {
 		b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
-		switch {
-		case err != nil || ok:
-		case int64(len(b)) > limit: // the candidate's: a patch over review.MaxDiff (Opus 22a-6b M2)
+		if err == nil && !ok { // the candidate's: a patch over review.MaxDiff (Opus 22a-6b M2); a damaged blob is readBlob's ErrBlobDamaged
 			err = fmt.Errorf("%w: blob %s is over %d bytes", ErrUnreviewable, ref.ContentDigest, limit)
-		default:
-			err = fmt.Errorf("%w: blob %s", ErrBlobDamaged, ref.ContentDigest) // the host's (Opus 22a-6d H1 re-check L2)
 		}
 		out.Included, out.Bytes[ref.IdentityDigest] = append(out.Included, ref), int64(len(b))
 		return b, err

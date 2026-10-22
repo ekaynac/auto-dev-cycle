@@ -43,7 +43,6 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		return PromptContext{}, err
 	}
 	out := PromptContext{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{}, Bytes: map[types.Digest]int64{}}
-	read := func(ref types.Ref, limit int64) ([]byte, bool, error) { return readRef(blobs, ref, limit) }
 	listed := map[types.Digest]string{} // each ref listed once, under the first input that takes it (a candidate repeated by rounds)
 	var prompt strings.Builder
 	var whole []types.Ref // the context as graph.Context renders it
@@ -56,7 +55,7 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		round := roundOf(names[i]) // its section's round (Opus 22a-6d L2)
 		switch k := rr.Result.Kind; {
 		case i == 0 && k == types.ResultKindPlan && len(v) == 1:
-			b, ok, err := read(v[0], MaxBrief)
+			b, ok, err := readBlob(blobs, v[0].ContentDigest, MaxBrief)
 			if err == nil && !ok {
 				err = fmt.Errorf("%w: the brief is over %d bytes", ErrUnbound, MaxBrief)
 			}
@@ -64,8 +63,8 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 				return PromptContext{}, err
 			}
 			pb, err := brief.Decode(b)
-			if err != nil {
-				return PromptContext{}, err
+			if err != nil { // its bytes are its digest's (readBlob): no brief, the content's (Astra chunk 4b M1)
+				return PromptContext{}, fmt.Errorf("%w: %s: %w", ErrNotTheBrief, v[0].ID, err)
 			}
 			p := brief.Prompt(pb)
 			prompt.Write(p)
@@ -77,7 +76,7 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 			case graph.Unreviewable(rr.Result) && len(v) == 0:
 				prompt.WriteString("It could not be reviewed: " + rr.Result.Detail + "\n")
 			case len(v) == 1 && v[0].Type == types.RefTypeView:
-				b, ok, err := read(v[0], maxSafeBytes)
+				b, ok, err := readBlob(blobs, v[0].ContentDigest, maxSafeBytes)
 				if err == nil && !ok {
 					err = fmt.Errorf("%w: the findings view is over %d bytes", ErrUnbound, maxSafeBytes)
 				}
@@ -105,7 +104,7 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 				continue
 			}
 			listed[v[0].IdentityDigest] = string(names[i])
-			b, ok, err := read(v[0], review.MaxDiff)
+			b, ok, err := readBlob(blobs, v[0].ContentDigest, review.MaxDiff)
 			if err != nil {
 				return PromptContext{}, err
 			}
@@ -128,16 +127,6 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		return PromptContext{}, fmt.Errorf("%w: the prompt is over %d bytes", ErrUnbound, MaxPrompt)
 	}
 	return out, nil
-}
-
-// readRef is readBlob's for ref, its bytes not its digest's an
-// ErrBlobDamaged (the host's), never ErrUnbound (the content's).
-func readRef(blobs receipt.Blobs, ref types.Ref, limit int64) ([]byte, bool, error) {
-	b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
-	if err == nil && b == nil {
-		err = fmt.Errorf("%w: blob %s", ErrBlobDamaged, ref.ContentDigest)
-	}
-	return b, ok, err
 }
 
 // roundOf is the round an input named findings-<n> or candidate-<n> is of
