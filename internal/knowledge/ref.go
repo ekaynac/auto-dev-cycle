@@ -185,7 +185,7 @@ func identityDigest(r types.Ref) (types.Digest, error) {
 func IdentityApartFromLineage(r types.Ref) (types.Digest, error) {
 	c := canonical(r)
 	c.Lineage = []string{}
-	return digestOf(identity{c.Type, c.ID, c.Revision, c.Scope, c.Lineage, c.Restrictions, c.ContentDigest})
+	return identityDigest(c)
 }
 
 // CheckRef reports whether r is a checked ref: a valid records/ref document,
