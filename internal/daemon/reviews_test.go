@@ -601,6 +601,22 @@ func TestTheReviewsGateRequirement(t *testing.T) {
 			t.Errorf("%s: the gate's result served the review", name)
 		}
 	}
+	for name, c := range map[string]struct { // a refusal, so the review waits (Opus 22a-6a′ M1, L4)
+		edit   func(*types.GateMeasured, *types.ProjectProfile)
+		reason vocab.Reason
+	}{
+		"an image the project no longer pins": {func(m *types.GateMeasured, _ *types.ProjectProfile) {
+			m.Image.Pinned = "localhost/adc/other@sha256:" + strings.Repeat("e", 64)
+		}, vocab.ReasonInstrumentChanged},
+		"a baseline of another base": {func(m *types.GateMeasured, _ *types.ProjectProfile) {
+			m.BaseTree = "git:" + types.GitID(strings.Repeat("f", 40))
+		}, vocab.ReasonEvidenceInapplicable},
+	} {
+		var refused *receipt.Refusal
+		if err := serves(c.edit); !errors.As(err, &refused) || refused.Reason != c.reason {
+			t.Errorf("%s: %v, want a %s refusal", name, err, c.reason)
+		}
+	}
 	t.Run("another tree", func(t *testing.T) {
 		rw.w.view(func(tx *eventstore.Tx) error {
 			g, _ := graph.ViewOf(tx, gateNode)
@@ -664,10 +680,96 @@ func TestAMeasurementIsTheGatesOwn(t *testing.T) {
 	}{"a second for the gate's result": {nodes[types.NodeKindGate], gateResult}, "the build's result": {nodes[types.NodeKindBuild], buildResult},
 		"the gate's result under the build": {nodes[types.NodeKindBuild], gateResult}, "the plan's result under the gate": {nodes[types.NodeKindGate], planResult}} {
 		if err := rw.w.try(rw.w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
-			ev, err := gate.RecordMeasured(c.node, c.result, gate.Baseline{}, img)
+			ev, err := gate.RecordMeasured(c.node, c.result, gate.Baseline{Base: strings.Repeat("a", 40)}, img)
 			return []eventstore.Event{ev}, err
 		}); err == nil {
 			t.Errorf("%s: recorded", name)
 		}
 	}
+	// Opus 22a-6a′ L3: in the command that records the gate's result, never
+	// later. The fold runs on its own over a re-recording of the gate's
+	// result and a measurement, the measurement's own record dropped first;
+	// the command is rolled back.
+	var recorded json.RawMessage
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		recorded, _, err = tx.Get(graph.ResultProjection, string(gateResult))
+		return err
+	})
+	rollback := errors.New("rolled back")
+	for name, c := range map[string]struct {
+		measuredIn string
+		twice      bool
+		subject    types.NodeID
+		admitted   bool
+	}{"in the result's command": {"cmd_a", false, "", true}, "in a later command": {"cmd_b", false, "", false}, "twice in the result's command": {"cmd_a", true, "", false},
+		"under the build, in the result's command": {"cmd_a", false, nodes[types.NodeKindBuild], false}} {
+		err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if err := tx.Delete(gate.MeasuredProjection, string(gateResult)); err != nil {
+				return nil, err
+			}
+			m, err := gate.RecordMeasured(nodes[types.NodeKindGate], gateResult, gate.Baseline{Base: strings.Repeat("a", 40)}, img)
+			if err != nil {
+				return nil, err
+			}
+			resultCmd, measuredCmd := "cmd_a", c.measuredIn
+			r := eventstore.Event{Kind: graph.ResultRecorded, Subject: string(nodes[types.NodeKindGate]), Command: &resultCmd, Payload: recorded}
+			m.Command = &measuredCmd
+			if c.subject != "" {
+				m.Subject = string(c.subject)
+			}
+			if err := (gate.MeasuredProjector{}).Project(tx, []eventstore.Event{r}); err != nil {
+				return nil, err
+			}
+			measured := []eventstore.Event{m}
+			if c.twice {
+				measured = append(measured, m)
+			}
+			if err := (gate.MeasuredProjector{}).Project(tx, measured); err != nil {
+				return nil, err
+			}
+			return nil, rollback
+		})
+		if admitted := errors.Is(err, rollback); admitted != c.admitted {
+			t.Errorf("a measurement %s: admitted %v (%v)", name, admitted, err)
+		}
+	}
+}
+
+// Opus 22a-6a′ M1: a gate result with no recorded measurement (its record
+// dropped here, as a result recorded before 6a′ would have none) does not
+// serve the review, a receipt_incomplete refusal: the review waits, and the
+// rest of the task evaluates (its requirement completes), with no
+// evaluation refused.
+func TestAnUnmeasuredGateResultServesNoReview(t *testing.T) {
+	rw := gateCompleted(t)
+	gateNode := templateNodes(rw.w, rw.task)[types.NodeKindGate]
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		g, err := graph.ViewOf(tx, gateNode)
+		if err != nil {
+			return nil, err
+		}
+		return nil, tx.Delete(gate.MeasuredProjection, string(*g.State.Result))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	rw.reviewing(stubRegistry(t, nil, nil))
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, &log)
+	rw.passesFor(t, 6, 0)
+	got := reviewNodes(rw)
+	if req, review := got[types.NodeKindReviewRequirement], got[types.NodeKindReview]; req.State.State != types.NodeStateStateCompleted ||
+		review.State.State != types.NodeStateStateWaiting {
+		t.Fatalf("the requirement %s, the review %s (holds %+v)", req.State.State, review.State.State, review.State.Holds)
+	}
+	if log.Len() != 0 {
+		t.Errorf("the loop logged: %s", log.String())
+	}
+	rw.w.view(func(tx *eventstore.Tx) error {
+		_, err := gateNeed(tx, gateNode)
+		var refused *receipt.Refusal
+		if !errors.As(err, &refused) || refused.Reason != vocab.ReasonReceiptIncomplete {
+			t.Errorf("the requirement of an unmeasured gate result: %v", err)
+		}
+		return nil
+	})
 }

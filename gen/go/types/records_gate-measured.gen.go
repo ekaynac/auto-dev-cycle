@@ -11,10 +11,11 @@ type GateMeasuredImage struct {
 	Arch   string `json:"arch"`
 }
 
-// GateMeasured: The payload of gate.measured/v1 (M1 P22a-6a′): what a gate run measured its result against, recorded by the controller in the command recording the gate's result. baseline_digest is the measured baseline's content digest (internal/gate Baseline.Digest), from which the receipt's demand key derives; image is the platform image the run resolved (its pinned reference, its id, OS and architecture). A consumer's gate requirement is derived from it, the accepted tree and the project's gate (internal/daemon needs), never from the receipt it checks. internal/gate admits it only under the gate node, for a gate_result the node recorded in the same history, once per result.
+// GateMeasured: The payload of gate.measured/v1 (M1 P22a-6a′): what a gate run measured its result against, recorded by the controller in the command recording the gate's result. baseline_digest is the measured baseline's content digest (internal/gate Baseline.Digest), from which the receipt's demand key derives; base_tree is the tree that baseline was measured on, which a consumer compares with the build attempt's base; image is the platform image the run resolved (its pinned reference, its id, OS and architecture). A consumer's gate requirement is derived from it, the accepted tree and the project's gate (internal/daemon needs), never from the receipt it checks. internal/gate admits it only under the gate node, for a gate_result the node recorded in the same command, once per result.
 type GateMeasured struct {
 	Node           NodeID            `json:"node"`
 	Result         ResultID          `json:"result"`
 	BaselineDigest Digest            `json:"baseline_digest"`
+	BaseTree       GitID             `json:"base_tree"`
 	Image          GateMeasuredImage `json:"image"`
 }

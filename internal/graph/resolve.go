@@ -46,7 +46,8 @@ import (
 
 // Requirements is a kind's: the receipt an input's result must carry, read in
 // tx (a requirement the log derives: P22a-6a′), or
-// nil when the input carries none.
+// nil when the input carries none. A *receipt.Refusal: none can be derived
+// now, and the input does not serve (Resolve's Missing, with its reason).
 type Requirements func(tx *eventstore.Tx, n types.Node, in types.InputSpec) (*receipt.Requirement, error)
 
 // Missing is an input that did not resolve: a structural wait (Refusal
@@ -92,6 +93,11 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 		req, err := need(tx, rec.Recorded.Node, in)
 		if err == nil && req == nil && carriesConclusions(src.ResultKind) {
 			err = fmt.Errorf("graph: input %s takes a %s and has no receipt requirement", in.Name, src.ResultKind)
+		}
+		var refused *receipt.Refusal
+		if errors.As(err, &refused) { // the requirement cannot be derived now: the input does not serve, a wait (P22a-6a′; Opus M1)
+			missing = append(missing, Missing{Name: in.Name, Refusal: refused, Detail: refused.Detail})
+			continue
 		}
 		if err != nil {
 			return nil, nil, err

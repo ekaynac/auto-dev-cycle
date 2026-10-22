@@ -3,8 +3,9 @@
 package gate
 
 // What a gate run measured its result against (P22a-6a′): the measured
-// baseline's digest and the platform image, recorded by the controller in
-// the command that records the gate's result (gate.measured/v1). A
+// baseline's digest and base tree, and the platform image, recorded by the
+// controller in the command that records the gate's result
+// (gate.measured/v1; the fold admits it in no later command). A
 // consumer's gate requirement is derived from it (the receipt's demand key
 // from the baseline's digest, its instrument and environment from the
 // image), never read off the receipt the requirement checks.
@@ -26,6 +27,7 @@ import (
 const (
 	Measured           = "gate.measured/v1"
 	MeasuredProjection = "gate_measured" // gate result id → its measurement
+	ResultsProjection  = "gate_results"  // gate result id → the command that recorded it
 	measuredSchema     = "records/gate-measured"
 )
 
@@ -39,7 +41,7 @@ func RecordMeasured(node types.NodeID, result types.ResultID, b Baseline, img sa
 	if err != nil {
 		return eventstore.Event{}, err
 	}
-	raw, err := json.Marshal(types.GateMeasured{Node: node, Result: result, BaselineDigest: d,
+	raw, err := json.Marshal(types.GateMeasured{Node: node, Result: result, BaselineDigest: d, BaseTree: types.GitID("git:" + b.Base),
 		Image: types.GateMeasuredImage{Pinned: img.Pinned, ID: img.ID, Os: img.OS, Arch: img.Arch}})
 	if err != nil {
 		return eventstore.Event{}, err
@@ -49,12 +51,20 @@ func RecordMeasured(node types.NodeID, result types.ResultID, b Baseline, img sa
 }
 
 // MeasuredProjector folds the measurements: each under its gate node, of a
-// gate_result that node recorded (in this command or before), once.
+// gate_result that node recorded in the same command, once (Opus 22a-6a′
+// L3). It indexes each gate_result's recording command (ResultsProjection)
+// to tell.
 type MeasuredProjector struct{}
 
 // Project folds evs' measurements.
 func (MeasuredProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ev.Kind == graph.ResultRecorded {
+			if err := indexResult(tx, ev); err != nil {
+				return err
+			}
+			continue
+		}
 		if ev.Kind != Measured {
 			continue
 		}
@@ -80,11 +90,36 @@ func (MeasuredProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) erro
 		if _, dup, err := tx.Get(MeasuredProjection, string(m.Result)); err != nil || dup {
 			return errors.Join(err, fmt.Errorf("gate: result %s's measurement is recorded", m.Result))
 		}
+		var by string
+		raw, ok, err = tx.Get(ResultsProjection, string(m.Result))
+		if err == nil && ok {
+			err = json.Unmarshal(raw, &by)
+		}
+		if err != nil || !ok || ev.Command == nil || *ev.Command != by {
+			return errors.Join(err, fmt.Errorf("gate: result %s's measurement is recorded in the command that records it, never later", m.Result))
+		}
 		if err := tx.Put(MeasuredProjection, string(m.Result), ev.Payload); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// indexResult indexes ev, a result.recorded, by its command when it
+// records a gate_result.
+func indexResult(tx *eventstore.Tx, ev eventstore.Event) error {
+	var rr types.ResultRecorded
+	if err := json.Unmarshal(ev.Payload, &rr); err != nil || rr.Result.Kind != types.ResultKindGateResult {
+		return err
+	}
+	if ev.Command == nil {
+		return fmt.Errorf("gate: result %s is recorded by no command", rr.Result.ID)
+	}
+	raw, err := json.Marshal(*ev.Command)
+	if err != nil {
+		return err
+	}
+	return tx.Put(ResultsProjection, string(rr.Result.ID), raw)
 }
 
 // MeasurementOf is result's measurement, if recorded.

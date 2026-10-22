@@ -405,6 +405,7 @@ var addedSinceRecord = []string{
 	graph.TaskResultProjection, // #348
 	intent.RecordedProjection,  // P22a-5c-2b-1
 	gate.MeasuredProjection,    // P22a-6a′
+	gate.ResultsProjection,     // P22a-6a′ (Opus L3)
 }
 
 // projections are the projections projector folds, each at its fold's

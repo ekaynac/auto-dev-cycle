@@ -81,9 +81,13 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	if err != nil {
 		return nil, err
 	}
+	// Recorded already: the task has a review or requirement node. So only
+	// a task's first gate gets a review: a later round's gate (after a
+	// no-go and a repair) gets none until 22a-6c keys this by gate (a
+	// review whose gate input is this gate). OBLIGATION, Opus 22a-6a′ L2.
 	for _, n := range nodes {
 		if n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement {
-			return nil, nil // recorded already
+			return nil, nil
 		}
 	}
 	// The candidate the gate checked: its chain back, gate → accept → build
