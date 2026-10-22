@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capability"
@@ -54,12 +55,13 @@ func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Ev
 // systemActions are the controller's own commands, the system actor's
 // alone: the bootstrap's, the upload purge, restart recovery's steps and
 // its orphan refusal (P21a, P21b; #226 entry 81), the model calls'
-// intent, count and reconciliation (P12a, P11b, P20; #226 entry 60), and
-// the reconcile loop's actions (P22a-4). None is a registered action a
+// intent, count and reconciliation (P12a, P11b, P20; #226 entry 60), the
+// reconcile loop's actions (P22a-4) and an attempt's end, which the
+// attempt run's host records (P22a-5c-2a). None is a registered action a
 // principal may ask for.
 var systemActions = append([]string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction,
 	recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
-	modelcall.Action, modelcall.Counted, ledger.ReconcileAction, api.CaptureAction, api.CapturePurgeAction}, reconcile.Actions...)
+	modelcall.Action, modelcall.Counted, ledger.ReconcileAction, api.CaptureAction, api.CapturePurgeAction, adapterhost.FinishAction}, reconcile.Actions...)
 
 // reconcileEvery is the reconcile loop's period (P22a-4; lead decision:
 // 5 s, plus a nudge after each applied command).

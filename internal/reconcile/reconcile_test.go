@@ -25,6 +25,7 @@ func TestDecide(t *testing.T) {
 	admitted := Versioned{ID: "tsk_01m3250v9xft08ssr4ygq6g2nq", Version: 11}
 	build := Versioned{ID: "nod_01m3250v9xft08ssr4ygq6g2nr", Version: 13}
 	held := Held{Node: Versioned{ID: "nod_01m3250v9xft08ssr4ygq6g2ns", Version: 15}, Hold: "hld_01m3250v9xft08ssr4ygq6g2nt"}
+	granted := Granted{Node: build, Lease: "lea_01m3250v9xft08ssr4ygq6g2nv"}
 	for name, c := range map[string]struct {
 		s    Snapshot
 		want []Action
@@ -44,6 +45,9 @@ func TestDecide(t *testing.T) {
 		"a build to place, the approval revoked": {Snapshot{Admitted: admitted, Revoked: true, Unplaced: []Versioned{build}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
 		"a plan to record, then a build":         {Snapshot{Admitted: admitted, Plans: []Versioned{plan}, Unplaced: []Versioned{build}, Evaluates: true}, []Action{Plan{Node: plan}, Match{Node: build}}},
 		"a plan to record, evaluation off":       {Snapshot{Admitted: admitted, Plans: []Versioned{plan}}, nil},
+		"a granted build to run":                 {Snapshot{Admitted: admitted, Granted: []Granted{granted}, Evaluates: true}, []Action{Run{Granted: granted}}},
+		"a granted build, evaluation off":        {Snapshot{Admitted: admitted, Granted: []Granted{granted}}, nil},
+		"a granted build, the approval revoked":  {Snapshot{Admitted: admitted, Revoked: true, Granted: []Granted{granted}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
 	} {
 		if got := Decide(c.s); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %#v, want %#v", name, got, c.want)

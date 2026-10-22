@@ -81,3 +81,15 @@ func Ref(d types.Digest, project types.ProjectID, r types.Restriction) (types.Re
 	return knowledge.Seal(types.Ref{Type: types.RefTypeBlob, ID: string(d), Scope: types.RefScope{Project: &project},
 		Lineage: []string{}, Restrictions: []types.Restriction{r}, ContentDigest: d})
 }
+
+// Decode is the brief b holds; b that is no brief (by its schema, every
+// field, nothing else) is an error.
+func Decode(b []byte) (types.PlanBrief, error) {
+	return contract.Decode[types.PlanBrief](record, b)
+}
+
+// Prompt is the builder's prompt from brief p: its title and requirement,
+// nothing else.
+func Prompt(p types.PlanBrief) []byte {
+	return []byte("# " + p.Title + "\n\n" + p.Requirement + "\n")
+}

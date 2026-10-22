@@ -23,7 +23,10 @@
 //     day or a profile change may have reopened (#226 entry 120); and
 //     Unblock each of its nodes held on configuration by the placer itself
 //     (a placement hold, dispatch.PlacementSignal), which a configuration
-//     change may have fixed (Mythos 22a-5c-1 M1). Holds are collected for
+//     change may have fixed (Mythos 22a-5c-1 M1); and Run each of its
+//     placed builds whose lease is granted, no attempt started on it
+//     (P22a-5c-2a: the Runner, adcd's, starts the attempt's run outside any
+//     command and returns; a run already going starts nothing). Holds are collected for
 //     the kinds Match places only (Mythos L1). Nothing else. The Placer (adcd's) makes a Match's card and executor and a
 //     ClearRail's check.
 //   - Executor.Run runs one action in one command. The command expects each
@@ -60,6 +63,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -69,6 +73,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -83,10 +88,13 @@ const (
 	UnblockAction   = "reconcile.unblock"
 	LaunchAction    = "reconcile.launch"
 	PlanAction      = "reconcile.plan"
+	// RunAction is the attempt run's own commands (adcd's runner, P22a-5c-2a):
+	// ending a lease never launched, and the build's completion.
+	RunAction = "reconcile.run"
 )
 
 // Actions are the loop's system actions.
-var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction}
+var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction, RunAction}
 
 // Placed are the node kinds Match places on an executor: a build (P22a-5c-1).
 // A review is the review capability's (22a-6); a plan, accept and gate run
@@ -122,9 +130,12 @@ type Snapshot struct {
 	// USD rail.
 	Unplaced    []Versioned
 	DayHeld     []Held
-	PlacingHeld []Held // held on configuration by the placer
+	PlacingHeld []Held // held on configuration by the placer, or by the runner
 	// Plans are its claimed plan nodes, whose result the controller records.
 	Plans []Versioned
+	// Granted are its claimed nodes of a Placed kind whose live lease is
+	// granted, no attempt started on it: the runs to start.
+	Granted []Granted
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
 	Next Versioned
@@ -137,7 +148,24 @@ type Held struct {
 	Signal string       `json:"signal"`
 }
 
-// Action is one decision: Admit, Abandon, Evaluate, Match or ClearRail.
+// runnerPrefix marks a hold the attempt run raised on a failure before
+// its launch (Opus 22a-5c-2a H2): Unblock clears it, as a placement hold,
+// once the runner's preconditions hold again (the Placer decides).
+const runnerPrefix = "runner: "
+
+// RunnerSignal is the signal of a runner's hold on what.
+func RunnerSignal(what string) string { return runnerPrefix + what }
+
+// IsRunnerSignal: signal is a runner hold's (RunnerSignal).
+func IsRunnerSignal(signal string) bool { return strings.HasPrefix(signal, runnerPrefix) }
+
+// Granted is a placed node and its granted lease.
+type Granted struct {
+	Node  Versioned     `json:"node"`
+	Lease types.LeaseID `json:"lease"`
+}
+
+// Action is one decision: Admit, Abandon, Evaluate, Plan, Match, ClearRail, Unblock or Run.
 type Action interface {
 	action() string
 	subject() string // what the refusal log keys on, with the action
@@ -169,6 +197,16 @@ func (p Plan) subject() string { return p.Node.ID }
 
 func (p Plan) expected() []eventstore.Expectation {
 	return []eventstore.Expectation{{Subject: p.Node.ID, Version: p.Node.Version}}
+}
+
+// Run starts the attempt run of a placed node under its granted lease
+// (Runner): never a command of its own.
+type Run struct{ Granted Granted }
+
+func (Run) action() string    { return RunAction }
+func (r Run) subject() string { return r.Granted.Node.ID }
+func (Run) expected() []eventstore.Expectation {
+	return nil
 }
 
 // ClearRail clears Held's day-rail hold once the day's rail leaves its
@@ -267,6 +305,12 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			if free, err = dispatch.Unplaced(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
 				v.Version, err = tx.SubjectVersion(v.ID)
 				s.Unplaced = append(s.Unplaced, v)
+			} else if err == nil {
+				var l types.LeaseID
+				if l, free, err = granted(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
+					v.Version, err = tx.SubjectVersion(v.ID)
+					s.Granted = append(s.Granted, Granted{Node: v, Lease: l})
+				}
 			}
 		case st == types.NodeStateStateHeld && g.Evaluates && slices.Contains(Placed, n.Node.Kind):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
@@ -276,13 +320,24 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 				switch held := (Held{Node: v, Hold: h.ID, Signal: h.SignalInstance}); {
 				case h.Hold == vocab.HoldBudgetRail && h.SignalInstance == day:
 					s.DayHeld = append(s.DayHeld, held)
-				case h.Hold == vocab.HoldSourceInvalidConfig && dispatch.IsPlacementSignal(h.SignalInstance):
+				case h.Hold == vocab.HoldSourceInvalidConfig && (dispatch.IsPlacementSignal(h.SignalInstance) || IsRunnerSignal(h.SignalInstance)):
 					s.PlacingHeld = append(s.PlacingHeld, held)
 				}
 			}
 		}
 	}
 	return s, err
+}
+
+// granted is unit's live lease when it is granted: placed, no attempt
+// started on it.
+func granted(tx *eventstore.Tx, unit types.UnitID) (types.LeaseID, bool, error) {
+	id, live, err := lease.LiveOn(tx, unit)
+	if err != nil || !live {
+		return "", false, err
+	}
+	l, _, ok, err := lease.LeaseOf(tx, id)
+	return id, ok && l.State == types.LeaseStateGranted, err
 }
 
 // Decide is the actions s calls for, in order.
@@ -309,6 +364,9 @@ func Decide(s Snapshot) []Action {
 		for _, h := range s.PlacingHeld {
 			out = append(out, Unblock{Held: h})
 		}
+		for _, g := range s.Granted {
+			out = append(out, Run{Granted: g})
+		}
 		return out
 	}
 	return nil
@@ -328,6 +386,16 @@ type Executor struct {
 	// Planner records a plan node's result (adcd's); nil leaves a claimed
 	// plan to whoever records it, as before 22a-5c-3: Plan changes nothing.
 	Planner Planner
+	// Runner starts placed nodes' attempt runs (adcd's); nil starts none:
+	// Run changes nothing.
+	Runner Runner
+}
+
+// Runner is what Run does, outside any command.
+type Runner interface {
+	// Run starts node's attempt run under granted lease l and returns:
+	// false when one is already going for node, starting nothing.
+	Run(node types.NodeID, l types.LeaseID) bool
 }
 
 // Planner is what Plan does, in the action's command.
@@ -358,6 +426,12 @@ var errNothing = errors.New("reconcile: the action changes nothing")
 // Run runs a in one command; stale_expected_state when a subject it read
 // has changed.
 func (x Executor) Run(ctx context.Context, a Action) error {
+	if r, ok := a.(Run); ok {
+		if x.Runner == nil || !x.Runner.Run(types.NodeID(r.Granted.Node.ID), r.Granted.Lease) {
+			return errNothing
+		}
+		return nil
+	}
 	cmd, err := ids.New("cmd")
 	input, merr := json.Marshal(a)
 	if err = errors.Join(err, merr); err != nil {

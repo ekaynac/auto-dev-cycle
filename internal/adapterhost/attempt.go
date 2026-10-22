@@ -71,8 +71,15 @@ type Host struct {
 	Store *eventstore.Store
 	Blobs *blobstore.Store
 	Actor string // act_…: the controller actor whose commands record the attempt
-	Root  string // the directory each attempt's exchange root is made in
+	// Principal is Actor's, as the writer's identity hook rechecks it (adcd's
+	// system principal); nil where the store has no such hook.
+	Principal eventstore.Principal
+	Root      string // the directory each attempt's exchange root is made in
 }
+
+// FinishAction is the action of the command that records an attempt's
+// end (its result, refusals, usage and loss).
+const FinishAction = "attempt.finish"
 
 // Spec is one attempt to run: started by its caller, never by the host.
 type Spec struct {
@@ -92,6 +99,10 @@ type Spec struct {
 	// AnyTool allows any described tool: only the M0 harness and the
 	// contract fixtures, whose adapters describe their own tools, set it.
 	AnyTool bool
+	// Path maps a host path the host hands the adapter (its exchange's in/
+	// and out/) to the adapter's view of it; nil is the identity (an adapter
+	// on the host). A contained adapter's starter sets it (22a-5d).
+	Path func(string) string
 }
 
 // Outcome is what an attempt left.
@@ -353,7 +364,11 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 		return types.AdapterRunResult{}, err
 	}
 	p.Attempt, p.FencingToken, p.Inputs = r.spec.Attempt, r.token, []types.AdapterHandle{r.x.prompt}
-	p.Exchange = types.AdapterPrepareParamsExchange{In: r.x.in, Out: r.x.out}
+	view := r.spec.Path
+	if view == nil {
+		view = func(p string) string { return p }
+	}
+	p.Exchange = types.AdapterPrepareParamsExchange{In: view(r.x.in), Out: view(r.x.out)}
 	hook("prepare")
 	o, err := bounded(ctx, b.Handshake, "handshake", func(ctx context.Context) (types.AdapterOutcome, error) { return s.Prepare(ctx, p) })
 	if err != nil {
@@ -467,7 +482,7 @@ func (h *Host) command(ctx context.Context, attempt types.AttemptID, step string
 	if err != nil {
 		return eventstore.Outcome{}, err
 	}
-	return h.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: h.Actor, Action: "attempt." + step, IdempotencyKey: id,
+	return h.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: h.Actor, Principal: h.Principal, Action: "attempt." + step, IdempotencyKey: id,
 		Input: []byte(`{"attempt":"` + string(attempt) + `","step":"` + step + `"}`)}, decide)
 }
 
