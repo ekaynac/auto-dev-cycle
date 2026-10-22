@@ -88,6 +88,20 @@ func (w *workspace) Keep() error {
 	return errors.Join(os.WriteFile(filepath.Join(w.run.Dir, keptName), []byte(w.attempt), 0o600), os.RemoveAll(w.clone))
 }
 
+// emptyWorkspace is a reviewer attempt's workspace (P22a-6c): a fresh,
+// empty run directory, its base the empty tree, no clone (a reviewer has no
+// tool to read one; contract 09 mounts it read-only).
+func emptyWorkspace(host sandbox.Host, attempt types.AttemptID) (*workspace, error) {
+	if err := ids.Check(string(attempt), "att"); err != nil {
+		return nil, err
+	}
+	run, err := host.NewAttempt()
+	if err != nil {
+		return nil, err
+	}
+	return &workspace{run: run, Base: types.GitID("git:" + emptyTree), attempt: attempt}, nil
+}
+
 // openWorkspace makes attempt's workspace from p's repository, cloned
 // under clones (the controller's own directory, outside the sandbox root),
 // at pin when it is set.

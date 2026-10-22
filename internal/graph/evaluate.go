@@ -382,12 +382,7 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 	if errors.As(err, &notIndependent) {
 		// The other goals go on; the node waits for an independent reviewer
 		// (06 rule 3), probed by M1's registry.
-		id, ierr := ids.New("hld")
-		if ierr != nil {
-			return ierr
-		}
-		evs, err = Raise(e.tx, rec.Recorded.Node.ID, types.NodeHold{ID: types.HoldID(id), Hold: "reviewer_unavailable",
-			SignalInstance: notIndependent.SignalInstance(), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+		evs, err = HoldNotIndependent(e.tx, rec.Recorded.Node.ID, notIndependent)
 	} else if errors.As(err, &taken) {
 		holder, herr := loadNode(e.tx, taken.Node)
 		if herr != nil || holder.State.State != types.NodeStateStateCompleted {
