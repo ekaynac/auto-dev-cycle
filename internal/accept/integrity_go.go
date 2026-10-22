@@ -610,12 +610,22 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if st, ok := t.(*ast.StarExpr); ok {
 						t = st.X
 					}
+					emb := ident(t) // an embedded field's name: T of testing.T, TT of a local alias
+					if sel, ok := t.(*ast.SelectorExpr); ok {
+						emb = sel.Sel
+					}
+					if a := s.alias(t); a != nil { // through a local alias (type TT = testing.T), as mentions reads it
+						t = a
+						if st, ok := t.(*ast.StarExpr); ok {
+							t = st.X
+						}
+					}
 					if q := s.qual(t); slices.Contains(testTypes, q) {
 						for _, id := range fl.Names {
 							s.fieldT[info.Defs[id]] = q
 						}
-						if sel, ok := t.(*ast.SelectorExpr); ok && fl.Names == nil {
-							s.fieldT[info.Defs[sel.Sel]] = q
+						if emb != nil && fl.Names == nil {
+							s.fieldT[info.Defs[emb]] = q
 						}
 					}
 				}

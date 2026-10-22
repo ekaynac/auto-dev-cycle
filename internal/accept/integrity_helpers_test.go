@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -304,6 +305,53 @@ func (o own) check() {
 }
 
 func TestOwn(t *testing.T) { own{t}.check() }
+
+func hop(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("hop")
+	}
+	if Add(2, 2) != 4 {
+		t.Fatal("hop2")
+	}
+}
+
+func hopWrap(t *testing.T) { hop(t) }
+
+var hopVar = hopWrap
+
+func TestHop(t *testing.T) { t.Run("a", hopVar) }
+
+func rec(t *testing.T, n int) {
+	if Add(1, 2) != 3 {
+		t.Fatal("rec")
+	}
+	if n > 0 {
+		rec(t, n-1)
+	}
+}
+
+type TT = testing.T
+
+type asuite struct{ t *TT }
+
+func (s asuite) check() {
+	if Add(1, 2) != 3 {
+		s.t.Fatal("alias")
+	}
+}
+
+type aemb struct{ *TT }
+
+func (e *aemb) check() {
+	if Add(1, 2) != 3 {
+		e.Fatal("aemb")
+	}
+}
+
+func TestAlias2(t *testing.T) {
+	asuite{t}.check()
+	(&aemb{t}).check()
+}
 `
 
 // TestIntegrityHelpers (P14d-w1, #226 entries 122, 129): a function of
@@ -372,6 +420,15 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a helper renamed weaker, a t.Run name":                       {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renRun(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"run\")\n\t}\n}\n", "func renRun2(t *testing.T) {}\n", "t.Run(\"a\", renRun)", "t.Run(\"a\", renRun2)", "\trenRun(t)\n", "\trenRun2(t)\n").Replace(moreFile)}, "pkg:pkg.renRun a helper renamed or replaced, weaker (1 → 0)"},
 		"a helper renamed weaker, a direct call":                      {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renTwo(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"two\")\n\t}\n", "func renOne(t *testing.T) {\n", "renTwo(t) }", "renOne(t) }").Replace(moreFile)}, "pkg:pkg.renTwo a helper renamed or replaced, weaker (2 → 1)"},
 		"a helper inlined beside an existing one and deleted (clean)": {in("pkg/more_test.go", moreFile, inner2Base, inner2Head), ""},
+		// Opus #376 r2 H1: a rename two hops down, its callers renamed too:
+		// unverifiable, not followed further.
+		"a helper renamed weaker two hops down, behind a var": {in("pkg/more_test.go", moreFile, "func hop(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"hop\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"hop2\")\n\t}\n}\n\nfunc hopWrap(t *testing.T) { hop(t) }\n\nvar hopVar = hopWrap\n", "func hop2(t *testing.T) {}\n\nfunc hopWrap2(t *testing.T) { hop2(t) }\n\nvar hopVar = hopWrap2\n"), "pkg:pkg.hop unverifiable: a helper's callers renamed or removed too: review it"},
+		// Stated false block: an unused helper that calls itself, deleted (its
+		// name used, by itself: unverifiable).
+		"an unused recursive helper deleted (stated false block)": {in("pkg/more_test.go", moreFile, "func rec(t *testing.T, n int) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"rec\")\n\t}\n\tif n > 0 {\n\t\trec(t, n-1)\n\t}\n}\n", ""), "pkg:pkg.rec unverifiable: a helper's callers renamed or removed too: review it"},
+		// Opus #376 r2 L2: a field typed through a local alias.
+		"an alias-typed field's assertion removed":     {in("pkg/more_test.go", moreFile, "\t\ts.t.Fatal(\"alias\")\n", "\t\t_ = s\n"), "pkg:pkg.asuite.check " + weakened + " (1 → 0)"},
+		"an alias-typed embedding's assertion removed": {in("pkg/more_test.go", moreFile, "\t\te.Fatal(\"aemb\")\n", "\t\t_ = e\n"), "pkg:pkg.aemb.check " + weakened + " (1 → 0)"},
 		// Opus #376 M2: a var's whole value, a table of closures.
 		"a table of closures weakened": {in("pkg/more_test.go", moreFile, "\t\tt.Fatal(\"one\")\n", "\t\t_ = t\n"), "pkg:pkg.table " + weakened + " (1 → 0)"},
 		// Opus #376 M1: a testing value through a field or an embedding.
@@ -506,6 +563,76 @@ func TestIntegrityHelpersDeterministic(t *testing.T) {
 			first = got
 		} else if !slices.Equal(got, first) {
 			t.Errorf("run %d differs from run 0: %q, %q", run, got, first)
+		}
+	}
+}
+
+// TestIntegrityHelpersRenameWork (Opus #376 r2 H2): the rename rule's work
+// is charged and linear: n helpers, each renamed, every one called by one
+// test, charge about four times as much at 4n, by a deterministic count.
+func TestIntegrityHelpersRenameWork(t *testing.T) {
+	charged := func(n int) int64 {
+		var b, h strings.Builder
+		b.WriteString("package pkg\n\nimport \"testing\"\n\nfunc TestAll(t *testing.T) {\n")
+		for i := range n {
+			fmt.Fprintf(&b, "\th%d(t)\n", i)
+		}
+		b.WriteString("}\n")
+		base := b.String()
+		for i := range n {
+			fmt.Fprintf(&b, "\nfunc h%d(t *testing.T) { t.Error() }\n", i)
+			fmt.Fprintf(&h, "\nfunc g%d(t *testing.T) { t.Error() }\n", i)
+		}
+		head := strings.ReplaceAll(base, "\th", "\tg") + h.String()
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{"pkg/all_test.go": b.String()})
+			plain(t, src, "add", "--all")
+		})
+		before := caseCharged.Load()
+		v := f.guarded(t, map[string]string{"pkg/all_test.go": head})
+		if finds(v.Blocks, "renamed") || finds(v.Blocks, "unverifiable") {
+			t.Errorf("n=%d: %q", n, whats(v.Blocks))
+		}
+		return caseCharged.Load() - before
+	}
+	small, large := charged(2000), charged(8000)
+	if large > 5*small {
+		t.Errorf("charged %d at n=2000, %d at n=8000: not linear", small, large)
+	}
+}
+
+// TestIntegrityHelpersRenameCharge: the rename rule charges each reference
+// it reads, the base's once and each referrer's head references once
+// (memoized), and a union's; past the bound, the removed helper is
+// unverifiable.
+func TestIntegrityHelpersRenameCharge(t *testing.T) {
+	old := maxCaseWork
+	t.Cleanup(func() { maxCaseWork = old })
+	fs := func(test bool, live int, refs ...string) []fnStat {
+		return []fnStat{{live: live, test: test, plat: "p", short: "x", refs: refs}}
+	}
+	add := func(bs *[]Block, k, w string) { *bs = append(*bs, Block{Path: k, What: w}) }
+	for _, c := range []struct {
+		name   string
+		b, a   map[string][]fnStat
+		bound  int
+		charge int
+		block  string
+	}{
+		{"one referrer", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 1 << 30, 2, ""},
+		{"two referrers, a union", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 6, "a helper renamed or replaced, weaker (2 → 1)"},
+		{"two referrers, kept whole", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 2), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 6, ""},
+		{"past the bound", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 1, 2, "unverifiable: test helpers' renames past the guard's work bound"},
+	} {
+		maxCaseWork = c.bound
+		r := &run{ctx: context.Background()}
+		r.compareHelpers(add, pkgFacts{helpers: c.b}, pkgFacts{helpers: c.a})
+		if r.caseWork != c.charge {
+			t.Errorf("%s: charged %d, want %d", c.name, r.caseWork, c.charge)
+		}
+		if got := whats(r.blocks); c.block == "" && len(got) > 0 || c.block != "" && !finds(r.blocks, c.block) {
+			t.Errorf("%s: blocks %q, want %q", c.name, got, c.block)
 		}
 	}
 }

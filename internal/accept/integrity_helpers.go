@@ -197,20 +197,52 @@ func liveDead(sts []fnStat) (live, dead int) {
 
 // compareHelpers blocks a function of the test files whose own live
 // assertions the head reduced, or that the head removed while its name is
-// still used, or renamed or replaced by weaker new functions; a test whose
-// own assertions the head made dead. A clause kept live because it is
-// fallen into warns.
-func compareHelpers(add func(*[]Block, string, string), blocks, warnings *[]Block, b, a pkgFacts) {
-	referrers := map[string][]string{} // the base's: who refers to each function
+// still used, or renamed or replaced by weaker new functions, or whose
+// callers went too (unverifiable); a test whose own assertions the head
+// made dead. A clause kept live because it is fallen into warns. Every
+// reference it reads is charged to the case layer's bound (Opus #376 r2
+// H2); past it, or cancelled, a removed helper is unverifiable.
+func (r *run) compareHelpers(add func(*[]Block, string, string), b, a pkgFacts) {
+	over := func() bool { return r.caseWork > maxCaseWork || r.ctx.Err() != nil }
+	charge := func(n int) bool {
+		r.caseWork += n
+		caseCharged.Add(int64(n))
+		return !over()
+	}
+	referrers := map[string][]string{} // the base's: who else refers to each function
 	for _, k := range keys(b.helpers) {
 		for _, st := range b.helpers[k] {
 			for _, c := range st.refs {
-				if r := referrers[c]; len(r) == 0 || r[len(r)-1] != k {
-					referrers[c] = append(r, k)
+				if rs := referrers[c]; c != k && charge(1) && (len(rs) == 0 || rs[len(rs)-1] != k) {
+					referrers[c] = append(rs, k)
 				}
 			}
 		}
 	}
+	type news struct {
+		fns  []string // the new functions (absent at the base) a referrer refers to at the head
+		live int      // their live assertions, each once
+	}
+	memo := map[string]*news{} // per referrer, computed once
+	newsOf := func(ref string) *news {
+		if m := memo[ref]; m != nil {
+			return m
+		}
+		m, seen := &news{}, map[string]bool{}
+		for _, st := range a.helpers[ref] {
+			for _, c := range st.refs {
+				_, at := a.helpers[c]
+				if _, before := b.helpers[c]; charge(1) && at && !before && !seen[c] {
+					seen[c], m.fns = true, append(m.fns, c)
+					l, _ := liveDead(a.helpers[c])
+					m.live += l
+				}
+			}
+		}
+		memo[ref] = m
+		return m
+	}
+	seen := map[string]string{} // c → the removed function it was last counted for: one map, shared
 	for _, k := range keys(b.helpers) {
 		bs := b.helpers[k]
 		bl, bd := liveDead(bs)
@@ -218,46 +250,51 @@ func compareHelpers(add func(*[]Block, string, string), blocks, warnings *[]Bloc
 		switch {
 		case !ok && (bs[0].test || bl == 0):
 		case !ok && a.names[bs[0].plat+" "+bs[0].short]:
-			add(blocks, k, "a helper with assertions removed while still used")
+			add(&r.blocks, k, "a helper with assertions removed while still used")
+		case !ok && over(): // the referrers, or a referrer's new functions, not all read
+			add(&r.blocks, k, "unverifiable: test helpers' renames past the guard's work bound")
 		case !ok:
-			if n, news := replaced(referrers[k], b, a); news && n < bl {
-				add(blocks, k, fmt.Sprintf("a helper renamed or replaced, weaker (%d → %d)", bl, n))
+			live := slices.DeleteFunc(slices.Clone(referrers[k]), func(ref string) bool { return a.helpers[ref] == nil })
+			switch {
+			case len(live) == 0 && (len(referrers[k]) > 0 || b.names[bs[0].plat+" "+bs[0].short]): // Opus #376 r2 H1: not followed further
+				add(&r.blocks, k, "unverifiable: a helper's callers renamed or removed too: review it")
+				continue
+			case len(live) == 0:
+				continue // unused: deleted
+			}
+			n, found := newsOf(live[0]).live, len(newsOf(live[0]).fns) > 0
+			if len(live) > 1 { // a union: each new function once
+				n = 0
+				for _, ref := range live {
+					for _, c := range newsOf(ref).fns {
+						if charge(1) && seen[c] != k {
+							seen[c], found = k, true
+							l, _ := liveDead(a.helpers[c])
+							n += l
+						}
+					}
+				}
+			}
+			switch {
+			case over():
+				add(&r.blocks, k, "unverifiable: test helpers' renames past the guard's work bound")
+			case found && n < bl:
+				add(&r.blocks, k, fmt.Sprintf("a helper renamed or replaced, weaker (%d → %d)", bl, n))
 			}
 		case bs[0].test:
 			if al, ad := liveDead(as); ad > bd && al < bl {
-				add(blocks, k, fmt.Sprintf("a test's assertions made dead (%d → %d live)", bl, al))
+				add(&r.blocks, k, fmt.Sprintf("a test's assertions made dead (%d → %d live)", bl, al))
 			}
 		default:
 			if al, _ := liveDead(as); al < bl {
-				add(blocks, k, fmt.Sprintf("a helper's assertions weakened (%d → %d)", bl, al))
+				add(&r.blocks, k, fmt.Sprintf("a helper's assertions weakened (%d → %d)", bl, al))
 			}
 		}
 	}
 	fell := func(sts []fnStat) bool { return slices.ContainsFunc(sts, func(st fnStat) bool { return st.fell }) }
 	for _, k := range keys(a.helpers) {
 		if fell(a.helpers[k]) && !fell(b.helpers[k]) {
-			add(warnings, k, "a switch clause never selected but fallen into, kept live: review it")
+			add(&r.warnings, k, "a switch clause never selected but fallen into, kept live: review it")
 		}
 	}
-}
-
-// replaced is the live assertions of the new functions (absent at the
-// base) that a removed function's referrers, those still declared, refer
-// to at the head, each counted once; news, whether there is any (Opus #376
-// H1: a helper renamed while weakened).
-func replaced(referrers []string, b, a pkgFacts) (n int, news bool) {
-	seen := map[string]bool{}
-	for _, r := range referrers {
-		for _, st := range a.helpers[r] {
-			for _, c := range st.refs {
-				_, at := a.helpers[c]
-				if _, before := b.helpers[c]; at && !before && !seen[c] {
-					seen[c], news = true, true
-					l, _ := liveDead(a.helpers[c])
-					n += l
-				}
-			}
-		}
-	}
-	return n, news
 }
