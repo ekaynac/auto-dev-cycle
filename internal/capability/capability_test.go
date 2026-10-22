@@ -147,6 +147,15 @@ func TestTable(t *testing.T) {
 	if launch.Active() || !slices.Equal(launch.Missing(), want) {
 		t.Errorf("launch: missing %v", launch.Missing())
 	}
+	// Opus #409 L1: I6's bits are its model_call half; the merge
+	// capabilities stay inactive on P20's merge half, their Pending, while
+	// it is open.
+	for _, name := range []string{"merge-local", "merge-github"} {
+		c, _ := Of(name)
+		if c.Active() || !slices.ContainsFunc(c.Pending, func(p string) bool { return strings.HasPrefix(p, "P20's merge half") }) {
+			t.Errorf("%s: active %v, pending %v", name, c.Active(), c.Pending)
+		}
+	}
 }
 
 // requiredBy is the inventory summary's "Required by" column, row for row

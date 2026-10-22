@@ -101,7 +101,7 @@ var kept = map[Row]bool{
 	{"I4", Admission}: true, {"I4", Fold}: true, {"I4", Consumption}: true, {"I4", Effect}: true,
 	{"I5", Fold}: true, {"I5", Consumption}: true, {"I5", Effect}: true, // P22a-6d; Admission is launch's activation's (Opus 22a-6d L1)
 
-	{"I6", Admission}: true, {"I6", Fold}: true, {"I6", Consumption}: true, {"I6", Effect}: true, // K1 (launch's kept bits)
+	{"I6", Admission}: true, {"I6", Fold}: true, {"I6", Consumption}: true, {"I6", Effect}: true, // K1: the model_call half; merge's half (P20's) is gated by merge-local's and merge-github's Pending (Opus #409 L1)
 	{"I7", Admission}: true, {"I7", Fold}: true, {"I7", Consumption}: true, {"I7", Effect}: true, // P22a-6d
 	{"I8", Admission}: true, {"I8", Fold}: true, {"I8", Consumption}: true, {"I8", Effect}: true, // K1
 	{"I9", Admission}: true, {"I9", Fold}: true, {"I9", Consumption}: true, {"I9", Effect}: true, // K1
