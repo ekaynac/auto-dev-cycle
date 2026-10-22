@@ -34,6 +34,15 @@ import (
 //   - Each test file's declarations are read in one pass, each node charged
 //     to the case layer's bound (r.caseWork) before it is read; past it, or
 //     cancelled, the file is unverifiable.
+//
+// Residuals (P14d-w2): a helper renamed while weakened; assertions on a
+// field or an embedded testing value, or on a testing value of a type
+// parameter ([T testing.TB]); assertions under a default clause never
+// selected; totals across calls; testify's. False blocks (main accepts
+// them): a body extracted into a new helper; an unused helper weakened; a
+// helper moved whole, under its name, into a package (non-test) file, or
+// between pkg and its external pkg_test; a value derived from t (main's
+// tval) whose Error method call is removed.
 
 // fnStat is one declaration's own direct assertions on one platform: live,
 // and dead (under branches never taken); the name a use of it spells (a
