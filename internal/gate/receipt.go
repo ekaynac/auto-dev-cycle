@@ -234,7 +234,20 @@ func (v Verdict) Report() ([]byte, error) {
 	for _, p := range slices.Sorted(maps.Keys(pkgs)) {
 		blocking = append(blocking, reportFinding{Package: id(p), Outcome: pkgs[p]})
 	}
-	truncated := max(0, len(blocking)-maxReported)
+	// At most maxReported findings, within the bytes MaxReportBytes leaves
+	// them encoded (json escapes '<' as 6 bytes: a candidate's test names
+	// may be all '<'; Opus 22a-6b M2): the rest counted.
+	kept, size := 0, 0
+	for ; kept < len(blocking) && kept < maxReported; kept++ {
+		b, err := json.Marshal(blocking[kept])
+		if err != nil {
+			return nil, err
+		}
+		if size += len(b) + 1; size > MaxReportBytes-reportRoom {
+			break
+		}
+	}
+	truncated := len(blocking) - kept
 	var passed, skipped int
 	for _, x := range v.Results.Results {
 		passed, skipped = passed+b2i(x.Outcome == results.Pass), skipped+b2i(x.Outcome == results.Skip)
@@ -294,9 +307,13 @@ type reportFinding struct {
 	Outcome results.Outcome `json:"outcome"`
 }
 
-// maxReportBytes bounds a report CheckReport reads: maxReported findings
-// of two ids, with room for the rest.
-const maxReportBytes = 2*maxReported*(2*maxID+64) + 64<<10
+// MaxReportBytes bounds a report CheckReport reads, and a reader of a
+// report reads: maxReported findings of two ids, with reportRoom for the
+// rest; Report keeps its encoded findings within it.
+const (
+	MaxReportBytes = 2*maxReported*(2*maxID+64) + reportRoom
+	reportRoom     = 64 << 10
+)
 
 // MaxDetail bounds a gate receipt's free text a reviewer may take (Opus
 // #321 r2 M2; Mythos #348 M1): its detail and its predicates', its
@@ -316,8 +333,8 @@ func CheckReport(b []byte) error {
 	var r report
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
-	if len(b) > maxReportBytes {
-		return fmt.Errorf("%w: a gate report of over %d bytes", ErrSpec, maxReportBytes)
+	if len(b) > MaxReportBytes {
+		return fmt.Errorf("%w: a gate report of over %d bytes", ErrSpec, MaxReportBytes)
 	}
 	if err := dec.Decode(&r); err != nil || r.Schema != reportSchema || len(r.Blocking) > maxReported || len(r.ChargeLinks) != 0 {
 		return fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)

@@ -44,7 +44,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -273,16 +272,12 @@ func (p Projector) prompt(rendered graph.Rendered) ([]byte, error) {
 	if len(rendered.Included) != 1 {
 		return nil, fmt.Errorf("%w: a build renders one brief, not %d refs", ErrUnbound, len(rendered.Included))
 	}
-	rc, err := p.Env.Blobs.Open(string(rendered.Included[0].ContentDigest))
-	if err != nil {
+	b, ok, err := readBlob(p.Env.Blobs, rendered.Included[0].ContentDigest, MaxBrief)
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	b, err := io.ReadAll(io.LimitReader(rc, MaxBrief+1))
-	if err = errors.Join(err, rc.Close()); err != nil {
-		return nil, err
-	}
-	if len(b) > MaxBrief {
-		return nil, fmt.Errorf("%w: the brief is over %d bytes", ErrUnbound, MaxBrief)
+	case !ok:
+		return nil, fmt.Errorf("%w: the brief is over %d bytes, or not its digest's", ErrUnbound, MaxBrief)
 	}
 	pb, err := brief.Decode(b)
 	if err != nil {

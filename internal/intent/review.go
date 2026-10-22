@@ -9,8 +9,11 @@ package intent
 //   - plan: the task's brief, its title and requirement (brief.Prompt) the
 //     prompt's task;
 //   - patch: the build's diff, the prompt's candidate change, read to at
-//     most review.MaxDiff+1 bytes (Prompt refuses a longer one);
-//   - gate: the gate's result, its receipt and its report. Only the
+//     most review.MaxDiff+1 bytes (Prompt refuses a longer one; 22a-6c
+//     records a verdict for a candidate whose context cannot be built:
+//     Opus 22a-6b M2);
+//   - gate: the gate's result, its receipt and its report, matched by
+//     type, read at the gate's own bound (gate.MaxReportBytes). Only the
 //     report's verdict and counts are rendered (gate.SummaryOf, its bytes
 //     checked as gate.CheckReport checks them), never an id (#321 L7): the
 //     receipt is in the context (graph.Context renders the result whole)
@@ -18,15 +21,14 @@ package intent
 //   - required: the review's requirement, which holds no ref.
 //
 // Included are the brief, the patch and the report, each at its blob's
-// size; any other shape of claim, or a context graph.Context renders
+// size (for a reviewer, an included item's bytes are its blob's, not what
+// it renders into: a builder's is its prompt's; Opus 22a-6b L1, stated); any other shape of claim, or a context graph.Context renders
 // otherwise, is refused.
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -62,7 +64,10 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 	var whole []types.Ref // the context as graph.Context renders it
 	var in review.PromptInput
 	include := func(ref types.Ref, limit int64) ([]byte, error) {
-		b, err := readAtMost(blobs, ref.ContentDigest, limit)
+		b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
+		if err == nil && !ok {
+			err = fmt.Errorf("%w: blob %s is over %d bytes or holds other bytes", ErrUnbound, ref.ContentDigest, limit)
+		}
 		out.Included, out.Bytes[ref.IdentityDigest] = append(out.Included, ref), int64(len(b))
 		return b, err
 	}
@@ -97,8 +102,10 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 				return ReviewContext{}, err
 			}
 			in.Diff = string(b)
-		case k == types.ResultKindGateResult && len(v) == 2 && v[0].Type == types.RefTypeReceipt && v[1].Type == types.RefTypeBlob:
-			b, err := include(v[1], maxSafeBytes)
+		case k == types.ResultKindGateResult && len(v) == 2 && v[0].Type != v[1].Type && slices.ContainsFunc(v, isReceipt) &&
+			slices.ContainsFunc(v, func(r types.Ref) bool { return r.Type == types.RefTypeBlob }):
+			rcpt := v[slices.IndexFunc(v, isReceipt)] // by type, in either order (graph.GateShape; Opus 22a-6b L2)
+			b, err := include(v[1-slices.IndexFunc(v, isReceipt)], gate.MaxReportBytes)
 			if err != nil {
 				return ReviewContext{}, err
 			}
@@ -107,7 +114,7 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 				return ReviewContext{}, err
 			}
 			in.Gate = review.Gate{Passed: s.Passed, Failed: s.Failed, Skipped: s.Skipped, Green: s.Green}
-			out.Omitted = append(out.Omitted, types.ManifestIntentOmittedItem{Ref: v[0], Reason: types.ManifestIntentOmittedItemReasonPolicy})
+			out.Omitted = append(out.Omitted, types.ManifestIntentOmittedItem{Ref: rcpt, Reason: types.ManifestIntentOmittedItemReasonPolicy})
 		case k == types.ResultKindReviewRequirement && len(v) == 0:
 		default:
 			return ReviewContext{}, fmt.Errorf("%w: review %s's input %s is a %s of %d refs, not what a review renders", ErrUnbound, node, c.Name, k, len(v))
@@ -122,27 +129,10 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 	return out, nil
 }
 
+// isReceipt is whether r is a receipt.
+func isReceipt(r types.Ref) bool { return r.Type == types.RefTypeReceipt }
+
 // sameRefs is whether a and b name the same refs, in order.
 func sameRefs(a, b []types.Ref) bool {
 	return slices.EqualFunc(a, b, func(x, y types.Ref) bool { return x.IdentityDigest == y.IdentityDigest })
-}
-
-// readAtMost is blob d's bytes, read to at most limit+1 bytes: over limit
-// is an error, as are bytes that are not d's content.
-func readAtMost(blobs receipt.Blobs, d types.Digest, limit int64) ([]byte, error) {
-	rc, err := blobs.Open(string(d))
-	if err != nil {
-		return nil, err
-	}
-	b, err := io.ReadAll(io.LimitReader(rc, limit+1))
-	if err = errors.Join(err, rc.Close()); err != nil {
-		return nil, err
-	}
-	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("%w: blob %s is over %d bytes", ErrUnbound, d, limit)
-	}
-	if sum := sha256.Sum256(b); types.Digest(fmt.Sprintf("sha256:%x", sum)) != d {
-		return nil, fmt.Errorf("%w: blob %s holds other bytes", ErrUnbound, d)
-	}
-	return b, nil
 }

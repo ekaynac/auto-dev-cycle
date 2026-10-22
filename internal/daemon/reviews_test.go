@@ -812,3 +812,24 @@ func TestARefusedGateReceiptHoldsTheReviewWithItsReason(t *testing.T) {
 		t.Errorf("the loop logged: %s", log.String())
 	}
 }
+
+// Opus 22a-6b M1: the evaluator clears only the awaiting_receipt holds it
+// raised (graph.ReceiptWait): another's, on evidence:rcp_x (as graph.Retry
+// raises one), stays held while the review's inputs would serve.
+func TestAnotherReceiptWaitIsNotTheEvaluators(t *testing.T) {
+	rw := gateCompleted(t)
+	rw.reviewing(stubRegistry(t, nil, nil))
+	rw.passesFor(t, 1, 0)
+	review := reviewNodes(rw)[types.NodeKindReview].Node.ID
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Raise(tx, review, types.NodeHold{ID: types.HoldID(newID(t, "hld")), Hold: vocab.HoldAwaitingReceipt, SignalInstance: "evidence:rcp_x",
+			Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rw.passesFor(t, 6, 0)
+	v := reviewNodes(rw)[types.NodeKindReview]
+	if v.State.State != types.NodeStateStateHeld || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != "evidence:rcp_x" {
+		t.Fatalf("the review: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+}
