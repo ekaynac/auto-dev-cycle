@@ -3,6 +3,7 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"strings"
@@ -85,9 +86,13 @@ func (d Dispatcher) footprint(executor types.ExecutorID, e types.RegistryExecuto
 }
 
 // Configured: no configuration refuses card on executor now (Mythos
-// 22a-5c-1 M1): the placement checks pass, a direct API's footprint is
-// admissible, and a priced executor is under USD rails. What clears a
-// placement hold the configuration raised; the rails' room is Match's.
+// 22a-5c-1 M1): the placement checks pass (re-derived from the registry
+// and roster now, what a launch's "placement changed since the grant"
+// compares: a new Match records them again), a credentialed destination's
+// credential is held (a launch's other source_invalid_config miss; #226
+// entry 156), a direct API's footprint is admissible, and a priced
+// executor is under USD rails. What clears a placement hold the
+// configuration raised; the rails' room is Match's.
 func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.ExecutorID) (bool, error) {
 	_, roster, err := graph.Units{}.Roster(tx, graph.UnitOf(card.Node), d.Registry)
 	if err != nil {
@@ -97,6 +102,9 @@ func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.Exec
 		return false, nil
 	}
 	e, _ := d.Registry.Executor(executor)
+	if held, err := d.credentialHeld(e); err != nil || !held {
+		return false, err
+	}
 	if e.Destination.Kind == types.RegistryDestinationKindLocalEndpoint {
 		return true, nil
 	}
@@ -108,6 +116,24 @@ func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.Exec
 	}
 	b, err := d.budget(tx, card)
 	return err == nil && !b.unrailed, err
+}
+
+// credentialBound bounds the credential check Configured makes, in the
+// writer's command, as the launch's readiness (Observe) does outside it.
+const credentialBound = 5 * time.Second
+
+// credentialHeld: e's destination needs no credential, or the gateway
+// holds it now. No gateway holds none.
+func (d Dispatcher) credentialHeld(e types.RegistryExecutor) (bool, error) {
+	if e.CredentialRef == nil {
+		return true, nil
+	}
+	if d.Credentials == nil {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), credentialBound)
+	defer cancel()
+	return d.Credentials.Holds(ctx, e.Destination.ID, *e.CredentialRef)
 }
 
 // RoomToday: the day's USD rail leaves card's node at least one turn on

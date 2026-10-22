@@ -677,10 +677,11 @@ var runnerImage = reconcile.RunnerSignal("image")
 const imageResolveBound = 5 * time.Second
 
 // imageReady reports whether node's project's one pinned image resolves
-// now: its image hold clears (Opus 22a-5c-2b-3 M1).
-func (r *runner) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) {
+// now: its image hold clears, the runner's (Opus 22a-5c-2b-3 M1) and the
+// launch's wrong_owner one (#226 entry 156). No image store resolves none.
+func (p placer) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) {
 	v, err := graph.ViewOf(tx, node)
-	if err != nil {
+	if err != nil || p.d.Images == nil {
 		return false, err
 	}
 	prof, ok, err := authority.ProjectProfile(tx, v.Project)
@@ -689,7 +690,7 @@ func (r *runner) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) 
 	}
 	for _, ref := range prof.Toolchain.Images {
 		ctx, cancel := context.WithTimeout(context.Background(), imageResolveBound)
-		_, rerr := r.place.d.Images.Resolve(ctx, string(ref))
+		_, rerr := p.d.Images.Resolve(ctx, string(ref))
 		cancel()
 		return rerr == nil, nil
 	}
@@ -735,7 +736,7 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 	case signal == runnerFailed:
 		return false, nil
 	case signal == runnerImage:
-		return r.imageReady(tx, node)
+		return r.place.imageReady(tx, node)
 	}
 	if _, err := fmt.Sscanf(signal, reconcile.RunnerSignal("retry %d until %s"), &n, &until); err == nil {
 		t, err := time.Parse(time.RFC3339Nano, until)

@@ -91,18 +91,27 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 }
 
 // Unblocked clears node's placement hold (hold, on signal: the loop passes
-// only placement and runner holds, dispatch.IsPlacementSignal and
-// reconcile.IsRunnerSignal) once the configuration admits node again: its
-// card is made, and no placement check, footprint or missing USD rail
-// refuses it (Dispatcher.Configured); nothing otherwise (Mythos 22a-5c-1
-// M1). Match then places it, or raises the rail it reaches. A runner's hold
-// clears once the runner's preconditions hold again (ready).
+// only placement, runner and launch image holds, dispatch.IsPlacementSignal,
+// reconcile.IsRunnerSignal and dispatch.IsImageSignal) once the
+// configuration admits node again: its card is made, and no placement
+// check, missing credential, footprint or missing USD rail refuses it
+// (Dispatcher.Configured); nothing otherwise (Mythos 22a-5c-1 M1). Match
+// then places it, or raises the rail it reaches. A runner's hold clears
+// once the runner's preconditions hold again (ready); a launch's image
+// hold once the project's pinned image resolves (imageReady; #226 entry
+// 156).
 func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error) {
-	if reconcile.IsRunnerSignal(signal) { // the runner's hold (Opus 22a-5c-2a H2)
-		if p.ready == nil {
+	var ready func(*eventstore.Tx, types.NodeID, string) (bool, error)
+	switch {
+	case dispatch.IsImageSignal(signal): // a launch's wrong_owner hold
+		ready = func(tx *eventstore.Tx, node types.NodeID, _ string) (bool, error) { return p.imageReady(tx, node) }
+	case reconcile.IsRunnerSignal(signal): // the runner's hold (Opus 22a-5c-2a H2)
+		if ready = p.ready; ready == nil {
 			return nil, nil
 		}
-		ok, err := p.ready(tx, node, signal)
+	}
+	if ready != nil {
+		ok, err := ready(tx, node, signal)
 		if err != nil || !ok {
 			return nil, err
 		}

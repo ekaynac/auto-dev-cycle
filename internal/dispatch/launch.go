@@ -162,8 +162,8 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		// The budget check was the USD rails' at the grant, with the spend then
 		// (P17b); the grant reserved it, so the launch does not re-read it.
 		if was != now[i] && was.name != "budget" {
-			return held("placement "+was.name+" changed since the grant",
-				"source_invalid_config", "executor "+string(l.Executor), types.OwnerOperator, nil)
+			return held("placement "+was.name+" changed since the grant", // Configured re-derives it (#226 entry 156)
+				"source_invalid_config", PlacementSignal("executor "+string(l.Executor)), types.OwnerOperator, nil)
 		}
 	}
 	e, _ := d.Registry.Executor(l.Executor) // registered: the placement still holds
@@ -172,8 +172,8 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		return held("the pinned image is not present at its digest", "wrong_owner", imageSignal(card.Image), types.OwnerNamedOwner, &ref)
 	}
 	credential := func() (*Miss, error) {
-		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config",
-			"destination "+string(e.Destination.ID), types.OwnerOperator, nil)
+		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config", // Configured checks it (#226 entry 156)
+			PlacementSignal("destination "+string(e.Destination.ID)), types.OwnerOperator, nil)
 	}
 	switch {
 	case d.Images == nil:
@@ -217,17 +217,25 @@ func (d Dispatcher) attemptRail(tx *eventstore.Tx, node types.NodeID) (*Miss, er
 // maxSignal is records/node-hold's bound on a signal instance.
 const maxSignal = 1024
 
+// imagePrefix starts imageSignal's signals.
+const imagePrefix = "image "
+
 // imageSignal names image in a hold's signal: "image <ref>", or, for a
 // reference too long for the signal (the pinned-image schema has no
 // bound), "image sha256:<hex of the ref>", so a miss always fits and
 // releases its lease.
 func imageSignal(image string) string {
-	if s := "image " + image; len(s) <= maxSignal {
+	if s := imagePrefix + image; len(s) <= maxSignal {
 		return s
 	}
 	sum := sha256.Sum256([]byte(image))
-	return "image sha256:" + hex.EncodeToString(sum[:])
+	return imagePrefix + "sha256:" + hex.EncodeToString(sum[:])
 }
+
+// IsImageSignal: signal is a launch's wrong_owner hold on its pinned image
+// (imageSignal), which the reconcile loop clears once the project's pinned
+// image resolves (#226 entry 156).
+func IsImageSignal(signal string) bool { return strings.HasPrefix(signal, imagePrefix) }
 
 // reason fits a refusal's reason to lease-event's 1024 bytes.
 func reason(s string) string {

@@ -78,7 +78,7 @@ func placingWith(t *testing.T, perDay *int64, edit func(map[string]any)) (*seede
 		}
 		return c, nil
 	}
-	pl := placer{d: dispatch.Dispatcher{Registry: reg, Rails: rails}}
+	pl := placer{d: dispatch.Dispatcher{Registry: reg, Rails: rails, Credentials: fakeCredentials{}}} // adcd's gateway holds the stub's credential
 	if perDay == nil {
 		pl.d.Rails = nil
 	}
@@ -248,6 +248,94 @@ func TestTheLaunchStartsTheMatchedBuild(t *testing.T) {
 			}
 			if _, live := leaseOn(w, build); live {
 				t.Error("the refused launch left its lease live")
+			}
+		})
+	}
+}
+
+// noCredentials holds no credential.
+type noCredentials struct{}
+
+func (noCredentials) Holds(context.Context, types.Slug, types.Slug) (bool, error) { return false, nil }
+
+// repriced is the stub registry with the builder's input price raised: its
+// registration, so the placement a lease recorded under the fixture's,
+// differs, while every check still passes.
+func repriced(t *testing.T) registry.Registry {
+	t.Helper()
+	const config = "../../fixtures/m1/config/"
+	var gs []types.ResourceGroup
+	raw, err := os.ReadFile(config + "groups.json")
+	if err == nil {
+		err = json.Unmarshal(raw, &gs)
+	}
+	doc, lerr := registry.Load(config + "registry-stub.json")
+	if err = errors.Join(err, lerr); err != nil {
+		t.Fatal(err)
+	}
+	p := *doc.Executors[0].Price
+	p.InputUsdMicrosPerMtok++
+	doc.Executors[0].Price = &p
+	reg, err := registry.New(doc, gs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+// #226 entry 156: every hold a launch miss raises has a clearing path. The
+// build, placed, misses its launch: the lease is released and the node held
+// on what is missing. While it is missing, the loop's passes leave the hold;
+// a restart with it fixed clears the hold, and the build is placed again.
+// The changed placement's fix is the new registry itself: the miss's own
+// restart, under which the next Match records the placement again.
+func TestALaunchMissHoldClearsOnceFixed(t *testing.T) {
+	for name, c := range map[string]struct {
+		miss, fix    func(*placer)
+		hold, signal string
+	}{
+		"the credential missing": {func(p *placer) { p.d.Credentials = noCredentials{} }, func(p *placer) { p.d.Credentials = fakeCredentials{} },
+			"source_invalid_config", dispatch.PlacementSignal("destination stub")},
+		"the image missing": {func(p *placer) { p.d.Images = fakeImages{false} }, func(p *placer) { p.d.Images = fakeImages{true} },
+			"wrong_owner", "image localhost/adc/py-mini@sha256:" + strings.Repeat("0", 64)}, // py-mini.json's pinned image
+		"the placement changed since the grant": {func(p *placer) { p.d.Registry = repriced(t) }, nil,
+			"source_invalid_config", dispatch.PlacementSignal("executor " + string(stubBuilder))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			perDay := int64(1 << 50)
+			w, sys, x, pl := placing(t, &perDay)
+			pl.d.Images, pl.d.Credentials = fakeImages{true}, fakeCredentials{}
+			x.Placer = pl
+			_, task := readyTask(t, w, sys)
+			l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+			passes(t, l)
+			build := templateNodes(w, task)[types.NodeKindBuild]
+			passes(t, l)
+			first, live := leaseOn(w, build)
+			if !live {
+				t.Fatal("the build was not placed")
+			}
+			c.miss(&pl)
+			if miss, err := pl.launch(context.Background(), w.s, x.System, build, first.ID, types.AttemptID(newID(t, "att")), emptyBase, nil); err != nil || miss == nil {
+				t.Fatalf("the launch: miss %v, %v", miss, err)
+			}
+			st := nodesOf(w, task)[types.NodeKindBuild].State
+			if len(st.Holds) != 1 || st.Holds[0].Hold != c.hold || st.Holds[0].SignalInstance != c.signal {
+				t.Fatalf("the missed launch held %+v; want %s on %q", st.Holds, c.hold, c.signal)
+			}
+			if c.fix != nil {
+				x.Placer = pl
+				passes(t, reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard))
+				if st := nodesOf(w, task)[types.NodeKindBuild].State; len(st.Holds) != 1 {
+					t.Fatalf("the hold cleared while its cause stood: %+v", st)
+				}
+				c.fix(&pl)
+			}
+			x.Placer = pl
+			passes(t, reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)) // a restart with the fix
+			again, live := leaseOn(w, build)
+			if st := nodesOf(w, task)[types.NodeKindBuild].State; st.State != types.NodeStateStateClaimed || len(st.Holds) != 0 || !live || again.ID == first.ID {
+				t.Fatalf("after the fix: node %+v, lease %s (live %v; the first %s)", st, again.ID, live, first.ID)
 			}
 		})
 	}

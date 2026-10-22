@@ -22,8 +22,10 @@
 //     ClearRail each of its nodes held on the day's USD rail, which a new
 //     day or a profile change may have reopened (#226 entry 120); and
 //     Unblock each of its nodes held on configuration by the placer itself
-//     (a placement hold, dispatch.PlacementSignal), which a configuration
-//     change may have fixed (Mythos 22a-5c-1 M1); and Run each of its
+//     (a placement hold, dispatch.PlacementSignal, the launch's among them)
+//     or on the launch's missing image (wrong_owner, dispatch.IsImageSignal;
+//     #226 entry 156), which a configuration change may have fixed (Mythos
+//     22a-5c-1 M1); and Run each of its
 //     placed builds whose lease is granted, no attempt started on it
 //     (P22a-5c-2a: the Runner, adcd's, starts the attempt's run outside any
 //     command and returns; a run already going starts nothing); and Accept
@@ -147,7 +149,7 @@ type Snapshot struct {
 	// USD rail.
 	Unplaced    []Versioned
 	DayHeld     []Held
-	PlacingHeld []Held // held on configuration by the placer, or by the runner
+	PlacingHeld []Held // held on configuration by the placer, by the runner, or on the launch's image
 	// Plans are its claimed plan nodes, whose result the controller records.
 	Plans []Versioned
 	// Granted are its claimed nodes of a Placed kind whose live lease is
@@ -462,7 +464,8 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 				switch held := (Held{Node: v, Hold: h.ID, Signal: h.SignalInstance}); {
 				case h.Hold == vocab.HoldBudgetRail && h.SignalInstance == day:
 					s.DayHeld = append(s.DayHeld, held)
-				case h.Hold == vocab.HoldSourceInvalidConfig && (dispatch.IsPlacementSignal(h.SignalInstance) || IsRunnerSignal(h.SignalInstance)):
+				case h.Hold == vocab.HoldSourceInvalidConfig && (dispatch.IsPlacementSignal(h.SignalInstance) || IsRunnerSignal(h.SignalInstance)),
+					h.Hold == vocab.HoldWrongOwner && dispatch.IsImageSignal(h.SignalInstance):
 					s.PlacingHeld = append(s.PlacingHeld, held)
 				}
 			}

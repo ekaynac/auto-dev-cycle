@@ -407,8 +407,8 @@ func TestLaunchReadiness(t *testing.T) {
 		d            Dispatcher
 		hold, signal string
 	}{
-		"the gateway holds no credential": {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(false)}, "source_invalid_config", "destination stub"},
-		"no gateway (P11 unbuilt)":        {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, "source_invalid_config", "destination stub"},
+		"the gateway holds no credential": {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(false)}, "source_invalid_config", PlacementSignal("destination stub")},
+		"no gateway (P11 unbuilt)":        {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, "source_invalid_config", PlacementSignal("destination stub")},
 		"the image is absent":             {Dispatcher{Rails: unrailed, Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}, "wrong_owner", "image " + image},
 		"no image store":                  {Dispatcher{Rails: unrailed, Registry: reg, Credentials: creds(true)}, "wrong_owner", "image " + image},
 	} {
@@ -463,7 +463,7 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 				e.missed(id, n, miss, "reviewer_unavailable", "registry:"+string(c.exe))
 				return
 			}
-			e.missed(id, n, miss, "source_invalid_config", "executor "+string(c.exe))
+			e.missed(id, n, miss, "source_invalid_config", PlacementSignal("executor "+string(c.exe)))
 		})
 	}
 	// A node held between the grant and the launch is no longer claimed:
@@ -509,7 +509,7 @@ func TestLaunchFailsClosed(t *testing.T) {
 		ready        func(Card) Readiness
 		hold, signal string
 	}{
-		"no dispatcher, no readiness":      {Dispatcher{}, func(Card) Readiness { return Readiness{} }, "source_invalid_config", "executor " + string(builder)},
+		"no dispatcher, no readiness":      {Dispatcher{}, func(Card) Readiness { return Readiness{} }, "source_invalid_config", PlacementSignal("executor " + string(builder))},
 		"no readiness":                     {full, func(Card) Readiness { return Readiness{} }, "", ""},
 		"a readiness for another executor": {full, func(c Card) Readiness { return full.Observe(ctx, c, reviewer) }, "", ""},
 		"a readiness for another image":    {full, func(c Card) Readiness { c.Image += "x"; return full.Observe(ctx, c, builder) }, "", ""},
@@ -520,7 +520,7 @@ func TestLaunchFailsClosed(t *testing.T) {
 			return Dispatcher{Rails: unrailed, Registry: cred, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
 		}, "", ""},
 		"no image store, a good readiness": {Dispatcher{Rails: unrailed, Registry: reg, Credentials: creds(true)}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "wrong_owner", "image " + image},
-		"no gateway, a good readiness":     {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", "destination stub"},
+		"no gateway, a good readiness":     {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", PlacementSignal("destination stub")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := open(t, gs)
