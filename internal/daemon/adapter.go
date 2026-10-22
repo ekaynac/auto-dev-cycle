@@ -44,9 +44,10 @@ type AdapterRun struct {
 // which the run calls once the exchange is prepared and before the launch
 // (nil: nothing to do), and whose failure starts nothing; and Within, which
 // the run calls once the session has ended and its process was seen gone
-// (nil: nothing to check): an error is a run that left more than its disk
-// bound, or what cannot be measured (Opus #393 M2), never one that may
-// still run.
+// (nil: nothing to check): sandbox.ErrLeft without sandbox.ErrUnmeasured
+// is a run that left more than its disk bound, or what it made
+// unmeasurable (Opus #393 M2); any other error keeps the attempt (Opus
+// 22a-5d-4 L1, Mythos chunk 2 L3).
 type AdapterSession struct {
 	Config session.Config
 	Path   func(string) string
@@ -57,6 +58,10 @@ type AdapterSession struct {
 // The adapter in a prepared image (scripts/prepare-go-image.sh): the
 // release's lib/adc closure under imageLib, run by its pinned Node.
 const imageLib = "/opt/adc/lib"
+
+// resolveTimeout bounds Start's resolution of the pinned image (podman
+// image inspect): a client stuck on its storage's lock is the host's fault.
+var resolveTimeout = 30 * time.Second
 
 var containerArgv = []string{imageLib + "/node/bin/node", imageLib + "/adapters/http-chat/src/main.ts"}
 
@@ -93,7 +98,12 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 	if run.Box == nil || run.Deadline <= 0 || run.Box.Workspace() != run.Workspace {
 		return AdapterSession{}, errors.New("daemon: an adapter container needs its attempt's directory, its workspace and a positive deadline")
 	}
-	img, err := c.Box.Resolve(ctx, run.Image)
+	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	img, err := c.Box.Resolve(rctx, run.Image)
+	if rctx.Err() != nil && ctx.Err() == nil { // the host's podman hung, not the profile's fault (Mythos chunk 2 L1)
+		err = fmt.Errorf("%w: the image could not be resolved within %s: %w", errHost, resolveTimeout, err)
+	}
+	cancel()
 	if err == nil {
 		err = img.CheckManifest(run.Toolchain, run.Workspace, run.Lockfiles)
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,13 +28,18 @@ type fakeBox struct {
 	resolve  error
 	interact error
 	within   error // what the run's Within returns
+	hang     bool  // Resolve waits for its context's end
 	refs     []string
 	runs     []sandbox.Run
 	attempts []string
 }
 
-func (b *fakeBox) Resolve(_ context.Context, ref string) (sandbox.Image, error) {
+func (b *fakeBox) Resolve(ctx context.Context, ref string) (sandbox.Image, error) {
 	b.refs = append(b.refs, ref)
+	if b.hang {
+		<-ctx.Done()
+		return sandbox.Image{}, fmt.Errorf("%w: %w", sandbox.ErrImage, ctx.Err())
+	}
 	return b.img, b.resolve
 }
 
@@ -199,7 +205,18 @@ func TestTheAdapterContainerRefuses(t *testing.T) {
 			t.Errorf("%s: configFault %v for %v", name, configFault(err), err)
 		}
 	}
+	// Mythos chunk 2 L1: a podman stuck on the image's inspect is cut, as
+	// the host's fault (retried), never the profile's.
+	old := resolveTimeout
+	resolveTimeout = 10 * time.Millisecond
 	w := newContainerWorld(t)
+	w.box.hang = true
+	_, err := w.c.Start(context.Background(), w.run)
+	resolveTimeout = old
+	if !errors.Is(err, errHost) || configFault(err) || len(w.box.runs) != 0 {
+		t.Errorf("a hung inspect: %v (a configuration fault: %v)", err, configFault(err))
+	}
+	w = newContainerWorld(t)
 	w.box.interact = sandbox.ErrSpec
 	s, err := w.c.Start(context.Background(), w.run)
 	if err != nil {

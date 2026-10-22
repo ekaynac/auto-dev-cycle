@@ -292,27 +292,30 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return errors.Join(err, endGateway(), r.abandon(ctx, pl, node, aid, vocab.ReasonAmbiguousState, "the launch's command failed after it applied")) // no adapter ran (Mythos L3)
 	}
 	launched = true
-	r.mu.Lock()
-	delete(r.tries, node)
-	r.mu.Unlock()
 	out, runErr := runPrepared(p, ctx)
 	unverified = errors.Is(out.Session, session.ErrUnverified) || errors.Is(runErr, session.ErrUnverified)
 	endErr := endGateway()
 	if errors.Is(out.Session, session.ErrSpawn) {
 		// The adapter never ran (its container's client could not start):
 		// the host's fault, never the candidate's. Nothing ran, so nothing
-		// is diffed or kept, and the build is matched again (Opus 22a-5d-4 M1).
+		// is diffed or kept (Opus 22a-5d-4 M1). It is a try like a failure
+		// before the launch: held on the runner's bounded retry, the
+		// maxTries-th in a row "failed" (Mythos chunk 2 M1).
 		unverified = false
 		r.logf("adcd: the attempt %s: %v", aid, out.Session)
-		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed, "the adapter could not be started on the controller's host"))
+		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed, "the adapter could not be started on the controller's host"),
+			r.holdAfter(ctx, node, out.Session))
 	}
+	r.mu.Lock()
+	delete(r.tries, node) // the adapter ran: the failures in a row end
+	r.mu.Unlock()
 	over := "" // the run left more than its disk bound (Opus #393 M2): its output, torn down, never kept
 	switch werr := out.Checked; {
 	case unverified, werr == nil:
-	case errors.Is(werr, sandbox.ErrLeft): // measured before the exchange was removed (Opus 22a-5d-4 L2)
-		over = "the run left more than its disk bound, or what cannot be measured"
+	case errors.Is(werr, sandbox.ErrLeft) && !errors.Is(werr, sandbox.ErrUnmeasured): // measured before the exchange was removed (Opus 22a-5d-4 L2)
+		over = "the run left more than its disk bound, or what it made unmeasurable"
 		r.logf("adcd: the attempt %s: %v", aid, werr)
-	default: // anything else is a container that may still run: kept, never diffed (L1)
+	default: // anything else, an unmeasurable tree not the candidate's (Mythos chunk 2 L3) or a container that may still run, is kept, never diffed (L1)
 		unverified = true
 		r.logf("adcd: the attempt %s: %v", aid, werr)
 	}
@@ -564,15 +567,42 @@ func (r *runner) endLease(ctx context.Context, l types.LeaseID, node types.NodeI
 	}); err != nil {
 		return err
 	}
-	if tries > 0 { // the hold applied: the try is spent (r3 L4)
-		r.mu.Lock()
-		if r.tries == nil {
-			r.tries = map[types.NodeID]int{}
-		}
-		r.tries[node] = tries
-		r.mu.Unlock()
-	}
+	r.spent(node, tries)
 	return nil
+}
+
+// spent records node's retry count once its hold applied (r3 L4); 0: none.
+func (r *runner) spent(node types.NodeID, tries int) {
+	if tries == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tries == nil {
+		r.tries = map[types.NodeID]int{}
+	}
+	r.tries[node] = tries
+}
+
+// holdAfter raises the runner's hold on node for cause after its attempt
+// ended (an adapter that never spawned, a host fault after the launch:
+// Mythos chunk 2 M1), as endLease does before it: the same bounded retry,
+// so the maxTries-th failure in a row ends "failed".
+func (r *runner) holdAfter(ctx context.Context, node types.NodeID, cause error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	dirs := r.dirsReady()
+	tries := 0
+	err := r.command(ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		held, n, err := r.holdOn(tx, node, dirs, cause)
+		tries = n
+		return held, err
+	})
+	if err == nil {
+		r.spent(node, tries)
+	}
+	return err
 }
 
 // logf writes one line to the runner's log, if any.

@@ -54,8 +54,9 @@ type Interactive struct {
 	Remove func(ctx context.Context) error
 	// Within checks, once Remove has succeeded and before the exchange is
 	// removed (adapterhost's Spec.Check), that what the run left, its
-	// exchange's out/ included (at most MaxOutEntries entries), is within
-	// Limits.Disk: ErrLeft when it is not, or cannot be measured (Opus #393
+	// exchange's out/ included (at most MaxOutEntries less the exchange's other entries), is within
+	// Limits.Disk: ErrLeft when it is not, or cannot be measured, with
+	// ErrUnmeasured when the cause is not the candidate's (Opus #393
 	// M2: a breach is the run's output, not a container that may still run);
 	// ErrSpec alone when Remove has not succeeded.
 	Within func() error
@@ -100,7 +101,11 @@ func (h Host) Interactive(r Run, attempt string) (Interactive, error) {
 		if a.unsafe {
 			return fmt.Errorf("%w: the run's container may still be running", ErrSpec)
 		}
-		return a.within(disk, out)
+		in, err := os.ReadDir(filepath.Join(filepath.Dir(out), "in"))
+		if err != nil {
+			return errors.Join(ErrLeft, ErrUnmeasured, fmt.Errorf("%w: the exchange's in/ cannot be read: %w", ErrSpec, err))
+		}
+		return a.within(disk, maxOutEntries-len(in)-exchangeOwn, out)
 	}
 	return Interactive{Command: append(append([]string{h.Podman}, global...), args...), Env: h.env(), Deadline: r.Limits.Timeout, Remove: remove, Within: within}, nil
 }

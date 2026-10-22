@@ -109,6 +109,14 @@ func TestContainerThatCannotSpawn(t *testing.T) {
 			t.Errorf("removal failing %v, through Open: %v, %d removals", fail, err, rm.calls.Load())
 		}
 	}
+	// Mythos chunk 2 L5: no pipe (the descriptor limit reached): no client
+	// ran either, so the same.
+	pipe = func() (*os.File, *os.File, error) { return nil, nil, errors.New("too many open files") }
+	t.Cleanup(func() { pipe = os.Pipe })
+	rm := &removal{}
+	if _, err := StartContainer(&Container{Command: []string{"/bin/true"}, Remove: rm.remove}, time.Minute); !errors.Is(err, ErrSpawn) || rm.calls.Load() != 1 {
+		t.Errorf("a pipe that fails: %v, %d removals", err, rm.calls.Load())
+	}
 }
 
 // P22a-5d: the client runs as this process's own child, never under

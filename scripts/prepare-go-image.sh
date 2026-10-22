@@ -246,12 +246,16 @@ case "${1:-}" in
     ctx="$(mktemp -d)"
     built=""
     # Once the build has begun, a failure removes NAME, which may hold a
-    # list whose checks failed or were never done (Opus #390 M1).
+    # list whose checks failed or were never done (Opus #390 M1); a build
+    # that failed before it made the list leaves nothing (Mythos chunk 2 L4).
     cleanup() {
-      local rc=$?
+      local rc=$? ex=0
       rm -rf -- "$ctx"
       if ((rc != 0)) && [[ -n "$built" ]]; then
-        if pod manifest rm "$name" >/dev/null; then
+        pod manifest exists "$name" || ex=$?
+        if ((ex == 1)); then
+          printf 'prepare-go-image: %s failed before its list was made: nothing to remove\n' "$name" >&2
+        elif ((ex == 0)) && pod manifest rm "$name" >/dev/null; then
           printf 'prepare-go-image: %s failed and is removed: do not push it\n' "$name" >&2
         else
           printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s\n' "$name" "$name" >&2

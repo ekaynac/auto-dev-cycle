@@ -27,6 +27,13 @@ var ErrSpec = errors.New("sandbox: run refused")
 // cannot be measured (within): what it did, not a refusal to start it.
 var ErrLeft = errors.New("sandbox: the run left more than its bounds")
 
+// ErrUnmeasured marks, with ErrLeft, a tree that cannot be measured for a
+// cause that is not the candidate's (an I/O error, a missing directory, the
+// exchange the release's adapter wrote): no breach is known (Mythos chunk 2
+// L3). What the candidate made unreadable (a permission error under the
+// workspace) stays ErrLeft alone, its own.
+var ErrUnmeasured = errors.New("sandbox: the run's tree cannot be measured")
+
 // Limits bound one run.
 type Limits struct {
 	Memory  int64         // bytes (podman --memory)
@@ -184,7 +191,7 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 	r.Attempt.unsafe = rmErr != nil
 	// What a run left is bounded whatever its outcome: a failed or
 	// timed-out run fills runs/ as well as a clean one.
-	return out, errors.Join(err, run.Err(), rmErr, r.Attempt.within(r.Limits.Disk))
+	return out, errors.Join(err, run.Err(), rmErr, r.Attempt.within(r.Limits.Disk, 0))
 }
 
 // within refuses an attempt that holds more than disk bytes, maxEntries
@@ -192,19 +199,20 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 // directory among them. also are directories the run wrote besides the
 // attempt's (an interactive run's exchange out/, measured before its host
 // removes it), counted against the same bound with it, each within
-// maxOutEntries entries: no more than one cleanup of the host removes
-// (adapterhost.MaxWork; Opus 22a-5d-4 L2).
-func (a *Attempt) within(disk int64, also ...string) error {
+// outLimit entries.
+func (a *Attempt) within(disk int64, outLimit int, also ...string) error {
 	var size int64
 	var err error
+	at := 0 // the directory err is from: 0 the attempt's
 	for i, dir := range append([]string{a.Dir}, also...) {
+		at = i
 		var root *os.Root
 		if root, err = os.OpenRoot(dir); err != nil {
 			break
 		}
 		limit := maxEntries
 		if i > 0 {
-			limit = maxOutEntries
+			limit = outLimit
 		}
 		err = walk(root.FS(), ".", limit, func(p string, d fs.DirEntry) error {
 			info, err := d.Info()
@@ -230,12 +238,24 @@ func (a *Attempt) within(disk int64, also ...string) error {
 		}
 	}
 	if err != nil && !errors.Is(err, ErrSpec) {
+		if !candidates(at, err) {
+			err = errors.Join(ErrUnmeasured, err)
+		}
 		err = fmt.Errorf("%w: the run left what cannot be measured: %w", ErrSpec, err)
 	}
 	if err != nil {
 		err = errors.Join(ErrLeft, err)
 	}
 	return err
+}
+
+// candidates reports whether err, from walking directory at of within's,
+// is one the candidate made: a permission error below the attempt's
+// workspace, which the candidate writes (a 000 directory in /workspace).
+func candidates(at int, err error) bool {
+	var pe *fs.PathError
+	return at == 0 && errors.Is(err, fs.ErrPermission) && errors.As(err, &pe) &&
+		(pe.Path == "workspace" || strings.HasPrefix(pe.Path, "workspace/"))
 }
 
 // walk calls fn for every entry below dir, depth first, reading each
@@ -326,13 +346,19 @@ func (a *Attempt) CopyTree(dst string, maxBytes int64) error {
 
 var maxEntries, maxDepth, maxBatch = 100_000, 64, 1024 // var: tests lower them
 
-// MaxOutEntries bounds the entries an interactive run may leave in its
-// exchange's out/: what one cleanup of the adapter's host removes
-// (adapterhost.MaxWork, which a daemon row pins equal), so a run's output
-// is never left half removed. maxOutEntries is it; tests lower it.
+// MaxOutEntries is what one cleanup of an adapter's host visits over its
+// whole exchange (adapterhost.MaxWork, which a daemon row pins equal). An
+// interactive run's out/ may hold that less its exchange's other entries
+// (the root's exchangeOwn and in/'s), so the exchange is never left half
+// removed (Opus 22a-5d-4 L2; Mythos chunk 2 L2). maxOutEntries is it;
+// tests lower it.
 const MaxOutEntries = 1 << 16
 
 var maxOutEntries = MaxOutEntries
+
+// exchangeOwn are the entries of an exchange its cleanup visits besides
+// in/'s and out/'s: the root, in/ and out/ themselves.
+const exchangeOwn = 3
 
 // copy copies src to dst, which must not exist, at most maxBytes,
 // maxEntries entries and maxDepth levels. A run's files are read only

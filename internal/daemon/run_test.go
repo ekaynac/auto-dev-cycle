@@ -702,19 +702,79 @@ func TestAnAdapterThatNeverSpawnedIsTheHosts(t *testing.T) {
 	}
 }
 
+// Mythos chunk 2 M1: a persistent spawn failure (the podman path missing)
+// is held on the runner's bounded retry, counted across the launch: the
+// second in a row is "retry 2 until …". With the round's attempts rail
+// lifted, the maxTries-th spends the retries ("failed"), after which no
+// pass runs the build again; under the default rail (3 attempts a round),
+// the fourth launch is refused first, budget_rail on rail:attempts_per_round.
+func TestSpawnFailuresInARowAreBounded(t *testing.T) {
+	retryBase = time.Millisecond
+	t.Cleanup(func() { retryBase = time.Minute })
+	for _, lifted := range []bool{true, false} {
+		rw := newRunWorld(t, true, builder(nil, false, nil))
+		rw.r.adapters.(*peerStarter).noClient = true
+		if lifted {
+			rails := rw.r.place.d.Rails
+			rw.r.place.d.Rails = func(tx *eventstore.Tx, task types.TaskID) (graph.Caps, error) {
+				c, err := rails(tx, task)
+				c.AttemptsPerRound = 2 * maxTries
+				return c, err
+			}
+		}
+		rw.untilRun(t)
+		if h := rw.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("retry 1 until ")) {
+			t.Fatalf("lifted %v: after one spawn failure: held on %q", lifted, h)
+		}
+		for i := 0; i < 40 && rw.runs.count() < 2; i++ {
+			rw.passesFor(t, 1, 20*time.Millisecond)
+		}
+		if h := rw.heldOn(); rw.runs.count() != 2 || !strings.HasPrefix(h, reconcile.RunnerSignal("retry 2 until ")) {
+			t.Fatalf("lifted %v: after two spawn failures in a row: %d runs, held on %q", lifted, rw.runs.count(), h)
+		}
+		railed := func() bool {
+			for _, h := range nodesOf(rw.w, rw.task)[types.NodeKindBuild].State.Holds {
+				if h.Hold == vocab.HoldBudgetRail && h.SignalInstance == "rail:attempts_per_round" {
+					return true
+				}
+			}
+			return false
+		}
+		done := func() bool { return lifted && rw.heldOn() == runnerFailed || !lifted && railed() }
+		for i := 0; i < 80 && !done(); i++ {
+			rw.passesFor(t, 1, 20*time.Millisecond)
+		}
+		n := rw.runs.count()
+		if !done() || lifted && n != maxTries {
+			t.Fatalf("lifted %v: after the failures: held on %q (rail %v), %d runs", lifted, rw.heldOn(), railed(), n)
+		}
+		rw.passesFor(t, 3, 20*time.Millisecond)
+		if rw.runs.count() != n {
+			t.Errorf("lifted %v: a bounded build ran again: %d runs after %d", lifted, rw.runs.count(), n)
+		}
+	}
+}
+
 // Opus 22a-5d-4 L1: only a breach of the bound (sandbox.ErrLeft) is the
 // run's output; any other Within error is a container that may still run:
 // its tree is never diffed, the result is could_not_run/ambiguous_state,
 // and its attempt directory is kept.
 func TestAnyOtherWithinErrorKeepsTheAttempt(t *testing.T) {
-	rw := newRunWorld(t, true, builder(func(ws string) {
-		_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
-	}, false, nil))
-	rw.r.adapters.(*peerStarter).within = fmt.Errorf("%w: the run's container may still be running", sandbox.ErrSpec)
-	rw.untilRun(t)
-	rw.endedNotRun(t, vocab.ReasonAmbiguousState)
-	if empty(filepath.Join(rw.r.box.Root, "runs")) {
-		t.Error("the attempt directory was torn down")
+	for _, werr := range []error{
+		fmt.Errorf("%w: the run's container may still be running", sandbox.ErrSpec),
+		// Mythos chunk 2 L3: a tree that cannot be measured for a cause
+		// not the candidate's is no known breach.
+		errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured, syscall.EIO),
+	} {
+		rw := newRunWorld(t, true, builder(func(ws string) {
+			_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+		}, false, nil))
+		rw.r.adapters.(*peerStarter).within = werr
+		rw.untilRun(t)
+		rw.endedNotRun(t, vocab.ReasonAmbiguousState)
+		if empty(filepath.Join(rw.r.box.Root, "runs")) {
+			t.Errorf("%v: the attempt directory was torn down", werr)
+		}
 	}
 }
 

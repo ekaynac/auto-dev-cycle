@@ -237,25 +237,55 @@ func TestInteractiveWithinBoundsTheExchange(t *testing.T) {
 	// Spec.Check; Opus 22a-5d-4 L2): a missing out/ cannot be measured.
 	must(t, os.Remove(filepath.Join(r.Exchange, "out", "big")))
 	must(t, it.Within())
+	// out/ holds what one cleanup visits less the exchange's other entries
+	// (the root, in/, out/ and in/'s: here one), exactly (Mythos chunk 2 L2).
 	old := maxOutEntries
-	maxOutEntries = 4
+	maxOutEntries = 8
 	t.Cleanup(func() { maxOutEntries = old })
-	for i := range maxOutEntries + 1 {
+	must(t, os.WriteFile(filepath.Join(r.Exchange, "in", "prompt.md"), nil, 0o600))
+	for i := range maxOutEntries - 1 - exchangeOwn {
 		must(t, os.WriteFile(filepath.Join(r.Exchange, "out", fmt.Sprint(i)), nil, 0o600))
 	}
+	must(t, it.Within())
+	must(t, os.WriteFile(filepath.Join(r.Exchange, "out", "one-more"), nil, 0o600))
 	if err := it.Within(); !errors.Is(err, ErrLeft) {
-		t.Fatalf("an out/ over maxOutEntries entries: %v, want ErrLeft", err)
+		t.Fatalf("an out/ one past the exchange's budget: %v, want ErrLeft", err)
 	}
+	if err := it.Within(); errors.Is(err, ErrUnmeasured) {
+		t.Fatalf("a breach of out/'s entries: %v, not ErrUnmeasured", err)
+	}
+	for i := range maxOutEntries - 1 - exchangeOwn {
+		must(t, os.Remove(filepath.Join(r.Exchange, "out", fmt.Sprint(i))))
+	}
+	must(t, os.Remove(filepath.Join(r.Exchange, "out", "one-more")))
+	must(t, it.Within())
+	// Mythos chunk 2 L3: a tree that cannot be measured is no known breach
+	// (ErrUnmeasured), unless the candidate made it so: a directory it made
+	// unreadable in its workspace is its own (ErrLeft alone).
+	locked := filepath.Join(r.Attempt.Workspace(), "locked")
+	must(t, os.Mkdir(locked, 0))
+	if err := it.Within(); !errors.Is(err, ErrLeft) || errors.Is(err, ErrUnmeasured) {
+		t.Errorf("the candidate's unreadable directory: %v, want ErrLeft alone", err)
+	}
+	must(t, os.Remove(locked))
+	locked = filepath.Join(r.Exchange, "out", "locked")
+	must(t, os.Mkdir(locked, 0))
+	if err := it.Within(); !errors.Is(err, ErrLeft) || !errors.Is(err, ErrUnmeasured) {
+		t.Errorf("an unreadable out/: %v, want ErrUnmeasured", err)
+	}
+	must(t, os.Remove(locked))
 	must(t, os.RemoveAll(r.Exchange))
-	if err := it.Within(); !errors.Is(err, ErrLeft) {
-		t.Fatalf("Within with no out/: %v, want ErrLeft", err)
+	if err := it.Within(); !errors.Is(err, ErrLeft) || !errors.Is(err, ErrUnmeasured) {
+		t.Fatalf("Within with no out/: %v, want ErrUnmeasured", err)
 	}
 	// Opus 22a-5d-4 L5: a missing attempt directory cannot be measured either.
-	must(t, os.MkdirAll(filepath.Join(r.Exchange, "out"), 0o700))
+	for _, d := range []string{"in", "out"} {
+		must(t, os.MkdirAll(filepath.Join(r.Exchange, d), 0o700))
+	}
 	must(t, it.Within())
 	must(t, os.RemoveAll(r.Attempt.Dir))
-	if err := it.Within(); !errors.Is(err, ErrLeft) {
-		t.Fatalf("Within with no attempt directory: %v, want ErrLeft", err)
+	if err := it.Within(); !errors.Is(err, ErrLeft) || !errors.Is(err, ErrUnmeasured) {
+		t.Fatalf("Within with no attempt directory: %v, want ErrUnmeasured", err)
 	}
 }
 
