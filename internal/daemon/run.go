@@ -161,6 +161,9 @@ func (r *runner) start(node types.NodeID, run func() error) bool {
 			r.mu.Unlock()
 		}()
 		err := run()
+		if errors.Is(err, errNotSealed) { // the input's seal not yet recorded: nothing to log, no nudge
+			return
+		}
 		if err != nil && r.log != nil {
 			fmt.Fprintf(r.log, "adcd: the run of %s: %v\n", node, err)
 		}
@@ -782,7 +785,7 @@ func (r *runner) record(ctx context.Context, l types.LeaseID, node types.NodeID,
 		if err != nil {
 			return nil, err
 		}
-		return lease.SealWith(tx, attempt, rev, graph.Units{Tasks: authority.Tasks{}}, r.blobs, diff, ignored, r.system.Actor())
+		return sealWith(tx, attempt, rev, graph.Units{Tasks: authority.Tasks{}}, r.blobs, diff, ignored, r.system.Actor())
 	}
 	var steps []func(*eventstore.Tx) ([]eventstore.Event, error)
 	if submitted {
@@ -824,6 +827,9 @@ func (r *runner) stopped(ctx context.Context, attempt types.AttemptID) (bool, er
 	})
 	return a.StopReason != nil, err
 }
+
+// sealWith is lease.SealWith; a test leaves an attempt unsealed.
+var sealWith = lease.SealWith
 
 // diffBound bounds the controller's diff of one tree.
 const diffBound = 10 * time.Minute
@@ -963,7 +969,13 @@ func (r *runner) command(ctx context.Context, logic func(*eventstore.Tx) ([]even
 	if err != nil {
 		return err
 	}
-	_, err = r.store.SubmitApplied(context.WithoutCancel(ctx), r.system.Command(cmd, reconcile.RunAction, cmd, json.RawMessage(`{}`), nil),
+	return r.commandAs(ctx, types.CommandID(cmd), logic)
+}
+
+// commandAs is command under the id cmd (a gate's receipt names the
+// command that records it).
+func (r *runner) commandAs(ctx context.Context, cmd types.CommandID, logic func(*eventstore.Tx) ([]eventstore.Event, error)) error {
+	_, err := r.store.SubmitApplied(context.WithoutCancel(ctx), r.system.Command(string(cmd), reconcile.RunAction, string(cmd), json.RawMessage(`{}`), nil),
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := logic(tx)
 			if err == nil && len(evs) == 0 && tx.Emitted() == 0 {
