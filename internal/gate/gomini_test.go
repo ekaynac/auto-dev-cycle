@@ -33,9 +33,9 @@ const (
 	// apart from any baseline (podman image inspect; Opus #300 L1).
 	pinnedARM64 = "d1a298571f62cfddb6deaea8eaf43ea32365a52ac6e5ec4e371700931c6e73ae"
 	// goMiniARM64 is the platform image go-mini's own prepared image
-	// (…-go-mini@sha256:ee7758f5…, #226 entry 97) resolves to on
+	// (…-go-mini@sha256:0050a01e…, #226 entry 97, rebuilt with the adapter at 84fe598) resolves to on
 	// linux/arm64 (podman image inspect).
-	goMiniARM64 = "88e9e039a6ba7719b386347388c00292458a81bc44de5f370731c7dea5bfbe6a"
+	goMiniARM64 = "7bef5a20acb114842a4a132fc6a54b3440baead4e3f839b2857091766dc74204"
 )
 
 // recorded: a record's environment names the pin and go-mini's arm64
@@ -45,8 +45,8 @@ func recorded(image, id, pin string) bool { return image == pin && id == goMiniA
 // TestGateGoMiniRecordStale (Opus #330 L1): a record still naming the old
 // pin, or the old platform image, is not go-mini's.
 func TestGateGoMiniRecordStale(t *testing.T) {
-	const pin = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d"
-	old := "ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97"
+	const pin = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:0050a01ec7bd87bb6e7e6bd991be22d323687862a40487d522820dc08e066319"
+	old := "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:ee7758f5af72529c67bc34965bab43dc6dbbff19cc5ae69c315ce1f25f4e113d" // go-mini's pin before the adapter
 	if !recorded(pin, goMiniARM64, pin) || recorded(pin, pinnedARM64, pin) || recorded(old, goMiniARM64, pin) {
 		t.Error("the record's environment check")
 	}
