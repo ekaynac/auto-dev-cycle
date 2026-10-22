@@ -48,6 +48,10 @@ type Config struct {
 	// contained. Only the fixture harness can make one (package inproc,
 	// whose importers a test restricts).
 	InProcess *inproc.Peer
+	// Container, when set, is the adapter in place of Command and Env: a
+	// container the session starts through its runtime's client
+	// (P22a-5d), never under bubblewrap.
+	Container *Container
 }
 
 // Kind is why a call failed or the session ended.
@@ -170,9 +174,14 @@ type Session struct {
 func Open(cfg Config) (*Session, error) {
 	var p *Process
 	var err error
-	if cfg.InProcess != nil {
+	switch {
+	case cfg.InProcess != nil && cfg.Container != nil:
+		err = errors.New("adapterhost: an adapter is in process or in a container, not both")
+	case cfg.InProcess != nil:
 		p, err = startPeer(cfg.InProcess, cfg.Deadline)
-	} else {
+	case cfg.Container != nil:
+		p, err = StartContainer(cfg.Container, cfg.Deadline)
+	default:
 		p, err = Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline})
 	}
 	if err != nil {

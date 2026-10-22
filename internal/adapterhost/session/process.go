@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package session is the core's side of one adapter session
-// (docs/design/m0/09): the adapter process in its PID namespace, bounded by
-// a deadline, with its stdio for the method client.
+// (docs/design/m0/09): the adapter process in its PID namespace, or in a
+// container (Container, P22a-5d), bounded by a deadline, with its stdio for
+// the method client.
 package session
 
 import (
@@ -239,9 +240,10 @@ func verified(initFD int) bool { return initFD >= 0 && awaitExit(initFD) }
 var poll = unix.Poll
 
 // ErrUnverified is Wait's error when the namespace's init was not seen to
-// exit (its pidfd missing or its poll failed): the process tree may still
-// run, and nothing it wrote may be ingested.
-var ErrUnverified = errors.New("adapterhost: the adapter's PID namespace was not seen to empty")
+// exit (its pidfd missing or its poll failed), or a container's removal
+// failed (Container): the process tree may still run, and nothing it wrote
+// may be ingested.
+var ErrUnverified = errors.New("adapterhost: the adapter's process tree was not seen to end")
 
 // openInit is openChild; a test replaces it to simulate a failed acquisition.
 var openInit = openChild
