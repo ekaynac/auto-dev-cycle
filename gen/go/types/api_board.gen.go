@@ -170,8 +170,9 @@ const (
 )
 
 type BoardNodeCard struct {
-	ID    NodeID             `json:"id"`
-	Kind  BoardNodeCardKind  `json:"kind"`
+	ID   NodeID            `json:"id"`
+	Kind BoardNodeCardKind `json:"kind"`
+	// The round of the candidate the node checks: a build's or plan's own round; an accept's, gate's or review's, its candidate build's (a repair's checks are recorded in round 1; graph.CandidateRound).
 	Round int64              `json:"round"`
 	State BoardNodeCardState `json:"state"`
 	// The external waits, one badge per hold.

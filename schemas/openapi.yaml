@@ -1206,6 +1206,7 @@ components:
                 - review
                 - review_requirement
             round:
+              description: 'The round of the candidate the node checks: a build''s or plan''s own round; an accept''s, gate''s or review''s, its candidate build''s (a repair''s checks are recorded in round 1; graph.CandidateRound).'
               type: integer
               minimum: 1
               maximum: 9007199254740991

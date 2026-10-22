@@ -65,6 +65,9 @@ export interface BoardNodeCard {
    */
   id: string;
   kind: "plan" | "build" | "accept" | "gate" | "review" | "review_requirement";
+  /**
+   * The round of the candidate the node checks: a build's or plan's own round; an accept's, gate's or review's, its candidate build's (a repair's checks are recorded in round 1; graph.CandidateRound).
+   */
   round: number;
   state: "waiting" | "runnable" | "held" | "claimed" | "completed" | "superseded";
   /**

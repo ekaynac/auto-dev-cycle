@@ -67,7 +67,7 @@ No other fields are allowed.
 |---|---|---|---|
 | `id` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `review`, `review_requirement` |  |
-| `round` | yes | integer (minimum `1`, maximum `9007199254740991`) |  |
+| `round` | yes | integer (minimum `1`, maximum `9007199254740991`) | The round of the candidate the node checks: a build's or plan's own round; an accept's, gate's or review's, its candidate build's (a repair's checks are recorded in round 1; graph.CandidateRound). |
 | `state` | yes | one of `waiting`, `runnable`, `held`, `claimed`, `completed`, `superseded` |  |
 | `holds` | yes | array of [BoardHoldBadge](#boardholdbadge) | The external waits, one badge per hold. |
 | `waiting` | yes | array of [BoardWaitBadge](#boardwaitbadge) | The structural waits (waiting(input)), one badge per missing input. |
