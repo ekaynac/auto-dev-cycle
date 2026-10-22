@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -40,6 +41,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -47,19 +49,19 @@ import (
 // image, its pin, and the adapter digest the installed release stands for.
 type liveBox struct {
 	h    sandbox.Host
+	env  []string // the test's own home (testguard.HomeEnv), for podmanIn
 	ref  string
 	want string
 }
 
-// podmanIn runs podman over h's private storage, as the sandbox runs it
-// (its global flags and its emptied environment).
-func podmanIn(t *testing.T, h sandbox.Host, args ...string) []byte {
+// podmanIn runs podman over h's private storage, with the sandbox's global
+// flags (its storage and runroot) and the test's own home
+// (testguard.HomeEnv): nothing of the user's Podman is read or written.
+func podmanIn(t *testing.T, h sandbox.Host, env []string, args ...string) []byte {
 	t.Helper()
-	home := filepath.Join(h.Root, "home")
 	global := []string{"--root", filepath.Join(h.Root, "storage"), "--runroot", filepath.Join(h.Root, "r"), "--cgroup-manager=cgroupfs", "--events-backend=none"}
 	cmd := exec.Command(h.Podman, append(global, args...)...)
-	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "XDG_RUNTIME_DIR=" + filepath.Join(h.Root, "xdg"), "XDG_CONFIG_HOME=" + home + "/.config",
-		"XDG_DATA_HOME=" + home + "/.local/share", "XDG_STATE_HOME=" + home + "/.local/state", "XDG_CACHE_HOME=" + home + "/.cache"}
+	cmd.Env = append(slices.Clone(env), "PATH=/usr/bin:/bin")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("podman %v: %v", args, err)
@@ -86,23 +88,24 @@ func newLiveBox(t *testing.T) liveBox {
 		t.Fatal(err)
 	}
 	h := sandbox.Host{Podman: "/usr/bin/podman", Root: root, Home: filepath.Clean(home)}
-	if err := errors.Join(os.Symlink(runs, filepath.Join(root, "runs")), os.MkdirAll(filepath.Join(root, "home"), 0o700),
-		os.MkdirAll(filepath.Join(root, "xdg"), 0o700)); err != nil {
+	if err := os.Symlink(runs, filepath.Join(root, "runs")); err != nil {
 		t.Fatal(err)
 	}
+	env := testguard.HomeEnv(t)
 	t.Cleanup(func() {
-		cmd := exec.Command("/bin/sh", "-c", `"$0" --root "$1/storage" --runroot "$1/r" --cgroup-manager=cgroupfs --events-backend=none system reset --force`, h.Podman, root)
-		cmd.Env = []string{"HOME=" + filepath.Join(root, "home"), "PATH=/usr/bin:/bin", "XDG_RUNTIME_DIR=" + filepath.Join(root, "xdg")}
+		cmd := exec.Command(h.Podman, "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "r"), "--cgroup-manager=cgroupfs",
+			"--events-backend=none", "system", "reset", "--force")
+		cmd.Env = append(slices.Clone(env), "PATH=/usr/bin:/bin")
 		_ = cmd.Run()
 		_ = os.RemoveAll(root)
 		_ = os.RemoveAll(runs)
 	})
-	podmanIn(t, h, "pull", "--quiet", "oci-archive:"+archive)
+	podmanIn(t, h, env, "pull", "--quiet", "oci-archive:"+archive)
 	var imgs []struct{ RepoDigests []string }
-	if err := json.Unmarshal(podmanIn(t, h, "images", "--format", "json"), &imgs); err != nil || len(imgs) != 1 || len(imgs[0].RepoDigests) == 0 {
+	if err := json.Unmarshal(podmanIn(t, h, env, "images", "--format", "json"), &imgs); err != nil || len(imgs) != 1 || len(imgs[0].RepoDigests) == 0 {
 		t.Fatalf("the archive's image: %+v, %v", imgs, err)
 	}
-	b := liveBox{h: h, ref: imgs[0].RepoDigests[0]}
+	b := liveBox{h: h, env: env, ref: imgs[0].RepoDigests[0]}
 	img, err := h.Resolve(context.Background(), b.ref)
 	if err != nil {
 		t.Fatal(err)
@@ -224,9 +227,9 @@ func stubRequests(t *testing.T, log string) int {
 }
 
 // containersIn are the containers Podman lists in h's storage.
-func containersIn(t *testing.T, h sandbox.Host) string {
+func containersIn(t *testing.T, b liveBox) string {
 	t.Helper()
-	return strings.TrimSpace(string(podmanIn(t, h, "ps", "--all", "--format", "{{.Names}}")))
+	return strings.TrimSpace(string(podmanIn(t, b.h, b.env, "ps", "--all", "--format", "{{.Names}}")))
 }
 
 // The I17 effect path, live: the loop places go-mini's build and adcd's
@@ -262,7 +265,7 @@ func TestLiveContainerRunsTheBuild(t *testing.T) {
 			t.Errorf("%s left behind", dir)
 		}
 	}
-	if left := containersIn(t, box.h); left != "" {
+	if left := containersIn(t, box); left != "" {
 		t.Errorf("containers left: %q", left)
 	}
 }
@@ -283,7 +286,7 @@ func TestLiveContainerRefusesAnotherAdapter(t *testing.T) {
 	if n := stubRequests(t, log); n != 0 {
 		t.Errorf("the stub provider saw %d requests", n)
 	}
-	if left := containersIn(t, box.h); left != "" {
+	if left := containersIn(t, box); left != "" {
 		t.Errorf("containers made: %q", left)
 	}
 }
