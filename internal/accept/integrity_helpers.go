@@ -43,11 +43,13 @@ import (
 // parameter ([T testing.TB]); assertions under a default clause never
 // selected; totals across calls; testify's. False blocks (main accepts
 // them): a body extracted into a new helper; an unused helper weakened; a
-// blank initializer moved to another package; a clause reached by
-// fallthrough from any reachable predecessor, read as dead by main's
-// markDead; a helper moved whole, under its name, into a package
-// (non-test) file, or between pkg and its external pkg_test; a value
-// derived from t (main's tval) whose Error method call is removed.
+// blank initializer moved to another package; an all-blank initializer
+// that gains a name (var _, _ = f() → var a, _ = f()), which leaves the
+// blank sum; a clause reached by fallthrough from any reachable
+// predecessor, read as dead by main's markDead; a helper moved whole,
+// under its name, into a package (non-test) file, or between pkg and its
+// external pkg_test; a value derived from t (main's tval) whose Error
+// method call is removed.
 
 // fnStat is one declaration's own direct assertions on one platform: live,
 // and dead (under branches never taken); the name a use of it spells (a

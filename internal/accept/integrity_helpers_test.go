@@ -432,6 +432,12 @@ var pairNamed, _ = registerPair(func(t *testing.T) {
 	}
 })
 
+var _, _ = registerPair(func(t *testing.T) {
+	if Add(9, 1) != 10 {
+		t.Fatal("blank pair")
+	}
+})
+
 var _, pairSecond = registerPair(func(t *testing.T) {
 	if Add(8, 2) != 10 {
 		t.Fatal("second named")
@@ -519,15 +525,18 @@ func TestIntegrityHelpers(t *testing.T) {
 		// Astra #384 H1: a package's blank initializers, one entry, their sum.
 		// Astra #384 r2 H1: a value counted once, however many blank names
 		// share its results; under its named entry, or the blank sum, never both.
-		"register to registerPair, one assertion fewer": {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n", "var _, _ = registerPair(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n})\n"), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
+		"register to registerPair, one assertion fewer": {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n", "var _, _ = registerPair(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n})\n"), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (6 → 5)"},
 		"a named and blank pair's value weakened":       {in("pkg/reg_test.go", regFile, "\t\tt.Fatal(\"named\")\n", "\t\t_ = t\n"), "linux/amd64 pkg:pkg.pairNamed " + weakened + " (1 → 0)"},
 		"a blank and named pair's value weakened":       {in("pkg/reg_test.go", regFile, "\t\tt.Fatal(\"second named\")\n", "\t\t_ = t\n"), "linux/amd64 pkg:pkg.pairSecond " + weakened + " (1 → 0)"},
-		"a named and blank pair made all blank (clean)": {in("pkg/reg_test.go", regFile, "var pairNamed, _ = registerPair(", "var _, _ = registerPair("), ""},
-		"one of a group of blank initializers removed":  {in("pkg/reg_test.go", regFile, "\t\tif Add(5, 0) != 5 {\n\t\t\tt.Fatal(\"g1\")\n\t\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
-		"every blank initializer removed":               {in("pkg/reg_test.go", regFile, regBlanks, ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 0)"},
-		"a blank initializer's assertion removed":       {in("pkg/reg_test.go", regFile, "\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
-		"one of two blank initializers removed":         {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (5 → 4)"},
-		"two blank initializers reordered (clean)":      {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n"), ""},
+		// Astra #384 r3: an all-blank initializer gaining a name leaves the
+		// blank sum: a stated false block.
+		"an all-blank initializer gains a name (stated false block)": {in("pkg/reg_test.go", regFile, "var _, _ = registerPair(func(t *testing.T) {\n\tif Add(9, 1) != 10 {", "var regA, _ = registerPair(func(t *testing.T) {\n\tif Add(9, 1) != 10 {"), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (6 → 5)"},
+		"a named and blank pair made all blank (clean)":              {in("pkg/reg_test.go", regFile, "var pairNamed, _ = registerPair(", "var _, _ = registerPair("), ""},
+		"one of a group of blank initializers removed":               {in("pkg/reg_test.go", regFile, "\t\tif Add(5, 0) != 5 {\n\t\t\tt.Fatal(\"g1\")\n\t\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (6 → 5)"},
+		"every blank initializer removed":                            {in("pkg/reg_test.go", regFile, regBlanks, ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (6 → 0)"},
+		"a blank initializer's assertion removed":                    {in("pkg/reg_test.go", regFile, "\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (6 → 5)"},
+		"one of two blank initializers removed":                      {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", ""), "linux/amd64 pkg:pkg.var _ blank package initializers' assertions fell (6 → 5)"},
+		"two blank initializers reordered (clean)":                   {in("pkg/reg_test.go", regFile, "var _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n", "var _ = register(func(t *testing.T) {\n\tif Add(3, 2) != 5 {\n\t\tt.Fatal(\"third\")\n\t}\n})\n\nvar _ = register(func(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"first\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"second\")\n\t}\n})\n"), ""},
 		// Astra #384 L3: a clause reached by fallthrough from a non-constant
 		// clause, read as dead by main's markDead: a stated false block.
 		"a clause fallen into from a non-constant clause (stated false block)": {edit("func checkCase(t *testing.T) {\n"+one, "func checkCase(t *testing.T) {\n\tswitch {\n\tcase Add(1, 2) != 3:\n\t\tfallthrough\n\tcase false:\n\t\tt.Fatal(\"bad\")\n\t}\n"), "pkg:pkg.checkCase " + weakened + " (1 → 0)"},
