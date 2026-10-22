@@ -23,6 +23,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
@@ -289,7 +290,7 @@ func nodeKinds() []types.NodeKind {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds(), api.CaptureKinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds(), api.CaptureKinds(), intent.Kinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -303,7 +304,9 @@ func eventKinds() (eventstore.Kinds, error) {
 // projector is the writer's Project hook, composed as a rebuild replays
 // it: each event goes through identity, then grants, the seat, proposals,
 // notes, projects, tasks, owed inputs, leases with their capacity reservations, the usage
-// ledger, the model calls' bindings, then the graph, before the next event (eventstore.ProjectEach).
+// ledger, the model calls' bindings, then the graph, then the builder's
+// recorded intents (whose check reads the graph), before the next event
+// (eventstore.ProjectEach).
 // The graph comes after leases, whose projections its supersession fold
 // reads. Units are nodes (graph.Units): an attempt starts only on a claimed
 // node's unit, and a seal binds its node's project and task. A node is
@@ -328,6 +331,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		modelcall.Project,   // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
 		api.ProjectCaptures, // the egress captures kept and not yet purged (P22a-5a)
 		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds(), Tasks: authority.Tasks{}}.Project, // the folds check the recorded answers (M1 P6), the deferred surfaces (I15) and the claims' tasks (I22)
+		intent.Projector{Env: graph.Env{Authority: authority.Answers{}, Blobs: blobs}}.Project,              // the builder's recorded intent, checked by the I18 walk over the graph's records (P22a-5c-2b-1)
 	)
 }
 
@@ -376,6 +380,7 @@ var addedSinceRecord = []string{
 	lease.StartProjection, lease.FirstProjection, // #345
 	api.CaptureProjection,      // #359
 	graph.TaskResultProjection, // #348
+	intent.RecordedProjection,  // P22a-5c-2b-1
 }
 
 // projections are the projections projector folds, each at its fold's

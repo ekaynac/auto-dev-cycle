@@ -226,7 +226,7 @@ func TestTheLaunchStartsTheMatchedBuild(t *testing.T) {
 				t.Fatal("the build was not placed")
 			}
 			attempt := types.AttemptID(newID(t, "att"))
-			miss, err := pl.launch(context.Background(), w.s, x.System, build, ls.ID, attempt, emptyBase)
+			miss, err := pl.launch(context.Background(), w.s, x.System, build, ls.ID, attempt, emptyBase, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

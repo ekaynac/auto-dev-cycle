@@ -53,6 +53,10 @@ A manifest is not one record written before egress with fields it cannot know ye
    destination: destination_id
    routing: verified|reported
    ```
+   M1's builder intent (P22a-5c-2b-1) records `harness_version` as `<adapter>@<release version>`, the adapter being adcd's
+   own release's. No capability profile is registered yet, so `capability_profile` holds the executor's family as a
+   stand-in: every builder runs the same edit-loop tool set (`adapterhost.EditLoopTools`). `budget.bytes` is the
+   prompt's bound (09's text bound), which a longer prompt is refused at.
 2. **`manifest.delivery`**, appended per turn as the adapter streams:
    - controller-mediated tool results with the exact handles the core supplied;
    - adapter coverage declarations;
