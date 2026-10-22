@@ -12,7 +12,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,11 +42,6 @@ type Config struct {
 	// item 4) keeps each model request body the gateway sends as a
 	// restricted capture, purged 7 days later.
 	CaptureEgress bool
-	// Adapter (--adapter, optional) is the builder's adapter: an absolute,
-	// clean path to an executable of adcd's own release (adapterPath), run
-	// on the host in a jail (P22a-5c-2a, #226 entry 126 option A). With no
-	// adapter or no sandbox, adcd runs no attempt.
-	Adapter string
 	// clock is the store clock (eventstore.Config.Now) that every command
 	// and the bootstrap decide by; nil is time.Now. Only tests set it.
 	clock func() time.Time
@@ -90,7 +84,7 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE [--registry FILE]] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]] [--capture-egress] [--adapter PATH]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE [--registry FILE]] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]] [--capture-egress]"
 	// sandboxRefusal is the one text for a refused sandbox (P9b).
 	sandboxRefusal = "the sandbox: --podman and --sandbox-root must be absolute, clean paths; the root short " +
 		"(Podman's runroot, <root>/r, is at most 50 characters) and apart from the state directory and the sockets; " +
@@ -110,9 +104,8 @@ func LoadConfig(args []string) (Config, error) {
 		root, podman := fs.String("sandbox-root", "", ""), fs.String("podman", "/usr/bin/podman", "")
 		reg := fs.String("registry", "", "")
 		capture := fs.Bool("capture-egress", false, "")
-		adapter := fs.String("adapter", "", "")
 		return func(cfg *Config) {
-			cfg.CaptureEgress, cfg.Adapter = *capture, *adapter
+			cfg.CaptureEgress = *capture
 			if *reg != "" {
 				doc, err := registry.Load(*reg)
 				cfg.Registry, cfg.registryErr = &doc, err
@@ -130,121 +123,14 @@ func LoadConfig(args []string) (Config, error) {
 	})
 }
 
-// userHome is the controller's home, and runTree the runtime tree, which
-// holds every user's runtime directory (/run/user/<uid>, the user bus's):
-// both kept apart from the adapter (Opus 22a-5c-2a-w L8). Tests set them.
-var (
-	userHome = func() (string, error) { // the passwd entry's, as the sandbox's (Mythos 22a-5c-2a-w L2)
-		if h := home(); h != "" {
-			return h, nil
-		}
-		return "", errors.New("the controller's user has no home in the user database")
-	}
-	runTree = "/run"
-)
-
-// releaseRoot is adcd's own installed release: <root>/bin/adcd, resolved,
-// gives <root>. A test sets it; nothing in production can.
-var releaseRoot = func() (string, error) {
-	exe, err := os.Executable()
-	if err == nil {
-		exe, err = filepath.EvalSymlinks(exe)
-	}
-	return filepath.Dir(filepath.Dir(exe)), err
-}
-
-// adapterPath is the adapter c names, resolved, once it is allowed (#226
-// entry 138; Opus 22a-5c-2a-w H1): an allowlist, its release's own. It
-// must resolve to a regular, executable file inside <release>/lib/adc,
-// whose directory, the one its jail binds, is also apart from the state
-// directory, the controller's home, the runtime tree /run (every user's
-// runtime directory), the sandbox root, the shared run directory, /proc, /dev and
-// /tmp, either way, every path resolved: no bind may bring the controller's
-// state, its home, its runtime directory or the jail's own mounts into it.
-// Validate checks it at load, and runnerOf again once the state directory
-// is made.
-func (c Config) adapterPath() (string, error) {
-	real, err := filepath.EvalSymlinks(c.Adapter)
-	if err != nil {
-		return "", configError("the adapter cannot be resolved: it must exist")
-	}
-	if fi, err := os.Stat(real); err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
-		return "", configError("the adapter must be a regular, executable file")
-	}
-	root, err := releaseRoot()
-	lib := filepath.Join(root, "lib", "adc")
-	for _, d := range []string{filepath.Dir(lib), lib} { // never a link out of the release (5c-2a-w L8)
-		if fi, lerr := os.Lstat(d); lerr != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
-			err = errors.Join(err, lerr, errors.New("not a directory of the release"))
-		}
-	}
-	if err == nil {
-		lib, err = filepath.EvalSymlinks(lib)
-	}
-	if err != nil || !strings.HasPrefix(real, lib+"/") {
-		return "", configError("the adapter must lie inside adcd's own release, under its lib/adc, neither a symlink")
-	}
-	dir := filepath.Dir(real)
-	apart := []string{c.StateDir, "/proc", "/dev", "/tmp", runTree}
-	h, err := userHome()
-	if err != nil {
-		return "", configError("the controller's user has no home in the user database: the adapter's directory cannot be kept apart from it")
-	}
-	apart = append(apart, h)
-	// The controller's own paths never under a directory every jail reads
-	// (systemDirs), nor the sandbox root under /tmp, which the jail mounts
-	// afresh over its binds (Mythos 22a-5c-2a-w H1, L1).
-	own := []string{c.StateDir}
-	if c.Sandbox != nil {
-		own = append(own, c.Sandbox.Root)
-	}
-	if c.Shared != nil {
-		own = append(own, c.Shared.RunDir)
-	}
-	for i, p := range own {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			p = r
-		}
-		within := slices.Clone(systemDirs)
-		if c.Sandbox != nil && i == 1 {
-			within = append(within, "/tmp")
-		}
-		for _, sys := range within {
-			if overlap(p, sys) {
-				return "", configError("with an adapter, the state directory, the sandbox root and the shared run directory must lie apart from the system directories every jail reads, and the sandbox root apart from /tmp")
-			}
-		}
-	}
-	if c.Sandbox != nil {
-		apart = append(apart, c.Sandbox.Root)
-	}
-	if c.Shared != nil {
-		apart = append(apart, c.Shared.RunDir)
-	}
-	for _, p := range apart {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			p = r
-		}
-		if overlap(dir, p) {
-			return "", configError("the adapter's directory must be apart from the state directory, the home, /run, the sandbox root, the shared run directory, /proc, /dev and /tmp")
-		}
-	}
-	return real, nil
-}
-
-// overlap reports whether a and b, clean absolute paths, are one or one
-// holds the other.
-func overlap(a, b string) bool {
-	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
-}
-
-// controllerPaths are what no sandbox run may mount or see: the state
-// directory (with adcd's private socket), the shared socket and the
-// Podman API sockets.
+// controllerPaths are what no sandbox run may mount or see, and what the
+// sandbox root must lie apart from: the state directory (with adcd's
+// private socket), the shared run directory (its socket) and the Podman
+// API sockets.
 func (c Config) controllerPaths() []string {
 	out := []string{filepath.Clean(c.StateDir), fmt.Sprintf("/run/user/%d/podman/podman.sock", os.Getuid()), "/run/podman/podman.sock"}
 	if c.Shared != nil {
-		out = append(out, filepath.Join(c.Shared.RunDir, sharedSocket))
+		out = append(out, filepath.Clean(c.Shared.RunDir))
 	}
 	return out
 }
@@ -307,13 +193,6 @@ func (c Config) Validate() error {
 		return configError("the shared socket needs both --shared-run-dir and --shared-group")
 	case c.Shared != nil && (!absClean(c.Shared.RunDir) || c.Shared.RunDir == c.StateDir || strings.HasPrefix(c.Shared.RunDir, c.StateDir+"/")):
 		return configError("the shared run directory must be an absolute, clean path apart from the state directory")
-	case c.Adapter != "" && !absClean(c.Adapter):
-		return configError("the adapter must be an absolute, clean path")
-	}
-	if c.Adapter != "" {
-		if _, err := c.adapterPath(); err != nil {
-			return err
-		}
 	}
 	if c.Shared != nil {
 		if _, err := c.Shared.gid(); err != nil {

@@ -42,24 +42,6 @@ type ProcessSpec struct {
 	// Deadline bounds the process from spawn: past it the namespace is
 	// killed.
 	Deadline time.Duration
-	// Jail, when set, confines the process's files and network (Jail);
-	// nil shares them, as the harness and the fixtures' adapters do.
-	Jail *Jail
-}
-
-// Jail is a confined adapter's view (Opus 22a-5c-2a M1; 5c-2a-w H1, L2): a
-// mount namespace holding only ReadOnly and Writable, each bound at its own
-// path (a missing read-only path is skipped), then a fresh /dev, /proc and
-// /tmp, mounted after the binds so no bind covers them; every other
-// namespace of its own (--unshare-all: no network but a loopback that is
-// down, no host IPC, no host processes) and a session of its own (no
-// controlling terminal). The adapter reaches its gateway by a unix socket
-// bound in Writable, and nothing else of the host, the controller's state
-// directory included. Its /tmp is unbounded: bubblewrap 0.9.0 has no
-// --size (stated).
-type Jail struct {
-	ReadOnly []string
-	Writable []string
 }
 
 // Process is one adapter process in a PID namespace of its own (bubblewrap
@@ -132,22 +114,11 @@ func startPeer(peer *inproc.Peer, deadline time.Duration) (*Process, error) {
 	return p, nil
 }
 
-// contain is the bubblewrap command line: a new PID namespace, the init's
-// pid written to fd 3; with no jail everything else shared, with one only
-// what it binds and no network (Jail).
-func contain(command []string, jail *Jail) []string {
-	if jail == nil {
-		return append([]string{"--unshare-pid", "--die-with-parent", "--info-fd", "3",
-			"--dev-bind", "/", "/", "--proc", "/proc", "--"}, command...)
-	}
-	args := []string{"--unshare-all", "--new-session", "--die-with-parent", "--info-fd", "3"}
-	for _, p := range jail.ReadOnly {
-		args = append(args, "--ro-bind-try", p, p)
-	}
-	for _, p := range jail.Writable {
-		args = append(args, "--bind", p, p)
-	}
-	return append(append(args, "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--"), command...)
+// contain is the bubblewrap command line: a new PID namespace, everything
+// else shared, the init's pid written to fd 3.
+func contain(command []string) []string {
+	return append([]string{"--unshare-pid", "--die-with-parent", "--info-fd", "3",
+		"--dev-bind", "/", "/", "--proc", "/proc", "--"}, command...)
 }
 
 // Spawn starts the command in its namespace, in a process group of its own.
@@ -167,7 +138,7 @@ func Spawn(spec ProcessSpec) (*Process, error) {
 			return nil, fmt.Errorf("adapterhost: pipe: %w", err)
 		}
 	}
-	cmd := exec.Command(bwrap, contain(spec.Command, spec.Jail)...)
+	cmd := exec.Command(bwrap, contain(spec.Command)...)
 	cmd.Env = append([]string{}, spec.Env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = pipes[0], pipes[3], pipes[5]
 	cmd.ExtraFiles = []*os.File{pipes[7]}
