@@ -34,7 +34,11 @@
 //     for a credential or a changed placement, reviewer_unavailable for a
 //     roster the registry no longer gives (as graph.Evaluate holds it),
 //     wrong_owner for an image. No attempt starts, so no rail allowance is
-//     spent (P17 counts attempts). A node no longer claimed or of another
+//     spent (P17 counts attempts). Each clears (#226 entry 156): the two
+//     source_invalid_config holds are placement holds (PlacementSignal),
+//     cleared once Configured admits the node again; the image hold
+//     (IsImageSignal) once the pinned image resolves; reviewer_unavailable
+//     as graph.Evaluate's. A node no longer claimed or of another
 //     project, or a readiness observed for something else, gets no hold.
 //   - A unit already placed (a live lease, or a running attempt) is not
 //     matched again, nor one whose last lease has not settled (P21).

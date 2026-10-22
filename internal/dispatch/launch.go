@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -53,6 +54,11 @@ type Readiness struct {
 
 var errNoGateway = errors.New("dispatch: no gateway confirms credentials (P11)")
 
+// ReadinessBound bounds each readiness check made in the writer's command
+// (Configured's credential; daemon's image check for a hold), as Observe's
+// are outside it (Opus #400 M2).
+const ReadinessBound = 5 * time.Second
+
 // Observe probes, outside the writer transaction, what the launch of card
 // on executor needs from the host and the gateway.
 func (d Dispatcher) Observe(ctx context.Context, card Card, executor types.ExecutorID) Readiness {
@@ -62,25 +68,35 @@ func (d Dispatcher) Observe(ctx context.Context, card Card, executor types.Execu
 	} else if _, err := d.Images.Resolve(ctx, card.Image); err != nil {
 		r.image = err
 	}
-	e, ok := d.Registry.Executor(executor)
+	e, _ := d.Registry.Executor(executor)
 	r.destination = e.Destination.ID
 	if e.CredentialRef != nil {
 		r.hasCredential, r.credentialRef = true, *e.CredentialRef
 	}
+	r.credential = d.credentialReady(ctx, executor)
+	return r
+}
+
+// credentialReady is why executor's launch lacks its credential, nil when
+// it needs none or the gateway holds it: the one answer the launch's
+// readiness (Observe) and the placement holds' clear (Configured) take
+// (Opus #400 M2). An unregistered executor, no gateway and the gateway's
+// error are all not ready.
+func (d Dispatcher) credentialReady(ctx context.Context, executor types.ExecutorID) error {
+	e, ok := d.Registry.Executor(executor)
 	switch {
 	case !ok:
-		r.credential = fmt.Errorf("dispatch: executor %s is not registered", executor)
-	case !r.hasCredential: // a local endpoint has none
+		return fmt.Errorf("dispatch: executor %s is not registered", executor)
+	case e.CredentialRef == nil: // a local endpoint has none
+		return nil
 	case d.Credentials == nil:
-		r.credential = errNoGateway
-	default:
-		held, err := d.Credentials.Holds(ctx, r.destination, r.credentialRef)
-		if err == nil && !held {
-			err = fmt.Errorf("dispatch: the gateway holds no credential %s for destination %s", r.credentialRef, r.destination)
-		}
-		r.credential = err
+		return errNoGateway
 	}
-	return r
+	held, err := d.Credentials.Holds(ctx, e.Destination.ID, *e.CredentialRef)
+	if err == nil && !held {
+		err = fmt.Errorf("dispatch: the gateway holds no credential %s for destination %s", *e.CredentialRef, e.Destination.ID)
+	}
+	return err
 }
 
 // boundTo: r was observed for exactly e's destination and credential
@@ -162,8 +178,8 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		// The budget check was the USD rails' at the grant, with the spend then
 		// (P17b); the grant reserved it, so the launch does not re-read it.
 		if was != now[i] && was.name != "budget" {
-			return held("placement "+was.name+" changed since the grant",
-				"source_invalid_config", "executor "+string(l.Executor), types.OwnerOperator, nil)
+			return held("placement "+was.name+" changed since the grant", // Configured re-derives it (#226 entry 156)
+				"source_invalid_config", PlacementSignal("executor "+string(l.Executor)), types.OwnerOperator, nil)
 		}
 	}
 	e, _ := d.Registry.Executor(l.Executor) // registered: the placement still holds
@@ -172,8 +188,8 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		return held("the pinned image is not present at its digest", "wrong_owner", imageSignal(card.Image), types.OwnerNamedOwner, &ref)
 	}
 	credential := func() (*Miss, error) {
-		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config",
-			"destination "+string(e.Destination.ID), types.OwnerOperator, nil)
+		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config", // Configured checks it (#226 entry 156)
+			PlacementSignal("destination "+string(e.Destination.ID)), types.OwnerOperator, nil)
 	}
 	switch {
 	case d.Images == nil:
@@ -217,17 +233,25 @@ func (d Dispatcher) attemptRail(tx *eventstore.Tx, node types.NodeID) (*Miss, er
 // maxSignal is records/node-hold's bound on a signal instance.
 const maxSignal = 1024
 
+// imagePrefix starts imageSignal's signals.
+const imagePrefix = "image "
+
 // imageSignal names image in a hold's signal: "image <ref>", or, for a
 // reference too long for the signal (the pinned-image schema has no
 // bound), "image sha256:<hex of the ref>", so a miss always fits and
 // releases its lease.
 func imageSignal(image string) string {
-	if s := "image " + image; len(s) <= maxSignal {
+	if s := imagePrefix + image; len(s) <= maxSignal {
 		return s
 	}
 	sum := sha256.Sum256([]byte(image))
-	return "image sha256:" + hex.EncodeToString(sum[:])
+	return imagePrefix + "sha256:" + hex.EncodeToString(sum[:])
 }
+
+// IsImageSignal: signal is a launch's wrong_owner hold on its pinned image
+// (imageSignal), which the reconcile loop clears once the project's pinned
+// image resolves (#226 entry 156).
+func IsImageSignal(signal string) bool { return strings.HasPrefix(signal, imagePrefix) }
 
 // reason fits a refusal's reason to lease-event's 1024 bytes.
 func reason(s string) string {

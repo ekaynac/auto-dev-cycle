@@ -3,6 +3,7 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"strings"
@@ -85,15 +86,25 @@ func (d Dispatcher) footprint(executor types.ExecutorID, e types.RegistryExecuto
 }
 
 // Configured: no configuration refuses card on executor now (Mythos
-// 22a-5c-1 M1): the placement checks pass, a direct API's footprint is
-// admissible, and a priced executor is under USD rails. What clears a
-// placement hold the configuration raised; the rails' room is Match's.
+// 22a-5c-1 M1): the placement checks pass (re-derived from the registry
+// and roster now, what a launch's "placement changed since the grant"
+// compares: a new Match records them again), a credentialed destination's
+// credential is held (a launch's other source_invalid_config miss; #226
+// entry 156), a direct API's footprint is admissible, and a priced
+// executor is under USD rails. What clears a placement hold the
+// configuration raised; the rails' room is Match's.
 func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.ExecutorID) (bool, error) {
 	_, roster, err := graph.Units{}.Roster(tx, graph.UnitOf(card.Node), d.Registry)
 	if err != nil {
 		return false, err
 	}
 	if _, _, blocks := blocked(d.checks(card, executor, roster)); blocks {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ReadinessBound)
+	ready := d.credentialReady(ctx, executor) // the launch's own answer: an error is not ready, as there
+	cancel()
+	if ready != nil {
 		return false, nil
 	}
 	e, _ := d.Registry.Executor(executor)

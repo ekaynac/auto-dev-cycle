@@ -671,31 +671,6 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 // image absent (errImageMissing).
 var runnerImage = reconcile.RunnerSignal("image")
 
-// imageResolveBound bounds the image's resolution a hold's check makes,
-// in the writer's command (Unblock), as the launch's readiness does
-// outside it.
-const imageResolveBound = 5 * time.Second
-
-// imageReady reports whether node's project's one pinned image resolves
-// now: its image hold clears (Opus 22a-5c-2b-3 M1).
-func (r *runner) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) {
-	v, err := graph.ViewOf(tx, node)
-	if err != nil {
-		return false, err
-	}
-	prof, ok, err := authority.ProjectProfile(tx, v.Project)
-	if err != nil || !ok || len(prof.Toolchain.Images) != 1 {
-		return false, err
-	}
-	for _, ref := range prof.Toolchain.Images {
-		ctx, cancel := context.WithTimeout(context.Background(), imageResolveBound)
-		_, rerr := r.place.d.Images.Resolve(ctx, string(ref))
-		cancel()
-		return rerr == nil, nil
-	}
-	return false, nil
-}
-
 // retrySignal is node's next bounded retry: its count, and "retry <n>
 // until <time>", or "failed" once maxTries are spent.
 func (r *runner) retrySignal(tx *eventstore.Tx, node types.NodeID) (int, string) {
@@ -735,7 +710,7 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 	case signal == runnerFailed:
 		return false, nil
 	case signal == runnerImage:
-		return r.imageReady(tx, node)
+		return r.place.imageReady(tx, node)
 	}
 	if _, err := fmt.Sscanf(signal, reconcile.RunnerSignal("retry %d until %s"), &n, &until); err == nil {
 		t, err := time.Parse(time.RFC3339Nano, until)
