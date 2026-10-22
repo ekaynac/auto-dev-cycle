@@ -21,11 +21,12 @@ import (
 // with the paths to look for as its arguments. It reports, one fact per
 // line: each network interface and the routing table's entries; HOME's
 // entries; each argument present; every mount (point, root within its
-// filesystem, type); the process's effective capabilities, no_new_privs
-// and seccomp mode; the cgroup's memory and pids limits; and every socket
-// outside /proc and /sys. Sockets are found by stat (test -S), never by
-// find -type s: a socket bind-mounted over a placeholder file reads as a
-// regular file in its directory. "done" proves it ran to its end.
+// filesystem, type) and each read-only mount's point; the process's
+// effective capabilities, no_new_privs and seccomp mode; the cgroup's
+// memory and pids limits; and every socket outside /proc and /sys.
+// Sockets are found by stat (test -S), never by find -type s: a socket
+// bind-mounted over a placeholder file reads as a regular file in its
+// directory. "done" proves it ran to its end.
 //
 // Trust: the probe proves the runtime's configuration, not the image's
 // honesty. It assumes an honest image, prepared by the controller and
@@ -40,6 +41,7 @@ echo "routes $n"
 for f in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do { [ -e "$f" ] || [ -L "$f" ]; } && echo "home ${f##*/}"; done
 for p in "$@"; do { [ -e "$p" ] || [ -L "$p" ]; } && echo "present $p"; done
 sed -E 's/^[0-9]+ [0-9]+ [0-9:]+ ([^ ]+) ([^ ]+) .* - ([^ ]+) .*$/mount \2 \1 \3/' /proc/self/mountinfo
+while read -r a b c d point opts rest; do case "$opts" in ro|ro,*) echo "readonly $point" ;; esac; done </proc/self/mountinfo
 while IFS=: read -r k v; do case "$k" in Cap*|NoNewPrivs|Seccomp) echo "status $k" $v ;; esac; done </proc/self/status
 echo "limit memory $(cat /sys/fs/cgroup/memory.max)"; echo "limit pids $(cat /sys/fs/cgroup/pids.max)"
 read -r q p </sys/fs/cgroup/cpu.max; echo "limit cpu $q/$p"
@@ -75,7 +77,9 @@ type Report struct {
 	Sockets    []string          `json:"sockets"`
 	Violations []string          `json:"violations"`
 
-	attempt, gateway string // the run's own mount sources: its attempt's id, the gateway's host path
+	attempt, gateway string   // the run's own mount sources: its attempt's id, the gateway's host path
+	exchange         string   // and an interactive run's exchange root's name
+	readonly         []string // the read-only mounts' points
 }
 
 // ErrProbe: the probe did not run to its end; nothing is proven.
@@ -110,7 +114,7 @@ func parse(out []byte) (Report, error) {
 	r := Report{Interfaces: []string{}, Home: []string{}, Present: []string{}, Mounts: []Mount{}, Sockets: []string{},
 		Status: map[string]string{}, Limits: map[string]string{}}
 	done := false
-	lists := map[string]*[]string{"iface": &r.Interfaces, "home": &r.Home, "present": &r.Present, "socket": &r.Sockets}
+	lists := map[string]*[]string{"iface": &r.Interfaces, "home": &r.Home, "present": &r.Present, "socket": &r.Sockets, "readonly": &r.readonly}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		key, val, _ := strings.Cut(sc.Text(), " ")
@@ -161,6 +165,8 @@ func (r Report) allowed(m Mount) bool {
 		return r.attempt != "" && strings.HasSuffix(m.Root, "/"+r.attempt+m.Point) // relative to runs/ or to a mount at runs/
 	case m.Point == GatewaySocket && r.Mode == Build:
 		return r.gateway != "" && path.Base(m.Root) == path.Base(r.gateway)
+	case m.Point == ExchangeIn || m.Point == ExchangeOut: // an interactive run's (P22a-5d)
+		return r.exchange != "" && strings.HasSuffix(m.Root, "/"+r.exchange+"/"+path.Base(m.Point))
 	case m.Type == "devtmpfs":
 		return m.Point == "/dev"+m.Root && slices.Contains(devices, path.Base(m.Root)) ||
 			strings.HasPrefix(m.Point, "/proc/") && m.Root == "/null"
@@ -217,6 +223,9 @@ func (r Report) check() []string {
 	}
 	if r.Mode == Build && !slices.Contains(r.Sockets, GatewaySocket) {
 		v = append(v, "the gateway socket is absent")
+	}
+	if r.exchange != "" && !slices.Contains(r.readonly, ExchangeIn) {
+		v = append(v, "the exchange's in/ is writable")
 	}
 	slices.Sort(v)
 	return v
