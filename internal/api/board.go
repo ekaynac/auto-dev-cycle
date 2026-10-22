@@ -15,8 +15,8 @@ package api
 //     is its current (unsuperseded) nodes': running while a plan or build
 //     node is claimed or held; else verifying while an accept, gate or
 //     review node is; else done_candidate when a review node of the task's
-//     latest round (the highest round of its current nodes, so no later
-//     repair) completed go (outcome empty; merge is inactive in M1(a));
+//     last build round completed go (graph.CandidateGo, the loop's rule for
+//     its task.done too; merge is inactive in M1(a));
 //     else ready, with the admitted badge. A held node keeps its stage's
 //     column and carries its hold badges. A done task (task.done) is
 //     done_candidate as a candidate, or done with the abandoned badge when
@@ -186,7 +186,7 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 	case !c.Admitted && t.State != authority.TaskDoneState:
 		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
 	}
-	latest, active, goRounds := int64(0), map[types.BoardPlacedCardColumn]bool{}, []int64{}
+	active := map[types.BoardPlacedCardColumn]bool{}
 	for _, n := range nodes {
 		stage, known := stages[n.Node.Kind]
 		switch {
@@ -202,15 +202,8 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 			return unplaced(t.ID, &project, reason)
 		}
 		c.Nodes = append(c.Nodes, card)
-		s := n.State.State
-		if s != types.NodeStateStateSuperseded {
-			latest = max(latest, n.Node.Round)
-		}
-		switch {
-		case s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld:
+		if s := n.State.State; s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld {
 			active[stage] = true
-		case s == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindReview && *n.Outcome == types.OutcomeEmpty:
-			goRounds = append(goRounds, n.Node.Round)
 		}
 	}
 	switch {
@@ -221,7 +214,7 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 		c.Column = types.BoardPlacedCardColumnDoneCandidate
 		return types.BoardCard{Variant: c}
 	}
-	active[types.BoardPlacedCardColumnDoneCandidate] = slices.Contains(goRounds, latest)
+	active[types.BoardPlacedCardColumnDoneCandidate] = graph.CandidateGo(nodes)
 	c.Column = types.BoardPlacedCardColumnReady
 	for _, col := range []types.BoardPlacedCardColumn{types.BoardPlacedCardColumnRunning, types.BoardPlacedCardColumnVerifying, types.BoardPlacedCardColumnDoneCandidate} {
 		if active[col] {

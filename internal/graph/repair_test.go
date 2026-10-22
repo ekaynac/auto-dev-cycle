@@ -120,3 +120,43 @@ func TestRepair(t *testing.T) {
 		}
 	}
 }
+
+// 22a-7 (Main): the one last-round rule. LastBuildRound is the highest
+// round of the task's build nodes; OfLastRound takes a review by its
+// candidate's build's round, never its own (a repair's review is recorded
+// in round 1); CandidateGo is a completed go review of the last round's
+// candidate: an earlier round's go (a second review of round 1), a no_go
+// in the last round, or a review not completed is no candidate.
+func TestTheLastRoundsCandidate(t *testing.T) {
+	empty, found := types.OutcomeEmpty, types.OutcomeFound
+	view := func(id string, kind types.NodeKind, round int64, st types.NodeStateState, o *types.Outcome, patchOf string) NodeView {
+		n := types.Node{ID: types.NodeID(id), Kind: kind, Round: round, Inputs: []types.InputSpec{}}
+		if patchOf != "" {
+			n.Inputs = append(n.Inputs, types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result",
+				Producer: types.NodeID(patchOf), ResultKind: types.ResultKindPatch}}})
+		}
+		return NodeView{Node: n, State: types.NodeState{State: st}, Outcome: o}
+	}
+	done := types.NodeStateStateCompleted
+	b1, b2 := view("b1", types.NodeKindBuild, 1, done, &found, ""), view("b2", types.NodeKindBuild, 2, done, &found, "")
+	for name, c := range map[string]struct {
+		nodes []NodeView
+		last  int64
+		go_   bool
+	}{
+		"no build":                              {nil, 0, false},
+		"round 1 go":                            {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &empty, "b1")}, 1, true},
+		"round 1 no_go":                         {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &found, "b1")}, 1, false},
+		"round 1 go, its review claimed":        {[]NodeView{b1, view("r1", types.NodeKindReview, 1, types.NodeStateStateClaimed, nil, "b1")}, 1, false},
+		"round 2's review (in round 1) go":      {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &found, "b1"), b2, view("r2", types.NodeKindReview, 1, done, &empty, "b2")}, 2, true},
+		"round 1 go, round 2 built, unreviewed": {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &empty, "b1"), b2}, 2, false},
+		"round 2's review no_go":                {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &found, "b1"), b2, view("r2", types.NodeKindReview, 1, done, &found, "b2")}, 2, false},
+	} {
+		if got := LastBuildRound(c.nodes); got != c.last {
+			t.Errorf("%s: LastBuildRound %d, want %d", name, got, c.last)
+		}
+		if got := CandidateGo(c.nodes); got != c.go_ {
+			t.Errorf("%s: CandidateGo %v, want %v", name, got, c.go_)
+		}
+	}
+}

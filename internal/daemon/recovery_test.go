@@ -219,7 +219,7 @@ func TestSystemActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range []string{recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
-		modelcall.Action, modelcall.Counted, "model_call.reconcile", reconcile.AdmitAction, reconcile.AbandonAction, reconcile.EvaluateAction,
+		modelcall.Action, modelcall.Counted, "model_call.reconcile", reconcile.AdmitAction, reconcile.AbandonAction, reconcile.DoneAction, reconcile.EvaluateAction,
 		reconcile.MatchAction, reconcile.ClearRailAction, reconcile.LaunchAction, reconcile.RunAction, adapterhost.FinishAction} {
 		if !slices.Contains(systemActions, a) {
 			t.Errorf("%s is not a system action", a)

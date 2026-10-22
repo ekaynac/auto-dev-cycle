@@ -48,6 +48,10 @@ func TestDecide(t *testing.T) {
 		"a granted build to run":                 {Snapshot{Admitted: admitted, Granted: []Granted{granted}, Evaluates: true}, []Action{Run{Granted: granted}}},
 		"a granted build, evaluation off":        {Snapshot{Admitted: admitted, Granted: []Granted{granted}}, nil},
 		"a granted build, the approval revoked":  {Snapshot{Admitted: admitted, Revoked: true, Granted: []Granted{granted}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
+		// 22a-7: a decided candidate ends its task, whatever the gates; a revoked approval abandons it first.
+		"a decided candidate":             {Snapshot{Admitted: admitted, Candidate: true}, []Action{Done{Task: admitted}}},
+		"a decided candidate, revoked":    {Snapshot{Admitted: admitted, Candidate: true, Revoked: true}, []Action{Abandon{Task: admitted}}},
+		"a decided candidate, and a next": {Snapshot{Admitted: admitted, Candidate: true, Next: next, Gates: Gates{Admits: true}}, []Action{Done{Task: admitted}}},
 	} {
 		if got := Decide(c.s); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %#v, want %#v", name, got, c.want)
@@ -56,6 +60,7 @@ func TestDecide(t *testing.T) {
 	for a, want := range map[Action][]eventstore.Expectation{
 		Admit{Task: next}:       {{Subject: next.ID, Version: 7}},
 		Abandon{Task: admitted}: {{Subject: admitted.ID, Version: 11}},
+		Done{Task: admitted}:    {{Subject: admitted.ID, Version: 11}},
 		Match{Node: build}:      {{Subject: build.ID, Version: 13}},
 		ClearRail{Held: held}:   {{Subject: held.Node.ID, Version: 15}},
 	} {

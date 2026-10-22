@@ -26,6 +26,47 @@ func RepairVerdict(outcome types.Outcome, reason types.ReasonCode) bool {
 	return outcome == types.OutcomeFound || Unreviewable(types.Result{Kind: types.ResultKindReview, Outcome: outcome, Reason: reason})
 }
 
+// LastBuildRound is the last build round of nodes, a task's: the highest
+// round of its build nodes, superseded ones included (a repair's build is
+// the next round; P22a-6d), 0 with none: OfLastRound's.
+func LastBuildRound(nodes []NodeView) int64 {
+	last := int64(0)
+	for _, n := range nodes {
+		if n.Node.Kind == types.NodeKindBuild {
+			last = max(last, n.Node.Round)
+		}
+	}
+	return last
+}
+
+// OfLastRound reports whether review, a review node of nodes (a task's),
+// takes the candidate of the task's last build round: its patch input is
+// a build node's of LastBuildRound (a repair's accept, gate and review are
+// recorded in round 1 too; only the build's round counts). The one rule
+// for "the last round's review": Repairable's (reconcile.Observe) and
+// CandidateGo's.
+func OfLastRound(nodes []NodeView, review types.Node) bool {
+	last := LastBuildRound(nodes)
+	return last > 0 && slices.ContainsFunc(review.Inputs, func(in types.InputSpec) bool {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		return ok && src.ResultKind == types.ResultKindPatch && slices.ContainsFunc(nodes, func(n NodeView) bool {
+			return n.Node.ID == src.Producer && n.Node.Kind == types.NodeKindBuild && n.Node.Round == last
+		})
+	})
+}
+
+// CandidateGo reports whether nodes, a task's, decide its candidate: a
+// review of its last build round's candidate (OfLastRound) completed go
+// (empty). It is the one rule for the board's done_candidate column and
+// for the loop's task.done as a candidate (reconcile.Observe; 22a-7): a
+// later round's build, or a NO-GO in the last round, is never a candidate.
+func CandidateGo(nodes []NodeView) bool {
+	return slices.ContainsFunc(nodes, func(n NodeView) bool {
+		return n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
+			*n.Outcome == types.OutcomeEmpty && OfLastRound(nodes, n.Node)
+	})
+}
+
 // Repair is the events recording round n+1 of build, a repair (13
 // "Successor rounds": "round n is a new build node whose inputs include
 // round n−1's review findings and candidate tree"). It is build's

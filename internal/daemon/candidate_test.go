@@ -1,0 +1,523 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package daemon
+
+// P22a-7: the in-process candidate fixture (slice plan §2.3, checkpoint
+// (a) in stub mode). Each case runs the reconcile loop and adcd's runner
+// with a scripted stub peer (inproc), then restarts adcd on the case's
+// state: the start compares every projection with a replay of the log and
+// refuses any difference, and the reads, through the installed commands,
+// are the restarted controller's. After it stops, verify-log exits 0.
+//
+//   - candidate: build found, accept, the gate empty/completed_clean, the
+//     review GO by an independent roster; no merge node; the board's card
+//     Done (candidate); task show's first-attempt metrics; task wait
+//     --until closed.
+//   - admission-held: task A held (its review: no independent reviewer),
+//     task B created stays Ready, never admitted; A resumes once a
+//     reviewer is, runs to its end, and only then is B admitted.
+//   - launch-missing-credential, launch-missing-image: the launch is
+//     refused, nothing starts, the lease is released, the build held on
+//     what is missing; task wait --until held.
+//   - a revoked approval: its task's operator revoked before the first
+//     claim, no node is claimed, no attempt starts, and the task is
+//     abandoned (Done, abandoned).
+//
+// No read holds the acceptance digest or the canary (the hidden test's
+// name, which only the gate's stream carries): every read the CLI has but
+// the event stream (the log, which is the record), as the operator.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/cli"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
+)
+
+// acceptDigest is the acceptance attachment's digest readyTask records:
+// restricted, withheld from the builder and the reviewer.
+const acceptDigest = "sha256:abababababababababababababababababababababababababababababababab"
+
+// canary is the hidden acceptance test's name, which only the gate's
+// stream (a restricted artifact) carries.
+const canary = "TestHiddenCanaryTransfer"
+
+// stubGroups are the fixture's resource groups, the run world's.
+func stubGroups(t *testing.T) []types.ResourceGroup {
+	t.Helper()
+	var gs []types.ResourceGroup
+	raw, err := os.ReadFile("../../fixtures/m1/config/groups.json")
+	if err == nil {
+		err = json.Unmarshal(raw, &gs)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gs
+}
+
+// restarted is adcd restarted on rw's state, its operator's token, and
+// the controller's log, once rw's runs have ended and its store closed.
+// The state moves to a short directory first (the private socket's path).
+type restarted struct {
+	c   *commanded
+	tok string
+}
+
+// restartOn stops rw and starts adcd on its state, its reader rw.w.op; Run refuses a start
+// whose projections differ from a replay of the log (Start's check). Its
+// cleanup stops adcd and then requires verify-log to exit 0.
+func restartOn(t *testing.T, rw *runWorld) restarted {
+	t.Helper()
+	rw.r.Wait()
+	rw.w.done()
+	dir := shortDir(t)
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(rw.w.dir, dir); err != nil {
+		t.Fatal(err)
+	}
+	gs := stubGroups(t)
+	w := seed(t, dir, daemonProjection(t, gs...))
+	var tok identity.Secret
+	w.do(rw.w.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		evs, s, err := identity.IssueToken(rw.w.op, rw.w.op, time.Now().UTC())
+		tok = s
+		return evs, err
+	})
+	w.done()
+	c := &commanded{dir: dir, logs: &logBuffer{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done, ready := make(chan error, 1), make(chan *Daemon, 1)
+	go func() {
+		done <- Run(ctx, Config{StateDir: dir, Groups: gs, reconcileEvery: time.Hour}, c.logs, func(d *Daemon) { ready <- d })
+	}()
+	select {
+	case c.d = <-ready:
+	case err := <-done:
+		t.Fatalf("the restart: %v\n%s", err, c.logs.String())
+	}
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+		var out, errb bytes.Buffer
+		if code := cli.Main(context.Background(), []string{"dev", "verify-log", "--state", dir}, &out, &errb, nil); code != entry.ExitOK {
+			t.Errorf("verify-log: %d %s %s", code, out.String(), errb.String())
+		}
+	})
+	return restarted{c: c, tok: tok.Reveal()}
+}
+
+// show is adc task show task --json, validated against its schema.
+func (r restarted) show(t *testing.T, task types.TaskID) types.TaskRead {
+	t.Helper()
+	code, out, errb := r.c.adc(r.tok, "task", "show", string(task), "--json")
+	var rec types.TaskRead
+	if code != entry.ExitOK || contract.Validate("api/task", []byte(out)) != nil || json.Unmarshal([]byte(out), &rec) != nil {
+		t.Fatalf("task show: %d %s %s", code, out, errb)
+	}
+	return rec
+}
+
+// wait is adc task wait task --until state's exit code.
+func (r restarted) wait(t *testing.T, task types.TaskID, state string) int {
+	t.Helper()
+	code, _, _ := r.c.adcWithin(10*time.Second, r.tok, "task", "wait", string(task), "--until", state, "--timeout", "2s", "--every", "100ms")
+	return code
+}
+
+// noLeak requires that no read the CLI has (every one but the event
+// stream), as the operator, holds the acceptance digest or the canary,
+// in task's show and every other read.
+func (r restarted) noLeak(t *testing.T, task types.TaskID) {
+	t.Helper()
+	for resource, line := range cli.ReadCommands() {
+		if resource == "events" {
+			continue // the log is the record, not a read of it
+		}
+		args := append(strings.Fields(strings.TrimPrefix(line, "adc ")), "--json")
+		if resource == "tasks" {
+			args = []string{"task", "show", string(task), "--json"}
+		}
+		code, out, errb := r.c.adc(r.tok, args...)
+		if code != entry.ExitOK {
+			t.Errorf("%s: %d %s", line, code, errb)
+		}
+		for _, secret := range []string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary} {
+			if strings.Contains(out, secret) {
+				t.Errorf("%s holds %q: %s", line, secret, out)
+			}
+		}
+	}
+}
+
+// card is task's placed card on the restarted board.
+func (r restarted) card(t *testing.T, task types.TaskID) types.BoardPlacedCard {
+	t.Helper()
+	placed, ok := r.show(t, task).Card.Variant.(*types.BoardPlacedCard)
+	if !ok {
+		t.Fatalf("the task's card is not placed: %+v", r.show(t, task).Card)
+	}
+	return *placed
+}
+
+// candidateRun is a run world whose task's build, accept and gate ran (the
+// gate green, the canary among its passing tests) and whose review, run
+// by reviewer under reg, decides. It returns once the review leaves claimed.
+func candidateRun(t *testing.T, held func(*runWorld)) *runWorld {
+	t.Helper()
+	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"gate-events.json": goEvents("TestA=pass", canary+"=pass")}, nil)
+	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted || v.Outcome == nil || *v.Outcome != types.OutcomeEmpty {
+		t.Fatalf("the gate: %s %v, holds %+v", v.State.State, v.Outcome, v.State.Holds)
+	}
+	if held != nil {
+		held(rw)
+	}
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil))
+	for range 12 {
+		rw.passesFor(t, 1, 0)
+		if reviewNodes(rw)[types.NodeKindReview].State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	return rw
+}
+
+// The candidate case.
+func TestCandidateFixture(t *testing.T) {
+	rw := candidateRun(t, nil)
+	nodes := nodesOf(rw.w, rw.task)
+	for kind, want := range map[types.NodeKind]types.Outcome{types.NodeKindBuild: types.OutcomeFound, types.NodeKindAccept: types.OutcomeEmpty,
+		types.NodeKindGate: types.OutcomeEmpty, types.NodeKindReview: types.OutcomeEmpty} {
+		v := nodes[kind]
+		if kind == types.NodeKindReview {
+			v = reviewNodes(rw)[kind]
+		}
+		if v.State.State != types.NodeStateStateCompleted || v.Outcome == nil || *v.Outcome != want {
+			t.Errorf("the %s: %s %v, holds %+v", kind, v.State.State, v.Outcome, v.State.Holds)
+		}
+	}
+	if _, merge := nodes[types.NodeKind("merge")]; merge {
+		t.Error("a merge node is recorded")
+	}
+	r := restartOn(t, rw)
+	approvedBeforeClaim(t, r.c.dir)
+	if c := r.card(t, rw.task); c.Column != types.BoardPlacedCardColumnDoneCandidate {
+		t.Errorf("the card: %+v", c)
+	}
+	f := r.show(t, rw.task).FirstAttempt
+	if f == nil || f.Node != rw.build || f.Outcome == nil || *f.Outcome != types.OutcomeFound || f.SecondsAfterApproval == nil {
+		t.Errorf("the first attempt: %+v", f)
+	}
+	if code := r.wait(t, rw.task, "closed"); code != entry.ExitOK {
+		t.Errorf("task wait --until closed: %d", code)
+	}
+	r.noLeak(t, rw.task)
+}
+
+// approvedBeforeClaim requires, in the log under dir, the approval of a
+// task recorded before the first node.claimed (§2.3 assertion 1).
+func approvedBeforeClaim(t *testing.T, dir string) {
+	t.Helper()
+	approved := count(t, dir, `SELECT COALESCE(MIN(seq), 0) FROM events WHERE kind = '`+authority.ApprovalRecorded+`'`)
+	claimed := count(t, dir, `SELECT COALESCE(MIN(seq), 0) FROM events WHERE kind = '`+graph.NodeClaimed+`'`)
+	if approved == 0 || claimed == 0 || approved > claimed {
+		t.Errorf("the approval at seq %d, the first claim at %d", approved, claimed)
+	}
+}
+
+// The admission-held case: A's review held with no independent reviewer
+// (the build's executor unknown to the registry); B created stays Ready.
+// A resumes once its builder is known again, runs to its end, and only
+// then is B admitted.
+func TestAdmissionHeldFixture(t *testing.T) {
+	var b types.TaskID
+	rw := candidateRun(t, func(rw *runWorld) {
+		rw.reviewing(stubRegistry(t, map[types.ExecutorID]types.Name{types.ExecutorID(newID(t, "exe")): "stub-builder"}, nil))
+		rw.passesFor(t, 8, 0)
+		if v := reviewNodes(rw)[types.NodeKindReview]; v.State.State != types.NodeStateStateHeld {
+			t.Fatalf("A's review: %s, holds %+v", v.State.State, v.State.Holds)
+		}
+		_, b = readyTask(t, rw.w, rw.w.sys)
+		rw.passesFor(t, 4, 0)
+		if n := nodesOf(rw.w, b); len(n) != 0 {
+			t.Fatalf("B, created while A is held, has nodes: %v", n)
+		}
+	})
+	if v := reviewNodes(rw)[types.NodeKindReview]; v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("A's review after its reviewer is known: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	if n := nodesOf(rw.w, b); len(n) == 0 {
+		rw.passesFor(t, 2, 0)
+	}
+	if n := nodesOf(rw.w, b); n[types.NodeKindPlan].Node.ID == "" {
+		t.Fatalf("B after A's end is not admitted: %v", n)
+	}
+	r := restartOn(t, rw)
+	if c := r.card(t, rw.task); c.Column != types.BoardPlacedCardColumnDoneCandidate {
+		t.Errorf("A's card: %+v", c)
+	}
+	r.noLeak(t, rw.task)
+}
+
+// The admission-held case's first half, as the board shows it: B, Ready
+// while A is held, is unadmitted, with no claim and no lease; task wait
+// --until held of A exits 0.
+func TestAdmissionHeldBoard(t *testing.T) {
+	var b types.TaskID
+	var rw *runWorld
+	rw = gateCompleted(t)
+	rw.reviewing(stubRegistry(t, map[types.ExecutorID]types.Name{types.ExecutorID(newID(t, "exe")): "stub-builder"}, nil))
+	rw.passesFor(t, 8, 0)
+	_, b = readyTask(t, rw.w, rw.w.sys)
+	rw.passesFor(t, 4, 0)
+	r := restartOn(t, rw)
+	if code := r.wait(t, rw.task, "held"); code != entry.ExitOK {
+		t.Errorf("task wait --until held of A: %d", code)
+	}
+	rec := r.show(t, b)
+	if rec.FirstAttempt != nil {
+		t.Errorf("B has a first attempt: %+v", rec.FirstAttempt)
+	}
+	raw, _ := json.Marshal(rec.Card)
+	if !bytes.Contains(raw, []byte(`"admitted":false`)) && !bytes.Contains(raw, []byte(`"column":"ready"`)) {
+		t.Errorf("B's card while A is held: %s", raw)
+	}
+}
+
+// The launch-missing cases: the launch is refused, nothing starts, the
+// lease is released and the build held on what is missing, naming it;
+// task wait --until held exits 0.
+func TestLaunchMissingFixtures(t *testing.T) {
+	for name, c := range map[string]struct {
+		edit         func(*runWorld)
+		hold, signal string
+	}{
+		"launch-missing-credential": {func(rw *runWorld) { rw.r.place.d.Credentials = noCredentials{} }, vocab.HoldSourceInvalidConfig, "destination stub"},
+		"launch-missing-image":      {func(rw *runWorld) { rw.r.place.d.Images = fakeImages{false} }, vocab.HoldWrongOwner, "localhost/adc/py-mini@sha256:"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rw := newRunWorld(t, true, builder(nil, false, nil))
+			c.edit(rw)
+			rw.untilRun(t)
+			if _, ok, err := firstAttempt(rw); err != nil || ok {
+				t.Fatalf("an attempt started: %v %v", ok, err)
+			}
+			st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
+			if len(st.Holds) != 1 || st.Holds[0].Hold != c.hold || !strings.Contains(st.Holds[0].SignalInstance, c.signal) {
+				t.Fatalf("the build: %+v", st)
+			}
+			if _, live := leaseOn(rw.w, rw.build); live {
+				t.Error("the refused launch left its lease live")
+			}
+			r := restartOn(t, rw)
+			if code := r.wait(t, rw.task, "held"); code != entry.ExitOK {
+				t.Errorf("task wait --until held: %d", code)
+			}
+			if f := r.show(t, rw.task).FirstAttempt; f != nil {
+				t.Errorf("a first attempt: %+v", f)
+			}
+			r.noLeak(t, rw.task)
+		})
+	}
+}
+
+// A revoked approval: the task's operator revoked before the first claim;
+// no node is claimed and no attempt starts; the task is abandoned (Done,
+// abandoned) and task wait --until closed exits 0.
+func TestRevokedApprovalFixture(t *testing.T) {
+	rw := newRunWorldWith(t, true, builder(nil, false, nil), nil)
+	if ran, err := rw.l.Pass(context.Background()); err != nil || ran != 1 { // the admission, before any claim
+		t.Fatalf("the admitting pass: %d, %v", ran, err)
+	}
+	if n := nodesOf(rw.w, rw.task); n[types.NodeKindPlan].State.State != types.NodeStateStateRunnable && n[types.NodeKindPlan].State.State != types.NodeStateStateWaiting {
+		t.Fatalf("the plan after admission: %s", n[types.NodeKindPlan].State.State)
+	}
+	reader := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "reader", CreatedBy: rw.w.op}
+	rw.w.do(rw.w.op, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(reader) })
+	rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeActor(tx, rw.w.op, time.Now())
+	})
+	rw.w.op = reader.ID // the restarted controller's reader: the task's operator is revoked
+	rw.passesFor(t, 4, 0)
+	for kind, v := range nodesOf(rw.w, rw.task) {
+		if v.State.State == types.NodeStateStateClaimed || v.State.State == types.NodeStateStateCompleted {
+			t.Errorf("the %s ran: %s", kind, v.State.State)
+		}
+		rw.w.view(func(tx *eventstore.Tx) error {
+			if _, started, err := lease.FirstOn(tx, graph.UnitOf(v.Node.ID)); err != nil || started {
+				t.Errorf("an attempt started on the %s: %v", kind, err)
+			}
+			return nil
+		})
+	}
+	r := restartOn(t, rw)
+	if c := r.card(t, rw.task); c.Column != types.BoardPlacedCardColumnDone || !c.Abandoned {
+		t.Errorf("the card: %+v", c)
+	}
+	if code := r.wait(t, rw.task, "closed"); code != entry.ExitOK {
+		t.Errorf("task wait --until closed: %d", code)
+	}
+}
+
+// taskState is task's record's state and done-as.
+func taskState(t *testing.T, w *seeder, task types.TaskID) (string, string) {
+	t.Helper()
+	var r authority.TaskRecord
+	w.view(func(tx *eventstore.Tx) error {
+		raw, _, err := authority.TaskRecordOf(task)(tx)
+		if err == nil {
+			err = json.Unmarshal(raw, &r)
+		}
+		return err
+	})
+	return r.State, r.DoneAs
+}
+
+// 22a-7: the loop records the admitted task's task.done as a candidate
+// once its candidate is decided (graph.CandidateGo, the board's
+// done_candidate rule) and none of its nodes is claimed or held:
+//   - while a node of it is claimed (a plan recorded in its round and
+//     claimed), the snapshot decides no Done; once it settles, it is done;
+//   - a Done expecting the task's version a later event moved is refused
+//     stale, recording nothing; the next pass decides it again, and it is
+//     recorded once.
+func TestTheLoopEndsADecidedCandidate(t *testing.T) {
+	rw := candidateRun(t, nil)
+	if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+		t.Fatal("the task ended before its review's GO was observed")
+	}
+	var stale reconcile.Versioned
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		stale.ID = string(rw.task)
+		stale.Version, err = tx.SubjectVersion(stale.ID)
+		stale.Version--
+		return err
+	})
+	head := rw.w.head()
+	if err := rw.x.Run(context.Background(), reconcile.Done{Task: stale}); !errors.Is(err, eventstore.ErrStaleExpectedState) || rw.w.head() != head {
+		t.Fatalf("a Done at a moved version: %v (head %d → %d)", err, head, rw.w.head())
+	}
+	// A node of the task claimed (a plan recorded and claimed in the
+	// candidate's round): the candidate is decided, but not settled.
+	plan := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
+		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
+	rw.w.do(rw.w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Record(types.NodeRecorded{Task: rw.task, Project: graphProject, Node: plan})
+	})
+	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, plan.ID, map[string]graph.Resolved{}, 1)
+	})
+	rw.w.view(func(tx *eventstore.Tx) error {
+		s, err := reconcile.Observe(tx, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true})
+		if err != nil || s.Candidate || slices.ContainsFunc(reconcile.Decide(s), func(a reconcile.Action) bool { _, done := a.(reconcile.Done); return done }) {
+			t.Errorf("a decided candidate with a node claimed: candidate %v, %v", s.Candidate, err)
+		}
+		return nil
+	})
+	rw.passesFor(t, 6, 0) // the loop records the plan, then ends the task
+	rw.w.view(func(tx *eventstore.Tx) error {
+		v, err := graph.ViewOf(tx, plan.ID)
+		if err != nil || v.State.State != types.NodeStateStateCompleted {
+			t.Fatalf("the extra plan did not settle: %+v, %v", v.State, err)
+		}
+		return nil
+	})
+	if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+		t.Fatalf("the decided candidate: %s %s", st, as)
+	}
+	if n := count(t, rw.w.dir, `SELECT count(*) FROM events WHERE kind = '`+authority.TaskDoneEvent+`'`); n != 1 {
+		t.Errorf("%d task.done recorded", n)
+	}
+}
+
+// 22a-7 (Main): the loop's task.done takes the last build round's review
+// only (graph.LastBuildRound, 6d's rule, CandidateGo's):
+//   - round 1 no_go, then round 2 (the repair) go: the task is not done
+//     after round 1, and is done once round 2's review is, once;
+//   - round 1 no_go with the rounds rail at one round: round 2's build is
+//     held on the rail, and the task is never done.
+func TestADoneCandidateIsTheLastRounds(t *testing.T) {
+	t.Run("no_go, then go", func(t *testing.T) {
+		rw, _ := reviewRun(t, noGoDecision)
+		rw.passesFor(t, 1, 0) // the repair: round 2 recorded
+		if roundOf(t, rw, 2).build.Node.ID == "" {
+			t.Fatal("round 1's no_go recorded no repair")
+		}
+		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+			t.Fatal("the task is done after a no_go")
+		}
+		rw.r.adapters = &peerStarter{peer: reviewer(goDecision, false, nil)}
+		for range 40 {
+			if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+				break
+			}
+			rw.passesFor(t, 1, 0)
+		}
+		two := roundOf(t, rw, 2)
+		if two.review.State.State != types.NodeStateStateCompleted || two.review.Outcome == nil || *two.review.Outcome != types.OutcomeEmpty {
+			t.Fatalf("round 2's review: %s %v", two.review.State.State, two.review.Outcome)
+		}
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+			rw.w.view(func(tx *eventstore.Tx) error {
+				nodes, _ := graph.TaskNodes(tx, rw.task)
+				for _, n := range nodes {
+					t.Logf("%s r%d %s %v holds %+v", n.Node.Kind, n.Node.Round, n.State.State, n.Outcome, n.State.Holds)
+				}
+				return nil
+			})
+			t.Fatalf("after round 2's go: %s %s", st, as)
+		}
+		if n := count(t, rw.w.dir, `SELECT count(*) FROM events WHERE kind = '`+authority.TaskDoneEvent+`'`); n != 1 {
+			t.Errorf("%d task.done recorded", n)
+		}
+	})
+	t.Run("no_go, the rounds rail held", func(t *testing.T) {
+		rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}, nil)
+		if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
+			t.Fatalf("the gate: %s", v.State.State)
+		}
+		rails := rw.x.Env.Rails
+		oneRound := func(tx *eventstore.Tx, task types.TaskID) (graph.Caps, error) {
+			c, err := rails(tx, task)
+			c.RoundsPerTask = 1
+			return c, err
+		}
+		rw.x.Env.Rails, rw.r.env.Rails = oneRound, oneRound
+		rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(noGoDecision, false, nil))
+		var two round
+		for range 24 {
+			if two = roundOf(t, rw, 2); slices.ContainsFunc(two.build.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldBudgetRail }) {
+				break
+			}
+			rw.passesFor(t, 1, 0)
+		}
+		if two.build.Node.ID == "" || len(two.build.State.Holds) == 0 {
+			t.Fatalf("round 2's build: %+v", two.build.State)
+		}
+		rw.passesFor(t, 4, 0)
+		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+			t.Error("the task is done with its last round held")
+		}
+	})
+}
