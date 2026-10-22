@@ -148,8 +148,7 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	var ns graph.ErrNotStartable
 	switch {
 	case errors.As(err, &ni): // as the evaluator holds it (graph.Evaluate)
-		return held("the registry no longer gives roster member "+string(ni.Executor)+" its family",
-			"reviewer_unavailable", "registry:"+string(ni.Executor), types.OwnerSystem, nil)
+		return rosterMiss(ni)
 	case errors.As(err, &ns):
 		return &Miss{Reason: reason("the node is no longer claimed: " + ns.Detail)}, nil
 	case err != nil:
@@ -238,6 +237,14 @@ func reason(s string) string {
 }
 
 // held is a miss with a registered node hold on signal.
+// rosterMiss is the miss of a node whose roster member the registry no
+// longer derives (ni): reviewer_unavailable on its registry entry, as the
+// evaluator holds it; Match's refusal of it too (Astra chunk 3 H1).
+func rosterMiss(ni graph.ErrNotIndependent) (*Miss, error) {
+	return held("the registry no longer gives roster member "+string(ni.Executor)+" its family",
+		"reviewer_unavailable", "registry:"+string(ni.Executor), types.OwnerSystem, nil)
+}
+
 func held(why, hold, signal string, owner types.Owner, ref *string) (*Miss, error) {
 	id, err := ids.New("hld")
 	if err != nil {

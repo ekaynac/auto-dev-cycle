@@ -397,7 +397,7 @@ func heldChain(rw *runWorld) types.HoldID {
 // The review state table (Opus 22a-6a re-check H1, L1; pr-6a.md): from
 // each reachable cell (the live requirement × the live review), each
 // registry event (a restart to no independent roster, back to the
-// original, to another independent roster) ends with the review claimed
+// original, to another independent roster) ends with the review claimed and placed
 // on the registry's independent roster, or held while none exists and
 // claimed on it once a restart restores it; a review claimed before the
 // event stays claimed (its commit's, 22a-6c: L2); no review action is
@@ -415,6 +415,7 @@ func TestTheReviewStateTable(t *testing.T) {
 		{"requirement completed, review waiting", []tableStep{{regA, 3}}, "completed/waiting"},
 		{"requirement completed, review held", []tableStep{{regA, 2}, {regN, 3}}, "completed/held"},
 		{"requirement completed, review claimed", []tableStep{{regA, 6}}, "completed/claimed"},
+		{"requirement completed, review claimed, unplaced", []tableStep{{regA, 4}}, "completed/claimed"},
 		{"a replacement held, its requirement held", []tableStep{{regA, 2}, {regN, 3}, {regB, 1}, {regNX, 3}}, "held/held"},
 		{"requirement held, another roster independent", []tableStep{{regA, 1}, {regB, 1}}, "held/waiting"},
 		{"a replacement waiting on its requirement, moved off a held one", []tableStep{{regA, 1}, {regB, 2}}, "runnable/waiting"},
@@ -444,6 +445,10 @@ func TestTheReviewStateTable(t *testing.T) {
 					t.Fatalf("the start: %s, want %s", start, s.cell)
 				}
 				before := reviewNodes(rw)[types.NodeKindReview]
+				_, placed := leaseOn(rw.w, before.Node.ID)
+				if before.State.State == types.NodeStateStateClaimed && strings.HasSuffix(s.name, "unplaced") == placed {
+					t.Fatalf("the start: placed %v", placed)
+				}
 				var log bytes.Buffer
 				event := func(k tableRegistry) {
 					rw.reviewing(k.of(t, unknown))
@@ -452,9 +457,15 @@ func TestTheReviewStateTable(t *testing.T) {
 				}
 				event(e.reg)
 				want := e.family
-				if before.State.State == types.NodeStateStateClaimed { // L2: the commit's
+				if before.State.State == types.NodeStateStateClaimed && want == "" { // its roster is still the registry's: Match places it; its contributor is the commit's to refuse (L2, 22a-6c)
+					want = "stub-reviewer"
+				}
+				if before.State.State == types.NodeStateStateClaimed && placed { // L2: the commit's (22a-6c)
 					if after := reviewNodes(rw)[types.NodeKindReview]; after.Node.ID != before.Node.ID || after.State.State != types.NodeStateStateClaimed {
 						t.Fatalf("the claimed review after the event: %s %s", after.Node.ID, after.State.State)
+					}
+					if l, live := leaseOn(rw.w, before.Node.ID); !live || l.Executor != stubReviewer {
+						t.Fatalf("its lease: %v %+v", live, l)
 					}
 					return
 				}
@@ -474,6 +485,9 @@ func TestTheReviewStateTable(t *testing.T) {
 				p, err := review.Node.ParamsAsReviewNodeParams()
 				if err != nil || len(p.Roster) != 1 || p.Roster[0].Family != want || review.State.State != types.NodeStateStateClaimed {
 					t.Fatalf("from %s: %s, roster %+v (%v), want claimed on %s", start, cellOf(rw), p.Roster, err, want)
+				}
+				if l, live := leaseOn(rw.w, review.Node.ID); !live || l.Executor != p.Roster[0].Executor { // placed on it (Astra chunk 3 H1)
+					t.Fatalf("from %s: its lease %v %+v", start, live, l)
 				}
 				if log.Len() != 0 {
 					t.Errorf("the loop logged: %s", log.String())
