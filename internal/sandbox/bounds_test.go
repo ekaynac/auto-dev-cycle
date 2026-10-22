@@ -175,3 +175,38 @@ func TestURLTightening(t *testing.T) {
 		t.Errorf("fetch origin: %v", err)
 	}
 }
+
+// Opus #393 M3: a forbidden path under a directory the controller cannot
+// search (root's 0700 /run/podman; here one of the test's own, mode 0) is
+// measured as that directory's device, so it does not refuse the host;
+// the probe under it gives EACCES (the control).
+func TestDevOfAnUnsearchableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root searches any directory")
+	}
+	closed := filepath.Join(t.TempDir(), "closed")
+	must(t, os.Mkdir(closed, 0o700))
+	must(t, os.Chmod(closed, 0))
+	t.Cleanup(func() { _ = os.Chmod(closed, 0o700) })
+	sock := filepath.Join(closed, "podman.sock")
+	var st syscall.Stat_t
+	if err := syscall.Stat(sock, &st); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("the control: %v, want EACCES", err)
+	}
+	var parent syscall.Stat_t
+	must(t, syscall.Stat(filepath.Dir(closed), &parent))
+	if d, err := devOf(sock, true); err != nil || d != uint64(parent.Dev) {
+		t.Fatalf("devOf: %d, %v; want the device %d of the directory above", d, err, parent.Dev)
+	}
+	if _, err := devOf(sock, false); !errors.Is(err, syscall.EACCES) {
+		t.Errorf("devOf without climbing: %v, want EACCES", err)
+	}
+	// Opus 22a-5d-4 L3: only a path that is missing or under an unsearchable
+	// directory climbs; any other error is kept (here a path under a regular
+	// file: ENOTDIR).
+	file := filepath.Join(t.TempDir(), "file")
+	must(t, os.WriteFile(file, nil, 0o600))
+	if _, err := devOf(filepath.Join(file, "podman.sock"), true); !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("devOf under a regular file: %v, want ENOTDIR", err)
+	}
+}

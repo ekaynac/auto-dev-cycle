@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,6 +106,10 @@ type peerStarter struct {
 	peer     *inproc.Peer
 	refuse   error
 	notReady error
+	within   error // what the session's Within returns
+	// noClient: the session's adapter is a container whose client does not
+	// exist (a podman that is not installed): it never spawns.
+	noClient bool
 	mu       sync.Mutex
 	runs     []AdapterRun
 }
@@ -116,8 +121,13 @@ func (p *peerStarter) Start(_ context.Context, run AdapterRun) (AdapterSession, 
 	if p.refuse != nil {
 		return AdapterSession{}, p.refuse
 	}
-	return AdapterSession{Config: session.Config{InProcess: p.peer, Deadline: run.Deadline}, Path: func(s string) string { return s },
-		Ready: func() error { return p.notReady }}, nil
+	cfg := session.Config{InProcess: p.peer, Deadline: run.Deadline}
+	if p.noClient {
+		cfg = session.Config{Container: &session.Container{Command: []string{"/nonexistent/podman", "run"}, Remove: func(context.Context) error { return nil }},
+			Deadline: run.Deadline}
+	}
+	return AdapterSession{Config: cfg, Path: func(s string) string { return s },
+		Ready: func() error { return p.notReady }, Within: func() error { return p.within }}, nil
 }
 
 // countRuns is the runner the loop calls, counting the runs it started.
@@ -417,9 +427,10 @@ func TestTheRunHandsTheContainerItsAttempt(t *testing.T) {
 // the prepared exchange (Ready) starts nothing: no attempt, the exchange
 // discarded, the lease released, and the build held source_invalid_config.
 // An image whose manifest or adapter is not the profile's toolchain's or
-// the installed release's is a configuration fault, held on the project's
-// profile, which a profile pinning a rebuilt image clears; any other
-// refusal is retried.
+// the installed release's, or a pin with no registry, is a configuration
+// fault, held on the project's profile, which a profile pinning a rebuilt
+// image clears; any other refusal is retried, the sandbox refusing the
+// container (the host's fault, errHost: Opus #393 L2, L3) among them.
 func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 	for name, c := range map[string]struct {
 		refuse, notReady error
@@ -428,7 +439,8 @@ func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 		"another adapter in the image": {refuse: sandbox.ErrAdapter, signal: reconcile.RunnerSignal("profile ")},
 		"an image not prepared for it": {refuse: sandbox.ErrManifest, signal: reconcile.RunnerSignal("profile ")},
 		"an image not present":         {refuse: sandbox.ErrImage, signal: reconcile.RunnerSignal("retry 1 until ")},
-		"a container not made":         {notReady: sandbox.ErrSpec, signal: reconcile.RunnerSignal("profile ")},
+		"a pin with no registry":       {refuse: sandbox.ErrUnqualified, signal: reconcile.RunnerSignal("profile ")},
+		"a container not made":         {notReady: fmt.Errorf("%w: %w", errHost, sandbox.ErrSpec), signal: reconcile.RunnerSignal("retry 1 until ")},
 		"a Ready that fails":           {notReady: errors.New("no"), signal: reconcile.RunnerSignal("retry 1 until ")},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -636,6 +648,136 @@ func TestAnUnverifiedEndKeepsTheAttemptDirectory(t *testing.T) {
 		t.Error("the clone was kept")
 	}
 	rw.endedNotRun(t, vocab.ReasonAmbiguousState) // never empty/completed_clean from the submission
+}
+
+// Opus #393 M2: a run that left more than its container's disk bound (the
+// session's Within) is the candidate's output: its tree is never diffed, the
+// build's result is failed/unsafe_output by the attempt, and the attempt
+// directory, the exchange and the clone are torn down, never kept.
+func TestARunPastItsBoundIsTornDown(t *testing.T) {
+	rw := newRunWorld(t, true, builder(func(ws string) {
+		_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+	}, false, nil))
+	rw.r.adapters.(*peerStarter).within = sandbox.ErrLeft
+	diffed := false
+	diffOf = func(context.Context, sandbox.Repo, string, string) ([]byte, []string, error) {
+		diffed = true
+		return nil, nil, nil
+	}
+	t.Cleanup(func() { diffOf = accept.Diff })
+	rw.untilRun(t)
+	a, l := rw.attemptOf(t)
+	var res types.Result
+	var byAttempt bool
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		res, byAttempt, err = graph.AttemptResult(tx, a.ID)
+		return err
+	})
+	if diffed || !byAttempt || res.Outcome != types.OutcomeFailed || res.Reason != vocab.ReasonUnsafeOutput || len(res.Value) != 0 ||
+		a.Status != types.AttemptStatusCompleted || l.State != types.LeaseStateSettled {
+		t.Fatalf("diffed %v; the result %+v (by the attempt %v), attempt %s, lease %s", diffed, res, byAttempt, a.Status, l.State)
+	}
+	for _, dir := range []string{rw.r.clones, rw.exch, filepath.Join(rw.r.box.Root, "runs")} {
+		if !empty(dir) {
+			t.Errorf("%s left behind", dir)
+		}
+	}
+}
+
+// Opus 22a-5d-4 M1: an adapter whose container's client cannot start (a
+// podman that is not installed) never ran: the build's result is
+// could_not_run/precondition_failed with no attempt, never the candidate's,
+// the node is not completed (the next pass matches it again), and nothing
+// is kept.
+func TestAnAdapterThatNeverSpawnedIsTheHosts(t *testing.T) {
+	rw := newRunWorld(t, true, builder(nil, false, nil))
+	rw.r.adapters.(*peerStarter).noClient = true
+	rw.untilRun(t)
+	rw.endedNotRun(t, vocab.ReasonPreconditionFailed)
+	if st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State.State; st == types.NodeStateStateCompleted {
+		t.Errorf("the build node is %s", st)
+	}
+	for _, dir := range []string{rw.r.clones, rw.exch, filepath.Join(rw.r.box.Root, "runs")} {
+		if !empty(dir) {
+			t.Errorf("%s left behind", dir)
+		}
+	}
+}
+
+// Mythos chunk 2 M1: a persistent spawn failure (the podman path missing)
+// is held on the runner's bounded retry, counted across the launch: the
+// second in a row is "retry 2 until …". With the round's attempts rail
+// lifted, the maxTries-th spends the retries ("failed"), after which no
+// pass runs the build again; under the default rail (3 attempts a round),
+// the fourth launch is refused first, budget_rail on rail:attempts_per_round.
+func TestSpawnFailuresInARowAreBounded(t *testing.T) {
+	retryBase = time.Millisecond
+	t.Cleanup(func() { retryBase = time.Minute })
+	for _, lifted := range []bool{true, false} {
+		rw := newRunWorld(t, true, builder(nil, false, nil))
+		rw.r.adapters.(*peerStarter).noClient = true
+		if lifted {
+			rails := rw.r.place.d.Rails
+			rw.r.place.d.Rails = func(tx *eventstore.Tx, task types.TaskID) (graph.Caps, error) {
+				c, err := rails(tx, task)
+				c.AttemptsPerRound = 2 * maxTries
+				return c, err
+			}
+		}
+		rw.untilRun(t)
+		if h := rw.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("retry 1 until ")) {
+			t.Fatalf("lifted %v: after one spawn failure: held on %q", lifted, h)
+		}
+		for i := 0; i < 40 && rw.runs.count() < 2; i++ {
+			rw.passesFor(t, 1, 20*time.Millisecond)
+		}
+		if h := rw.heldOn(); rw.runs.count() != 2 || !strings.HasPrefix(h, reconcile.RunnerSignal("retry 2 until ")) {
+			t.Fatalf("lifted %v: after two spawn failures in a row: %d runs, held on %q", lifted, rw.runs.count(), h)
+		}
+		railed := func() bool {
+			for _, h := range nodesOf(rw.w, rw.task)[types.NodeKindBuild].State.Holds {
+				if h.Hold == vocab.HoldBudgetRail && h.SignalInstance == "rail:attempts_per_round" {
+					return true
+				}
+			}
+			return false
+		}
+		done := func() bool { return lifted && rw.heldOn() == runnerFailed || !lifted && railed() }
+		for i := 0; i < 80 && !done(); i++ {
+			rw.passesFor(t, 1, 20*time.Millisecond)
+		}
+		n := rw.runs.count()
+		if !done() || lifted && n != maxTries {
+			t.Fatalf("lifted %v: after the failures: held on %q (rail %v), %d runs", lifted, rw.heldOn(), railed(), n)
+		}
+		rw.passesFor(t, 3, 20*time.Millisecond)
+		if rw.runs.count() != n {
+			t.Errorf("lifted %v: a bounded build ran again: %d runs after %d", lifted, rw.runs.count(), n)
+		}
+	}
+}
+
+// Opus 22a-5d-4 L1: only a breach of the bound (sandbox.ErrLeft) is the
+// run's output; any other Within error is a container that may still run:
+// its tree is never diffed, the result is could_not_run/ambiguous_state,
+// and its attempt directory is kept.
+func TestAnyOtherWithinErrorKeepsTheAttempt(t *testing.T) {
+	for _, werr := range []error{
+		fmt.Errorf("%w: the run's container may still be running", sandbox.ErrSpec),
+		// Mythos chunk 2 L3: a tree that cannot be measured for a cause
+		// not the candidate's is no known breach.
+		errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured, syscall.EIO),
+	} {
+		rw := newRunWorld(t, true, builder(func(ws string) {
+			_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+		}, false, nil))
+		rw.r.adapters.(*peerStarter).within = werr
+		rw.untilRun(t)
+		rw.endedNotRun(t, vocab.ReasonAmbiguousState)
+		if empty(filepath.Join(rw.r.box.Root, "runs")) {
+			t.Errorf("%v: the attempt directory was torn down", werr)
+		}
+	}
 }
 
 // ended reports the build's attempt sealed and its lease settled, with the

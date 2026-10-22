@@ -60,35 +60,44 @@ type Manifest struct {
 	Adapter   map[string]string `json:"adapter,omitempty"` // os/arch -> sha256:hex
 }
 
+// ErrUnqualified: the pin names no registry, or is no digest pin: a fault
+// of the profile that pins it, which no wait clears (Opus #393 L2). It is an
+// ErrImage.
+var ErrUnqualified = fmt.Errorf("%w: not a fully qualified reference pinned by digest", ErrImage)
+
 // Resolve finds ref (name@sha256:hex) in the host's storage, never
 // pulling: an image whose digest differs from the pin is refused, and so
 // is one built for another OS or architecture than the host's (#226 entry
 // 88: with an emulator registered, an index digest can sit on another
-// platform's image, which would run emulated).
+// platform's image, which would run emulated). A host that holds several
+// platforms' images under an index pin may inspect it as another
+// platform's (podman 4.9): Resolve then takes, among the images whose
+// RepoDigests hold ref, the one of the host's platform, and refuses none
+// or more than one (Opus #397 L1).
 func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
 	// Podman's RepoDigests name the registry (docker.io/library/debian@…);
 	// a short name is refused rather than guessed.
 	registry, _, qualified := strings.Cut(ref, "/")
 	if !pinned.MatchString(ref) || !qualified || !strings.ContainsAny(registry, ".:") && registry != "localhost" {
-		return Image{}, fmt.Errorf("%w: not a fully qualified reference pinned by digest", ErrImage)
+		return Image{}, ErrUnqualified
 	}
-	out, err := h.podman(ctx, "image", "inspect", "--", ref)
+	found, err := h.inspect(ctx, ref, ref)
 	if err != nil {
-		return Image{}, fmt.Errorf("%w: %w", ErrImage, err)
+		return Image{}, err
 	}
-	var found []struct {
-		ID           string            `json:"Id"`
-		RepoDigests  []string          `json:"RepoDigests"`
-		Labels       map[string]string `json:"Labels"`
-		OS           string            `json:"Os"`
-		Architecture string            `json:"Architecture"`
-	}
-	if err := json.Unmarshal(out, &found); err != nil || len(found) != 1 || !imgID.MatchString(found[0].ID) ||
-		!slices.Contains(found[0].RepoDigests, ref) {
-		return Image{}, ErrImage
-	}
-	if found[0].OS != runtime.GOOS || found[0].Architecture != runtime.GOARCH {
-		return Image{}, fmt.Errorf("%w: the image is %s/%s, the host %s/%s", ErrImage, found[0].OS, found[0].Architecture, runtime.GOOS, runtime.GOARCH)
+	if !found[0].host() {
+		other := found[0]
+		if found, err = h.underPin(ctx, ref); err != nil {
+			return Image{}, err
+		}
+		found = slices.DeleteFunc(found, func(i inspected) bool { return !i.host() })
+		switch len(found) {
+		case 0:
+			return Image{}, fmt.Errorf("%w: the image is %s/%s, the host %s/%s", ErrImage, other.OS, other.Architecture, runtime.GOOS, runtime.GOARCH)
+		case 1:
+		default:
+			return Image{}, fmt.Errorf("%w: %d images of the host's platform hold %s", ErrImage, len(found), ref)
+		}
 	}
 	img := Image{Pinned: ref, ID: found[0].ID, OS: found[0].OS, Arch: found[0].Architecture}
 	if raw, ok := found[0].Labels[ManifestLabel]; ok {
@@ -99,6 +108,62 @@ func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
 		img.Manifest = m
 	}
 	return img, nil
+}
+
+// inspected is what Resolve reads of an image (podman image inspect).
+type inspected struct {
+	ID           string            `json:"Id"`
+	RepoDigests  []string          `json:"RepoDigests"`
+	Labels       map[string]string `json:"Labels"`
+	OS           string            `json:"Os"`
+	Architecture string            `json:"Architecture"`
+}
+
+func (i inspected) host() bool { return i.OS == runtime.GOOS && i.Architecture == runtime.GOARCH }
+
+// inspect inspects names, each of which must be an image whose
+// RepoDigests hold ref.
+func (h Host) inspect(ctx context.Context, ref string, names ...string) ([]inspected, error) {
+	out, err := h.podman(ctx, append([]string{"image", "inspect", "--"}, names...)...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrImage, err)
+	}
+	var found []inspected
+	if err := json.Unmarshal(out, &found); err != nil || len(found) != len(names) {
+		return nil, ErrImage
+	}
+	for _, i := range found {
+		if !imgID.MatchString(i.ID) || !slices.Contains(i.RepoDigests, ref) {
+			return nil, ErrImage
+		}
+	}
+	return found, nil
+}
+
+// underPin inspects every image whose RepoDigests hold ref (podman images:
+// one row per name, so an image's ID once).
+func (h Host) underPin(ctx context.Context, ref string) ([]inspected, error) {
+	out, err := h.podman(ctx, "images", "--all", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrImage, err)
+	}
+	var listed []struct {
+		ID          string   `json:"Id"`
+		RepoDigests []string `json:"RepoDigests"`
+	}
+	if err := json.Unmarshal(out, &listed); err != nil {
+		return nil, fmt.Errorf("%w: podman's images: %w", ErrImage, err)
+	}
+	var ids []string
+	for _, l := range listed {
+		if slices.Contains(l.RepoDigests, ref) && !slices.Contains(ids, l.ID) {
+			ids = append(ids, l.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return h.inspect(ctx, ref, ids...)
 }
 
 // ParseManifest reads ManifestLabel's JSON strictly (#373 L2): no

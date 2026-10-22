@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -155,4 +156,38 @@ type boundUnit struct{ anyUnit }
 
 func (boundUnit) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
 	return "prj_01m3250vkwffc979nzjw0g2sa1", "tsk_01m3250v9xft08ssr4ygq6g2np", true, nil
+}
+
+// Opus 22a-5d-4 L2: Spec.Check runs once the session has ended with its
+// tree seen gone, before the exchange is removed: out/ is still there,
+// holding what the adapter wrote; its error is Outcome.Checked. After an
+// unverified end it never runs.
+func TestCheckRunsBeforeTheExchangeIsRemoved(t *testing.T) {
+	for _, unverified := range []bool{false, true} {
+		w := newWorld(t)
+		if unverified {
+			waitTree = func(*session.Session) error { return session.ErrUnverified }
+		}
+		bound := errors.New("past the bound")
+		var seen []string
+		sp := spec(stub(t, stubPlan{Files: map[string]string{"patch.diff": "x"}, Result: clean}))
+		sp.Check = func() error {
+			entries, err := os.ReadDir(filepath.Join(w.host.Root, ExchangeName(sp.Attempt), "out"))
+			for _, e := range entries {
+				seen = append(seen, e.Name())
+			}
+			return errors.Join(err, bound)
+		}
+		out, _ := w.run(context.Background(), sp)
+		waitTree = (*session.Session).Wait
+		switch {
+		case unverified && (seen != nil || out.Checked != nil):
+			t.Errorf("Check ran after an unverified end: %q, %v", seen, out.Checked)
+		case !unverified && (!slices.Contains(seen, "patch.diff") || !errors.Is(out.Checked, bound)):
+			t.Errorf("Check saw %q, Outcome.Checked %v", seen, out.Checked)
+		}
+		if entries, err := os.ReadDir(w.host.Root); err != nil || len(entries) != 0 {
+			t.Errorf("unverified %v: the exchange is left: %v %v", unverified, entries, err)
+		}
+	}
 }
