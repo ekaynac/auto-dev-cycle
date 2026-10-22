@@ -99,11 +99,25 @@ func (l testLog) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// peerStarter starts peer as every attempt's adapter.
-type peerStarter struct{ peer *inproc.Peer }
+// peerStarter starts peer as every attempt's adapter, recording each run;
+// Start fails with refuse, and Ready with notReady, when set.
+type peerStarter struct {
+	peer     *inproc.Peer
+	refuse   error
+	notReady error
+	mu       sync.Mutex
+	runs     []AdapterRun
+}
 
-func (p peerStarter) Start(run AdapterRun) (AdapterSession, error) {
-	return AdapterSession{Config: session.Config{InProcess: p.peer, Deadline: run.Deadline}, Path: func(s string) string { return s }}, nil
+func (p *peerStarter) Start(_ context.Context, run AdapterRun) (AdapterSession, error) {
+	p.mu.Lock()
+	p.runs = append(p.runs, run)
+	p.mu.Unlock()
+	if p.refuse != nil {
+		return AdapterSession{}, p.refuse
+	}
+	return AdapterSession{Config: session.Config{InProcess: p.peer, Deadline: run.Deadline}, Path: func(s string) string { return s },
+		Ready: func() error { return p.notReady }}, nil
 }
 
 // countRuns is the runner the loop calls, counting the runs it started.
@@ -178,7 +192,7 @@ func newRunWorld(t *testing.T, images bool, peer *inproc.Peer) *runWorld {
 				return gateway.Observed{}, nil
 			}, nil
 		},
-		adapters: peerStarter{peer}, log: testLog{t}, done: func() { rw.nudged.Add(1) }}
+		adapters: &peerStarter{peer: peer}, log: testLog{t}, done: func() { rw.nudged.Add(1) }}
 	pl.ready = rw.r.cleared // the runner's holds clear as adcd's do
 	x.Placer = pl
 	rw.runs = &countRuns{r: rw.r}
@@ -344,6 +358,85 @@ func TestTheRunCompletesTheBuild(t *testing.T) {
 				if !empty(dir) {
 					t.Errorf("%s left behind", dir)
 				}
+			}
+		})
+	}
+}
+
+// P22a-5d-3: the run hands the adapter's container what it runs over: the
+// attempt's own directory, whose workspace is the one prepared, its
+// exchange under the host's root, its socket, and the profile's one pinned
+// image, with its toolchain key and lockfiles, for the image's checks.
+func TestTheRunHandsTheContainerItsAttempt(t *testing.T) {
+	rw := newRunWorld(t, true, builder(nil, false, nil))
+	rw.untilRun(t)
+	runs := rw.r.adapters.(*peerStarter).runs
+	var prof types.ProjectProfile
+	rw.w.view(func(tx *eventstore.Tx) error {
+		task, err := authority.TaskOf(tx, rw.task)
+		if err != nil {
+			return err
+		}
+		p, _, err := authority.ProjectProfile(tx, task.Project)
+		if p != nil {
+			prof = *p
+		}
+		return err
+	})
+	image, toolchain, err := pinnedImage(prof)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("%d adapter runs; the profile's image: %v", len(runs), err)
+	}
+	r, a := runs[0], types.AttemptID("")
+	if id, ok, _ := firstAttempt(rw); ok {
+		a = id
+	}
+	var lockfiles []string
+	for _, f := range prof.Toolchain.DependencyRecipe.Lockfiles {
+		lockfiles = append(lockfiles, string(f))
+	}
+	if r.Box == nil || r.Workspace != r.Box.Workspace() || r.Attempt != a || r.Exchange != filepath.Join(rw.exch, "exchange-"+string(a)) ||
+		r.Socket != filepath.Join(rw.r.sockets, string(a)+".sock") || r.Image != image || r.Toolchain != toolchain || !slices.Equal(r.Lockfiles, lockfiles) ||
+		len(lockfiles) == 0 || r.Deadline != sessionDeadline {
+		t.Errorf("the adapter's run: %+v (the attempt %s, the image %s %s, the lockfiles %q)", r, a, toolchain, image, lockfiles)
+	}
+}
+
+// P22a-5d-3: an adapter that cannot be started (Start) or made ready over
+// the prepared exchange (Ready) starts nothing: no attempt, the exchange
+// discarded, the lease released, and the build held source_invalid_config.
+// An image whose manifest or adapter is not the profile's toolchain's or
+// the installed release's is a configuration fault, held on the project's
+// profile, which a profile pinning a rebuilt image clears; any other
+// refusal is retried.
+func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
+	for name, c := range map[string]struct {
+		refuse, notReady error
+		signal           string // the hold's signal's start
+	}{
+		"another adapter in the image": {refuse: sandbox.ErrAdapter, signal: reconcile.RunnerSignal("profile ")},
+		"an image not prepared for it": {refuse: sandbox.ErrManifest, signal: reconcile.RunnerSignal("profile ")},
+		"an image not present":         {refuse: sandbox.ErrImage, signal: reconcile.RunnerSignal("retry 1 until ")},
+		"a container not made":         {notReady: sandbox.ErrSpec, signal: reconcile.RunnerSignal("profile ")},
+		"a Ready that fails":           {notReady: errors.New("no"), signal: reconcile.RunnerSignal("retry 1 until ")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rw := newRunWorld(t, true, builder(nil, false, nil))
+			s := rw.r.adapters.(*peerStarter)
+			s.refuse, s.notReady = c.refuse, c.notReady
+			rw.untilRun(t)
+			if _, ok, err := firstAttempt(rw); err != nil || ok {
+				t.Fatalf("an attempt started: %v %v", ok, err)
+			}
+			st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
+			if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, c.signal) {
+				t.Errorf("the node: %+v, want a hold on %q…", st, c.signal)
+			}
+			if _, live := leaseOn(rw.w, rw.build); live {
+				t.Error("the lease is still live")
+			}
+			if !empty(rw.exch) {
+				t.Error("the prepared exchange was not discarded")
 			}
 		})
 	}

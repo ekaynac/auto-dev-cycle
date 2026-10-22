@@ -256,10 +256,10 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | the test sandbox only (`scripts/test-sandbox.sh`, `make test-sandbox-selftest`), which stays. There is no product sandbox | GAP | P9 (phase 2 on the pinned prepared image; P10 when the registry proxy activates) |
+| admission | the product sandbox is P9's (`internal/sandbox`: one rootless Podman container per run, the pinned prepared image resolved by digest, no network, no capability, a read-only root). adcd's attempt run starts the builder's adapter in the attempt's container (22a-5d: `daemon.containerAdapter` over `sandbox.Host.Interactive`; `session.StartContainer`), its image checked first against the profile's toolchain, the base's lockfiles and the installed release's adapter (`sandbox.Image.CheckManifest`, `CheckAdapter`); adcd has no host adapter path. The reviewer's adapter (22a-6) runs in the same container start, with no tools and a read-only workspace. Inert until launch is active. The test sandbox (`scripts/test-sandbox.sh`) stays for tests | kept + GAP | the activation PR (flips it); P10 when the registry proxy activates |
 | fold/replay | n/a: containment is not a projection | n/a | — |
-| consumption | results come from a mount the controller owns; the controller never runs `git` on a workspace's `.git` | GAP | P9, P14a, P15 |
-| effect | the gateway socket is the only egress of a build (no network for a gate). The gateway and its socket exist (P11, #248), inert until P22a; the sandbox's confinement is P9's | kept + GAP | P9 (P11 done, inert) |
+| consumption | results come from a mount the controller owns; the controller never runs `git` on a workspace's `.git`. The adapter's outputs come from its exchange's `out/` (mounted at `/exchange/out`; `in/` read-only), ingested only once the container is seen removed (`Interactive.Remove`; otherwise `session.ErrUnverified`, nothing ingested and the attempt directory kept) and within the attempt's disk bound | kept + GAP | the activation PR (the adapter's half); P15 (the gate's, 22a-5c-2b) |
+| effect | the gateway socket is the only egress of a build (no network for a gate): the adapter's container has `--network=none` and the attempt's gateway socket mounted at `/run/adc/gateway.sock`, nothing else of the host (the live rows `TestLiveInteractive*`, run by the lead: `ADC_LIVE_PODMAN_ARCHIVE=… go test -run LiveInteractive ./internal/sandbox/`). Inert until launch is active | kept + GAP | the activation PR |
 
 ## I18. Acceptance confidentiality: `hidden/` never reaches a builder or a reviewer
 

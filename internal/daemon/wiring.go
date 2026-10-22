@@ -96,21 +96,23 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 }
 
 // runnerOf is adcd's attempt runner (P22a-5c-2a), under ctx, the daemon's:
-// nil with no sandbox or no adapter configured. The workspaces are cloned
-// and copied under <state>/clones, which only the controller's git reads;
-// the exchanges (adapterhost.Host.Root, one value 22a-5d's container
-// mounts) and the gateway sockets are made under <sandbox root>/runs. The
-// adapter's jail (hostAdapter) binds the attempt's workspace, exchange and
-// socket, and nothing of the state directory (Opus 22a-5c-2a M1).
+// nil with no sandbox configured. The workspaces are cloned and copied
+// under <state>/clones, which only the controller's git reads; the
+// exchanges (adapterhost.Host.Root: the sandbox's exchange root) and the
+// gateway sockets are made under <sandbox root>/runs, which the sandbox
+// keeps apart from the state directory and the controller's sockets. The
+// adapter runs in the attempt's container (containerAdapter, 22a-5d), which
+// mounts the attempt's workspace, exchange and socket, and nothing of the
+// state directory; its image's adapter must be the installed release's.
 func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry, eg *egress, logw io.Writer) (*runner, error) {
-	if cfg.Sandbox == nil || cfg.Adapter == "" {
+	if cfg.Sandbox == nil {
 		return nil, nil
 	}
-	adapter, err := hostAdapterOf(cfg)
+	lib, err := releaseLib()
 	if err != nil {
 		return nil, err
 	}
-	clones, exchanges, sockets := filepath.Join(cfg.StateDir, "clones"), filepath.Join(cfg.Sandbox.Root, "runs", "exchange"), filepath.Join(cfg.Sandbox.Root, "runs", "gateway")
+	clones, exchanges, sockets := filepath.Join(cfg.StateDir, "clones"), cfg.Sandbox.ExchangeRoot(), filepath.Join(cfg.Sandbox.Root, "runs", "gateway")
 	for _, dir := range []string{clones, exchanges, sockets} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
@@ -119,15 +121,7 @@ func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry,
 	return &runner{ctx: ctx, store: d.store, system: d.system, blobs: d.blobs, place: placerOf(reg, *cfg.Sandbox, eg.gw), env: env(d, reg),
 		host: &adapterhost.Host{Store: d.store, Blobs: d.blobs, Actor: string(d.system.Actor()), Principal: d.system, Root: exchanges},
 		box:  *cfg.Sandbox, clones: clones, sockets: sockets, gateway: eg.open,
-		adapters: adapter, log: logw}, nil
-}
-
-// hostAdapterOf is cfg's adapter on the host, checked again now the state
-// directory is made (adapterPath): its resolved path, whose directory is
-// what its jail binds (Opus 22a-5c-2a-w H1, L3).
-func hostAdapterOf(cfg Config) (hostAdapter, error) {
-	adapter, err := cfg.adapterPath()
-	return hostAdapter{Command: []string{adapter}, Env: adapterEnv}, err
+		adapters: &containerAdapter{Box: *cfg.Sandbox, Release: lib}, log: logw}, nil
 }
 
 // placerOf is adcd's placer over reg: the task's rails (authority.Rails)
