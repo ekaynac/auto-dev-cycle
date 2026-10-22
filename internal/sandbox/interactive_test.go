@@ -63,6 +63,26 @@ func TestInteractiveIsStartPlusTheExchange(t *testing.T) {
 	}
 }
 
+// Mythos chunk 4a L1: a reviewer's run mounts its workspace read-only; a
+// builder's stays writable; the command differs in that mount alone.
+func TestAReadOnlyWorkspaceIsMountedReadOnly(t *testing.T) {
+	h := testHost(t, &fake{})
+	att := newAttemptID(t)
+	r := testRun(t, h, Build)
+	r.Exchange = exchange(t, h, att)
+	rw, err := h.Interactive(r, att)
+	must(t, err)
+	r.ReadOnlyWorkspace = true
+	ro, err := h.Interactive(r, att)
+	must(t, err)
+	mount := "--mount=type=bind,src=" + resolve(r.Attempt.Workspace()) + ",dst=" + WorkspaceDir
+	i := slices.Index(rw.Command, mount)
+	if i < 0 || slices.Contains(ro.Command, mount) || len(ro.Command) != len(rw.Command) || ro.Command[i] != mount+",ro=true" ||
+		!slices.Equal(ro.Command[:i], rw.Command[:i]) || !slices.Equal(ro.Command[i+1:], rw.Command[i+1:]) {
+		t.Errorf("the workspace's mounts:\n%q\n%q", rw.Command, ro.Command)
+	}
+}
+
 // An interactive run is refused before Podman runs unless it is a build
 // run of its attempt's exchange, directly under the exchange root, whose
 // in/ and out/ are real directories; a batch start never mounts one.

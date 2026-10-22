@@ -94,8 +94,11 @@ type Run struct {
 	// interactive build run's only (Host.Interactive), under
 	// Host.ExchangeRoot, named exchange-<its attempt>.
 	Exchange string
-	Limits   Limits
-	Argv     []string
+	// ReadOnlyWorkspace mounts the workspace read-only (a reviewer's:
+	// contract 09; Mythos chunk 4a L1).
+	ReadOnlyWorkspace bool
+	Limits            Limits
+	Argv              []string
 }
 
 // resolve is p with every symlink resolved; a missing tail is kept as is.
@@ -182,7 +185,7 @@ func (h Host) args(r Run, name string) ([]string, error) {
 		"--timeout=" + strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds()))+int64(conmonGrace/time.Second), 10),
 		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
 		"--env=HOME=" + homeDir, "--workdir=" + WorkspaceDir,
-		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir, "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}
+		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir + map[bool]string{true: ",ro=true"}[r.ReadOnlyWorkspace], "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}
 	if r.Mode == Build {
 		args = append(args, "--mount=type=bind,src="+m[2]+",dst="+GatewaySocket)
 	}

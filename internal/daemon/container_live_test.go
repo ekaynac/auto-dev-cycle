@@ -2,9 +2,10 @@
 
 package daemon
 
-// P22a-5d's end-to-end live row (Opus #393 M1): a placed build's attempt
+// P22a-5d's end-to-end live rows (Opus #393 M1): a placed build's attempt
 // runs through adcd's runner with the builder's adapter in the attempt's
-// container, under rootless Podman. It runs only when asked, outside the
+// container, under rootless Podman; and a placed review's, with the
+// reviewer's (Mythos chunk 4a H1). It runs only when asked, outside the
 // test sandbox, with an OCI archive of a prepared image that carries the
 // adapter (scripts/prepare-go-image.sh, go-mini's) and Node for the stub
 // provider:
@@ -28,9 +29,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -171,9 +174,10 @@ func goMiniRepo(t *testing.T, tmp string) string {
 
 // liveWorld is runWorld over go-mini's repository, pinning the live image,
 // with adcd's runner on the live sandbox host: the container adapter, the
-// gateway (its registry's stub destination the stub provider), the
-// exchanges and sockets under the host's runs/.
-func liveWorld(t *testing.T, want func(liveBox) string) (*runWorld, liveBox, string) {
+// gateway (its registry reg's stub destination the stub provider), the
+// exchanges and sockets under the host's runs/; edit, if any, edits the
+// profile further.
+func liveWorld(t *testing.T, want func(liveBox) string, edit func(map[string]any)) (*runWorld, liveBox, string, registry.Registry) {
 	t.Helper()
 	tmp := t.TempDir()
 	src := goMiniRepo(t, tmp)
@@ -185,6 +189,9 @@ func liveWorld(t *testing.T, want func(liveBox) string) (*runWorld, liveBox, str
 		tc := p["toolchain"].(map[string]any) // what a go-mini image is prepared for
 		tc["images"] = map[string]any{"go": box.ref}
 		tc["dependency_recipe"].(map[string]any)["lockfiles"] = []string{"go.mod"}
+		if edit != nil {
+			edit(p)
+		}
 	})
 	box.h.Forbidden = []string{rw.w.dir} // the controller's state directory
 	doc, err := registry.Load("../../fixtures/m1/config/registry-stub.json")
@@ -219,7 +226,7 @@ func liveWorld(t *testing.T, want func(liveBox) string) (*runWorld, liveBox, str
 		}
 	}
 	rw.r.adapters = &containerAdapter{Box: h, Want: want(box)}
-	return rw, box, log
+	return rw, box, log, reg
 }
 
 // stubRequests are the stub provider's logged requests.
@@ -247,7 +254,7 @@ func containersIn(t *testing.T, b liveBox) string {
 // attempt (CommitAttempt). The container, the attempt directory, the
 // exchange and the clone are gone after it.
 func TestLiveContainerRunsTheBuild(t *testing.T) {
-	rw, box, log := liveWorld(t, func(b liveBox) string { return b.want })
+	rw, box, log, _ := liveWorld(t, func(b liveBox) string { return b.want }, nil)
 	rw.untilRun(t)
 	a, l := rw.attemptOf(t)
 	var res types.Result
@@ -266,24 +273,14 @@ func TestLiveContainerRunsTheBuild(t *testing.T) {
 	if n := stubRequests(t, log); n < 2 {
 		t.Errorf("the stub provider saw %d requests, want the builder's turns", n)
 	}
-	for _, dir := range []string{rw.r.clones, rw.exch} {
-		if !empty(dir) {
-			t.Errorf("%s left behind", dir)
-		}
-	}
-	if left, _ := filepath.Glob(filepath.Join(box.h.Root, "runs", "a*")); len(left) != 0 { // the attempt directories
-		t.Errorf("attempt directories left: %q", left)
-	}
-	if left := containersIn(t, box); left != "" {
-		t.Errorf("containers left: %q", left)
-	}
+	leftBehind(t, rw, box)
 }
 
 // An image whose adapter is not the installed release's is refused before
 // anything is prepared: no attempt starts, no request reaches the stub, no
 // container is made, and the build is held on the project's profile.
 func TestLiveContainerRefusesAnotherAdapter(t *testing.T) {
-	rw, box, log := liveWorld(t, func(liveBox) string { return "sha256:" + strings.Repeat("0", 64) })
+	rw, box, log, _ := liveWorld(t, func(liveBox) string { return "sha256:" + strings.Repeat("0", 64) }, nil)
 	rw.untilRun(t)
 	if _, ok, err := firstAttempt(rw); err != nil || ok {
 		t.Fatalf("an attempt started: %v %v", ok, err)
@@ -298,4 +295,80 @@ func TestLiveContainerRefusesAnotherAdapter(t *testing.T) {
 	if left := containersIn(t, box); left != "" {
 		t.Errorf("containers made: %q", left)
 	}
+}
+
+// leftBehind reports what a live run left: the clones, the exchanges, the
+// attempt directories, the containers.
+func leftBehind(t *testing.T, rw *runWorld, box liveBox) {
+	t.Helper()
+	for _, dir := range []string{rw.r.clones, rw.exch} {
+		if !empty(dir) {
+			t.Errorf("%s left behind", dir)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(box.h.Root, "runs", "a*")); len(left) != 0 {
+		t.Errorf("attempt directories left: %q", left)
+	}
+	if left := containersIn(t, box); left != "" {
+		t.Errorf("containers left: %q", left)
+	}
+}
+
+// The review's activation prerequisite (Mythos chunk 4a H1): live, under
+// go-mini's profile (its gate, its go.mod lockfile), the loop places the
+// build, accept and the gate run on the live sandbox, and the placed
+// review runs in the reviewer's container with its empty, read-only
+// workspace: the image checked with no base to hash, the stub provider's
+// reviewer answering go through adcd's gateway. The review completes with
+// that verdict, recorded by its attempt, and nothing is left behind.
+func TestLiveContainerRunsTheReview(t *testing.T) {
+	var gomini struct{ Gate map[string]any }
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err == nil {
+		err = json.Unmarshal(raw, &gomini)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	rw, box, log, reg := liveWorld(t, func(b liveBox) string { return b.want }, func(p map[string]any) {
+		g := gomini.Gate
+		g["environments"].([]any)[0].(map[string]any)["facts"].(map[string]any)["runtime"].(map[string]any)["arch"] = runtime.GOARCH
+		p["gate"] = g
+	})
+	rw.untilRun(t) // the build
+	// accept's and the gate's image is the live one, resolved as adcd does.
+	rw.r.place.d.Images = box.h
+	pl := rw.x.Placer.(placer)
+	pl.d.Images = box.h
+	rw.x.Placer = pl
+	rw.reviewing(reg)
+	// The launch's destinations are the grant's; builds, accept, the gate
+	// and the review run through adcd's runner.
+	rw.r.env.Families, rw.r.place.d.Registry = reg, reg
+	rw.x.Runner = rw.runs
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, io.Discard)
+	builderCalls := stubRequests(t, log)
+	var review graph.NodeView
+	for range 16 {
+		if _, err := rw.l.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		rw.r.Wait()
+		review = reviewNodes(rw)[types.NodeKindReview]
+		if review.State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	gate := nodesOf(rw.w, rw.task)[types.NodeKindGate]
+	if review.State.State != types.NodeStateStateCompleted || review.Outcome == nil || *review.Outcome != types.OutcomeEmpty {
+		t.Fatalf("the review: %s %v, holds %+v (the gate: %s, holds %+v)", review.State.State, review.Outcome, review.State.Holds, gate.State.State, gate.State.Holds)
+	}
+	rs := reviewResults(rw, review.Node.ID)
+	if len(rs) != 1 || rs[0].Attempt == nil || rs[0].Result.Reason != vocab.ReasonCompletedClean {
+		t.Fatalf("its results: %+v", rs)
+	}
+	if n := stubRequests(t, log) - builderCalls; n < 1 {
+		t.Errorf("the stub provider saw %d reviewer requests", n)
+	}
+	leftBehind(t, rw, box)
 }

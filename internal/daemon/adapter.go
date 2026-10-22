@@ -37,6 +37,10 @@ type AdapterRun struct {
 	Image     string           // the project's pinned toolchain image, name@sha256:hex
 	Toolchain string           // its key in the profile's toolchain.images
 	Lockfiles []string         // the profile's dependency_recipe.lockfiles, at the base
+	// NoBase: no base is checked out (a reviewer's empty workspace), so the
+	// image's lockfile set is checked, never hashed at the workspace (Mythos
+	// chunk 4a H1); ReadOnly mounts the workspace read-only (L1).
+	NoBase, ReadOnly bool
 }
 
 // AdapterSession is a started adapter's session config; Path, a host path
@@ -104,7 +108,11 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 		err = fmt.Errorf("%w: the image could not be resolved within %s: %w", errHost, resolveTimeout, err)
 	}
 	cancel()
-	if err == nil {
+	switch {
+	case err != nil:
+	case run.NoBase:
+		err = img.CheckPrepared(run.Toolchain, run.Lockfiles)
+	default:
 		err = img.CheckManifest(run.Toolchain, run.Workspace, run.Lockfiles)
 	}
 	if err == nil {
@@ -115,7 +123,8 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 	}
 	limits := containerLimits
 	limits.Timeout = run.Deadline
-	r := sandbox.Run{Image: img, Mode: sandbox.Build, Attempt: run.Box, Gateway: run.Socket, Exchange: run.Exchange, Limits: limits, Argv: containerArgv}
+	r := sandbox.Run{Image: img, Mode: sandbox.Build, Attempt: run.Box, Gateway: run.Socket, Exchange: run.Exchange, ReadOnlyWorkspace: run.ReadOnly,
+		Limits: limits, Argv: containerArgv}
 	// The container's command is made once the exchange is (Ready): the
 	// sandbox refuses an exchange whose in/ and out/ are not directories.
 	ct := &session.Container{}

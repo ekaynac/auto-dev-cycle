@@ -332,12 +332,11 @@ func (r *runner) notRun(node types.NodeID, kind types.ResultKind, detail string,
 		if err != nil || cur.State.State != types.NodeStateStateClaimed || cur.State.Key == nil {
 			return errors.Join(err, fmt.Errorf("node %s holds no claim", node))
 		}
-		id, err := ids.New("res")
+		res, err := resultOf(*cur.State.Key, kind, types.OutcomeCouldNotRun, vocab.ReasonControllerRunFailed, detail)
 		if err != nil {
 			return err
 		}
-		return graph.Commit(tx, node, types.Result{ID: types.ResultID(id), Computation: cur.State.Key.Key, Kind: kind, Value: []types.Ref{},
-			Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonControllerRunFailed, Detail: detail}, r.env)
+		return graph.Commit(tx, node, res, r.env)
 	})
 }
 

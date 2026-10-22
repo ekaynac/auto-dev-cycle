@@ -192,13 +192,10 @@ func ParseManifest(raw []byte) (Manifest, error) {
 // toolchain.images) from exactly the lockfiles at the base, read from
 // base, a controller-side copy, never following a symlink.
 func (img Image) CheckManifest(toolchain, base string, lockfiles []string) error {
+	if err := img.CheckPrepared(toolchain, lockfiles); err != nil {
+		return err
+	}
 	m := img.Manifest
-	if m.Toolchain == "" || m.Toolchain != toolchain {
-		return fmt.Errorf("%w: prepared for another toolchain", ErrManifest)
-	}
-	if !slices.Equal(slices.Sorted(maps.Keys(m.Lockfiles)), slices.Sorted(slices.Values(lockfiles))) {
-		return fmt.Errorf("%w: another set of lockfiles", ErrManifest)
-	}
 	for _, p := range lockfiles {
 		sum, err := fileSum(base, p)
 		if err != nil {
@@ -207,6 +204,21 @@ func (img Image) CheckManifest(toolchain, base string, lockfiles []string) error
 		if m.Lockfiles[p] != sum {
 			return fmt.Errorf("%w: lockfile %s differs at the base", ErrManifest, p)
 		}
+	}
+	return nil
+}
+
+// CheckPrepared is CheckManifest without a base: the image is prepared
+// for toolchain and for exactly lockfiles, none of which is hashed. It is
+// a run's with no base checked out (a reviewer's empty workspace; Mythos
+// chunk 4a H1).
+func (img Image) CheckPrepared(toolchain string, lockfiles []string) error {
+	m := img.Manifest
+	if m.Toolchain == "" || m.Toolchain != toolchain {
+		return fmt.Errorf("%w: prepared for another toolchain", ErrManifest)
+	}
+	if !slices.Equal(slices.Sorted(maps.Keys(m.Lockfiles)), slices.Sorted(slices.Values(lockfiles))) {
+		return fmt.Errorf("%w: another set of lockfiles", ErrManifest)
 	}
 	return nil
 }

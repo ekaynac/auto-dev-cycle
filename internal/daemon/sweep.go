@@ -196,9 +196,7 @@ func (r *runner) endOne(ctx context.Context, lf left) error {
 	}
 	if recorded == nil {
 		errs = append(errs, r.command(ctx, r.commitStep(lf.node, nil, func(key types.ComputationKey) (types.Result, error) {
-			id, err := ids.New("res")
-			return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindPatch, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
-				Reason: vocab.ReasonAmbiguousState, Detail: "the controller restarted before it recorded the attempt's result"}, err
+			return resultOf(key, types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonAmbiguousState, "the controller restarted before it recorded the attempt's result")
 		}, &recorded)))
 	}
 	return errors.Join(append(errs, r.endAttempt(ctx, lf.attempt.Lease, lf.attempt.ID, recorded))...)
