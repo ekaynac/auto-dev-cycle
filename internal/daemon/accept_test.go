@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -283,5 +285,36 @@ func TestABlobIsReadByItsDigest(t *testing.T) {
 	}
 	if _, err := r.readBlob(types.Digest(d), 64); err == nil {
 		t.Error("a damaged blob was read as its digest's")
+	}
+}
+
+// countAccepts counts the accept and gate runs an Acceptor is asked for.
+type countAccepts struct {
+	r *runner
+	n atomic.Int32
+}
+
+func (c *countAccepts) Accept(node types.NodeID) bool { c.n.Add(1); return c.r.Accept(node) }
+func (c *countAccepts) Gate(node types.NodeID) bool   { c.n.Add(1); return c.r.Gate(node) }
+
+// Opus 22a-5c-2b-3 H2 (and 22a-5c-2b-2 M1, L1): while the build attempt
+// that recorded accept's input is not sealed, the loop decides no Accept:
+// no run in N passes, the accept node claimed with no hold.
+func TestAnUnsealedInputIsNotAccepted(t *testing.T) {
+	sealWith = func(*eventstore.Tx, types.AttemptID, int64, lease.Units, lease.Publisher, *types.Digest, []string, types.ActorID) ([]eventstore.Event, error) {
+		return nil, nil // the seal's command never lands
+	}
+	t.Cleanup(func() { sealWith = lease.SealWith })
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	if a, _ := rw.attemptOf(t); a.Checkpoint != nil {
+		t.Fatalf("the build's attempt was sealed: %+v", a)
+	}
+	c := &countAccepts{r: rw.r}
+	rw.x.Acceptor = c
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	rw.passesFor(t, 5, 0)
+	if v := nodesOf(rw.w, rw.task)[types.NodeKindAccept]; c.n.Load() != 0 || v.State.State != types.NodeStateStateClaimed || len(v.State.Holds) != 0 {
+		t.Errorf("accept on an unsealed input: %d runs, %s, holds %+v", c.n.Load(), v.State.State, v.State.Holds)
 	}
 }

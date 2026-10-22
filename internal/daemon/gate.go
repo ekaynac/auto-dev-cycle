@@ -92,8 +92,8 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		return errors.Join(cause, r.notRunOrHold(node, types.ResultKindGateResult, "the gate could not run: "+why, cause))
 	}
 	g, err := r.gating(ctx, node)
-	if errors.Is(err, errNotSealed) {
-		return nil
+	if errors.Is(err, errNotSealed) { // a backstop, as accept's: no hold, no nudge
+		return err
 	}
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
@@ -159,18 +159,29 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
 	}
-	err = r.commandAs(r.ctx, types.CommandID(cmd), func(tx *eventstore.Tx) ([]eventstore.Event, error) { // past the bound's work: its deadline cuts no record
+	commit := func(tx *eventstore.Tx) error {
 		cur, err := graph.ViewOf(tx, node)
 		if err != nil || cur.State.State != types.NodeStateStateClaimed || cur.State.Key == nil {
-			return nil, errors.Join(err, fmt.Errorf("gate node %s holds no claim", node))
+			return errors.Join(err, fmt.Errorf("gate node %s holds no claim", node))
 		}
 		res, err := gate.Result(*cur.State.Key, v, contract, img, gate.Subject{Project: g.view.Project, Revision: buildContractRevision},
 			types.CommandID(cmd), r.blobs, tx.Now())
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return nil, graph.Commit(tx, node, res, r.env)
-	})
+		return graph.Commit(tx, node, res, r.env)
+	}
+	if v.Outcome == vocab.CouldNotRun {
+		// The gate's own could_not_run (results it cannot read: a candidate
+		// may cause it) is never selected: the node is held in the same
+		// command, a bounded retry ending in "runner: failed", so it never
+		// re-runs at once (Opus 22a-5c-2b-3 H1).
+		err = r.holdAfterAs(types.CommandID(cmd), node, fmt.Errorf("the gate could not read its results: %s", v.Why), commit)
+	} else {
+		err = r.commandAs(r.ctx, types.CommandID(cmd), func(tx *eventstore.Tx) ([]eventstore.Event, error) { // past the bound's work: its deadline cuts no record
+			return nil, commit(tx)
+		})
+	}
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
 	}

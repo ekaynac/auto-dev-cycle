@@ -257,3 +257,25 @@ func TestAGateRetryClears(t *testing.T) {
 		t.Fatalf("the gate after its retry's time: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 }
+
+// Opus 22a-5c-2b-3 H1: the gate's own could_not_run (a candidate stream the
+// controller cannot read) is recorded once, and the node is held in the
+// same command for a bounded retry: no second run in the passes that
+// follow.
+func TestAnUnreadableStreamIsHeld(t *testing.T) {
+	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"gate-events.json": "not a stream\n"}, nil)
+	v := rw.gating(t)
+	rw.passesFor(t, 4, 0)
+	v = nodesOf(rw.w, rw.task)[types.NodeKindGate]
+	held := ""
+	for _, h := range v.State.Holds {
+		if reconcile.IsRunnerSignal(h.SignalInstance) {
+			held = h.SignalInstance
+		}
+	}
+	got := resultsOn(t, rw.w, v.Node.ID)
+	if len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonRunnerFault ||
+		!strings.HasPrefix(held, reconcile.RunnerSignal("retry 1 until ")) {
+		t.Errorf("the gate of an unreadable stream: %s, held on %q, results %+v", v.State.State, held, got)
+	}
+}

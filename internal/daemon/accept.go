@@ -114,8 +114,8 @@ func (r *runner) acceptNode(node types.NodeID) (err error) {
 		}
 	}()
 	a, err := r.acceptance(ctx, node, true)
-	if errors.Is(err, errNotSealed) { // the build's seal follows its result: the next pass runs it (Opus 22a-5c-2b-2 M1)
-		return nil
+	if errors.Is(err, errNotSealed) { // a backstop: the loop decides Accept only on a sealed input (reconcile.SealedInput); no hold, no nudge
+		return err
 	}
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
@@ -210,13 +210,13 @@ func (r *runner) acceptance(ctx context.Context, node types.NodeID, claimed bool
 	if err != nil {
 		return a, err
 	}
+	if checkpoint == nil { // read first: an unsealed input reads no patch (Opus 22a-5c-2b-3 H2)
+		return a, errNotSealed
+	}
 	if patch != nil {
 		if a.patch, err = r.readBlob(*patch, maxPatchRead); err != nil {
 			return a, err
 		}
-	}
-	if checkpoint == nil {
-		return a, errNotSealed
 	}
 	b, err := r.readBlob(*checkpoint, 1<<20)
 	var rec types.AttemptRecord
@@ -329,13 +329,23 @@ func (r *runner) hold(node types.NodeID, cause error) error { return r.holdAfter
 // command under the daemon's context (the run's bound may be what failed);
 // a shutdown holds nothing.
 func (r *runner) holdAfter(node types.NodeID, cause error, first func(*eventstore.Tx) error) error {
+	cmd, err := ids.New("cmd")
+	if err != nil {
+		return err
+	}
+	return r.holdAfterAs(types.CommandID(cmd), node, cause, first)
+}
+
+// holdAfterAs is holdAfter under the command id cmd (a gate's receipt
+// names the command that records it).
+func (r *runner) holdAfterAs(cmd types.CommandID, node types.NodeID, cause error, first func(*eventstore.Tx) error) error {
 	ctx := r.ctx
 	if ctx.Err() != nil {
 		return nil
 	}
 	dirs := r.dirsReady()
 	tries := 0
-	err := r.command(ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	err := r.commandAs(ctx, cmd, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		if first != nil {
 			if err := first(tx); err != nil {
 				return nil, err

@@ -331,8 +331,11 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Open = append(s.Open, v)
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindAccept:
-			v.Version, err = tx.SubjectVersion(v.ID)
-			s.Accepts = append(s.Accepts, v)
+			var sealed bool
+			if sealed, err = SealedInput(tx, n.Node.ID); err == nil && sealed {
+				v.Version, err = tx.SubjectVersion(v.ID)
+				s.Accepts = append(s.Accepts, v)
+			}
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindGate:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Gated = append(s.Gated, v)
@@ -684,4 +687,26 @@ func recovered(what string, f func() error) (err error) {
 		}
 	}()
 	return f()
+}
+
+// SealedInput reports whether accept node's claimed input may be accepted
+// now: false only while the build attempt that recorded it is not sealed
+// yet (its checkpoint, which accept reads, is the command after its
+// result), so the loop decides no Accept, and no run spins, until it is
+// (Opus 22a-5c-2b-3 H2). An input of any other shape is accept's to refuse.
+func SealedInput(tx *eventstore.Tx, node types.NodeID) (bool, error) {
+	ins, _, err := graph.ClaimInputs(tx, node)
+	if err != nil || len(ins) != 1 || ins[0].Result == nil {
+		return true, err
+	}
+	raw, ok, err := tx.Get(graph.ResultProjection, string(*ins[0].Result))
+	var rr types.ResultRecorded
+	if err == nil && ok {
+		err = json.Unmarshal(raw, &rr)
+	}
+	if err != nil || !ok || rr.Attempt == nil {
+		return true, err
+	}
+	a, _, found, err := lease.AttemptAt(tx, *rr.Attempt)
+	return err != nil || !found || a.Checkpoint != nil, err
 }
