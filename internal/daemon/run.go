@@ -16,10 +16,12 @@ package daemon
 //     the branch's tree for its first attempt (openWorkspace);
 //  3. the gateway: the attempt's session on a socket of its own
 //     (egress.open), its token bound to the lease, the attempt and the call;
-//  4. the adapter's session, through the one seam 22a-5d swaps
-//     (AdapterStarter: on the host here, #226 entry 126 option A), the
-//     exchange prepared and checked (adapterhost.Host.Prepare), the prompt
-//     the brief's title and requirement, the tools the edit loop's;
+//  4. the adapter's session, through the one seam (AdapterStarter: in the
+//     attempt's container, containerAdapter, 22a-5d), its image resolved
+//     and checked before anything else, the exchange prepared and checked
+//     (adapterhost.Host.Prepare), then the container's command made over
+//     it (AdapterSession.Ready), the prompt the brief's title and
+//     requirement, the tools the edit loop's;
 //  5. the launch (placer.launch: the readiness observed, then
 //     dispatch.Launch in one command): a miss discards the exchange and
 //     starts nothing, the lease released and the node held by Launch;
@@ -42,7 +44,7 @@ package daemon
 // loop decides no Run until then. The builder's manifest.intent is recorded
 // in the launch command (builderIntent; P22a-5c-2b-1, W17); restart (an
 // attempt left running or finishing with no runner) is 22a-5c-2c's. adcd
-// builds the runner with an adapter and a sandbox (runnerOf, P22a-5c-2a-w).
+// builds the runner with a sandbox (runnerOf, P22a-5c-2a-w; 22a-5d).
 
 import (
 	"bytes"
@@ -232,8 +234,17 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, endGateway()) }()
-	sess, err := r.adapters.Start(AdapterRun{Attempt: aid, Workspace: ws.Path(), Exchange: filepath.Join(r.host.Root, adapterhost.ExchangeName(aid)),
-		Socket: socket, Deadline: sessionDeadline})
+	image, toolchain, err := pinnedImage(pl.profile)
+	if err != nil {
+		err = fmt.Errorf("%w: project %s %w", errConfig, pl.view.Project, err)
+		return errors.Join(err, r.endLease(ctx, l, node, err))
+	}
+	lockfiles := make([]string, len(pl.profile.Toolchain.DependencyRecipe.Lockfiles))
+	for i, f := range pl.profile.Toolchain.DependencyRecipe.Lockfiles {
+		lockfiles[i] = string(f)
+	}
+	sess, err := r.adapters.Start(ctx, AdapterRun{Attempt: aid, Box: ws.run, Workspace: ws.Path(), Exchange: filepath.Join(r.host.Root, adapterhost.ExchangeName(aid)),
+		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles})
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
@@ -246,6 +257,11 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 				WallSeconds: int64(runBounds.Result / time.Second)},
 			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: adapterhost.EditLoopTools(), Mediated: []types.AdapterLabel{}},
 			Gateway:    &gv}})
+	if err == nil && sess.Ready != nil { // the exchange is made: the container's command can be
+		if err = sess.Ready(); err != nil {
+			err = errors.Join(err, p.Discard())
+		}
+	}
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
@@ -578,9 +594,12 @@ func contentFault(cause error) bool {
 
 // configFault reports whether cause is errConfig's: its profile missing,
 // or its repository refused, another than the profile names, or without
-// its pinned base.
+// its pinned base; or the profile's image not prepared for it, or carrying
+// another adapter than the installed release's (sandbox.ErrManifest,
+// ErrAdapter among it: a profile pinning the rebuilt image clears it).
 func configFault(cause error) bool {
-	return errors.Is(cause, errConfig) || errors.Is(cause, ErrRemoteMismatch) || errors.Is(cause, ErrBaseMismatch) || errors.Is(cause, sandbox.ErrSpec)
+	return errors.Is(cause, errConfig) || errors.Is(cause, ErrRemoteMismatch) || errors.Is(cause, ErrBaseMismatch) || errors.Is(cause, sandbox.ErrSpec) ||
+		errors.Is(cause, sandbox.ErrManifest)
 }
 
 // holdOn raises the runner's hold on node for cause, while it is claimed:

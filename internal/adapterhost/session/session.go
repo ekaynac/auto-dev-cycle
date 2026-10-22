@@ -43,8 +43,6 @@ type Config struct {
 	// Heartbeat is the longest silence between heartbeats during a run
 	// (DefaultHeartbeat when zero).
 	Heartbeat time.Duration
-	// Jail, when set, confines the spawned adapter (ProcessSpec.Jail).
-	Jail *Jail
 	// InProcess, when set, is the adapter in place of Command and Env: a
 	// function of this process over the session's pipes, never spawned nor
 	// contained. Only the fixture harness can make one (package inproc,
@@ -184,7 +182,7 @@ func Open(cfg Config) (*Session, error) {
 	case cfg.Container != nil:
 		p, err = StartContainer(cfg.Container, cfg.Deadline)
 	default:
-		p, err = Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline, Jail: cfg.Jail})
+		p, err = Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline})
 	}
 	if err != nil {
 		return nil, err

@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
 )
 
@@ -349,5 +350,42 @@ func TestLiveInteractiveNoLoopbackToTheHost(t *testing.T) {
 	must(t, p.Wait())
 	if string(out) != "refused\n" || accepted.Load() != before {
 		t.Fatalf("inside: %q; the port saw %d connections from the run", out, accepted.Load()-before)
+	}
+}
+
+// P22a-5d-3's live row, for a prepared image with the builder's adapter
+// (scripts/prepare-go-image.sh; 5d-4's): the http-chat adapter, run as adcd
+// runs it (/opt/adc/lib's Node and main.ts, in the attempt's container,
+// through the session), answers describe over its stdio, and shuts down
+// cleanly; the container is gone after Wait. With
+// ADC_LIVE_ADAPTER_RELEASE (a release's lib/adc, e.g. dist/linux-ARCH/lib/adc
+// of the image's commit), the image's adapter must be that release's.
+//
+//	ADC_LIVE_PODMAN_ARCHIVE=/path/prepared.oci.tar ADC_LIVE_ADAPTER=1 go test -count=1 -run LiveInteractiveAdapter ./internal/sandbox/
+func TestLiveInteractiveAdapterDescribes(t *testing.T) {
+	if os.Getenv("ADC_LIVE_ADAPTER") == "" {
+		t.Skip("set ADC_LIVE_ADAPTER with an archive of a prepared image that carries the adapter")
+	}
+	l := newLive(t)
+	if rel := os.Getenv("ADC_LIVE_ADAPTER_RELEASE"); rel != "" {
+		want, err := AdapterDigest(rel)
+		must(t, err)
+		must(t, l.img.CheckAdapter(want))
+	}
+	it, _, att := l.interactive(t, l.h, "/opt/adc/lib/node/bin/node", "/opt/adc/lib/adapters/http-chat/src/main.ts")
+	s, err := session.Open(session.Config{Container: &session.Container{Command: it.Command, Env: it.Env, Remove: it.Remove}, Deadline: it.Deadline})
+	must(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	d, err := s.Describe(ctx)
+	if err != nil || d.Harness == "" {
+		t.Fatalf("describe: %+v, %v", d, err)
+	}
+	if o, err := s.Shutdown(ctx); err != nil || o.Outcome != types.OutcomeEmpty {
+		t.Fatalf("shutdown: %+v, %v", o, err)
+	}
+	must(t, s.Wait())
+	if left := l.listedNow(t, l.h, att); len(left) != 0 {
+		t.Fatalf("listed after Wait: %q", left)
 	}
 }
