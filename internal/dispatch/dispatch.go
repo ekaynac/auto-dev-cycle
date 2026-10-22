@@ -112,6 +112,14 @@ func (r *Refused) Error() string {
 func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorID) ([]eventstore.Event, types.LeaseID, error) {
 	unit := graph.UnitOf(card.Node)
 	project, roster, err := graph.Units{}.Placement(tx, unit, d.Registry)
+	if ni := (graph.ErrNotIndependent{}); errors.As(err, &ni) { // a claimed review whose roster a restart's registry no longer gives: held, as at launch (Astra chunk 3 H1)
+		m, herr := rosterMiss(ni)
+		if herr != nil {
+			return nil, "", herr
+		}
+		return nil, "", errors.Join(err, &Refused{Check: "roster", PlacementCheck: types.PlacementCheck{Outcome: types.OutcomeCouldNotRun,
+			Reason: vocab.ReasonReviewerNotIndependent, Detail: ni.Error()}, Hold: m.Hold})
+	}
 	if err != nil {
 		return nil, "", err
 	}
