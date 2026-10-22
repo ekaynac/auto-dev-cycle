@@ -241,6 +241,8 @@ func editFile(p string, edit func(string) string) error {
 //   - answers info with STATE/native (linux/arm64), exists from
 //     STATE/exists-KIND, inspect from STATE/inspect.json, and manifest rm
 //     (failing when STATE/normrm exists);
+//   - builds by making STATE/exists-manifest (failing, with none made,
+//     when STATE/nobuild exists);
 //   - runs Node with STATE/node and the platform's arch (failing when
 //     STATE/nonode exists);
 //   - copies NAME-ARCH:… with the dist's lib/adc of ARCH (failing when
@@ -286,7 +288,10 @@ for a in "$@"; do
 done
 case "$1" in
 info) exec cat "$state/native" ;;
-build | rm | create) exit 0 ;;
+build)
+  [ -e "$state/nobuild" ] && exit 1
+  touch "$state/exists-manifest" ;;
+rm | create) exit 0 ;;
 run)
   [ -e "$state/nonode" ] && exit 1
   [ "$arch" = amd64 ] && arch=x64
@@ -490,26 +495,28 @@ func TestPrepareBuild(t *testing.T) {
 			return editFile(filepath.Join(f.state, "inspect.json"), func(s string) string {
 				return strings.Replace(s, `[`, `[{"platform":{"architecture":"amd64","os":"linux"}},`, 1)
 			})
-		}, 6, true, "rather than one image"},
-		"a platform missing":   {file("inspect.json", `{"manifests":[{"platform":{"architecture":"arm64","os":"linux"}}]}`), 6, true, "rather than one image"},
-		"Node does not start":  {file("nonode", ""), 11, true, "Node does not start"}, // the run (9), its container's removal, NAME's
-		"another Node version": {file("node", "v21.0.0\n"), 10, true, "reports 'v21.0.0 arm64'"},
+		}, 7, true, "rather than one image"},
+		"a platform missing":   {file("inspect.json", `{"manifests":[{"platform":{"architecture":"arm64","os":"linux"}}]}`), 7, true, "rather than one image"},
+		"Node does not start":  {file("nonode", ""), 12, true, "Node does not start"}, // the run (9), its container's removal, NAME's check and removal
+		"another Node version": {file("node", "v21.0.0\n"), 11, true, "reports 'v21.0.0 arm64'"},
 		// Mythos #373 M1: the image's /opt/adc/lib must have the label's digest.
-		"an image whose adapter differs": {file("tamper", ""), 9, true, "not the label's"},
-		"the other platform's adapter":   {file("swap", ""), 9, true, "not the label's"},
-		"a copy that fails":              {file("nocp", ""), 9, true, "or copy /opt/adc/lib out of it"},
-		"NAME cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normrm", "")(f)) }, 11, true,
+		"an image whose adapter differs": {file("tamper", ""), 10, true, "not the label's"},
+		"the other platform's adapter":   {file("swap", ""), 10, true, "not the label's"},
+		"a copy that fails":              {file("nocp", ""), 10, true, "or copy /opt/adc/lib out of it"},
+		// Mythos chunk 2 L4: a build that made no list leaves nothing to remove.
+		"the build fails": {file("nobuild", ""), 5, false, "failed before its list was made: nothing to remove"},
+		"NAME cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normrm", "")(f)) }, 12, true,
 			"could not be removed: do not push it"},
 		// #226 entry 141, Opus #390 M2: every bounded call, cut.
 		"info hangs":             {hang("info", false), 1, false, cut},
 		"manifest exists hangs":  {hang("manifest exists", false), 2, false, cut},
 		"image exists hangs":     {hang("image exists", false), 3, false, cut},
-		"manifest inspect hangs": {hang("manifest inspect", false), 6, true, cut},
-		"create hangs":           {hang("create", false), 8, true, cut}, // its container still removed (7)
-		"cp hangs":               {hang("cp", false), 9, true, cut},
-		"rm hangs":               {hang("rm --force", false), 9, true, cut},
-		"run hangs":              {hang("run", false), 11, true, cut},
-		"run ignores the cut":    {hang("run", true), 11, true, "was cut after 1s or killed (exit 137)"},
+		"manifest inspect hangs": {hang("manifest inspect", false), 7, true, cut},
+		"create hangs":           {hang("create", false), 9, true, cut}, // its container still removed (7)
+		"cp hangs":               {hang("cp", false), 10, true, cut},
+		"rm hangs":               {hang("rm --force", false), 10, true, cut},
+		"run hangs":              {hang("run", false), 12, true, cut},
+		"run ignores the cut":    {hang("run", true), 12, true, "was cut after 1s or killed (exit 137)"},
 	}
 	for name, c := range rows {
 		f := newBuildFixture(t)

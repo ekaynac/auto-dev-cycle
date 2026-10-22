@@ -18,7 +18,8 @@ package daemon
 //     (egress.open), its token bound to the lease, the attempt and the call;
 //  4. the adapter's session, through the one seam (AdapterStarter: in the
 //     attempt's container, containerAdapter, 22a-5d), its image resolved
-//     and checked before anything else, the exchange prepared and checked
+//     and checked (against the workspace's lockfiles, so after steps 2 and
+//     3) before the exchange is prepared and checked
 //     (adapterhost.Host.Prepare), then the container's command made over
 //     it (AdapterSession.Ready), the prompt the brief's title and
 //     requirement, the tools the edit loop's;
@@ -260,7 +261,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	}
 	base := types.AttemptBase{Tree: ws.Base, ContractRevision: buildContractRevision}
 	p, err := r.host.Prepare(adapterhost.Spec{Lease: l, Attempt: aid, Base: base, Call: cid, Adapter: sess.Config, Prompt: pl.prompt, Bounds: runBounds,
-		Tools: adapterhost.EditLoopTools(), Path: sess.Path,
+		Tools: adapterhost.EditLoopTools(), Path: sess.Path, Check: sess.Within,
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: pl.lease.Executor, Model: types.AdapterLabel(pl.executor.Model),
 			Workspace: types.AdapterPrepareParamsWorkspace{Path: sess.Path(ws.Path()), Writable: true},
 			Limits: types.AdapterPrepareParamsLimits{MaxTurns: max(pl.lease.Footprint.ExpectedTurns, 1), MaxOutputTokens: builderOutputTokens,
@@ -301,12 +302,33 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return errors.Join(err, endGateway(), r.abandon(ctx, pl, node, aid, vocab.ReasonAmbiguousState, "the launch's command failed after it applied")) // no adapter ran (Mythos L3)
 	}
 	launched = true
-	r.mu.Lock()
-	delete(r.tries, node)
-	r.mu.Unlock()
 	out, runErr := runPrepared(p, ctx)
 	unverified = errors.Is(out.Session, session.ErrUnverified) || errors.Is(runErr, session.ErrUnverified)
 	endErr := endGateway()
+	if errors.Is(out.Session, session.ErrSpawn) {
+		// The adapter never ran (its container's client could not start):
+		// the host's fault, never the candidate's. Nothing ran, so nothing
+		// is diffed or kept (Opus 22a-5d-4 M1). It is a try like a failure
+		// before the launch: held on the runner's bounded retry, the
+		// maxTries-th in a row "failed" (Mythos chunk 2 M1).
+		unverified = false
+		r.logf("adcd: the attempt %s: %v", aid, out.Session)
+		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed, "the adapter could not be started on the controller's host"),
+			r.hold(node, out.Session))
+	}
+	r.mu.Lock()
+	delete(r.tries, node) // the adapter ran: the failures in a row end
+	r.mu.Unlock()
+	over := "" // the run left more than its disk bound (Opus #393 M2): its output, torn down, never kept
+	switch werr := out.Checked; {
+	case unverified, werr == nil:
+	case errors.Is(werr, sandbox.ErrLeft) && !errors.Is(werr, sandbox.ErrUnmeasured): // measured before the exchange was removed (Opus 22a-5d-4 L2)
+		over = "the run left more than its disk bound, or what it made unmeasurable"
+		r.logf("adcd: the attempt %s: %v", aid, werr)
+	default: // anything else, an unmeasurable tree not the candidate's (Mythos chunk 2 L3) or a container that may still run, is kept, never diffed (L1)
+		unverified = true
+		r.logf("adcd: the attempt %s: %v", aid, werr)
+	}
 	if !unverified && errors.Is(runErr, adapterhost.ErrRecord) && r.otherCall(ctx, aid, cid) {
 		// The fold refused the attempt's facts (intent.ErrUnbound): what it
 		// made is not under its intent's call, so no diff of it is sealed
@@ -314,7 +336,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed,
 			"the attempt's facts were refused: its intent names another call than the one it ran under"))
 	}
-	return errors.Join(runErr, endErr, r.complete(ctx, pl, node, aid, ws, out, obs, unverified))
+	return errors.Join(runErr, endErr, r.complete(ctx, pl, node, aid, ws, out, obs, unverified, over))
 }
 
 // otherCall reports whether attempt's recorded intent names another call
@@ -595,6 +617,13 @@ var errConfig = errors.New("daemon: the runner's configuration")
 // build takes is not the plan's brief alone (r3 L2).
 var errContent = errors.New("daemon: the build's input")
 
+// errHost marks a failure before the launch on the controller's host, not
+// in the project's configuration: the sandbox refusing the adapter's
+// container (AdapterSession.Ready: a mount overlapping a forbidden path, a
+// leftover cid file). It is retried, never held on the profile, which
+// cannot clear it (Opus #393 L3).
+var errHost = errors.New("daemon: the runner's host")
+
 // contentFault reports whether cause is a refusal of what the build takes:
 // the I18 walk's (intent.ErrAcceptanceInput: a forged brief among them) or
 // its input's shape (errContent).
@@ -604,12 +633,17 @@ func contentFault(cause error) bool {
 
 // configFault reports whether cause is errConfig's: its profile missing,
 // or its repository refused, another than the profile names, or without
-// its pinned base; or the profile's image not prepared for it, or carrying
+// its pinned base; or the profile's image pinned with no registry
+// (sandbox.ErrUnqualified, Opus #393 L2), not prepared for it, or carrying
 // another adapter than the installed release's (sandbox.ErrManifest,
-// ErrAdapter among it: a profile pinning the rebuilt image clears it).
+// ErrAdapter among it): a profile pinning the rebuilt image clears it. A
+// host's refusal (errHost) is none, whatever it wraps.
 func configFault(cause error) bool {
+	if errors.Is(cause, errHost) {
+		return false
+	}
 	return errors.Is(cause, errConfig) || errors.Is(cause, ErrRemoteMismatch) || errors.Is(cause, ErrBaseMismatch) || errors.Is(cause, sandbox.ErrSpec) ||
-		errors.Is(cause, sandbox.ErrManifest)
+		errors.Is(cause, sandbox.ErrManifest) || errors.Is(cause, sandbox.ErrUnqualified)
 }
 
 // holdOn raises the runner's hold on node for cause, while it is claimed:
@@ -715,11 +749,12 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 //     error events' hints). A tree whose session's end is unverified is
 //     never diffed;
 //   - the result: graph.Build's from the facts, or, for an unsafe output
-//     tree (screen, accept.ErrUnsafeTree, or one past maxTree),
+//     tree (screen, accept.ErrUnsafeTree, or one past maxTree, or a run that
+//     left more than its container's disk bound, over: then not diffed),
 //     failed/unsafe_output (the candidate's fault);
 //   - facts that cannot be gathered (the attempt unreadable, the diff not
 //     taken or not published) end the attempt all the same (abandon).
-func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attempt types.AttemptID, ws *workspace, out adapterhost.Outcome, obs gateway.Observed, unverified bool) error {
+func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attempt types.AttemptID, ws *workspace, out adapterhost.Outcome, obs gateway.Observed, unverified bool, over string) error {
 	stopped, err := r.stopped(ctx, attempt)
 	if err != nil {
 		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonStoreUnreadable, "the attempt's record could not be read"))
@@ -732,7 +767,12 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 	if unverified { // the run's own verdict (r3 L1): a tree something may still write is never diffed (09), whatever was submitted (r2 N1)
 		return r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the session's end is unverified")
 	}
-	patch, ignored, unsafe, err := r.diff(ctx, ws, attempt)
+	var patch []byte
+	var ignored []string
+	unsafe := over // a tree past its bound is never diffed: failed/unsafe_output, the candidate's fault
+	if over == "" {
+		patch, ignored, unsafe, err = r.diff(ctx, ws, attempt)
+	}
 	if err != nil {
 		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the controller's diff of the workspace could not be taken"))
 	}
