@@ -26,9 +26,12 @@
 # would add to an existing list); after the build, the list must hold one
 # image per platform, the pinned Node must start in the image of podman's
 # native platform (podman info), which PLATFORMS must name, and each
-# image's /opt/adc/lib must have the label's adapter digest. Once the build
-# has begun, any failure removes NAME (podman manifest rm) and says not to
-# push it (Opus #390 M1).
+# image's /opt/adc/lib must have the label's adapter digest. Each image is
+# run by its own ID (the list's instance digest, found in podman's images),
+# as podman 4.9 runs a local list's native image whatever --platform says.
+# Once the build has begun, any failure removes NAME (podman manifest rm)
+# and its images (podman rmi), or says what is left, and says not to push
+# it (Opus #390 M1); a build that made no list leaves nothing.
 #
 # Node's start is checked only for the native platform. An emulated
 # platform's run (qemu binfmt) once crashed and hung for hours (#226 entry
@@ -95,6 +98,27 @@ pod() {
     printf 'prepare-go-image: podman %s was cut after %ss or killed (exit %s)\n' "$1" "$step_timeout" "$rc" >&2
   fi
   return "$rc"
+}
+
+# instances NAME: one "OS/ARCH ID" line for each image of the list NAME:
+# its instance digest (podman manifest inspect) and the one image podman's
+# storage holds under it (podman images): the image whose digest it is (a
+# local build's) or one of whose RepoDigests ends in @it (a pull's, whose
+# own digest may be its list's), each image once whatever its tags (Opus
+# #397 L2); fails when there is not exactly one. Each image is run by that
+# ID: podman (4.9) creates a container of a local list's native image
+# whatever --platform says.
+instances() {
+  local inspect images p id
+  inspect="$(pod manifest inspect "$1")" && images="$(pod images --all --format json)" || return 1
+  jq -r --slurpfile images <(printf '%s' "$images") '
+    .manifests[] | (.digest // "") as $d
+    | ([$images[0][] | select($d != "" and (.Digest == $d or any(.RepoDigests[]?; endswith("@" + $d)))) | .Id] | unique) as $ids
+    | .platform.os + "/" + .platform.architecture + " " + (if ($ids | length) == 1 then $ids[0] else "-" end)' <<<"$inspect" |
+    while read -r p id; do
+      [[ "$id" =~ ^[0-9a-f]{64}$ ]] || return 1
+      printf '%s %s\n' "$p" "$id"
+    done
 }
 
 # project PROJECT: sets repo, lockfiles (the profile's, in its order) and
@@ -246,16 +270,40 @@ case "${1:-}" in
     ctx="$(mktemp -d)"
     built=""
     # Once the build has begun, a failure removes NAME, which may hold a
-    # list whose checks failed or were never done (Opus #390 M1).
+    # list whose checks failed or were never done (Opus #390 M1), and the
+    # images this build made, which podman manifest rm leaves; an image that
+    # was in podman's storage before the build (a cached build reuses it, a
+    # pinned one among them) is kept, and named (Opus #397 M1). A build that
+    # made no list leaves nothing.
     cleanup() {
-      local rc=$?
+      local rc=$? ex=0 found="" id
+      local -a made=() had=()
       rm -rf -- "$ctx"
-      if ((rc != 0)) && [[ -n "$built" ]]; then
-        if pod manifest rm "$name" >/dev/null; then
-          printf 'prepare-go-image: %s failed and is removed: do not push it\n' "$name" >&2
-        else
-          printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s\n' "$name" "$name" >&2
-        fi
+      ((rc != 0)) && [[ -n "$built" ]] || return 0
+      pod manifest exists "$name" || ex=$?
+      if ((ex == 1)); then
+        printf 'prepare-go-image: %s failed before its list was made: nothing to remove\n' "$name" >&2
+        return 0
+      fi
+      if ((ex == 0)) && found="$(instances "$name")"; then
+        while read -r id; do
+          if grep -qxF "sha256:$id" <<<"$before"; then had+=("$id"); else made+=("$id"); fi
+        done < <(cut -d' ' -f2 <<<"$found" | LC_ALL=C sort -u)
+      else
+        found="" # instances' partial output names only some images: none are removed
+      fi
+      if [[ -z "$found" ]]; then
+        printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s, and podman rmi the images it made\n' "$name" "$name" >&2
+      elif ! pod manifest rm "$name" >/dev/null; then
+        printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s%s\n' \
+          "$name" "$name" "${made[*]:+, and podman rmi ${made[*]}}" >&2
+      elif ((${#made[@]} > 0)) && ! pod rmi -- "${made[@]}" >/dev/null; then
+        printf 'prepare-go-image: %s failed and is removed, but its images could not be: do not push it; run podman rmi %s\n' "$name" "${made[*]}" >&2
+      else
+        printf 'prepare-go-image: %s failed and is removed, with the images it made: do not push it\n' "$name" >&2
+      fi
+      if ((${#had[@]} > 0)); then
+        printf 'prepare-go-image: kept %s, in podman'"'"'s storage before the build\n' "${had[*]}" >&2
       fi
     }
     trap cleanup EXIT
@@ -268,6 +316,9 @@ case "${1:-}" in
       -f '{{if and (not .Standard) .Module (not .Module.Main)}}{{.ImportPath}}{{end}}' ./... |
       LC_ALL=C sort -u >"$ctx/warm.txt"
     [[ -s "$ctx/warm.txt" || "$warm_required" == 0 ]] || die "no third-party packages listed in $repo"
+    # The images podman holds before the build: a failed build's cleanup
+    # never removes one of them (Opus #397 M1).
+    before="$(pod images --all --quiet --no-trunc)" || die "cannot list podman's images"
     built=1
     podman build --pull=missing --timestamp=0 --platform="$(IFS=,; echo "${plats[*]}")" --manifest="$name" \
       --label="dev.adc.prepared=$label" -f "$containerfile" "$ctx"
@@ -277,17 +328,19 @@ case "${1:-}" in
     # copied out of it, has the label's adapter digest for the platform
     # (Mythos #373 M1: the label pins what COPY put in the image, not only
     # the context).
-    listed="$(pod manifest inspect "$name" | jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' | LC_ALL=C sort)" ||
-      die "cannot list the images of $name (podman manifest inspect, jq)"
+    found="$(instances "$name")" ||
+      die "cannot find each image of $name in podman's storage (podman manifest inspect, podman images)"
+    listed="$(cut -d' ' -f1 <<<"$found" | LC_ALL=C sort)"
     [[ "$listed" == "$(printf '%s\n' "${plats[@]}")" ]] ||
       die "$name lists ${listed//$'\n'/ } rather than one image for each of ${plats[*]}: run 'podman manifest rm $name' and build again"
     for p in "${plats[@]}"; do
+      id="$(awk -v p="$p" '$1 == p { print $2 }' <<<"$found")"
       if [[ "$p" == "$host" ]]; then
         version="$(pin "$p" 2)" || exit 1
         want="$version ${p#linux/}"
         want="${want/%amd64/x64}"
         n="adc-prepare-$$-${p#linux/}"
-        if ! got="$(pod run --rm --name="$n" --pull=never --network=none --platform="$p" "$name" \
+        if ! got="$(pod run --rm --name="$n" --pull=never --network=none --platform="$p" "$id" \
           /opt/adc/lib/node/bin/node -p 'process.version + " " + process.arch')"; then
           pod rm --force --ignore --time=0 "$n" >/dev/null || printf 'prepare-go-image: the container %s may still run\n' "$n" >&2
           die "Node does not start in $name for $p"
@@ -299,7 +352,7 @@ case "${1:-}" in
       out="$ctx/image-${p#linux/}"
       # Named, so it is removed whatever fails, a cut create included (Opus #390 L2).
       n="adc-prepare-$$-copy-${p#linux/}" rc=0
-      pod create --name="$n" --pull=never --network=none --platform="$p" "$name" true >/dev/null || rc=$?
+      pod create --name="$n" --pull=never --network=none --platform="$p" "$id" true >/dev/null || rc=$?
       if ((rc == 0)); then
         pod cp "$n:/opt/adc/lib" "$out" || rc=$?
       fi
