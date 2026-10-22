@@ -3,10 +3,12 @@
 # The prepared Go image of a project (P32, 00 §8 item 2; #226 entry 97): this
 # repository's, or go-mini's. It is the pinned toolchain with the module cache
 # for the project's lockfiles baked in, so the gate runs `go test -json`
-# offline. Build it only through scripts/prepare-go-image.sh PROJECT, which
-# puts exactly the project's lockfiles (under lock/) and warm.txt into the
-# build context and sets the dev.adc.prepared manifest label that the sandbox
-# checks (sandbox.Image.CheckManifest).
+# offline, and the builder's adapter (below). Build it only through
+# scripts/prepare-go-image.sh PROJECT, which puts exactly the project's
+# lockfiles (under lock/), warm.txt and each platform's adapter closure
+# (under adapter/) into the build context and sets the dev.adc.prepared
+# manifest label that the sandbox checks (sandbox.Image.CheckManifest and
+# CheckAdapter).
 #
 # The base is go.mod's toolchain (go1.27.1), pinned by its multi-arch index
 # digest (linux/amd64 and linux/arm64). It is fixed here, not a build
@@ -48,3 +50,15 @@ ENV GOPROXY=off \
     GOWORK=off \
     GODEBUG=goindex=0
 WORKDIR /
+
+# The builder's adapter (P22a-5d): make dist's lib/adc closure for the
+# target platform (sandbox.AdapterClosure: the pinned Node, the http-chat
+# adapter, the contract package, gen/ts and the production node_modules),
+# which prepare-go-image.sh puts under adapter/linux-ARCH/ after checking it
+# against the dist's SHA256SUMS. It runs as /opt/adc/lib/node/bin/node
+# /opt/adc/lib/adapters/http-chat/src/main.ts. The label's adapter digest
+# for the platform (sandbox.AdapterDigest) pins it: adcd refuses an image
+# whose adapter is not its installed release's (Image.CheckAdapter). Owned
+# by root, read-only at run time under the sandbox's --read-only root.
+ARG TARGETARCH
+COPY adapter/linux-${TARGETARCH}/ /opt/adc/lib/
