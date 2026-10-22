@@ -202,12 +202,14 @@ func TestRefreshedChecks(t *testing.T) {
 	}
 	g.must(evaluate(env, odd.Checks[0]))
 	g.must(commit(odd.Checks[0], g.gateResult(odd.Checks[0], nil), env)) // about tree A, not B
-	if _, miss := g.resolve(odd.Merge, mergeNeed(treeA), at); len(miss) != 1 || miss[0].Refusal == nil || !strings.Contains(miss[0].Detail, "prospective tree") {
+	_, miss := g.resolve(odd.Merge, mergeNeed(treeA), at)
+	if len(miss) != 1 || miss[0].Refusal == nil || !strings.Contains(miss[0].Detail, "prospective tree") {
 		t.Fatalf("a receipt about another tree: %+v", miss)
 	}
 	g.must(evaluate(env, odd.Merge))
-	if st := g.state(odd.Merge); st.State != types.NodeStateStateWaiting {
-		t.Fatalf("the merge of another tree's receipt is %s", st.State)
+	if st := g.state(odd.Merge); st.State != types.NodeStateStateHeld || len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldAwaitingReceipt ||
+		!strings.HasPrefix(st.Holds[0].SignalInstance, "receipt:") || !strings.HasSuffix(st.Holds[0].SignalInstance, ":"+miss[0].Refusal.Reason.String()) {
+		t.Fatalf("the merge of another tree's receipt is %s, holds %+v: not held awaiting it, with its reason (P22a-6b)", st.State, st.Holds)
 	}
 
 	// A check of an earlier generation's rebase, or after the merge, is

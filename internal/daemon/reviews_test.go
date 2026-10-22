@@ -735,41 +735,80 @@ func TestAMeasurementIsTheGatesOwn(t *testing.T) {
 	}
 }
 
-// Opus 22a-6a′ M1: a gate result with no recorded measurement (its record
-// dropped here, as a result recorded before 6a′ would have none) does not
-// serve the review, a receipt_incomplete refusal: the review waits, and the
-// rest of the task evaluates (its requirement completes), with no
-// evaluation refused.
-func TestAnUnmeasuredGateResultServesNoReview(t *testing.T) {
+// Opus 22a-6a′ M1, P22a-6b (Main's decision: the wait shown with its
+// reason): a gate result whose requirement cannot be derived holds the
+// review awaiting_receipt, its reason in the signal instance, and the rest
+// of the task evaluates (the requirement completes), with no evaluation
+// refused:
+//   - no recorded measurement (its record dropped here, as a result
+//     recorded before 6a′ would have none): receipt_incomplete;
+//   - then measured in an image the project does not pin: the hold
+//     re-raised on instrument_changed, the first cleared;
+//   - then its own measurement again: the hold cleared, the review claimed.
+func TestARefusedGateReceiptHoldsTheReviewWithItsReason(t *testing.T) {
 	rw := gateCompleted(t)
 	gateNode := templateNodes(rw.w, rw.task)[types.NodeKindGate]
-	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	var result types.ResultID
+	var own types.GateMeasured
+	rw.w.view(func(tx *eventstore.Tx) error {
 		g, err := graph.ViewOf(tx, gateNode)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			result = *g.State.Result
+			own, _, err = gate.MeasurementOf(tx, result)
 		}
-		return nil, tx.Delete(gate.MeasuredProjection, string(*g.State.Result))
-	}); err != nil {
-		t.Fatal(err)
+		return err
+	})
+	measure := func(m *types.GateMeasured) {
+		t.Helper()
+		if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if m == nil {
+				return nil, tx.Delete(gate.MeasuredProjection, string(result))
+			}
+			raw, err := json.Marshal(*m)
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Put(gate.MeasuredProjection, string(result), raw)
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	held := func(signal string) types.HoldID {
+		t.Helper()
+		review := reviewNodes(rw)[types.NodeKindReview]
+		if review.State.State != types.NodeStateStateHeld || len(review.State.Holds) != 1 || review.State.Holds[0].Hold != vocab.HoldAwaitingReceipt ||
+			review.State.Holds[0].SignalInstance != signal || review.State.Holds[0].Reason != nil {
+			t.Fatalf("the review: %s, holds %+v, want held awaiting_receipt on %s", review.State.State, review.State.Holds, signal)
+		}
+		return review.State.Holds[0].ID
+	}
+	measure(nil)
 	var log bytes.Buffer
 	rw.reviewing(stubRegistry(t, nil, nil))
 	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, &log)
 	rw.passesFor(t, 6, 0)
-	got := reviewNodes(rw)
-	if req, review := got[types.NodeKindReviewRequirement], got[types.NodeKindReview]; req.State.State != types.NodeStateStateCompleted ||
-		review.State.State != types.NodeStateStateWaiting {
-		t.Fatalf("the requirement %s, the review %s (holds %+v)", req.State.State, review.State.State, review.State.Holds)
+	if req := reviewNodes(rw)[types.NodeKindReviewRequirement]; req.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the requirement: %s", req.State.State)
 	}
+	first := held("receipt:gate:receipt_incomplete")
+	rw.passesFor(t, 3, 0)
+	if again := held("receipt:gate:receipt_incomplete"); again != first {
+		t.Fatalf("the hold did not stay: %s, was %s", again, first)
+	}
+	unpinned := own
+	unpinned.Image.Pinned = "localhost/adc/other@sha256:" + strings.Repeat("e", 64)
+	measure(&unpinned)
+	rw.passesFor(t, 3, 0)
+	if next := held("receipt:gate:instrument_changed"); next == first {
+		t.Fatalf("the changed reason kept the hold %s", first)
+	}
+	measure(&own)
+	rw.passesFor(t, 1, 0) // the hold cleared and the review claimed in one evaluation
+	if review := reviewNodes(rw)[types.NodeKindReview]; review.State.State != types.NodeStateStateClaimed || len(review.State.Holds) != 0 {
+		t.Fatalf("the review once its receipt serves: %s, holds %+v", review.State.State, review.State.Holds)
+	}
+	rw.passesFor(t, 4, 0)
 	if log.Len() != 0 {
 		t.Errorf("the loop logged: %s", log.String())
 	}
-	rw.w.view(func(tx *eventstore.Tx) error {
-		_, err := gateNeed(tx, gateNode)
-		var refused *receipt.Refusal
-		if !errors.As(err, &refused) || refused.Reason != vocab.ReasonReceiptIncomplete {
-			t.Errorf("the requirement of an unmeasured gate result: %v", err)
-		}
-		return nil
-	})
 }
