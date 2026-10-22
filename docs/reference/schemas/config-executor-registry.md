@@ -33,6 +33,18 @@ No other fields are allowed.
 | `group` | yes | [ResourceGroupID](common-defs.md#resourcegroupid) | The one resource group the executor draws from; the group's members name it. |
 | `cost_basis` | yes | one of `cash`, `subscription_equivalent`, `free`, `local` |  |
 | `price` | yes | null or [RegistryPrice](#registryprice) | The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost). |
+| `footprint_prior` |  | [FootprintPrior](#footprintprior) | The operator's prior of one attempt's footprint on this executor (#226 entries 103, 120): the lease's footprint, and a direct API's token reservation, at most context_tokens × expected_turns, shrunk to what the USD rails leave but never below context_tokens (one turn). Optional: a direct_api executor without it is refused at placement (precondition_failed), its node held source_invalid_config. A local endpoint reserves a slot. |
+
+No other fields are allowed.
+
+### FootprintPrior
+
+#### Fields of FootprintPrior
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `context_tokens` | yes | integer (minimum `1`, maximum `9007199254740991`) | The tokens one turn's context holds, at most. |
+| `expected_turns` | yes | integer (minimum `1`, maximum `9007199254740991`) | The turns one attempt is expected to take. |
 
 No other fields are allowed.
 

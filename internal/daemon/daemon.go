@@ -24,6 +24,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
@@ -230,7 +231,11 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 			return err
 		}
 	}
-	loop := reconciler(d, reg, cfg.reconcileEvery, logw)
+	var images dispatch.Images // the pinned images the launch checks, in the sandbox's storage (none: every launch misses its image)
+	if cfg.Sandbox != nil {
+		images = *cfg.Sandbox
+	}
+	loop := reconciler(d, reg, images, cfg.reconcileEvery, logw)
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {

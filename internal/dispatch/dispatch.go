@@ -71,14 +71,12 @@ import (
 // Card is a claimed node offered for placement, with what its project
 // profile and template fix for it.
 type Card struct {
-	Node      types.NodeID
-	Project   types.ProjectID
-	Policy    types.ProjectProfileDataPolicy // the profile's data policy
-	Image     string                         // the pinned toolchain image, name@sha256:hex
-	Tokens    types.Amount                   // a direct API's reservation: the attempt's footprint (Q8)
-	Footprint types.LeaseFootprint
-	Priority  int64
-	Deadline  types.Time
+	Node     types.NodeID
+	Project  types.ProjectID
+	Policy   types.ProjectProfileDataPolicy // the profile's data policy
+	Image    string                         // the pinned toolchain image, name@sha256:hex
+	Priority int64
+	Deadline types.Time
 }
 
 // Dispatcher places cards on registered executors and launches them.
@@ -119,16 +117,19 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 	}
 	checks := d.checks(card, executor, roster)
 	if name, c, ok := blocked(checks); ok {
-		return nil, "", &Refused{Check: name, PlacementCheck: c}
+		_, registered := d.Registry.Executor(executor)
+		h, err := heldOn(name, card, executor, registered)
+		return nil, "", errors.Join(err, &Refused{Check: name, PlacementCheck: c, Hold: h})
 	}
 	e, _ := d.Registry.Executor(executor)
-	res := types.LeaseReservationsItem{Group: e.Group, Amount: card.Tokens, Unit: types.CapacityUnitTokens}
-	if e.Destination.Kind == types.RegistryDestinationKindLocalEndpoint { // one slot (Q8)
-		res.Amount, res.Unit = 1, types.CapacityUnitSlots
-	} else if card.Tokens <= 0 {
-		return nil, "", fmt.Errorf("dispatch: card %s reserves %d tokens; an attempt's footprint is positive", card.Node, card.Tokens)
+	res, footprint, b, refused, err := d.reservation(tx, card, executor, e)
+	if err != nil {
+		return nil, "", err
 	}
-	budget, hold, err := d.usdRail(tx, card, executor, res)
+	if refused != nil {
+		return nil, "", refused
+	}
+	budget, hold, err := d.usdRail(tx, card, executor, res, b)
 	if err != nil {
 		return nil, "", err
 	}
@@ -140,33 +141,54 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 		return nil, "", err
 	}
 	l := types.Lease{ID: types.LeaseID(id), Unit: unit, Role: types.Name(e.Role), Executor: executor, Price: e.Price, State: types.LeaseStateRequested,
-		Reservations: []types.LeaseReservationsItem{res}, Priority: card.Priority, Footprint: card.Footprint,
+		Reservations: []types.LeaseReservationsItem{res}, Priority: card.Priority, Footprint: footprint,
 		Deadline: card.Deadline, PlacementChecks: checks}
 	evs, err := lease.RequestGranted(tx, l)
 	return evs, l.ID, err
 }
 
-// placed refuses a unit already placed: a live lease (requested, waiting,
-// granted or active), a running attempt, or a last lease not yet settled,
-// so one node is matched once.
+// placed refuses a unit already placed (occupied), so one node is matched
+// once.
 func placed(tx *eventstore.Tx, unit types.UnitID) error {
+	why, err := occupied(tx, unit)
+	if err == nil && why != "" {
+		err = errors.New("dispatch: " + why)
+	}
+	return err
+}
+
+// Unplaced: nothing is placed on unit (occupied), so Match may place it:
+// what the reconcile loop reads before it matches a node.
+func Unplaced(tx *eventstore.Tx, unit types.UnitID) (bool, error) {
+	why, err := occupied(tx, unit)
+	return err == nil && why == "", err
+}
+
+// occupied is why unit is placed: a live lease (requested, waiting,
+// granted or active), a running attempt, or a last lease not yet settled;
+// "" when none.
+func occupied(tx *eventstore.Tx, unit types.UnitID) (string, error) {
 	if id, live, err := lease.LiveOn(tx, unit); err != nil || live {
-		return errors.Join(err, fmt.Errorf("dispatch: unit %s already has live lease %s", unit, id))
+		return fmt.Sprintf("unit %s already has live lease %s", unit, id), err
 	}
 	cur, ok, err := lease.CurrentAttempt(tx, unit)
 	if err != nil || !ok {
-		return err
+		return "", err
 	}
 	a, _, _, err := lease.AttemptOf(tx, cur)
-	if err == nil && a.Status == types.AttemptStatusRunning {
-		err = fmt.Errorf("dispatch: unit %s's attempt %s is running", unit, cur)
+	if err != nil {
+		return "", err
+	}
+	if a.Status == types.AttemptStatusRunning {
+		return fmt.Sprintf("unit %s's attempt %s is running", unit, cur), nil
 	}
 	// A replacement waits until its predecessor's lease settled (X3: step 4
 	// before step 5), so it is sized against what that settlement returned.
-	if l, _, ok, lerr := lease.LeaseOf(tx, a.Lease); err == nil && (lerr != nil || !ok || !lease.Ended(l.State)) {
-		err = errors.Join(lerr, fmt.Errorf("dispatch: unit %s's last lease %s has not settled", unit, a.Lease))
+	l, _, ok, err := lease.LeaseOf(tx, a.Lease)
+	if err == nil && (!ok || !lease.Ended(l.State)) {
+		return fmt.Sprintf("unit %s's last lease %s has not settled", unit, a.Lease), nil
 	}
-	return err
+	return "", err
 }
 
 // checks derives the placement of card on executor from the registry now,
@@ -203,6 +225,25 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 			"a rostered node places only on its pinned roster member, a reviewer; any other node on a builder")
 	}
 	return c
+}
+
+// heldOn is the hold a blocked placement check raises on card's node
+// (Opus 22a-5c-1 M1): each is configuration, which no later match passes
+// until it changes, so the node is held source_invalid_config, the
+// operator's, naming what to change: the project's profile for its data
+// policy (data_floor) and its pinned image (capability); the executor for
+// its registration (destinations, and any check of an executor the
+// registry does not name) and its role (independence).
+func heldOn(check string, card Card, executor types.ExecutorID, registered bool) (*types.NodeHold, error) {
+	signal := "executor " + string(executor)
+	if registered && (check == "data_floor" || check == "capability") {
+		signal = "profile " + string(card.Project)
+	}
+	r, err := configRefusal(check, signal, "")
+	if err != nil {
+		return nil, err
+	}
+	return r.Hold, nil
 }
 
 // blocked is the first check that blocks the grant.

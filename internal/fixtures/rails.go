@@ -29,19 +29,23 @@ import (
 
 // railsRegistry is the stub builder at $1 and $4 per million input and
 // output tokens, and its reviewer, in a 2,000,000-token quota
-// (fixtures/m1/config's).
+// (fixtures/m1/config's); each attempt's prior is a 1,000-token turn, 2
+// turns: a 2,000-token attempt_cap, one turn at least (#226 entries 103,
+// 120).
 const (
 	railsRegistry = `{"schema":"adc.executor-registry/v1","executors":[{"id":"exe_01m4tm99haemqt8es2qfbwj8pa","role":"builder","family":"stub-builder",` +
 		`"adapter":"http-chat","model":"stub-builder-1","destination":{"id":"stub","kind":"direct_api","verification":"verified","trust_class":"contracted",` +
 		`"endpoint":"http://127.0.0.1:18080/v1","retention_days":0},"credential_ref":"stub","group":"rg_01m4tm99haemss9tvzd438vq8j","cost_basis":"cash",` +
-		`"price":{"input_usd_micros_per_mtok":1000000,"output_usd_micros_per_mtok":4000000}},` +
+		`"price":{"input_usd_micros_per_mtok":1000000,"output_usd_micros_per_mtok":4000000},"footprint_prior":{"context_tokens":1000,"expected_turns":2}},` +
 		`{"id":"exe_01m4tm99haemr8ajyf09v4ytzb","role":"reviewer","family":"stub-reviewer","adapter":"http-chat","model":"stub-reviewer-1",` +
 		`"destination":{"id":"stub","kind":"direct_api","verification":"verified","trust_class":"contracted","endpoint":"http://127.0.0.1:18080/v1","retention_days":0},` +
-		`"credential_ref":"stub","group":"rg_01m4tm99haemss9tvzd438vq8j","cost_basis":"cash","price":{"input_usd_micros_per_mtok":2000000,"output_usd_micros_per_mtok":8000000}}]}`
+		`"credential_ref":"stub","group":"rg_01m4tm99haemss9tvzd438vq8j","cost_basis":"cash","price":{"input_usd_micros_per_mtok":2000000,"output_usd_micros_per_mtok":8000000},"footprint_prior":{"context_tokens":1000,"expected_turns":2}}]}`
 	railsGroups = `[{"id":"rg_01m4tm99haemss9tvzd438vq8j","kind":"account_quota","capacity_model":{"unit":"tokens","limit":2000000,"window":null,` +
 		`"reset_at":null,"quota_state":"known"},"release_rule":"on_settle","members":["exe_01m4tm99haemqt8es2qfbwj8pa","exe_01m4tm99haemr8ajyf09v4ytzb"]}]`
 	// railsProfile is go-mini's profile, its per_task_usd $0.01 (10,000
-	// micros): a 2,000-token card reserves 8,000 at the builder's $4.
+	// micros): an unconstrained lease reserves 2,000 tokens, 8,000 micros at
+	// the builder's $4; the 2,000 micros it leaves buy 500 tokens, less than
+	// a turn.
 	railsProfile = `{"schema":"adc.project-profile/v1","id":"prj_01m3250vkwffc979nzjw0g2sf9","name":"rails-usd","repo":{"url":"/var/lib/adc/remotes/go-mini.git","base_ref":"refs/heads/main"},"forge":{"kind":"git","capabilities":{"change_requests":false,"protected_branches":false,"required_checks":false},"settings":{}},"source_tests":{"dev_dependencies":true,"vcs_metadata":false},"package":{"recipe":[["go","build","-trimpath","-o","bin/","./..."]],"outputs":["bin"]},"runtime_verification":{"command":null,"facts_from":null},"toolchain":{"images":{"go":"ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97"},"dependency_recipe":{"lockfiles":["go.mod"],"command":["go","mod","download"],"registries":["goproxy"]}},"gate":{"command":["go","test","-count=1","-json","./..."],"result_adapter":"go_test_json","baseline":{"kind":"measured","relock_requires":"approval"},"environments":[{"name":"ci","facts":{"vcs_metadata":false,"network":"none","runtime":{"language_version":"go1.27.1","os":"linux","arch":"arm64"}},"owner":"operator"}],"ownership_rules":"default"},"integration":{"plugin":"none","topology":null,"receipts_required":[]},"plugins":{"deploy":"none","records":"json_ledger"},"protected_paths":["go.mod","go.sum","go.work","go.work.sum","vendor/**"],"protected_documents":[],"data_policy":{"floor":"contracted","routing":"verified","allowed_destinations":[]},"usage_profile_override":null,"priority":100,"budget":{"rails":{"per_task_usd":"0.01","per_day_usd":"20"}},"retention":{"attempt_continuity_post_closure_ttl":"P7D","supervisor_notes_ttl":null,"blob_payload_ttl":null},"vocabulary":{"task_id_pattern":null,"branch_prefix":"adc/","language":"en"}}`
 	railsBuilder = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa")
 	railsProject = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sf9")
@@ -50,8 +54,9 @@ const (
 // railsUSDLiability (P17b; #226 entry 69; fault 2: "a liability left out
 // of the USD rail"): under the rails authority.Rails gives the task (its
 // project profile's per_task_usd), a task's call ends in a hostile zero
-// final, so its lease settles with the call a liability (empty); the next
-// lease would pass per_task_usd with it and is refused, could_not_run/
+// final, so its lease settles with the call a liability (empty); what the
+// next lease could reserve under per_task_usd with it is less than one
+// turn, so it is refused, could_not_run/
 // budget_rail_reached, nothing placed; the node is held on budget_rail
 // (empty); the operator's task.raise_rail (its handler's logic, and the
 // task.rail_raised fold) raises the task's rail and clears the hold
@@ -185,9 +190,8 @@ func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violation
 		return rec.Node.ID, err
 	}
 	card := func(n types.NodeID) dispatch.Card {
-		return dispatch.Card{Node: n, Project: railsProject, Image: "localhost/prepared@sha256:" + string(make64('a')), Tokens: 2000, Deadline: "2026-10-04T14:00:00Z",
-			Policy:    types.ProjectProfileDataPolicy{Floor: "contracted", Routing: "verified", AllowedDestinations: []types.Slug{"stub"}},
-			Footprint: types.LeaseFootprint{ContextTokens: 1, ExpectedTurns: 1}}
+		return dispatch.Card{Node: n, Project: railsProject, Image: "localhost/prepared@sha256:" + string(make64('a')), Deadline: "2026-10-04T14:00:00Z",
+			Policy: types.ProjectProfileDataPolicy{Floor: "contracted", Routing: "verified", AllowedDestinations: []types.Slug{"stub"}}}
 	}
 	match := func(n types.NodeID) (types.LeaseID, *dispatch.Refused, error) {
 		var id types.LeaseID

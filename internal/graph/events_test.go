@@ -93,8 +93,8 @@ func leases(blobs *blobstore.Store) func(*eventstore.Tx, []eventstore.Event) err
 
 // runningOn starts n's next attempt under a fresh lease on n's unit: its
 // first, or the successor of its last, which the tests never end: running
-// (lost first) or finishing, it is sealed with the minimal record, then
-// superseded.
+// (lost first) or finishing, it is sealed with the minimal record, its
+// lease revoked and settled, then superseded.
 func (g graphStore) runningOn(n types.NodeID) types.AttemptID {
 	g.t.Helper()
 	ok := types.PlacementCheck{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}
@@ -131,6 +131,17 @@ func (g graphStore) runningOn(n types.NodeID) types.AttemptID {
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.SealMinimal(tx, last, rev, Units{}, g.blobs, nil, "act_01m3250v0aer9ss2097svmefj8")
 	})
+	// The predecessor's lease ends first (#226 entry 83): revoked, settled.
+	for _, e := range []lease.LeaseEvent{{Kind: lease.Revoked, Reason: "grant_revoked"},
+		{Kind: lease.Settled, Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}} {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			_, lrev, _, err := lease.LeaseOf(tx, prev.Lease)
+			if err != nil {
+				return nil, err
+			}
+			return lease.ChangeLease(tx, prev.Lease, lrev, e, nil)
+		})
+	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.SupersedeAttempt(tx, last, rev+1, l.ID, 2, a, base)
 	})

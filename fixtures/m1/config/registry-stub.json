@@ -11,7 +11,8 @@
       "credential_ref": "stub",
       "group": "rg_01m4tm99haemss9tvzd438vq8j",
       "cost_basis": "cash",
-      "price": {"input_usd_micros_per_mtok": 1000000, "output_usd_micros_per_mtok": 4000000}
+      "price": {"input_usd_micros_per_mtok": 1000000, "output_usd_micros_per_mtok": 4000000},
+      "footprint_prior": {"context_tokens": 500, "expected_turns": 2}
     },
     {
       "id": "exe_01m4tm99haemr8ajyf09v4ytzb",
@@ -23,7 +24,8 @@
       "credential_ref": "stub",
       "group": "rg_01m4tm99haemss9tvzd438vq8j",
       "cost_basis": "cash",
-      "price": {"input_usd_micros_per_mtok": 2000000, "output_usd_micros_per_mtok": 8000000}
+      "price": {"input_usd_micros_per_mtok": 2000000, "output_usd_micros_per_mtok": 8000000},
+      "footprint_prior": {"context_tokens": 500, "expected_turns": 2}
     }
   ]
 }

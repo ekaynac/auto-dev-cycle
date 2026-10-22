@@ -24,11 +24,15 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// The stub builder's price (registry-stub.json): $1 and $4 per million
-// input and output tokens. A card reserves 1,000 tokens: 4,000 micros at
-// the higher rate. noCap is a USD rail no test reaches.
+// The stub builder's price and footprint prior (registry-stub.json): $1
+// and $4 per million input and output tokens; a 500-token turn, 2 turns.
+// An unconstrained match reserves its attempt_cap, 1,000 tokens: 4,000
+// micros at the higher rate; one turn, 500 tokens, is 2,000 micros, the
+// least a match reserves (#226 entry 120). noCap is a USD rail no test
+// reaches.
 const (
 	reservedMicros = 4000
+	turnMicros     = 2000
 	noCap          = int64(1) << 50
 )
 
@@ -101,15 +105,17 @@ func refusedOn(t *testing.T, err error, rail string) {
 // The USD rails (P17b; fault 2: "a liability left out of the USD rail"):
 //   - U3, #226 entry 69: a hostile zero final leaves its call unsettled, and
 //     its liability (the reservation, above the gateway's counts) counts:
-//     the next lease past per_task_usd is refused, budget_rail
-//     (rail:per_task_usd) named, nothing placed;
+//     the next lease, whose fit is one token short of a turn, is refused,
+//     budget_rail (rail:per_task_usd) named, nothing placed (#226 entry
+//     120);
+//   - a raised rail places it, at exactly one turn (the fit equal to the
+//     prior's context_tokens);
 //   - U1: a live lease's reservation counts too;
-//   - a raised rail places it;
 //   - an executor with no price costs nothing.
 func TestUSDTaskRail(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	perTask, perDay := int64(2*reservedMicros-1), noCap
+	perTask, perDay := int64(reservedMicros+turnMicros-1), noCap
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 	first := e.nodeIn(task)
 	e.spentOn(d, first, e.hostileZeroFinal)
@@ -119,10 +125,13 @@ func TestUSDTaskRail(t *testing.T) {
 	if l, live, lerr := e.liveOn(next); lerr != nil || live {
 		t.Fatalf("the refused match placed %s", l)
 	}
-	perTask = 2 * reservedMicros // the raise
+	perTask = reservedMicros + turnMicros // the raise: exactly one turn left
 	id, err := e.match(d, card(next), builder)
 	if err != nil {
 		t.Fatalf("within the raised rail: %v", err)
+	}
+	if l, _, _ := e.state(id, next); l.Reservations[0].Amount != 500 {
+		t.Errorf("the lease at one turn reserves %d tokens", l.Reservations[0].Amount)
 	}
 	// U1: the live lease's reservation counts.
 	third := e.nodeIn(task)
@@ -132,7 +141,7 @@ func TestUSDTaskRail(t *testing.T) {
 		refusedOn(t, err, graph.RailTaskUSD)
 	}
 	l, _, _ := e.state(id, next)
-	if !strings.Contains(l.PlacementChecks.Budget.Detail, "task 4000 of 8000") {
+	if !strings.Contains(l.PlacementChecks.Budget.Detail, "task 4000 of 6000") {
 		t.Errorf("the placed lease's budget check: %+v", l.PlacementChecks.Budget)
 	}
 }
@@ -143,7 +152,8 @@ func TestUSDTaskRail(t *testing.T) {
 // unsettled; its lease settles it as a 4,000-micro liability; its end
 // (Reconciler.Ended, no Query) records it uncertain, then still_uncertain
 // (the route has no query), never completed. The next lease the same day
-// is refused at the day rail. The contrast: a route whose query answers the
+// is refused at the day rail, which the liability leaves less than one
+// turn. The contrast: a route whose query answers the
 // gateway's own count (300 in, 200 out, 1,100 micros) completes the call,
 // and the next lease is placed.
 func TestUSDAnUnqueriedCallStaysALiability(t *testing.T) {
@@ -157,7 +167,10 @@ func TestUSDAnUnqueriedCallStaysALiability(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reg, gs := stub(t, nil)
 			e := open(t, gs)
-			perTask, perDay := noCap, int64(2*reservedMicros-1)
+			// The day holds the liability and less than one turn more: since
+			// #226 entry 120 (P22a-5c-1) a day leaving a turn or more places a
+			// smaller reservation, so only less than a turn is refused.
+			perTask, perDay := noCap, int64(reservedMicros+turnMicros-1)
 			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 			id, a, call := e.liveCall(d, e.nodeIn(task))
 			e.hostileZeroFinal(call, a, id)
@@ -198,7 +211,7 @@ func TestUSDDayRail(t *testing.T) {
 	t.Cleanup(func() { clock = time.Now })
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	perTask, perDay := noCap, int64(2*reservedMicros-1)
+	perTask, perDay := noCap, int64(reservedMicros+turnMicros-1)
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 	other := types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2nq")
 	yesterday := time.Now().UTC().AddDate(0, 0, -1)
@@ -455,8 +468,8 @@ func TestUSDOnePlacementPerCommand(t *testing.T) {
 		other           types.TaskID
 		rail            string
 	}{
-		"the task's rail": {reservedMicros + 2000, noCap, task, graph.RailTaskUSD},
-		"the day's rail":  {noCap, reservedMicros + 2000, types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2nq"), graph.RailDayUSD},
+		"the task's rail": {reservedMicros + turnMicros - 1, noCap, task, graph.RailTaskUSD},
+		"the day's rail":  {noCap, reservedMicros + turnMicros - 1, types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2nq"), graph.RailDayUSD},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg, gs := stub(t, nil)
@@ -546,14 +559,17 @@ func (e env) liveOn(node types.NodeID) (types.LeaseID, bool, error) {
 
 // No rails fail closed (P17b, decision A): a Dispatcher with no Rails
 // refuses a lease on a priced executor, could_not_run/precondition_failed,
-// naming no hold and placing nothing; on an unpriced one it places it.
+// placing nothing, its node held source_invalid_config on the project's
+// profile, which states no USD rail (Opus 22a-5c-1 M1); on an unpriced one
+// it places it.
 func TestUSDNoRails(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
 	n := e.nodeIn(task)
 	_, err := e.match(Dispatcher{Registry: reg}, card(n), builder)
 	var r *Refused
-	if !errors.As(err, &r) || r.Check != "budget" || r.Outcome != types.OutcomeCouldNotRun || r.Reason != vocab.ReasonPreconditionFailed || r.Hold != nil {
+	if !errors.As(err, &r) || r.Check != "budget" || r.Outcome != types.OutcomeCouldNotRun || r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil ||
+		r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != PlacementSignal("profile "+string(project)) {
 		t.Fatalf("a priced executor with no rails: %v", err)
 	}
 	if _, live, err := e.liveOn(n); err != nil || live {
@@ -598,4 +614,48 @@ func onSecond(node types.NodeID) Card {
 	c := card(node)
 	c.Policy.AllowedDestinations = []types.Slug{"stub", "stub-second"}
 	return c
+}
+
+// #226 entries 103 and 120, a priced match's reservation: min(fit,
+// attempt_cap), fit the most tokens the tighter rail leaves at the
+// executor's higher rate, rounded down (the price rounds up, so 2,401
+// micros buy 600 tokens, never 601). Unconstrained, attempt_cap (1,000 tokens); with
+// 3,000 micros left, 750 tokens (shrunk); with exactly one turn left (2,000
+// micros), 500; one token less (1,999 micros: 499 tokens) is refused as
+// the rail that binds. With both rails capped, the tighter names the hold,
+// and the reservation is its fit; at equal room, the task's.
+func TestUSDReservationFits(t *testing.T) {
+	for name, c := range map[string]struct {
+		perTask, perDay int64
+		tokens          int64  // reserved; 0: refused
+		rail            string // the refusal's rail
+	}{
+		"unconstrained":                   {noCap, noCap, 1000, ""},
+		"shrunk to the task's rail":       {3000, noCap, 750, ""},
+		"exactly one turn":                {turnMicros, noCap, 500, ""},
+		"one token short of a turn":       {turnMicros - 1, noCap, 0, graph.RailTaskUSD},
+		"the day's rail the tighter":      {3000, 2401, 600, ""}, // 600.25 tokens: rounded down, as priced up
+		"the day's rail binds, refused":   {3000, turnMicros - 1, 0, graph.RailDayUSD},
+		"the task's rail binds, refused":  {turnMicros - 1, 3000, 0, graph.RailTaskUSD},
+		"equal room, the task's is named": {turnMicros - 1, turnMicros - 1, 0, graph.RailTaskUSD},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg, gs := stub(t, nil)
+			e := open(t, gs)
+			perTask, perDay := c.perTask, c.perDay
+			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
+			n := e.nodeIn(task)
+			id, err := e.match(d, card(n), builder)
+			if c.rail != "" {
+				refusedOn(t, err, c.rail)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, _, _ := e.state(id, n); l.Reservations[0].Amount != c.tokens || l.Footprint.ContextTokens != 500 || l.Footprint.ExpectedTurns != 2 {
+				t.Errorf("reserved %d tokens, footprint %+v; want %d", l.Reservations[0].Amount, l.Footprint, c.tokens)
+			}
+		})
+	}
 }

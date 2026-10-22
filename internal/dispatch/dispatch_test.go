@@ -170,9 +170,8 @@ func (e env) node(kind types.NodeKind, reg registry.Registry, unclaimed bool) ty
 }
 
 func card(n types.NodeID) Card {
-	return Card{Node: n, Project: project, Image: image, Tokens: 1000, Deadline: "2026-10-04T14:00:00Z",
-		Policy:    types.ProjectProfileDataPolicy{Floor: "contracted", Routing: "verified", AllowedDestinations: []types.Slug{"stub"}},
-		Footprint: types.LeaseFootprint{ContextTokens: 1, ExpectedTurns: 1}}
+	return Card{Node: n, Project: project, Image: image, Deadline: "2026-10-04T14:00:00Z",
+		Policy: types.ProjectProfileDataPolicy{Floor: "contracted", Routing: "verified", AllowedDestinations: []types.Slug{"stub"}}}
 }
 
 func (e env) match(d Dispatcher, c Card, exe types.ExecutorID) (types.LeaseID, error) {
@@ -315,27 +314,42 @@ func TestMatchRefusesBeforeReserving(t *testing.T) {
 		card  Card
 		exe   types.ExecutorID
 		check string // the blocking check; "" for an error before placement
+		held  string // the source_invalid_config hold's signal (Opus 22a-5c-1 M1)
 	}{
-		"a destination the project does not allow": {edit(card(plan), func(c *Card) { c.Policy.AllowedDestinations = []types.Slug{"other"} }), builder, "data_floor"},
-		"a floor the destination is below":         {edit(card(plan), func(c *Card) { c.Policy.Floor = "own" }), builder, "data_floor"},
-		"an unregistered executor":                 {card(plan), "exe_01m4tm99haemrs8zjs56wjm467", "data_floor"},
-		"a reviewer on a builder's node":           {card(plan), reviewer, "independence"},
-		"a builder on a rostered node":             {card(req), builder, "independence"},
-		"no pinned image":                          {edit(card(plan), func(c *Card) { c.Image = "" }), builder, "capability"},
-		"another project's card":                   {edit(card(plan), func(c *Card) { c.Project = other }), builder, ""},
-		"an unclaimed node":                        {card(unclaimed), builder, ""},
-		"no tokens to reserve":                     {edit(card(plan), func(c *Card) { c.Tokens = 0 }), builder, ""},
+		"a destination the project does not allow": {edit(card(plan), func(c *Card) { c.Policy.AllowedDestinations = []types.Slug{"other"} }), builder, "data_floor", PlacementSignal("profile " + string(project))},
+		"a floor the destination is below":         {edit(card(plan), func(c *Card) { c.Policy.Floor = "own" }), builder, "data_floor", PlacementSignal("profile " + string(project))},
+		"an unregistered executor":                 {card(plan), "exe_01m4tm99haemrs8zjs56wjm467", "data_floor", PlacementSignal("executor exe_01m4tm99haemrs8zjs56wjm467")},
+		"a reviewer on a builder's node":           {card(plan), reviewer, "independence", PlacementSignal("executor " + string(reviewer))},
+		"a builder on a rostered node":             {card(req), builder, "independence", PlacementSignal("executor " + string(builder))},
+		"no pinned image":                          {edit(card(plan), func(c *Card) { c.Image = "" }), builder, "capability", PlacementSignal("profile " + string(project))},
+		"another project's card":                   {edit(card(plan), func(c *Card) { c.Project = other }), builder, "", ""},
+		"an unclaimed node":                        {card(unclaimed), builder, "", ""},
 	} {
 		_, err := e.match(d, c.card, c.exe)
 		var r *Refused
 		if errors.As(err, &r) != (c.check != "") || (r != nil && r.Check != c.check) || err == nil {
 			t.Errorf("%s: %v, want refused by %q", name, err, c.check)
 		}
+		if r != nil && (r.Hold == nil || r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != c.held || r.Hold.Owner != types.OwnerOperator) {
+			t.Errorf("%s: the hold %+v, want source_invalid_config on %q", name, r.Hold, c.held)
+		}
 	}
-	// Capacity refuses the whole command: the request goes with the grant.
-	var full *capacity.Exhausted
-	if _, err := e.match(d, edit(card(plan), func(c *Card) { c.Tokens = 3000000 }), builder); !errors.As(err, &full) || full.Reason != vocab.ReasonCapacityReservedFull {
-		t.Errorf("over the group's limit: %v", err)
+	// #226 entry 103: a direct API with no footprint_prior is refused
+	// precondition_failed, its node held source_invalid_config naming the
+	// executor; there is no default number.
+	unsized, _ := stub(t, func(r *types.ExecutorRegistry) { r.Executors[0].FootprintPrior = nil })
+	var r *Refused
+	if _, err := e.match(Dispatcher{Rails: unrailed, Registry: unsized}, card(plan), builder); !errors.As(err, &r) || r.Check != "footprint_prior" ||
+		r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil || r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != PlacementSignal("executor "+string(builder)) {
+		t.Errorf("no footprint_prior: %v (hold %+v)", err, r)
+	}
+	// An attempt_cap past its group's limit is configuration (Opus 22a-5c-1
+	// M1): refused precondition_failed, held source_invalid_config naming the
+	// executor, nothing requested.
+	big, _ := stub(t, func(r *types.ExecutorRegistry) { r.Executors[0].FootprintPrior.ContextTokens = 1_500_000 })
+	if _, err := e.match(Dispatcher{Rails: unrailed, Registry: big}, card(plan), builder); !errors.As(err, &r) || r.Check != "capacity" ||
+		r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil || r.Hold.SignalInstance != PlacementSignal("executor "+string(builder)) {
+		t.Errorf("an attempt_cap over the group's limit: %v", err)
 	}
 	e.view(func(tx *eventstore.Tx) error {
 		keys, err := tx.Keys(lease.LeaseProjection, "")

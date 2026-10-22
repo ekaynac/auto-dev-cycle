@@ -25,7 +25,17 @@
         "credential_ref": {"description": "The name of the credential the gateway injects (P11); never the credential. Null for an endpoint without one.", "oneOf": [{"type": "null"}, {"$ref": "project-profile.json#/$defs/Slug"}]},
         "group": {"description": "The one resource group the executor draws from; the group's members name it.", "$ref": "../common/defs.json#/$defs/ResourceGroupID"},
         "cost_basis": {"enum": ["cash", "subscription_equivalent", "free", "local"]},
-        "price": {"description": "The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost).", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/RegistryPrice"}]}
+        "price": {"description": "The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost).", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/RegistryPrice"}]},
+        "footprint_prior": {"description": "The operator's prior of one attempt's footprint on this executor (#226 entries 103, 120): the lease's footprint, and a direct API's token reservation, at most context_tokens × expected_turns, shrunk to what the USD rails leave but never below context_tokens (one turn). Optional: a direct_api executor without it is refused at placement (precondition_failed), its node held source_invalid_config. A local endpoint reserves a slot.", "$ref": "#/$defs/FootprintPrior"}
+      }
+    },
+    "FootprintPrior": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_tokens", "expected_turns"],
+      "properties": {
+        "context_tokens": {"description": "The tokens one turn's context holds, at most.", "type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "expected_turns": {"description": "The turns one attempt is expected to take.", "type": "integer", "minimum": 1, "maximum": 9007199254740991}
       }
     },
     "RegistryDestination": {
