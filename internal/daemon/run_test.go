@@ -145,6 +145,7 @@ type runWorld struct {
 	ended  func(gateway.Binding)
 	opened func(gateway.Binding)
 	nudged atomic.Int32 // the runs that nudged the loop
+	x      reconcile.Executor
 }
 
 func newRunWorld(t *testing.T, images bool, peer *inproc.Peer) *runWorld {
@@ -192,6 +193,7 @@ func newRunWorldWith(t *testing.T, images bool, peer *inproc.Peer, edit func(map
 	x.Placer = pl
 	rw.runs = &countRuns{r: rw.r}
 	x.Runner = rw.runs
+	rw.x = x
 	rw.l = reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
 	_, rw.task = readyTask(t, w, sys)
 	return rw

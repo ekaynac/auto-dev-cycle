@@ -136,6 +136,13 @@ var _ reconcile.Runner = (*runner)(nil)
 // 22a-5c-2a H2): what failed holds its node, and the loop's timer paces
 // the rest.
 func (r *runner) Run(node types.NodeID, l types.LeaseID) bool {
+	return r.start(node, func() error { return r.attempt(node, l) })
+}
+
+// start runs run for node on its own goroutine, unless one is going for
+// node (an attempt's run or an accept's): true when it started it. Its
+// error is logged; only a run that succeeded nudges the loop.
+func (r *runner) start(node types.NodeID, run func() error) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.live[node] {
@@ -153,9 +160,9 @@ func (r *runner) Run(node types.NodeID, l types.LeaseID) bool {
 			delete(r.live, node)
 			r.mu.Unlock()
 		}()
-		err := r.attempt(node, l)
+		err := run()
 		if err != nil && r.log != nil {
-			fmt.Fprintf(r.log, "adcd: the attempt run of %s: %v\n", node, err)
+			fmt.Fprintf(r.log, "adcd: the run of %s: %v\n", node, err)
 		}
 		if err == nil && r.done != nil {
 			r.done()
