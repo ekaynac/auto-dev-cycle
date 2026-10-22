@@ -359,13 +359,21 @@ func TestPrompt(t *testing.T) {
 	}
 	for name, bad := range map[string]review.PromptInput{
 		"no requirement": {Diff: in.Diff},
-		"no diff":        {Requirement: in.Requirement},
 		"a huge diff":    {Requirement: in.Requirement, Diff: strings.Repeat("x", 1<<20)},
 		"not UTF-8":      {Requirement: in.Requirement, Diff: "\xff"},
 	} {
 		if _, err := review.Prompt(bad); err == nil {
 			t.Errorf("%s: a prompt", name)
 		}
+	}
+	// Astra chunk 3 M2: no diff (an empty candidate) renders "no changes",
+	// no fence; M3: the largest brief the schemas admit (a title of 200 and
+	// a requirement of 17,000 four-byte code points) is a requirement.
+	if p, err := review.Prompt(review.PromptInput{Requirement: in.Requirement}); err != nil || !bytes.Contains(p, []byte("No changes: the candidate's diff against its base is empty.")) || bytes.Contains(p, []byte("```")) {
+		t.Errorf("no diff: %s, %v", p, err)
+	}
+	if _, err := review.Prompt(review.PromptInput{Requirement: "# " + strings.Repeat("𝄞", 200) + "\n\n" + strings.Repeat("𝄞", 17000) + "\n", Diff: in.Diff}); err != nil {
+		t.Errorf("a requirement of 17,000 four-byte characters: %v", err)
 	}
 	// L5: a diff line holding a fence never closes the prompt's.
 	in.Diff = "diff --git a/x b/x\n ```\n+``` ``````\n"
@@ -379,7 +387,7 @@ func TestPrompt(t *testing.T) {
 	}
 }
 
-const pinnedPrompt = "b73d979dfc3d748a3c3601cc714b14d1a221e575c96bcfd1cfb646a0c310f6fa"
+const pinnedPrompt = "3fb68e906d650a8da74daa8a690a0f5d1d651c57c4791e9d65df5d1ee1c264d4" // Astra chunk 3 M2, M3: the no-change rendering and the requirement bound
 
 // TestAdapterDigest: the digest moves with the http-chat adapter's runtime
 // closure (its source and package.json, the contract package's source and

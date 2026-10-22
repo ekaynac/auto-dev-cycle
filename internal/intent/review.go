@@ -8,7 +8,8 @@ package intent
 // agree byte for byte. The review's claimed inputs, in its declared order:
 //   - plan: the task's brief, its title and requirement (brief.Prompt) the
 //     prompt's task;
-//   - patch: the build's diff, the prompt's candidate change, read to at
+//   - patch: the build's diff, the prompt's candidate change (none for an
+//     empty candidate, patch/empty with no ref: "no changes"), read to at
 //     most review.MaxDiff+1 bytes (Prompt refuses a longer one; 22a-6c
 //     records a verdict for a candidate whose context cannot be built:
 //     Opus 22a-6b M2);
@@ -63,6 +64,7 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 	out := ReviewContext{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{}, Bytes: map[types.Digest]int64{}}
 	var whole []types.Ref // the context as graph.Context renders it
 	var in review.PromptInput
+	empty := false // an empty candidate: review.Prompt renders no change
 	include := func(ref types.Ref, limit int64) ([]byte, error) {
 		b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
 		if err == nil && !ok {
@@ -96,6 +98,8 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 				return ReviewContext{}, err
 			}
 			in.Requirement = string(brief.Prompt(pb))
+		case k == types.ResultKindPatch && len(v) == 0: // patch/empty: no diff, and no ref (Astra chunk 3 M2)
+			empty = true
 		case k == types.ResultKindPatch && len(v) == 1:
 			b, err := include(v[0], review.MaxDiff)
 			if err != nil {
@@ -120,13 +124,20 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 			return ReviewContext{}, fmt.Errorf("%w: review %s's input %s is a %s of %d refs, not what a review renders", ErrUnbound, node, c.Name, k, len(v))
 		}
 	}
-	if len(out.Included) != 3 || len(rendered.Omitted) != 0 || !sameRefs(rendered.Included, whole) {
+	if len(out.Included) != 3-b2i(empty) || len(rendered.Omitted) != 0 || !sameRefs(rendered.Included, whole) {
 		return ReviewContext{}, fmt.Errorf("%w: review %s's rendered context is not its brief, patch and gate result", ErrUnbound, node)
 	}
 	if out.Prompt, err = review.Prompt(in); err != nil {
 		return ReviewContext{}, err
 	}
 	return out, nil
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // isReceipt is whether r is a receipt.
