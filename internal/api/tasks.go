@@ -22,8 +22,11 @@ package api
 //     (Lease.Price, ledger.PriceMicros), unknown (null), never zero, when
 //     the lease records no price or a settled call's usage is unknown,
 //     saturated or inconsistent; the calls not settled yet listed apart,
-//     their count and their usage so far at that price (null while one has
-//     none). A reported cost is never read (#226 entry 62).
+//     their count and what the USD rail counts of them (dispatch.Cost:
+//     while the lease is live, its reservation or its usage so far, the
+//     larger, at the higher token rate; once ended, the liability its
+//     settlement kept), null with no price or past the contract's
+//     integers. A reported cost is never read (#226 entry 62).
 //
 // Its work is bounded by what the board reads and the task's own nodes:
 // the first attempt is read from each node's first-attempt index
@@ -39,6 +42,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
@@ -160,8 +164,8 @@ func metrics(tx *eventstore.Tx, t authority.TaskRecord, f started, tokens bool) 
 		return nil, err
 	}
 	slices.Sort(calls)
-	var settled, outstanding int64
-	settledKnown, outstandingKnown := l.Price != nil, l.Price != nil
+	var settled int64
+	settledKnown := l.Price != nil
 	for _, c := range calls {
 		ms, err := ledger.Measurements(tx, c)
 		if err != nil {
@@ -183,8 +187,6 @@ func metrics(tx *eventstore.Tx, t authority.TaskRecord, f started, tokens bool) 
 		}
 		if s.Settled {
 			settled, settledKnown = settled+priced, settledKnown && known
-		} else {
-			outstanding, outstandingKnown = outstanding+priced, outstandingKnown && known
 		}
 		if s.Usage == nil {
 			continue
@@ -198,8 +200,14 @@ func metrics(tx *eventstore.Tx, t authority.TaskRecord, f started, tokens bool) 
 		if settledKnown {
 			m.Charge.SettledUsdMicros = &settled
 		}
-		if outstandingKnown {
-			m.Charge.OutstandingUsdMicros = &outstanding
+		if m.Charge.OutstandingCalls > 0 && l.Price != nil && len(calls) == 1 { // the rail's own figure (Opus 22a-5c-2c M1): one call a lease
+			outstanding, err := dispatch.Cost(tx, l)
+			if err != nil {
+				return nil, err
+			}
+			if outstanding != dispatch.Unaffordable {
+				m.Charge.OutstandingUsdMicros = &outstanding
+			}
 		}
 	}
 	return m, nil

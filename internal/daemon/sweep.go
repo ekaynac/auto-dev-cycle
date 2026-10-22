@@ -9,10 +9,11 @@ package daemon
 //  1. RemoveStale removes every container a crashed controller left: every
 //     batch run's, and every attempt's interactive one (no attempt is kept:
 //     none runs);
-//  2. a run directory a session whose end was unverified kept (keptName,
-//     workspace.Keep) is torn down only when RemoveStale named its attempt,
-//     so its container is gone: one whose removal failed stays, with its
-//     cid, for a later sweep;
+//  2. the run directories and clones a crash left go (tearDownRuns,
+//     removeClones): every run directory once RemoveStale's listing was
+//     complete; otherwise only one a session whose end was unverified kept
+//     (keptName, workspace.Keep) whose attempt RemoveStale named, so its
+//     container is gone: the rest stay, with their cid, for a later sweep;
 //  3. recovery.RefuseOrphans refuses the output each cut attempt left in
 //     its exchange root (stale_attempt), and clears the exchange
 //     directory;
@@ -26,8 +27,10 @@ package daemon
 //
 // Every step runs whatever an earlier one returned, and none blocks the
 // start: its failures are the start's note, and the next start resumes
-// them. A kept directory whose container is gone without this sweep naming
-// it (removed by hand) stays: the rule keeps it, and it is the operator's.
+// them. The sweep runs only with a runner (no sandbox root, no adapter: no
+// sweep), so a start without one leaves a finishing attempt, its lease and
+// an orphan's output for the next start with one (stated, Opus 22a-5c-2c
+// L4). One adcd holds a sandbox root (lockSandbox).
 
 import (
 	"context"
@@ -58,37 +61,62 @@ var removeStale = func(r *runner, ctx context.Context) ([]string, error) {
 // joined.
 func (r *runner) sweep(ctx context.Context) error {
 	removed, err := removeStale(r, ctx)
-	errs := []error{err, r.tearDownKept(removed)}
+	errs := []error{err, r.tearDownRuns(removed, err == nil), r.removeClones()}
 	errs = append(errs, recovery.Recovery{Store: r.store, Actor: r.system.Actor(), Units: graph.Units{}, Blobs: r.blobs, Exchanges: r.host.Root,
 		Principal: r.system}.RefuseOrphans(ctx))
 	errs = append(errs, r.endLeft(ctx))
 	return errors.Join(errs...)
 }
 
-// tearDownKept tears down each kept run directory whose attempt is in
-// removed.
-func (r *runner) tearDownKept(removed []string) error {
+// tearDownRuns tears down the run directories a crash left under the
+// sandbox root's runs/ (never the exchange or socket directories, the
+// adapter host's and the gateway's). At start nothing runs, so with
+// RemoveStale's listing complete (complete: it returned no error) no run
+// directory has a live container, and every one goes, kept or not (Opus
+// 22a-5c-2c M3); otherwise only a kept one whose attempt RemoveStale
+// removed, and the rest wait for a later sweep.
+func (r *runner) tearDownRuns(removed []string, complete bool) error {
 	dirs, err := r.box.Runs()
 	errs := []error{err}
 	for _, dir := range dirs {
-		f, err := os.Open(filepath.Join(dir, keptName))
-		if errors.Is(err, os.ErrNotExist) {
-			continue // not kept: its run's own teardown is the run's
-		}
-		var b []byte
-		if err == nil {
-			b, err = io.ReadAll(io.LimitReader(f, 64))
-			err = errors.Join(err, f.Close())
-		}
-		if err != nil || ids.Check(string(b), "att") != nil || !slices.Contains(removed, string(b)) {
-			errs = append(errs, err) // its container may still exist: kept for a later sweep
+		if dir == filepath.Clean(r.host.Root) || dir == filepath.Clean(r.sockets) {
 			continue
+		}
+		if !complete {
+			f, err := os.Open(filepath.Join(dir, keptName))
+			var b []byte
+			if err == nil {
+				b, err = io.ReadAll(io.LimitReader(f, 64))
+				err = errors.Join(err, f.Close())
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				continue // not kept: its container may still exist
+			}
+			if err != nil || ids.Check(string(b), "att") != nil || !slices.Contains(removed, string(b)) {
+				errs = append(errs, err) // its container may still exist: kept for a later sweep
+				continue
+			}
 		}
 		a, err := r.box.Kept(dir)
 		if err == nil {
 			err = a.Teardown()
 		}
 		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// removeClones removes what a crash left in the controller's clones
+// directory (the workspaces' clones, the diffs' trees, accept's and the
+// gate's clones): at start no run uses it.
+func (r *runner) removeClones() error {
+	entries, err := os.ReadDir(r.clones)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	errs := []error{err}
+	for _, e := range entries {
+		errs = append(errs, os.RemoveAll(filepath.Join(r.clones, e.Name())))
 	}
 	return errors.Join(errs...)
 }
@@ -146,7 +174,12 @@ func (r *runner) endLeft(ctx context.Context) error {
 
 // endOne ends lf as the run would have: sealed (a finishing attempt; its
 // result's patch the diff), its result kept or could_not_run recorded with
-// no attempt, then its lease ended (endAttempt).
+// no attempt, then its lease ended (endAttempt). Two losses against the
+// run's own seal, stated (Opus 22a-5c-2c L1): the output files .gitignore
+// kept out of the diff are not carried (no result records them), so accept
+// reports no ignored-file warnings for such an attempt; and a result with
+// no patch (failed/unsafe_output, say) seals no diff, as one that changed
+// nothing.
 func (r *runner) endOne(ctx context.Context, lf left) error {
 	if lf.attempt.Status == types.AttemptStatusCompleted { // only its lease's end is left
 		return r.endActive(ctx, lf.attempt.Lease, lease.LeaseEvent{Kind: lease.Completed})
@@ -178,24 +211,42 @@ var resealAfter = 2 * time.Minute
 // Reseal seals the build attempt node, a claimed accept node, waits on
 // (reconcile.Reseal), once it has waited resealAfter, as the start sweep
 // ends an attempt left finishing (endOne): a seal that never landed while
-// adcd runs (Opus 22a-5c-2b-3, Main's obligation for 5c-2c). Its tries are
-// bounded (maxTries, one a pass); when they are spent, node is held
-// "runner: failed" with the cause. True when it started a seal.
-func (r *runner) Reseal(node types.NodeID) bool {
+// adcd runs (Opus 22a-5c-2b-3, Main's obligation for 5c-2c). nodes is the
+// pass's whole list: a node no longer in it is forgotten (Opus 22a-5c-2c
+// L2), so its clock starts again if it waits again. Its tries are bounded
+// (maxTries, one a pass); when they are spent, node is held "runner:
+// failed" with the cause. That hold, and the attempt's lease, stay until a
+// restart: the start sweep then seals the attempt and ends its lease, but
+// "runner: failed" is never cleared (the recovery: revoke the task's
+// approval; stated, Opus 22a-5c-2c L3). True when it started a seal.
+func (r *runner) Reseal(nodes []types.NodeID) bool {
 	now := time.Now()
+	var due []types.NodeID
 	r.mu.Lock()
 	if r.waiting == nil {
 		r.waiting = map[types.NodeID]time.Time{}
 	}
-	since, seen := r.waiting[node]
-	if !seen {
-		r.waiting[node], since = now, now
+	for n := range r.waiting { // waiting no more (Opus 22a-5c-2c L2)
+		if !slices.Contains(nodes, n) {
+			delete(r.waiting, n)
+			delete(r.resealTries, n)
+		}
+	}
+	for _, node := range nodes {
+		since, seen := r.waiting[node]
+		if !seen {
+			r.waiting[node], since = now, now
+		}
+		if now.Sub(since) >= resealAfter {
+			due = append(due, node)
+		}
 	}
 	r.mu.Unlock()
-	if now.Sub(since) < resealAfter {
-		return false
+	started := false
+	for _, node := range due {
+		started = r.start(node, func() error { return r.reseal(node) }) || started
 	}
-	return r.start(node, func() error { return r.reseal(node) })
+	return started
 }
 
 // reseal is one try of Reseal.

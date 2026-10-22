@@ -235,6 +235,14 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if cfg.Sandbox != nil {
 		images = *cfg.Sandbox
 	}
+	if cfg.Sandbox != nil { // one adcd a sandbox root: its start sweep removes every stale run there (Opus 22a-5c-2c M2)
+		unlock, err := lockSandbox(cfg.Sandbox.Root)
+		if err != nil {
+			_ = d.Close()
+			return err
+		}
+		defer unlock()
+	}
 	eg, err := newEgress(d, reg, cfg.CaptureEgress) // the one gateway (Opus #322 L5)
 	var run *runner
 	if err == nil {

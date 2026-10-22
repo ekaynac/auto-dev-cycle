@@ -235,13 +235,13 @@ func (Gate) expected() []eventstore.Expectation {
 	return nil
 }
 
-// Reseal starts the controller's seal of the build attempt a claimed
-// accept node's input waits on (Acceptor's Reseal): never a command of its
-// own.
-type Reseal struct{ Node Versioned }
+// Reseal starts the controller's seals of the build attempts claimed
+// accept nodes' inputs wait on (Acceptor's Reseal), the pass's whole list:
+// never a command of its own.
+type Reseal struct{ Nodes []Versioned }
 
-func (Reseal) action() string    { return RunAction }
-func (r Reseal) subject() string { return r.Node.ID }
+func (Reseal) action() string  { return RunAction }
+func (Reseal) subject() string { return "unsealed" }
 func (Reseal) expected() []eventstore.Expectation {
 	return nil
 }
@@ -433,8 +433,8 @@ func Decide(s Snapshot) []Action {
 		for _, n := range s.Gated {
 			out = append(out, Gate{Node: n})
 		}
-		for _, n := range s.Unsealed {
-			out = append(out, Reseal{Node: n})
+		if len(s.Unsealed) > 0 {
+			out = append(out, Reseal{Nodes: slices.Clone(s.Unsealed)})
 		}
 		return out
 	}
@@ -471,10 +471,11 @@ type Acceptor interface {
 	Accept(node types.NodeID) bool
 	// Gate starts node's gate run, likewise.
 	Gate(node types.NodeID) bool
-	// Reseal starts the seal of the build attempt accept node's input is
-	// waiting on, when it is due, and returns false when it starts nothing
-	// (not due, or one going).
-	Reseal(node types.NodeID) bool
+	// Reseal starts the seal of the build attempt each accept node of nodes
+	// (every one the pass found waiting on its input's seal) waits on, when
+	// it is due, forgetting any other it waited on, and returns false when
+	// it starts nothing (none due, or each going).
+	Reseal(nodes []types.NodeID) bool
 }
 
 // Runner is what Run does, outside any command.
@@ -531,7 +532,11 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 		return nil
 	}
 	if rs, ok := a.(Reseal); ok {
-		if x.Acceptor == nil || !x.Acceptor.Reseal(types.NodeID(rs.Node.ID)) {
+		nodes := make([]types.NodeID, 0, len(rs.Nodes))
+		for _, n := range rs.Nodes {
+			nodes = append(nodes, types.NodeID(n.ID))
+		}
+		if x.Acceptor == nil || !x.Acceptor.Reseal(nodes) {
 			return errNothing
 		}
 		return nil

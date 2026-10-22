@@ -191,7 +191,7 @@ export interface Charge {
    */
   settled_usd_micros: null | number;
   /**
-   * The calls not settled yet, listed apart: their usage so far at the lease's price; null when any of them has no usage reported yet or the lease records no price.
+   * The calls not settled yet, listed apart, as the USD rail counts them: while the lease is live, its reservation or the usage so far, the larger, at the higher token rate; once it has ended, the liability its settlement kept. Null when the lease records no price, or the figure passes the contract's integers.
    */
   outstanding_usd_micros: null | number;
   /**
