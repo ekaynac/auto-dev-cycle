@@ -38,7 +38,6 @@ package intent
 // refuses the replay, as the seal fold's do.
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -48,7 +47,6 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
-	"github.com/ekaynac/auto-dev-cycle/internal/brief"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -218,72 +216,48 @@ func (p Projector) bind(tx *eventstore.Tx, mi types.ManifestIntent) error {
 }
 
 // rendersAs is the prompt n's context, rendered, renders into, for n's
-// role, once mi states exactly that context (P22a-6b: per role):
-//   - a build: its one input, the brief, included at the prompt's size
-//     (brief.Prompt);
-//   - a review: its rendered context as Review reads it from the log, the
-//     brief, the patch and the gate's report included at their sizes and
-//     the gate's receipt omitted (review.Prompt).
+// role, once mi states exactly that context, its inputs, its included refs
+// at their sizes and its omitted refs with their reasons, in order
+// (P22a-6b: per role):
+//   - a build: as Build reads it from the log, the brief (at its prompt's
+//     size), and a repair round's findings view and candidate;
+//   - a review: as Review reads it from the log, the brief, the patch and
+//     the gate's report included at their sizes and the gate's receipt
+//     omitted (review.Prompt).
 //
 // Any other node's intent is refused.
 func (p Projector) rendersAs(tx *eventstore.Tx, n types.Node, rendered graph.Rendered, mi types.ManifestIntent) ([]byte, error) {
+	var pc PromptContext
+	var err error
 	switch n.Kind {
 	case types.NodeKindBuild:
-		prompt, err := p.prompt(rendered)
-		switch {
-		case err != nil:
-			return nil, err
-		case len(mi.Inputs) != 1 || len(mi.Included) != 1 || len(rendered.Omitted) != 0 || mi.Included[0].Ref.IdentityDigest != rendered.Included[0].IdentityDigest:
-			return nil, fmt.Errorf("%w: its inputs are not its node's rendered context, the brief included", ErrUnbound)
-		case mi.Included[0].Bytes != int64(len(prompt)):
-			return nil, fmt.Errorf("%w: the brief renders into %d bytes, its intent states %d", ErrUnbound, len(prompt), mi.Included[0].Bytes)
-		}
-		return prompt, nil
+		pc, err = Build(tx, p.Env.Blobs, n.ID, rendered)
 	case types.NodeKindReview:
-		rc, err := Review(tx, p.Env.Blobs, n.ID, rendered)
-		if err != nil {
-			return nil, err
-		}
-		inputs := slices.Clone(rc.Included)
-		for _, o := range rc.Omitted {
-			inputs = append(inputs, o.Ref)
-		}
-		included := func(x, y types.ManifestIntentIncludedItem) bool {
-			return x.Ref.IdentityDigest == y.Ref.IdentityDigest && x.Bytes == y.Bytes
-		}
-		want := []types.ManifestIntentIncludedItem{}
-		for _, r := range rc.Included {
-			want = append(want, types.ManifestIntentIncludedItem{Ref: r, Bytes: rc.Bytes[r.IdentityDigest]})
-		}
-		omitted := func(x, y types.ManifestIntentOmittedItem) bool {
-			return x.Ref.IdentityDigest == y.Ref.IdentityDigest && x.Reason == y.Reason
-		}
-		if !sameRefs(mi.Inputs, inputs) || !slices.EqualFunc(mi.Included, want, included) || !slices.EqualFunc(mi.Omitted, rc.Omitted, omitted) {
-			return nil, fmt.Errorf("%w: its inputs are not its review's rendered context: the brief, the patch and the gate's report included at their sizes, its receipt omitted", ErrUnbound)
-		}
-		return rc.Prompt, nil
+		pc, err = Review(tx, p.Env.Blobs, n.ID, rendered)
+	default:
+		return nil, fmt.Errorf("%w: a %s node has no consumer's intent", ErrUnbound, n.Kind)
 	}
-	return nil, fmt.Errorf("%w: a %s node has no consumer's intent", ErrUnbound, n.Kind)
-}
-
-// prompt is the builder's prompt rendered's one included ref, the brief,
-// renders into (brief.Prompt).
-func (p Projector) prompt(rendered graph.Rendered) ([]byte, error) {
-	if len(rendered.Included) != 1 {
-		return nil, fmt.Errorf("%w: a build renders one brief, not %d refs", ErrUnbound, len(rendered.Included))
-	}
-	b, ok, err := readBlob(p.Env.Blobs, rendered.Included[0].ContentDigest, MaxBrief)
-	switch {
-	case err != nil:
-		return nil, err
-	case !ok:
-		return nil, fmt.Errorf("%w: the brief is over %d bytes, or not its digest's", ErrUnbound, MaxBrief)
-	}
-	pb, err := brief.Decode(b)
 	if err != nil {
 		return nil, err
 	}
-	return bytes.Clone(brief.Prompt(pb)), nil
+	inputs := slices.Clone(pc.Included)
+	for _, o := range pc.Omitted {
+		inputs = append(inputs, o.Ref)
+	}
+	included := func(x, y types.ManifestIntentIncludedItem) bool {
+		return x.Ref.IdentityDigest == y.Ref.IdentityDigest && x.Bytes == y.Bytes
+	}
+	want := []types.ManifestIntentIncludedItem{}
+	for _, r := range pc.Included {
+		want = append(want, types.ManifestIntentIncludedItem{Ref: r, Bytes: pc.Bytes[r.IdentityDigest]})
+	}
+	omitted := func(x, y types.ManifestIntentOmittedItem) bool {
+		return x.Ref.IdentityDigest == y.Ref.IdentityDigest && x.Reason == y.Reason
+	}
+	if !sameRefs(mi.Inputs, inputs) || !slices.EqualFunc(mi.Included, want, included) || !slices.EqualFunc(mi.Omitted, pc.Omitted, omitted) {
+		return nil, fmt.Errorf("%w: its inputs are not its %s's rendered context, included at their sizes and omitted for their reasons", ErrUnbound, n.Kind)
+	}
+	return pc.Prompt, nil
 }
 
 // calledAs refuses ev, an attempt's submitted result, a usage measurement

@@ -127,6 +127,39 @@ func RecordReview(r types.NodeRecorded, families Families) ([]eventstore.Event, 
 	return record(r)
 }
 
+// RecordRoundReview is RecordReview for a repair round's review (P22a-6d):
+// r takes a recorded review_requirement node, on that node's roster. A
+// roster the registry no longer gives (ErrNotIndependent) is recorded all
+// the same, so the task's round goes on and never stalls unheld: the
+// review's claim refuses it (ClaimReview) and the evaluator holds it
+// reviewer_unavailable (HoldNotIndependent), which adcd's reviews.Unheld
+// clears or supersedes onto an independent roster. Any other refusal, or a
+// roster not its requirement's, refuses.
+func RecordRoundReview(tx *eventstore.Tx, r types.NodeRecorded, families Families) ([]eventstore.Event, error) {
+	var ni ErrNotIndependent
+	if err := registered(r.Node, families); err != nil && !errors.As(err, &ni) {
+		return nil, err
+	}
+	roster, _, err := rosterOf(r.Node)
+	if err != nil || r.Node.Kind != types.NodeKindReview {
+		return nil, errors.Join(err, fmt.Errorf("graph: %s is no review", r.Node.ID))
+	}
+	for _, in := range r.Node.Inputs {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		if !ok || src.ResultKind != types.ResultKindReviewRequirement {
+			continue
+		}
+		req, err := loadNode(tx, src.Producer)
+		if err != nil {
+			return nil, err
+		}
+		if was, _, err := rosterOf(req.Recorded.Node); err != nil || req.Recorded.Node.Kind != types.NodeKindReviewRequirement || !slices.Equal(was, roster) {
+			return nil, errors.Join(err, fmt.Errorf("graph: review %s's roster is not its recorded requirement %s's", r.Node.ID, src.Producer))
+		}
+	}
+	return record(r)
+}
+
 // ClaimReview is Claim for a review or review_requirement node: its roster
 // is checked against the registry again, whoever recorded it, and a
 // review's roster against its task's contributors (contributors.go).

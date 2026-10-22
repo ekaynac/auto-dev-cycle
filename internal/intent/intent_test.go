@@ -26,29 +26,41 @@ const acceptance = "e" // the task's acceptance blob's digest character
 // store is a resolver over records by id, counting its lookups.
 type store struct {
 	recs     map[string]graph.RefRecord
+	more     map[string][]graph.RefRecord // further records of an id: other lineages (#226 entry 161)
 	lookups  map[string]int
 	reviewed map[types.Digest]bool
 }
 
 func newStore(recs ...graph.RefRecord) *store {
-	s := &store{recs: map[string]graph.RefRecord{}, lookups: map[string]int{}, reviewed: map[types.Digest]bool{}}
+	s := &store{recs: map[string]graph.RefRecord{}, more: map[string][]graph.RefRecord{}, lookups: map[string]int{}, reviewed: map[types.Digest]bool{}}
 	for _, r := range recs {
 		s.recs[r.ID] = r
 	}
 	return s
 }
 
-func (s *store) resolve(id string) (graph.RefRecord, bool, error) {
+func (s *store) resolve(id string) ([]graph.RefRecord, bool, error) {
 	s.lookups[id]++
 	r, ok := s.recs[id]
-	return r, ok, nil
+	if !ok {
+		return nil, false, nil
+	}
+	return append([]graph.RefRecord{r}, s.more[id]...), true, nil
 }
 
 // project is the scope of every ref of these tests.
 const project = types.ProjectID("prj_01m3250vkwffc979nzjw0gpym1")
 
 func rec(id, d string, producer types.NodeKind, lineage ...string) graph.RefRecord {
-	return graph.RefRecord{ID: id, ContentDigest: digest(d), Lineage: append([]string{}, lineage...), Producer: producer, Project: project}
+	r := graph.RefRecord{ID: id, Type: types.RefTypeBlob, ContentDigest: digest(d), Lineage: append([]string{}, lineage...), Producer: producer, Project: project,
+		Restrictions: []types.Restriction{}}
+	p := project
+	identity, err := knowledge.IdentityApartFromLineage(types.Ref{Type: r.Type, ID: id, Scope: types.RefScope{Project: &p}, ContentDigest: r.ContentDigest})
+	if err != nil {
+		panic(err)
+	}
+	r.Identity = identity
+	return r
 }
 
 // ref is r's sealed ref, as a context renders it.
@@ -470,7 +482,8 @@ func (m blobMap) Open(d string) (io.ReadCloser, error) {
 }
 
 // TestReadBlob (Astra #321 H1): a declassified output's bytes are its
-// digest's content, within maxSafeBytes, or no safe output.
+// digest's content, within maxSafeBytes, or no safe output: past the
+// bound, false; another digest's bytes, ErrBlobDamaged (Astra chunk 4b H1).
 func TestReadBlob(t *testing.T) {
 	sum := func(b []byte) types.Digest { return types.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256(b))) }
 	good, big := []byte("a report"), bytes.Repeat([]byte("x"), maxSafeBytes+1)
@@ -482,11 +495,83 @@ func TestReadBlob(t *testing.T) {
 		bytes bool // bytes returned: d's own, whatever their size (Opus 22a-6c L2)
 	}{"its content": {sum(good), true, true}, "at the bound": {sum(at), true, true}, "past the bound": {sum(big), false, true},
 		"another digest's content": {digest("1"), false, false}, "past the bound, another digest's": {digest("3"), false, false}} {
-		if b, ok, err := readBlob(blobs, c.d, maxSafeBytes); err != nil || ok != c.ok || (b != nil) != c.bytes {
+		// Astra chunk 4b H1: another digest's bytes are the host's store
+		// damaged (ErrBlobDamaged), never the content's (ErrUnbound), nor
+		// a blob that is simply not the one sought.
+		b, ok, err := readBlob(blobs, c.d, maxSafeBytes)
+		if damaged := !c.bytes; damaged != errors.Is(err, ErrBlobDamaged) || errors.Is(err, ErrUnbound) || (!damaged && err != nil) || ok != c.ok || (b != nil) != c.bytes {
 			t.Errorf("%s: %v %v, bytes %d", name, ok, err, len(b))
 		}
 	}
 	if _, _, err := readBlob(blobs, digest("2"), maxSafeBytes); err == nil {
 		t.Error("a missing blob read")
+	}
+}
+
+// #226 entry 161: an id a task's rounds record again (a repeated tree or
+// decision: several records of one producer kind, differing in lineage
+// alone) is walked through every record: clean in each, the intent is
+// given; one record of it with an acceptance-derived ancestor refuses it;
+// and the input as listed must be one of its records.
+func TestIntentRepeatedRecords(t *testing.T) {
+	decision := rec("tree-1", "1", "accept", "patch-1")
+	again := rec("tree-1", "1", "accept", "patch-2")
+	clean := newStore(decision, rec("patch-1", "2", "build"), rec("patch-2", "3", "build"))
+	clean.more["tree-1"] = []graph.RefRecord{again}
+	for role, intent := range roles {
+		if _, err := intent(in(t, clean, decision)); err != nil {
+			t.Errorf("%s: a repeated id, each record clean: %v", role, err)
+		}
+		if _, err := intent(in(t, clean, again)); err != nil {
+			t.Errorf("%s: a repeated id, as its other record: %v", role, err)
+		}
+	}
+	accepted := "sha256:" + strings.Repeat(acceptance, 64)
+	tainted := newStore(decision, rec("patch-1", "2", "build"), rec("patch-2", "3", "build", accepted))
+	tainted.more["tree-1"] = []graph.RefRecord{again}
+	view := rec("view-1", "4", "accept", "tree-1") // the repeated id an ancestor, not the input
+	tainted.recs["view-1"] = view
+	for role, intent := range roles {
+		if _, err := intent(in(t, tainted, decision)); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s: one record's ancestor is acceptance-derived: %v", role, err)
+		}
+		if _, err := intent(in(t, tainted, view)); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s: one record of an ancestor has an acceptance-derived ancestor: %v", role, err)
+		}
+	}
+	// Opus 22a-6d H1 re-check L1: the brief's check runs on each record of
+	// a plan id, so a later record that is no root refuses it.
+	brief := rec("brief-1", "5", "plan")
+	plans := newStore(brief, rec("spec-1", "6", ""))
+	plans.more["brief-1"] = []graph.RefRecord{rec("brief-1", "5", "plan", "spec-1")}
+	for role, intent := range roles {
+		x := in(t, plans, brief)
+		x.Records.brief = func(r graph.RefRecord) error {
+			if len(r.Lineage) != 0 {
+				return ErrNotTheBrief
+			}
+			return nil
+		}
+		if _, err := intent(x); !errors.Is(err, ErrNotTheBrief) {
+			t.Errorf("%s: a plan id's second record no root: %v", role, err)
+		}
+	}
+	// Astra chunk 4b H2: an input under a revision its record has not is
+	// not the input its record names (the comparison graph.Records makes).
+	revised := in(t, clean, decision)
+	rev := "1"
+	r := revised.Context.Included[0]
+	r.Revision = &rev
+	r, err := knowledge.Seal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revised.Context.Included[0], revised.Bytes[r.IdentityDigest] = r, 10
+	if _, err := Builder(revised); !errors.Is(err, ErrAncestryUnresolved) {
+		t.Errorf("an input under another revision: %v", err)
+	}
+	other := rec("tree-1", "1", "accept", "patch-3")
+	if _, err := Builder(in(t, clean, other)); !errors.Is(err, ErrAncestryUnresolved) {
+		t.Errorf("an input listed with a lineage none of its records has: %v", err)
 	}
 }

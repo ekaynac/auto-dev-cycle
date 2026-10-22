@@ -63,7 +63,7 @@ var holdRows = []holdRow{
 		"rail:per_day_usd: the day's room (RoomToday); rail:per_task_usd: task.raise_rail (graph.ClearRail)"},
 	// The launch's misses (Dispatcher.Launch, #226 entry 156).
 	// rosterMiss: raised by Launch's miss and by Match's refusal (placer.Place; Astra chunk 3 H1).
-	{"dispatch.rosterMiss", "reviewer_unavailable", `"registry:" + string(ni.Executor)`, "registry:e", "daemon.reviews.Unheld", "a review node's roster is the registry's again, or re-derived"},
+	{"dispatch.rosterMiss", "reviewer_unavailable", "ni.SignalInstance()", "registry:e", "daemon.reviews.Unheld", "a review node's roster is the registry's again, or re-derived"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `PlacementSignal("executor " + string(l.Executor))`, "placement: executor e", "daemon.placer.Unblocked", "Configured re-derives the placement"},
 	{"dispatch.Dispatcher.miss", "wrong_owner", "imageSignal(card.Image)", "image i", "daemon.placer.Unblocked", "the project's pinned image resolves (placer.imageReady)"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `PlacementSignal("destination " + string(e.Destination.ID))`, "placement: destination d", "daemon.placer.Unblocked", "Configured: the credential is held"},

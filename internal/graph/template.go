@@ -4,6 +4,7 @@ package graph
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -53,12 +54,30 @@ func Candidate(task types.TaskID, project types.ProjectID) ([]types.NodeRecorded
 	builder, edit := types.Name("builder"), types.Name("edit")
 	b := node(build, types.NodeKindBuild, on("plan", plan, types.ResultKindPlan))
 	b.Node.Requires = types.NodeRequires{Role: &builder, Capability: &edit, Resources: []types.ResourceGroupKind{types.ResourceGroupKindAccountQuota}}
-	return []types.NodeRecorded{
-		node(plan, types.NodeKindPlan, []types.InputSpec{}),
-		b,
-		node(accept, types.NodeKindAccept, on("patch", build, types.ResultKindPatch)),
-		node(gate, types.NodeKindGate, on("tree", accept, types.ResultKindTree)),
-	}, nil
+	return append([]types.NodeRecorded{node(plan, types.NodeKindPlan, []types.InputSpec{}), b}, checked(task, project, build, accept, gate)...), nil
+}
+
+// Checked is the accept and gate nodes that check build's candidate, as
+// the template records them (Candidate): a repair round's (P22a-6d).
+func Checked(task types.TaskID, project types.ProjectID, build types.NodeID) ([]types.NodeRecorded, error) {
+	accept, err := ids.New("nod")
+	gate, gerr := ids.New("nod")
+	if err = errors.Join(err, gerr); err != nil {
+		return nil, err
+	}
+	return checked(task, project, build, types.NodeID(accept), types.NodeID(gate)), nil
+}
+
+// checked are the accept and gate nodes, accept and gate, on build.
+func checked(task types.TaskID, project types.ProjectID, build, accept, gate types.NodeID) []types.NodeRecorded {
+	on := func(name string, producer types.NodeID, kind types.ResultKind) []types.InputSpec {
+		return []types.InputSpec{{Name: types.Name(name), Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: producer, ResultKind: kind}}}}
+	}
+	node := func(id types.NodeID, kind types.NodeKind, inputs []types.InputSpec) types.NodeRecorded {
+		return types.NodeRecorded{Task: task, Project: project, Node: types.Node{ID: id, Kind: kind, DefinitionVersion: TemplateVersion, Round: 1,
+			Params: json.RawMessage(`{}`), Inputs: inputs, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}
+	}
+	return []types.NodeRecorded{node(accept, types.NodeKindAccept, on("patch", build, types.ResultKindPatch)), node(gate, types.NodeKindGate, on("tree", accept, types.ResultKindTree))}
 }
 
 // RecordTemplate is the events recording template, a task's nodes, once

@@ -591,14 +591,27 @@ func TestOneRunPerBuild(t *testing.T) {
 }
 
 // P22a-5c-3 with 5c-2a: a forged plan brief is never handed to the
-// builder: the run's plan refuses it by the I18 walk (intent.ErrNotTheBrief)
-// before it reads anything else.
+// builder: the run's builder intent (intent.Build, then the I18 walk)
+// refuses it (intent.ErrNotTheBrief), before any workspace (P22a-6d: the
+// plan no longer reads the brief).
 func TestTheRunRefusesAForgedBrief(t *testing.T) {
-	w, x, _, build := forgedPlan(t, ofTask(func(x *types.Task) { x.Spec.Requirement = "CANARY-ACCEPTANCE" }))
-	r := &runner{store: w.s, blobs: w.blobs, env: x.Env}
-	if _, err := r.plan(context.Background(), build, "lea_01m3250v57fhm9v1z9xd1wk8gy"); !errors.Is(err, intent.ErrNotTheBrief) ||
-		strings.Contains(err.Error(), "CANARY") {
-		t.Errorf("the run's plan over a forged brief: %v", err)
+	malformed := func(t *testing.T, _ types.Task, policy types.Restriction) ([]byte, types.Ref) { // Astra chunk 4b M1: hashed right, no brief
+		return []byte("{}"), briefRef(t, []byte("{}"), policy)
+	}
+	for name, forge := range map[string]forgery{"an acceptance in its requirement": ofTask(func(x *types.Task) { x.Spec.Requirement = "CANARY-ACCEPTANCE" }),
+		"malformed ({})": malformed} {
+		w, x, _, build := forgedPlan(t, forge)
+		r := &runner{store: w.s, blobs: w.blobs, env: x.Env}
+		var pl plan
+		w.view(func(tx *eventstore.Tx) (err error) {
+			pl.view, err = graph.ViewOf(tx, build)
+			return err
+		})
+		// The content's: held "runner: failed" at once (contentFault), never retried.
+		if _, prompt, err := r.builderIntent(context.Background(), pl, build, types.AttemptID(newID(t, "att")), types.CallID(newID(t, "cal"))); !errors.Is(err, intent.ErrNotTheBrief) ||
+			!contentFault(err) || strings.Contains(err.Error(), "CANARY") || prompt != nil {
+			t.Errorf("%s: the run's intent over a forged brief: %v, a prompt of %d bytes", name, err, len(prompt))
+		}
 	}
 }
 
@@ -1081,5 +1094,24 @@ func TestTheIgnoredFilesAreSealed(t *testing.T) {
 	}
 	if err != nil || rec.IgnoredFiles == nil || !slices.ContainsFunc(*rec.IgnoredFiles, func(f string) bool { return strings.HasPrefix(f, "gen/") }) {
 		t.Errorf("the sealed record's ignored files: %v (%v)", rec.IgnoredFiles, err)
+	}
+}
+
+// Opus 22a-6d L3: a refusal of the build's rendered context
+// (intent.ErrUnbound: a brief over its bound, a forged findings view) is
+// the content's, held "runner: failed" at once, as the I18 walk's is, never
+// a bounded retry.
+func TestARenderedContextRefusalIsContent(t *testing.T) {
+	for _, cause := range []error{fmt.Errorf("%w: the brief is over its bound", intent.ErrUnbound), intent.ErrNotTheBrief, fmt.Errorf("%w: x", errContent)} {
+		if !contentFault(cause) {
+			t.Errorf("%v: not the content's", cause)
+		}
+	}
+	// Opus 22a-6d H1 re-check L2: a blob whose bytes are not its digest's
+	// is the host's store, retried (bounded), never the content's.
+	for _, cause := range []error{errors.New("a store's error"), fmt.Errorf("%w: blob x", intent.ErrBlobDamaged)} {
+		if contentFault(cause) {
+			t.Errorf("%v: the content's", cause)
+		}
 	}
 }

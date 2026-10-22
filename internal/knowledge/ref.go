@@ -177,6 +177,17 @@ func identityDigest(r types.Ref) (types.Digest, error) {
 	return digestOf(identity{r.Type, r.ID, r.Revision, r.Scope, r.Lineage, r.Restrictions, r.ContentDigest})
 }
 
+// IdentityApartFromLineage is r's identity digest with its lineage left
+// out: over every other canonical field (type, id, revision, scope,
+// restrictions, content digest). Two refs it gives alike differ in their
+// lineage alone (graph.Records' repeated id, #226 entry 161; Astra chunk
+// 4b H2: a revision is never dropped).
+func IdentityApartFromLineage(r types.Ref) (types.Digest, error) {
+	c := canonical(r)
+	c.Lineage = []string{}
+	return identityDigest(c)
+}
+
 // CheckRef reports whether r is a checked ref: a valid records/ref document,
 // in canonical form, whose identity digest is the recomputed one.
 func CheckRef(r types.Ref) error {

@@ -156,10 +156,11 @@ func env(d *Daemon, reg registry.Registry) graph.Env {
 
 // noRequirement are the inputs M1(a) resolves with no requirement, by the
 // consuming node's kind and the kinds of result its inputs take: the build
-// takes the plan, accept the build's patch, the gate accept's tree, each
-// whole (P14a); the plan takes none (Opus #325 L6).
+// takes the plan (and a repair round its findings and its candidate),
+// accept the build's patch, the gate accept's tree, each whole (P14a); the
+// plan takes none (Opus #325 L6).
 var noRequirement = map[types.NodeKind][]types.ResultKind{
-	types.NodeKindBuild:  {types.ResultKindPlan},
+	types.NodeKindBuild:  {types.ResultKindPlan, types.ResultKindReview, types.ResultKindPatch}, // a repair round's findings and candidate (P22a-6d): selected, whole
 	types.NodeKindAccept: {types.ResultKindPatch},
 	types.NodeKindGate:   {types.ResultKindTree},
 	// The review (P22a-6a): the plan (the requirement review.Prompt

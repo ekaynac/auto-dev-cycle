@@ -75,7 +75,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
-	"github.com/ekaynac/auto-dev-cycle/internal/brief"
 	"github.com/ekaynac/auto-dev-cycle/internal/buildinfo"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -239,7 +238,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	if review {
 		mi, pl.prompt, err = r.reviewerIntent(ctx, pl, node, aid, cid)
 	} else {
-		mi, err = r.builderIntent(ctx, pl, node, aid, cid)
+		mi, pl.prompt, err = r.builderIntent(ctx, pl, node, aid, cid)
 	}
 	if errors.Is(err, intent.ErrUnreviewable) { // the candidate's, not the run's: the review's verdict, no attempt
 		return r.unreviewable(ctx, l, node, err)
@@ -513,18 +512,20 @@ func guarded(f func() error) (err error) {
 //     rendered digest, the prompt's;
 //   - the destination, and its routing as the registry verifies it
 //     (verified or attested: verified; reported: reported).
-func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID) (types.ManifestIntent, error) {
-	return r.intentOf(ctx, pl, node, aid, cid, func(_ *eventstore.Tx, call types.ManifestIntent, rendered graph.Rendered, recs intent.Records) (types.ManifestIntent, error) {
-		if int64(len(pl.prompt)) > maxPrompt {
-			return types.ManifestIntent{}, fmt.Errorf("%w: the prompt is over %d bytes", errContent, maxPrompt)
+func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID) (types.ManifestIntent, []byte, error) {
+	var prompt []byte
+	mi, err := r.intentOf(ctx, pl, node, aid, cid, func(tx *eventstore.Tx, call types.ManifestIntent, rendered graph.Rendered, recs intent.Records) (types.ManifestIntent, error) {
+		pc, err := intent.Build(tx, r.blobs, node, rendered) // the brief, and a repair round's findings view and candidate (P22a-6d)
+		if err != nil {
+			return types.ManifestIntent{}, err
 		}
-		call.RenderedDigest = promptDigest(pl.prompt)
-		sizes := map[types.Digest]int64{}
-		for _, in := range rendered.Included {
-			sizes[in.IdentityDigest] = int64(len(pl.prompt)) // the brief is all the prompt renders
-		}
-		return intent.Builder(intent.In{Call: call, Context: rendered, Bytes: sizes, Records: recs})
+		prompt, call.RenderedDigest = pc.Prompt, promptDigest(pc.Prompt)
+		return intent.Builder(intent.In{Call: call, Context: pc.Rendered(), Bytes: pc.Bytes, Records: recs})
 	})
+	if err != nil {
+		return mi, nil, err // no prompt of a refused intent
+	}
+	return mi, prompt, nil
 }
 
 // reviewerIntent is the manifest.intent of review node's attempt aid, its
@@ -631,12 +632,11 @@ func newRunIDs() (types.AttemptID, types.CallID, error) {
 }
 
 // plan reads what node's attempt under l runs over: node, its project's
-// profile, its one input, the plan's brief, which the I18 walk must pass
-// (intent.ErrNotTheBrief: a forgery), the lease (granted, on node's unit)
-// and its executor, the unit's pin, and the prompt, from the brief.
+// profile, the lease (granted, on node's unit) and its executor, and the
+// unit's pin; the prompt is builderIntent's (intent.Build), whose I18 walk
+// refuses a forged brief (intent.ErrNotTheBrief) before any workspace.
 func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (plan, error) {
 	var pl plan
-	var in types.Ref
 	err := r.store.View(ctx, func(tx *eventstore.Tx) error {
 		var err error
 		if pl.view, err = graph.ViewOf(tx, node); err != nil {
@@ -647,21 +647,6 @@ func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (
 			return errors.Join(err, fmt.Errorf("%w: project %s has no adopted profile", errConfig, pl.view.Project))
 		}
 		pl.profile = *prof
-		rendered, err := graph.Context(tx, node, r.env)
-		if err != nil {
-			return err
-		}
-		if len(rendered.Included) != 1 || len(rendered.Omitted) != 0 {
-			return fmt.Errorf("%w: the build takes %d inputs and omits %d, not the plan's brief alone", errContent, len(rendered.Included), len(rendered.Omitted))
-		}
-		in = rendered.Included[0]
-		recs, err := intent.Load(tx, r.blobs, pl.view.Task)
-		if err == nil {
-			err = intent.Check(recs, "builder", types.ManifestIntent{Consumer: types.ManifestIntentConsumer{Role: "builder"}, Inputs: []types.Ref{in}})
-		}
-		if err != nil {
-			return err
-		}
 		var found bool
 		if pl.lease, _, found, err = lease.LeaseOf(tx, l); err != nil || !found || pl.lease.State != types.LeaseStateGranted || pl.lease.Unit != graph.UnitOf(node) {
 			return errors.Join(err, fmt.Errorf("lease %s is no granted lease of node %s", l, node))
@@ -680,26 +665,7 @@ func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (
 		}
 		return nil
 	})
-	if err != nil {
-		return pl, err
-	}
-	rc, err := r.blobs.Open(string(in.ContentDigest))
-	if err != nil {
-		return pl, err
-	}
-	b, err := io.ReadAll(io.LimitReader(rc, intent.MaxBrief+1)) // as the intent's fold reads it (Mythos 22a-5c-2b-1 L4)
-	if err = errors.Join(err, rc.Close()); err != nil {
-		return pl, err
-	}
-	if len(b) > intent.MaxBrief {
-		return pl, fmt.Errorf("%w: the brief is over %d bytes", errContent, intent.MaxBrief)
-	}
-	pb, err := brief.Decode(b)
-	if err != nil {
-		return pl, err
-	}
-	pl.prompt = brief.Prompt(pb)
-	return pl, nil
+	return pl, err
 }
 
 // reviewPlan reads what review node's attempt under l runs over (P22a-6b;
@@ -834,10 +800,12 @@ var errContent = errors.New("daemon: the build's input")
 var errHost = errors.New("daemon: the runner's host")
 
 // contentFault reports whether cause is a refusal of what the build takes:
-// the I18 walk's (intent.ErrAcceptanceInput: a forged brief among them) or
-// its input's shape (errContent).
+// the I18 walk's (intent.ErrAcceptanceInput: a forged brief among them),
+// its rendered context's (intent.ErrUnbound: a brief over its bound, a
+// findings view that is not one; Opus 22a-6d L3) or its input's shape
+// (errContent).
 func contentFault(cause error) bool {
-	return errors.Is(cause, intent.ErrAcceptanceInput) || errors.Is(cause, errContent)
+	return errors.Is(cause, intent.ErrAcceptanceInput) || errors.Is(cause, intent.ErrUnbound) || errors.Is(cause, errContent)
 }
 
 // configFault reports whether cause is errConfig's: its profile missing,

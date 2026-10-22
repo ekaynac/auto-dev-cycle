@@ -170,7 +170,11 @@ type Snapshot struct {
 	// review takes (P22a-6a; Opus 22a-6a re-check H1).
 	Reviewable   Versioned
 	Requirements []Versioned
-	ReviewHeld   []Held
+	// Repairable are its completed reviews whose verdict is no_go or
+	// unreviewable, of the task's last build round: each repaired once
+	// (Repair; P22a-6d).
+	Repairable []Versioned
+	ReviewHeld []Held
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
 	Next Versioned
@@ -295,6 +299,16 @@ func (r Require) expected() []eventstore.Expectation {
 	return []eventstore.Expectation{{Subject: r.Node.ID, Version: r.Node.Version}}
 }
 
+// Repair records the next round of a review's candidate, its verdict no_go
+// or unreviewable (Reviews.Repair; P22a-6d).
+type Repair struct{ Review Versioned }
+
+func (Repair) action() string    { return ReviewAction }
+func (r Repair) subject() string { return r.Review.ID }
+func (r Repair) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: r.Review.ID, Version: r.Review.Version}}
+}
+
 // ReviewUnblock re-derives a review's roster held reviewer_unavailable
 // (Reviews.Unheld).
 type ReviewUnblock struct{ Held Held }
@@ -405,8 +419,11 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	}
 	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
 	reviews := g.Evaluates && g.Reviews
-	var gates []Versioned               // the task's completed gates
-	var reviewNodes []types.Node        // the task's review nodes, in any state: which gates they take (graph.TakesGate)
+	var gates []Versioned         // the task's completed gates
+	var reviewNodes []types.Node  // the task's review nodes, in any state: which gates they take (graph.TakesGate)
+	var verdicts []graph.NodeView // the completed reviews whose verdict asks for a repair
+	lastBuild := int64(0)         // the task's last build round
+	round := map[types.NodeID]int64{}
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
 	var heldReqs []Held
@@ -417,6 +434,13 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		v := Versioned{ID: string(n.Node.ID)}
 		if n.Node.Kind == types.NodeKindReview {
 			reviewNodes = append(reviewNodes, n.Node)
+		}
+		if n.Node.Kind == types.NodeKindBuild {
+			round[n.Node.ID], lastBuild = n.Node.Round, max(lastBuild, n.Node.Round)
+		}
+		if reviews && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
+			graph.RepairVerdict(*n.Outcome, *n.Reason) { // no_go, or unreviewable: Repair's rule
+			verdicts = append(verdicts, n)
 		}
 		for _, in := range n.Node.Inputs {
 			if src, ok := in.Source.Variant.(*types.ResultSource); ok && n.Node.Kind == types.NodeKindReview &&
@@ -504,6 +528,15 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			s.ReviewHeld = append(s.ReviewHeld, h)
 		}
 	}
+	for _, v := range verdicts { // a review of the last round's candidate, repaired once: its repair is the next round
+		for _, in := range v.Node.Inputs {
+			if src, ok := in.Source.Variant.(*types.ResultSource); ok && err == nil && src.ResultKind == types.ResultKindPatch && round[src.Producer] == lastBuild {
+				rv := Versioned{ID: string(v.Node.ID)}
+				rv.Version, err = tx.SubjectVersion(rv.ID)
+				s.Repairable = append(s.Repairable, rv)
+			}
+		}
+	}
 	for _, gate := range gates { // keyed by gate (Opus 22a-6a′ L2): a later round's gate is reviewable too
 		if err == nil && reviews && !slices.ContainsFunc(reviewNodes, func(r types.Node) bool { return graph.TakesGate(r, types.NodeID(gate.ID)) }) {
 			gate.Version, err = tx.SubjectVersion(gate.ID)
@@ -564,6 +597,9 @@ func Decide(s Snapshot) []Action {
 		for _, n := range s.Requirements {
 			out = append(out, Require{Node: n})
 		}
+		for _, n := range s.Repairable {
+			out = append(out, Repair{Review: n})
+		}
 		for _, h := range s.ReviewHeld {
 			out = append(out, ReviewUnblock{Held: h})
 		}
@@ -608,6 +644,11 @@ type Reviews interface {
 	Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Event, error)
 	// Require commits node's result, a claimed review requirement's.
 	Require(tx *eventstore.Tx, node types.NodeID) error
+	// Repair records the next round of node's candidate, node a completed
+	// review whose verdict is no_go or unreviewable: the build's successor
+	// (graph.Repair), its accept and gate, and their review, recorded at
+	// once (P22a-6d).
+	Repair(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error)
 	// Unheld clears node's reviewer_unavailable hold (hold, on signal), or
 	// supersedes node onto an independent roster, once the registry now
 	// gives one: nothing otherwise.
@@ -743,6 +784,13 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 				return nil, errNothing
 			}
 			return nil, x.Reviews.Require(tx, types.NodeID(a.Node.ID))
+		}
+	case Repair:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if x.Reviews == nil {
+				return nil, errNothing
+			}
+			return x.Reviews.Repair(tx, types.NodeID(a.Review.ID))
 		}
 	case ReviewUnblock:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {

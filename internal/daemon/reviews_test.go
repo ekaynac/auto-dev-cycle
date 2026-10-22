@@ -897,7 +897,7 @@ func TestAClaimedUnplacedReviewRecovers(t *testing.T) {
 		rw.reviewing(regNB.of(t, unknown))
 		rw.passesFor(t, 3, 0)
 		held := heldChain(rw)
-		if held == "" || reviewNodes(rw)[types.NodeKindReview].State.Holds[0].Hold != vocab.HoldReviewerUnavailable {
+		if h := reviewNodes(rw)[types.NodeKindReview].State.Holds; held == "" || h[0].Hold != vocab.HoldReviewerUnavailable || h[0].SignalInstance != "registry:"+string(stubReviewer) {
 			t.Fatalf("not held: %s", cellOf(rw))
 		}
 		rw.passesFor(t, 4, 0)

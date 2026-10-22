@@ -162,6 +162,7 @@ type NodeView struct {
 	Project types.ProjectID
 	State   types.NodeState
 	Outcome *types.Outcome
+	Reason  *types.ReasonCode // its selected result's, with Outcome
 }
 
 // TaskProject is the project task's first node pinned (graph_tasks);
@@ -209,7 +210,7 @@ func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 				return nil, err
 			}
 			if ok {
-				v.Outcome = &r.Result.Outcome
+				v.Outcome, v.Reason = &r.Result.Outcome, &r.Result.Reason
 			}
 		}
 		out = append(out, v)

@@ -48,8 +48,10 @@ type reviewerSeen struct {
 // as adapters/http-chat's reviewer does; it sends what it was prepared with
 // on seen. It describes http-chat's tool surface (httpChatTools: it learns
 // its role only at prepare); with requestTool, it requests read_file on run
-// (a tool.request) before it submits.
-func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen) *inproc.Peer {
+// (a tool.request) before it submits. Prepared as a builder (a repair
+// round's build, P22a-6d), it runs as builder does: edit, when given, over
+// its workspace, then empty and clean.
+func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen, edit ...func(string)) *inproc.Peer {
 	return inproc.New(func(in io.Reader, out io.Writer) {
 		r, w := wire.NewReader(in), wire.NewWriter(out)
 		var prep types.AdapterPrepareParams
@@ -68,12 +70,24 @@ func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen) *inpr
 				if json.Unmarshal(req.Params, &prep) != nil {
 					return
 				}
-				if seen != nil {
+				if seen != nil && prep.Role == "reviewer" {
 					b, _ := os.ReadFile(filepath.Join(prep.Exchange.In, adapterhost.PromptName))
 					entries, _ := os.ReadDir(prep.Workspace.Path)
-					seen <- reviewerSeen{prep, b, len(entries)}
+					select {
+					case seen <- reviewerSeen{prep, b, len(entries)}:
+					default: // the rows read the first
+					}
 				}
 			case "run":
+				if prep.Role == "builder" {
+					for _, e := range edit {
+						e(prep.Workspace.Path)
+					}
+					if res, err = json.Marshal(types.AdapterRunResult{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}); err != nil {
+						return
+					}
+					break
+				}
 				if os.WriteFile(filepath.Join(prep.Exchange.Out, "decision.json"), []byte(decision), 0o600) != nil {
 					return
 				}
@@ -109,12 +123,13 @@ func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen) *inpr
 // most 12 passes): the world and what the peer was prepared with.
 func reviewRun(t *testing.T, decision string) (*runWorld, reviewerSeen) {
 	t.Helper()
-	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}, nil)
+	files := map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}
+	rw := gateWorld(t, goEvents("TestA=pass"), files, nil)
 	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
 		t.Fatalf("the gate: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 	seen := make(chan reviewerSeen, 4)
-	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(decision, false, seen))
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(decision, false, seen, writes(files))) // a repair's builder writes the same candidate
 	for range 12 {
 		rw.passesFor(t, 1, 0)
 		if v := reviewNodes(rw)[types.NodeKindReview]; v.State.State != types.NodeStateStateClaimed && v.State.State != types.NodeStateStateWaiting && v.State.State != types.NodeStateStateRunnable {
@@ -274,7 +289,7 @@ func TestAnUnreviewableCandidateIsTheReviewsVerdict(t *testing.T) {
 	seen := make(chan reviewerSeen, 4)
 	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, seen))
 	rw.passesFor(t, 8, 0)
-	review := reviewNodes(rw)[types.NodeKindReview]
+	review := roundOf(t, rw, 1).review // round 1's: its verdict repairs the build (P22a-6d)
 	rs := reviewResults(rw, review.Node.ID)
 	if review.State.State != types.NodeStateStateCompleted || len(rs) != 1 || rs[0].Attempt != nil || rs[0].Result.Outcome != types.OutcomeFailed ||
 		rs[0].Result.Reason != vocab.ReasonUnsafeOutput || !strings.Contains(rs[0].Result.Detail, "over 524288 bytes") {

@@ -110,28 +110,94 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	if err != nil {
 		return nil, err
 	}
-	id, err := ids.New("nod")
+	review, err := reviewNode(g.Task, g.Project, plan, build, gate, req.Node.ID, roster)
 	if err != nil {
 		return nil, err
 	}
-	params, err := json.Marshal(types.ReviewNodeParams{Subject: reviewSubject, Roster: roster})
-	if err != nil {
-		return nil, err
-	}
-	on := func(name string, p types.NodeID, kind types.ResultKind) types.InputSpec {
-		return types.InputSpec{Name: types.Name(name), Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: p, ResultKind: kind}}}
-	}
-	reviewer, read := types.Name(types.RegistryExecutorRoleReviewer), types.Name("review") // a model kind's role and capability (records/node)
-	review := types.NodeRecorded{Task: g.Task, Project: g.Project, Node: types.Node{ID: types.NodeID(id), Kind: types.NodeKindReview,
-		DefinitionVersion: graph.TemplateVersion, Round: 1, Params: params,
-		Inputs: []types.InputSpec{on("plan", plan, types.ResultKindPlan), on("patch", build, types.ResultKindPatch),
-			on("gate", gate, types.ResultKindGateResult), on("required", req.Node.ID, types.ResultKindReviewRequirement)},
-		Requires: types.NodeRequires{Role: &reviewer, Capability: &read, Resources: []types.ResourceGroupKind{types.ResourceGroupKindAccountQuota}}}}
 	evs, err := graph.RecordReview(req, r.reg)
 	if err != nil {
 		return nil, err
 	}
 	more, err := graph.RecordReview(review, r.reg)
+	return append(evs, more...), err
+}
+
+// reviewNode is the review of build's candidate (on plan), checked by gate,
+// under requirement, rostered on roster: Record's and Repair's.
+func reviewNode(task types.TaskID, project types.ProjectID, plan, build, gate, requirement types.NodeID, roster []types.RosterMember) (types.NodeRecorded, error) {
+	id, err := ids.New("nod")
+	if err != nil {
+		return types.NodeRecorded{}, err
+	}
+	params, err := json.Marshal(types.ReviewNodeParams{Subject: reviewSubject, Roster: roster})
+	on := func(name string, p types.NodeID, kind types.ResultKind) types.InputSpec {
+		return types.InputSpec{Name: types.Name(name), Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: p, ResultKind: kind}}}
+	}
+	reviewer, read := types.Name(types.RegistryExecutorRoleReviewer), types.Name("review") // a model kind's role and capability (records/node)
+	return types.NodeRecorded{Task: task, Project: project, Node: types.Node{ID: types.NodeID(id), Kind: types.NodeKindReview,
+		DefinitionVersion: graph.TemplateVersion, Round: 1, Params: params,
+		Inputs: []types.InputSpec{on("plan", plan, types.ResultKindPlan), on("patch", build, types.ResultKindPatch),
+			on("gate", gate, types.ResultKindGateResult), on("required", requirement, types.ResultKindReviewRequirement)},
+		Requires: types.NodeRequires{Role: &reviewer, Capability: &read, Resources: []types.ResourceGroupKind{types.ResourceGroupKindAccountQuota}}}}, err
+}
+
+// Repair records the next round of node's candidate (P22a-6d; 13
+// "Successor rounds"), node a completed review whose verdict is no_go or
+// unreviewable (graph.Repair checks it), in one command:
+//   - the build's successor, round n+1, on its findings and its candidate
+//     (graph.Repair); its builder sees the findings view only
+//     (graph.Context; intent.Build);
+//   - its accept and gate (graph.Checked, the template's);
+//   - and their review, recorded now, before that gate completes (Opus
+//     22a-6c L1): it takes the requirement node's review takes, on its
+//     roster, so no requirement revision is recorded again. A roster the
+//     registry no longer derives is recorded all the same
+//     (graph.RecordRoundReview): the review is held reviewer_unavailable at
+//     its claim, and Unheld clears it or supersedes it onto an independent
+//     roster, so the task is never left stuck unheld (Main, 6d).
+//
+// The task's round rail (rounds_per_task) holds the successor before its
+// claim (graph's roundRail).
+func (r reviews) Repair(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
+	v, err := graph.ViewOf(tx, node)
+	if err != nil || v.Node.Kind != types.NodeKindReview {
+		return nil, errors.Join(err, fmt.Errorf("daemon: node %s is no review", node))
+	}
+	build, err := producerOf(tx, node, types.ResultKindPatch)
+	plan, perr := producerOf(tx, node, types.ResultKindPlan)
+	required, rerr := producerOf(tx, node, types.ResultKindReviewRequirement)
+	if err = errors.Join(err, perr, rerr); err != nil {
+		return nil, err
+	}
+	evs, err := graph.Repair(tx, build, node, r.env.Authority)
+	if err != nil {
+		return nil, err
+	}
+	next := types.NodeID(evs[len(evs)-1].Subject) // Successor's node.recorded is its last event
+	checked, err := graph.Checked(v.Task, v.Project, next)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range checked {
+		more, err := graph.Record(c)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, more...)
+	}
+	req, err := graph.ViewOf(tx, required)
+	if err != nil {
+		return nil, err
+	}
+	p, err := req.Node.ParamsAsReviewRequirement()
+	if err != nil {
+		return nil, err
+	}
+	review, err := reviewNode(v.Task, v.Project, plan, next, checked[1].Node.ID, required, p.Roster)
+	if err != nil {
+		return nil, err
+	}
+	more, err := graph.RecordRoundReview(tx, review, r.reg) // a roster the registry no longer gives: held at its claim, never a stalled repair
 	return append(evs, more...), err
 }
 
