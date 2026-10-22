@@ -185,3 +185,36 @@ func TestAFailedGoListRefusesTheCandidate(t *testing.T) {
 		t.Errorf("accept's result: %s/%s %q", res.Outcome, res.Reason, res.Detail)
 	}
 }
+
+// Opus 22a-5c-2b-2 H1: a runner hold on an accept node clears as a build's
+// does: a transient failure (the image misses once) holds the node for a
+// retry; once its time passes, a pass clears it and the next run completes
+// the node.
+func TestAnAcceptRetryClears(t *testing.T) {
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	retryBase = 300 * time.Millisecond
+	t.Cleanup(func() { retryBase = time.Minute })
+	rw.r.place.d.Images = fakeImages{false}
+	if v := rw.accepting(t, nil); len(v.State.Holds) == 0 {
+		t.Fatalf("the accept node after a transient failure: %s, no hold", v.State.State)
+	}
+	rw.r.place.d.Images = fakeImages{true}
+	time.Sleep(retryBase)
+	var v graph.NodeView
+	for range 6 {
+		if _, err := rw.l.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		rw.r.Wait()
+		if v = nodesOf(rw.w, rw.task)[types.NodeKindAccept]; v.State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	if v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the accept node after its retry's time: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	if res := resultOf(t, rw.w, v).Result; res.Outcome != types.OutcomeEmpty {
+		t.Errorf("the retried accept's result: %s/%s", res.Outcome, res.Reason)
+	}
+}

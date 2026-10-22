@@ -103,6 +103,11 @@ var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, 
 // in the controller.
 var Placed = []types.NodeKind{types.NodeKindBuild}
 
+// ControllerRun are the node kinds the controller runs itself, no lease:
+// accept (P22a-5c-2b-2). Their runner holds are offered to Unblock as a
+// placed node's are (Opus 22a-5c-2b-2 H1), so a bounded retry clears.
+var ControllerRun = []types.NodeKind{types.NodeKindAccept}
+
 // Versioned is a subject read at a version: the seq of its last event.
 type Versioned struct {
 	ID      string `json:"id"`
@@ -330,7 +335,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 					s.Granted = append(s.Granted, Granted{Node: v, Lease: l})
 				}
 			}
-		case st == types.NodeStateStateHeld && g.Evaluates && slices.Contains(Placed, n.Node.Kind):
+		case st == types.NodeStateStateHeld && g.Evaluates && (slices.Contains(Placed, n.Node.Kind) || slices.Contains(ControllerRun, n.Node.Kind)):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
 				break
 			}
