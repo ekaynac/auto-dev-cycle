@@ -234,10 +234,12 @@ func editFile(p string, edit func(string) string) error {
 // committed; the dist's adc reports HEAD. A fake podman on PATH records
 // each call in STATE/log, answers exists from STATE/exists-KIND, inspect
 // from STATE/inspect.json, run with STATE/node and the platform's arch
-// (failing when STATE/nonode exists), create with c-ARCH, and cp of
+// (failing when STATE/nonode exists, hanging when STATE/hang does), create
+// with c-ARCH, and cp of
 // c-ARCH:… with the dist's lib/adc of ARCH (failing when STATE/nocp
 // exists; the other ARCH's when STATE/swap does; with a byte appended to
-// http-chat's main.ts when STATE/tamper does).
+// http-chat's main.ts when STATE/tamper does). A fake uname -m answers
+// STATE/machine (aarch64 unless changed): the host's native platform.
 type buildFixture struct {
 	checkout, state, head string
 	env                   []string
@@ -268,6 +270,7 @@ done
 case "$1" in
 build | rm) exit 0 ;;
 run)
+  [ -e "$state/hang" ] && exec sleep 100000
   [ -e "$state/nonode" ] && exit 1
   [ "$arch" = amd64 ] && arch=x64
   echo "$(cat "$state/node") $arch" ;;
@@ -298,7 +301,9 @@ esac
 		}
 	}
 	inspect := `{"manifests":[{"platform":{"architecture":"arm64","os":"linux","variant":"v8"}},{"platform":{"architecture":"amd64","os":"linux"}}]}`
+	uname := "#!/bin/sh\n[ \"$1\" = -m ] && exec cat '" + state + "/machine'\nexec /usr/bin/uname \"$@\"\n"
 	err = errors.Join(os.Rename(dist, filepath.Join(co, "dist")), os.WriteFile(filepath.Join(bin, "podman"), []byte(podman), 0o755),
+		os.WriteFile(filepath.Join(bin, "uname"), []byte(uname), 0o755), os.WriteFile(filepath.Join(state, "machine"), []byte("aarch64\n"), 0o644),
 		os.WriteFile(filepath.Join(state, "inspect.json"), []byte(inspect), 0o644),
 		os.WriteFile(filepath.Join(state, "node"), []byte(nodeVersion+"\n"), 0o644))
 	if err != nil {
@@ -331,12 +336,16 @@ func (f buildFixture) version(t *testing.T, v string) {
 	}
 }
 
-// build runs the checkout's prepare-go-image.sh build go-mini; it returns
+// build runs the checkout's prepare-go-image.sh build go-mini, with
+// PREPARE_GO_IMAGE_TIMEOUT from STATE/timeout when it exists; it returns
 // the podman calls.
 func (f buildFixture) build(t *testing.T) ([]string, string, error) {
 	t.Helper()
 	cmd := exec.Command("bash", filepath.Join(f.checkout, "scripts/prepare-go-image.sh"), "build", "go-mini", "localhost/adc-test")
 	cmd.Env = f.env
+	if b, err := os.ReadFile(filepath.Join(f.state, "timeout")); err == nil {
+		cmd.Env = append(slices.Clone(f.env), "PREPARE_GO_IMAGE_TIMEOUT="+strings.TrimSpace(string(b)))
+	}
 	out, err := cmd.CombinedOutput()
 	log, _ := os.ReadFile(filepath.Join(f.state, "log"))
 	return strings.FieldsFunc(string(log), func(r rune) bool { return r == '\n' }), string(out), err
@@ -346,12 +355,14 @@ func (f buildFixture) build(t *testing.T) ([]string, string, error) {
 // dist's adc is HEAD's builds NAME with the label of the dist's adapters,
 // then lists its images and, per platform, runs the pinned Node and
 // copies /opt/adc/lib out of a created container, which it removes (M1,
-// L6; Mythos M1). A dirty tree, or a dist's adc of another commit or a
+// L6; Mythos M1). Node's start is run only in the native platform's image
+// (the fake uname's), and the other's skip printed (#226 entry 141). A dirty tree, or a dist's adc of another commit or a
 // dirty one, is refused before podman runs; a NAME podman already holds
 // is refused before the build; a list without exactly one image per
 // platform, a Node that does not start or reports another version, or an
 // image whose /opt/adc/lib is not the label's adapter (or cannot be
-// copied, the container still removed), after it.
+// copied, the container still removed), after it. A run that hangs is cut
+// by PREPARE_GO_IMAGE_TIMEOUT, its container removed, and the build fails.
 func TestPrepareBuild(t *testing.T) {
 	f := newBuildFixture(t)
 	calls, out, err := f.build(t)
@@ -369,8 +380,10 @@ func TestPrepareBuild(t *testing.T) {
 	label := `,"adapter":{` + strings.Join(adapter, ",") + "}}"
 	want := []string{"manifest exists localhost/adc-test", "image exists localhost/adc-test", "build", "manifest inspect localhost/adc-test"}
 	for _, arch := range []string{"amd64", "arm64"} {
-		want = append(want, "run --rm --pull=never --network=none --platform=linux/"+arch+" localhost/adc-test /opt/adc/lib/node/bin/node -p",
-			"create --pull=never --network=none --platform=linux/"+arch+" localhost/adc-test true",
+		if arch == "arm64" { // the native platform (the fake uname's aarch64): only its Node is run
+			want = append(want, "run --rm --name=adc-prepare-")
+		}
+		want = append(want, "create --pull=never --network=none --platform=linux/"+arch+" localhost/adc-test true",
 			"cp c-"+arch+":/opt/adc/lib ", "rm c-"+arch)
 	}
 	if len(calls) != len(want) {
@@ -380,6 +393,23 @@ func TestPrepareBuild(t *testing.T) {
 		if !strings.HasPrefix(c, want[i]) {
 			t.Errorf("podman call %d: %q, want %q…", i, c, want[i])
 		}
+	}
+	if run := calls[7]; !strings.HasSuffix(run, "-arm64 --pull=never --network=none --platform=linux/arm64 localhost/adc-test /opt/adc/lib/node/bin/node -p process.version + \" \" + process.arch") {
+		t.Errorf("the native Node run: %q", run)
+	}
+	if !strings.Contains(out, "Node's start in localhost/adc-test for linux/amd64 is not checked: the platform is emulated on this linux/arm64 host") ||
+		strings.Contains(out, "for linux/arm64 is not checked") {
+		t.Errorf("the emulated platform's skip is not printed, or the native one's is: %s", out)
+	}
+	// On an amd64 host, amd64's Node is the one run.
+	g := newBuildFixture(t)
+	if err := os.WriteFile(filepath.Join(g.state, "machine"), []byte("x86_64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g.version(t, "adc 1234567 (commit "+g.head+", schema set none, go1.27.1, linux/amd64)")
+	if calls, out, err := g.build(t); err != nil || len(calls) != 11 || !strings.HasPrefix(calls[4], "run --rm --name=adc-prepare-") ||
+		!strings.Contains(calls[4], "--platform=linux/amd64 ") || !strings.Contains(out, "for linux/arm64 is not checked") {
+		t.Errorf("on an amd64 host: %v, podman calls %q; %s", err, calls, out)
 	}
 	if !strings.Contains(calls[2], "--platform=linux/amd64,linux/arm64 --manifest=localhost/adc-test --label=dev.adc.prepared={") ||
 		!strings.Contains(calls[2], label+" -f ") {
@@ -415,14 +445,19 @@ func TestPrepareBuild(t *testing.T) {
 		"a platform missing": {func(f buildFixture) error {
 			return os.WriteFile(filepath.Join(f.state, "inspect.json"), []byte(`{"manifests":[{"platform":{"architecture":"arm64","os":"linux"}}]}`), 0o644)
 		}, 4},
-		"Node does not start": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "nonode"), nil, 0o644) }, 5},
+		// amd64's create, cp and rm (5-7), then arm64's run (8) and, when it fails, the removal of its container (9).
+		"Node does not start": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "nonode"), nil, 0o644) }, 9},
 		"another Node version": {func(f buildFixture) error {
 			return os.WriteFile(filepath.Join(f.state, "node"), []byte("v21.0.0\n"), 0o644)
-		}, 5},
+		}, 8},
+		// #226 entry 141: a run that hangs is cut, its container removed.
+		"a run that hangs": {func(f buildFixture) error {
+			return errors.Join(os.WriteFile(filepath.Join(f.state, "hang"), nil, 0o644), os.WriteFile(filepath.Join(f.state, "timeout"), []byte("1\n"), 0o644))
+		}, 9},
 		// Mythos #373 M1: the image's /opt/adc/lib must have the label's digest.
-		"an image whose adapter differs": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "tamper"), nil, 0o644) }, 8},
-		"the other platform's adapter":   {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "swap"), nil, 0o644) }, 8},
-		"a copy that fails":              {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "nocp"), nil, 0o644) }, 8},
+		"an image whose adapter differs": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "tamper"), nil, 0o644) }, 7},
+		"the other platform's adapter":   {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "swap"), nil, 0o644) }, 7},
+		"a copy that fails":              {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, "nocp"), nil, 0o644) }, 7},
 	}
 	for name, edit := range before {
 		after[name] = struct {
@@ -438,6 +473,10 @@ func TestPrepareBuild(t *testing.T) {
 		calls, out, err := f.build(t)
 		if err == nil || len(calls) != c.calls || !strings.Contains(out, "prepare-go-image: ") {
 			t.Errorf("%s: %v, podman calls %q; %s", name, err, calls, out)
+		}
+		if name == "a run that hangs" && (!strings.Contains(out, "prepare-go-image: podman run did not finish within 1s") ||
+			!strings.HasPrefix(calls[len(calls)-1], "rm --force --ignore --time=0 adc-prepare-") || !strings.HasSuffix(calls[len(calls)-1], "-arm64")) {
+			t.Errorf("%s: not cut, or its container not removed: podman calls %q; %s", name, calls, out)
 		}
 	}
 }
