@@ -38,7 +38,7 @@ func TestDevCapabilities(t *testing.T) {
 	if !in.Active || !by["answers"].Active || !by["admission"].Active || !slices.Equal(in.Actions, []string{"project.create", "task.create", "task.cancel"}) {
 		t.Errorf("intake: %+v", in)
 	}
-	unkept := slices.ContainsFunc(launch.Rows, func(r capabilityRow) bool { return r.Invariant == "I16" && !r.Kept })
+	unkept := slices.ContainsFunc(launch.Rows, func(r capabilityRow) bool { return r.Invariant == "I21" && !r.Kept }) // the activation PR's (K1 keeps I16)
 	if launch.Active || !slices.Equal(launch.EffectKinds, []string{"model_call"}) || !unkept {
 		t.Errorf("launch: %+v", launch)
 	}

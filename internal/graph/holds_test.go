@@ -274,8 +274,8 @@ func TestHoldRefusals(t *testing.T) {
 	})
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Retry(tx, z, plain.ID, newHold(t, "", types.OwnerOperator, nil), nil)
-	}); err == nil {
-		t.Error("executor_incomplete raised a retry wait")
+	}); err == nil || !strings.Contains(err.Error(), "names no hold; the rails decide its retry") { // Retry's own refusal (I16 admission), not the fold's
+		t.Errorf("executor_incomplete raised a retry wait: %v", err)
 	}
 	found := unrecorded(t, *g.state(z).Key)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
