@@ -24,19 +24,21 @@
 # the label. build requires a clean checkout whose HEAD the dist's adc was
 # built from, and a NAME podman does not hold yet (podman build --manifest
 # would add to an existing list); after the build, the list must hold one
-# image per platform, the pinned Node must start in the host's native
-# platform's image, and each image's /opt/adc/lib must have the label's
-# adapter digest.
+# image per platform, the pinned Node must start in the image of podman's
+# native platform (podman info), which PLATFORMS must name, and each
+# image's /opt/adc/lib must have the label's adapter digest. Once the build
+# has begun, any failure removes NAME (podman manifest rm) and says not to
+# push it (Opus #390 M1).
 #
-# Node's start is checked only for the native platform (uname -m). An
-# emulated platform's run (qemu binfmt) once crashed and hung for hours
-# (#226 entry 141), so it is skipped, and the skip printed: that platform's
-# Node bytes are still checked, against scripts/node-pins in the context and
-# by the adapter digest of what is copied out of its image. Every podman
-# call but the build is cut after PREPARE_GO_IMAGE_TIMEOUT seconds (default
-# 300), and the script then fails; a cut run's container is removed. The
-# build itself is not cut: its length depends on the network and on
-# emulation.
+# Node's start is checked only for the native platform. An emulated
+# platform's run (qemu binfmt) once crashed and hung for hours (#226 entry
+# 141), so it is skipped, and the skip printed: that platform's Node bytes
+# are still checked, against scripts/node-pins in the context and by the
+# adapter digest of what is copied out of its image. Every podman call but
+# the build is cut after PREPARE_GO_IMAGE_TIMEOUT seconds (default 300),
+# and killed 10 s later if it ignores the cut; the script then fails, and
+# the containers it made are removed by name. The build itself is not cut:
+# its length depends on the network and on emulation.
 #
 # Usage:
 #   scripts/prepare-go-image.sh [--pins FILE] manifest PROJECT        print the label's lockfile part for PROJECT
@@ -48,18 +50,18 @@
 # --pins FILE: the Node pins (default scripts/node-pins), as dist-lib.sh takes them.
 #
 # The build needs network (the base image and the Go module proxy), podman
-# and jq. It never pushes. The lead's commands, on a clean checkout (the
-# rm only for a NAME podman already holds, e.g. from the previous build;
-# the tag is the README's form, and the digest files go outside the
-# checkout, which build requires clean):
-#   make dist
-#   podman manifest rm ghcr.io/ekaynac/adc-prepared-go-mini
-#   podman manifest rm ghcr.io/ekaynac/adc-prepared-go
-#   scripts/prepare-go-image.sh build go-mini        ghcr.io/ekaynac/adc-prepared-go-mini
-#   scripts/prepare-go-image.sh build auto-dev-cycle ghcr.io/ekaynac/adc-prepared-go
-#   tag="go1.27.1-$(date -u +%F)" digests="$(mktemp -d)"
-#   podman manifest push --all --digestfile "$digests/go-mini" ghcr.io/ekaynac/adc-prepared-go-mini "docker://ghcr.io/ekaynac/adc-prepared-go-mini:$tag"
-#   podman manifest push --all --digestfile "$digests/go"      ghcr.io/ekaynac/adc-prepared-go      "docker://ghcr.io/ekaynac/adc-prepared-go:$tag"
+# and jq. It never pushes. The lead's commands, on a clean checkout, one
+# chain, so a failed step pushes nothing (the previous build's NAME
+# removed if podman holds it; the tag is the README's form, and the digest
+# files go outside the checkout, which build requires clean):
+#   make dist &&
+#   { ! podman manifest exists ghcr.io/ekaynac/adc-prepared-go-mini || podman manifest rm ghcr.io/ekaynac/adc-prepared-go-mini; } &&
+#   { ! podman manifest exists ghcr.io/ekaynac/adc-prepared-go || podman manifest rm ghcr.io/ekaynac/adc-prepared-go; } &&
+#   scripts/prepare-go-image.sh build go-mini        ghcr.io/ekaynac/adc-prepared-go-mini &&
+#   scripts/prepare-go-image.sh build auto-dev-cycle ghcr.io/ekaynac/adc-prepared-go &&
+#   tag="go1.27.1-$(date -u +%F)" digests="$(mktemp -d)" &&
+#   podman manifest push --all --digestfile "$digests/go-mini" ghcr.io/ekaynac/adc-prepared-go-mini "docker://ghcr.io/ekaynac/adc-prepared-go-mini:$tag" &&
+#   podman manifest push --all --digestfile "$digests/go"      ghcr.io/ekaynac/adc-prepared-go      "docker://ghcr.io/ekaynac/adc-prepared-go:$tag" &&
 #   head "$digests"/*
 # Each digest file holds the pushed list's index digest (sha256:…), the same
 # whatever the tag. The pin, NAME@sha256:…, goes in the project's profile
@@ -83,12 +85,14 @@ step_timeout="${PREPARE_GO_IMAGE_TIMEOUT:-300}"
 
 # pod ARGS…: podman ARGS, cut after step_timeout seconds (then killed 10 s
 # later if it ignores the cut). A cut call says so on stderr and returns
-# 124 (137 if killed); the caller fails on any non-zero status.
+# 124 (137 if killed: a call whose process SIGKILL ended for another cause,
+# Node by the OOM killer say, returns 137 too, so the message says both);
+# the caller fails on any non-zero status.
 pod() {
   local rc=0
   timeout --kill-after=10 "$step_timeout" podman "$@" || rc=$?
   if ((rc == 124 || rc == 137)); then
-    printf 'prepare-go-image: podman %s did not finish within %ss\n' "$1" "$step_timeout" >&2
+    printf 'prepare-go-image: podman %s was cut after %ss or killed (exit %s)\n' "$1" "$step_timeout" "$rc" >&2
   fi
   return "$rc"
 }
@@ -223,10 +227,14 @@ case "${1:-}" in
     [[ -z "$dirty" ]] || die "uncommitted changes in $here"
     head="$(git -C "$here" rev-parse HEAD)" || die "cannot read HEAD in $here"
     host_adc "$here/dist"
-    host="linux/$arch"
     version="$("$adc" version)" || die "$adc does not run"
     [[ "$version" == *"(commit $head,"* && "$version" != *-dirty* ]] ||
       die "$adc is not built from $head ($version): run 'make dist' on this clean commit"
+    # The native platform is podman's, which may not be the kernel's (a
+    # remote podman; Opus #390 L3): Node's start is checked only there, so
+    # PLATFORMS must name it.
+    host="$(pod info --format '{{.Host.OS}}/{{.Host.Arch}}')" || die "cannot read podman's platform (podman info)"
+    [[ " ${plats[*]} " == *" $host "* ]] || die "PLATFORMS (${plats[*]}) lacks podman's native platform $host: no Node start could be checked"
     # podman build --manifest adds to an existing list (#373 M1): NAME must
     # name nothing yet, so the list holds only this build's images.
     for kind in manifest image; do
@@ -236,7 +244,21 @@ case "${1:-}" in
     done
     printf 'prepare-go-image: preparing %s from %s at %s\n' "$2" "$repo" "$head"
     ctx="$(mktemp -d)"
-    trap 'rm -rf -- "$ctx"' EXIT
+    built=""
+    # Once the build has begun, a failure removes NAME, which may hold a
+    # list whose checks failed or were never done (Opus #390 M1).
+    cleanup() {
+      local rc=$?
+      rm -rf -- "$ctx"
+      if ((rc != 0)) && [[ -n "$built" ]]; then
+        if pod manifest rm "$name" >/dev/null; then
+          printf 'prepare-go-image: %s failed and is removed: do not push it\n' "$name" >&2
+        else
+          printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s\n' "$name" "$name" >&2
+        fi
+      fi
+    }
+    trap cleanup EXIT
     context "$here/dist" "$ctx"
     # warm.txt: the third-party packages the project's tests import, whose
     # builds the image caches (none for a project without dependencies).
@@ -246,6 +268,7 @@ case "${1:-}" in
       -f '{{if and (not .Standard) .Module (not .Module.Main)}}{{.ImportPath}}{{end}}' ./... |
       LC_ALL=C sort -u >"$ctx/warm.txt"
     [[ -s "$ctx/warm.txt" || "$warm_required" == 0 ]] || die "no third-party packages listed in $repo"
+    built=1
     podman build --pull=missing --timestamp=0 --platform="$(IFS=,; echo "${plats[*]}")" --manifest="$name" \
       --label="dev.adc.prepared=$label" -f "$containerfile" "$ctx"
     # The new list holds exactly one image per platform; in the native
@@ -274,11 +297,14 @@ case "${1:-}" in
         printf "prepare-go-image: Node's start in %s for %s is not checked: the platform is emulated on this %s host (its bytes are checked: scripts/node-pins, and the adapter digest below)\n" "$name" "$p" "$host"
       fi
       out="$ctx/image-${p#linux/}"
-      c="$(pod create --pull=never --network=none --platform="$p" "$name" true)" || die "cannot create a container of $name for $p"
-      rc=0
-      pod cp "$c:/opt/adc/lib" "$out" || rc=$?
-      pod rm "$c" >/dev/null || die "cannot remove the container $c"
-      ((rc == 0)) || die "cannot copy /opt/adc/lib out of $name for $p"
+      # Named, so it is removed whatever fails, a cut create included (Opus #390 L2).
+      n="adc-prepare-$$-copy-${p#linux/}" rc=0
+      pod create --name="$n" --pull=never --network=none --platform="$p" "$name" true >/dev/null || rc=$?
+      if ((rc == 0)); then
+        pod cp "$n:/opt/adc/lib" "$out" || rc=$?
+      fi
+      pod rm --force --ignore --time=0 "$n" >/dev/null || die "cannot remove the container $n"
+      ((rc == 0)) || die "cannot create a container of $name for $p, or copy /opt/adc/lib out of it"
       got="$("$adc" dev adapter-digest "$out")" || die "the adapter in $name for $p cannot be digested"
       [[ "$got" == "${digests[$p]}" ]] || die "the adapter in $name for $p is $got, not the label's ${digests[$p]}"
     done
