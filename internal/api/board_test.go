@@ -258,12 +258,19 @@ func taskIn(t *testing.T, state string, approval *authority.TaskApproval) author
 func TestBoardColumns(t *testing.T) {
 	now := since.Add(90 * time.Second)
 	approval := func(status string) *authority.TaskApproval { return &authority.TaskApproval{Status: status} }
-	build, gate, review := node(t, types.NodeKindBuild, types.NodeStateStateClaimed), node(t, types.NodeKindGate, types.NodeStateStateClaimed),
-		node(t, types.NodeKindReview, types.NodeStateStateClaimed)
+	// A review takes its build's candidate (the patch), as graph records it;
+	// a repair's build is the next round, its review recorded in round 1
+	// (P22a-6d): graph.CandidateGo takes the last build round's review.
+	takes := func(b graph.NodeView) types.InputSpec {
+		return types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: b.Node.ID, ResultKind: types.ResultKindPatch}}}
+	}
+	build, gate := node(t, types.NodeKindBuild, types.NodeStateStateClaimed), node(t, types.NodeKindGate, types.NodeStateStateClaimed)
+	review := node(t, types.NodeKindReview, types.NodeStateStateClaimed, takes(build))
 	done := []graph.NodeView{completed(build, types.OutcomeEmpty), completed(gate, types.OutcomeEmpty), completed(review, types.OutcomeEmpty)}
 	superseded := completed(review, types.OutcomeEmpty)
 	superseded.State.State = types.NodeStateStateSuperseded
-	repaired := append(slices.Clone(done), completed(round(build, 2), types.OutcomeEmpty), round(node(t, types.NodeKindGate, types.NodeStateStateRunnable), 2))
+	build2 := round(node(t, types.NodeKindBuild, types.NodeStateStateClaimed), 2)
+	repaired := append(slices.Clone(done), completed(build2, types.OutcomeEmpty), round(node(t, types.NodeKindGate, types.NodeStateStateRunnable), 2))
 	for name, c := range map[string]struct {
 		state    string
 		approval *authority.TaskApproval
@@ -283,9 +290,9 @@ func TestBoardColumns(t *testing.T) {
 		"review go, merge inactive":          {authority.TaskAdmitted, nil, done, types.BoardPlacedCardColumnDoneCandidate},
 		"review no_go":                       {authority.TaskAdmitted, nil, []graph.NodeView{completed(review, types.OutcomeFailed)}, types.BoardPlacedCardColumnReady},
 		"a superseded go review":             {authority.TaskAdmitted, nil, []graph.NodeView{superseded}, types.BoardPlacedCardColumnReady},
-		"a repair build after a go":          {authority.TaskAdmitted, nil, append(slices.Clone(done), round(build, 2)), types.BoardPlacedCardColumnRunning},
+		"a repair build after a go":          {authority.TaskAdmitted, nil, append(slices.Clone(done), build2), types.BoardPlacedCardColumnRunning},
 		"a repair completed, its gate ahead": {authority.TaskAdmitted, nil, repaired, types.BoardPlacedCardColumnReady},
-		"the repair's own review go":         {authority.TaskAdmitted, nil, append(slices.Clone(repaired), completed(round(review, 2), types.OutcomeEmpty)), types.BoardPlacedCardColumnDoneCandidate},
+		"the repair's own review go":         {authority.TaskAdmitted, nil, append(slices.Clone(repaired), completed(node(t, types.NodeKindReview, types.NodeStateStateClaimed, takes(build2)), types.OutcomeEmpty)), types.BoardPlacedCardColumnDoneCandidate},
 		"a structural waiting(input)":        {authority.TaskAdmitted, nil, []graph.NodeView{waitingOn(gate, "candidate", &types.ResultSource{Type: "result", Producer: build.Node.ID})}, types.BoardPlacedCardColumnReady},
 		"a review_requirement claimed":       {authority.TaskAdmitted, nil, []graph.NodeView{node(t, types.NodeKindReviewRequirement, types.NodeStateStateClaimed)}, types.BoardPlacedCardColumnReady},
 		"a cancelled task":                   {authority.TaskCancelledState, approval(authority.ApprovalInForce), nil, types.BoardPlacedCardColumnDone},
