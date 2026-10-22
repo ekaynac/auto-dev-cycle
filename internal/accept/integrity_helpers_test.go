@@ -348,7 +348,18 @@ func (e *aemb) check() {
 	}
 }
 
+type TP = *testing.T
+
+type psuite struct{ t TP }
+
+func (s psuite) check() {
+	if Add(1, 2) != 3 {
+		s.t.Fatal("palias")
+	}
+}
+
 func TestAlias2(t *testing.T) {
+	psuite{t}.check()
 	asuite{t}.check()
 	(&aemb{t}).check()
 }
@@ -427,8 +438,9 @@ func TestIntegrityHelpers(t *testing.T) {
 		// name used, by itself: unverifiable).
 		"an unused recursive helper deleted (stated false block)": {in("pkg/more_test.go", moreFile, "func rec(t *testing.T, n int) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"rec\")\n\t}\n\tif n > 0 {\n\t\trec(t, n-1)\n\t}\n}\n", ""), "pkg:pkg.rec unverifiable: a helper's callers renamed or removed too: review it"},
 		// Opus #376 r2 L2: a field typed through a local alias.
-		"an alias-typed field's assertion removed":     {in("pkg/more_test.go", moreFile, "\t\ts.t.Fatal(\"alias\")\n", "\t\t_ = s\n"), "pkg:pkg.asuite.check " + weakened + " (1 → 0)"},
-		"an alias-typed embedding's assertion removed": {in("pkg/more_test.go", moreFile, "\t\te.Fatal(\"aemb\")\n", "\t\t_ = e\n"), "pkg:pkg.aemb.check " + weakened + " (1 → 0)"},
+		"an alias-typed field's assertion removed":        {in("pkg/more_test.go", moreFile, "\t\ts.t.Fatal(\"alias\")\n", "\t\t_ = s\n"), "pkg:pkg.asuite.check " + weakened + " (1 → 0)"},
+		"a pointer-alias-typed field's assertion removed": {in("pkg/more_test.go", moreFile, "\t\ts.t.Fatal(\"palias\")\n", "\t\t_ = s\n"), "pkg:pkg.psuite.check " + weakened + " (1 → 0)"},
+		"an alias-typed embedding's assertion removed":    {in("pkg/more_test.go", moreFile, "\t\te.Fatal(\"aemb\")\n", "\t\t_ = e\n"), "pkg:pkg.aemb.check " + weakened + " (1 → 0)"},
 		// Opus #376 M2: a var's whole value, a table of closures.
 		"a table of closures weakened": {in("pkg/more_test.go", moreFile, "\t\tt.Fatal(\"one\")\n", "\t\t_ = t\n"), "pkg:pkg.table " + weakened + " (1 → 0)"},
 		// Opus #376 M1: a testing value through a field or an embedding.
@@ -623,6 +635,8 @@ func TestIntegrityHelpersRenameCharge(t *testing.T) {
 		{"one referrer", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 1 << 30, 2, ""},
 		{"two referrers, a union", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 6, "a helper renamed or replaced, weaker (2 → 1)"},
 		{"two referrers, kept whole", map[string][]fnStat{"h": fs(false, 2), "T1": fs(true, 0, "h"), "T2": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 2), "T1": fs(true, 0, "g"), "T2": fs(true, 0, "g")}, 1 << 30, 6, ""},
+		{"one referrer, the new function twice", map[string][]fnStat{"h": fs(false, 2), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g", "g")}, 1 << 30, 3, "a helper renamed or replaced, weaker (2 → 1)"},
+		{"past the bound reading the base", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 0, 1, "unverifiable: test helpers' renames past the guard's work bound"},
 		{"past the bound", map[string][]fnStat{"h": fs(false, 1), "T": fs(true, 0, "h")}, map[string][]fnStat{"g": fs(false, 1), "T": fs(true, 0, "g")}, 1, 2, "unverifiable: test helpers' renames past the guard's work bound"},
 	} {
 		maxCaseWork = c.bound
