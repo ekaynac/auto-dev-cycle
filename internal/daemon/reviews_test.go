@@ -847,3 +847,58 @@ func TestAnotherReceiptWaitIsNotTheEvaluators(t *testing.T) {
 		t.Fatalf("the review: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 }
+
+// Astra chunk 3 r2 L1: a claimed review not yet placed recovers from a
+// restart whatever the registry does:
+//   - to no independent reviewer (regNB: its reviewer of another family,
+//     the build's executor unknown), then back: held reviewer_unavailable,
+//     the same hold over passes and no lease while it lasts, then cleared
+//     and the same review placed;
+//   - its reviewer removed, another independent one registered: superseded
+//     onto it, claimed and placed on it.
+func TestAClaimedUnplacedReviewRecovers(t *testing.T) {
+	unplaced := func(t *testing.T) (*runWorld, graph.NodeView) {
+		rw := gateCompleted(t)
+		rw.reviewing(stubRegistry(t, nil, nil))
+		rw.passesFor(t, 4, 0)
+		v := reviewNodes(rw)[types.NodeKindReview]
+		if _, live := leaseOn(rw.w, v.Node.ID); live || v.State.State != types.NodeStateStateClaimed {
+			t.Fatalf("the start: %s, placed %v", v.State.State, live)
+		}
+		return rw, v
+	}
+	t.Run("to no independent reviewer, then back", func(t *testing.T) {
+		rw, before := unplaced(t)
+		unknown := types.ExecutorID(newID(t, "exe"))
+		rw.reviewing(regNB.of(t, unknown))
+		rw.passesFor(t, 3, 0)
+		held := heldChain(rw)
+		if held == "" || reviewNodes(rw)[types.NodeKindReview].State.Holds[0].Hold != vocab.HoldReviewerUnavailable {
+			t.Fatalf("not held: %s", cellOf(rw))
+		}
+		rw.passesFor(t, 4, 0)
+		if _, live := leaseOn(rw.w, before.Node.ID); live || heldChain(rw) != held {
+			t.Fatalf("while unavailable: placed %v, hold %s, was %s", live, heldChain(rw), held)
+		}
+		rw.reviewing(regA.of(t, unknown))
+		rw.passesFor(t, 6, 0)
+		after := reviewNodes(rw)[types.NodeKindReview]
+		if l, live := leaseOn(rw.w, after.Node.ID); after.Node.ID != before.Node.ID || after.State.State != types.NodeStateStateClaimed || !live || l.Executor != stubReviewer {
+			t.Fatalf("after the restore: %s %s, lease %v %+v", after.Node.ID, after.State.State, live, l)
+		}
+	})
+	t.Run("its reviewer removed, another registered", func(t *testing.T) {
+		rw, before := unplaced(t)
+		other := types.ExecutorID(newID(t, "exe"))
+		rw.reviewing(stubRegistry(t, nil, map[types.ExecutorID]types.Name{other: "fam-b"}))
+		rw.passesFor(t, 10, 0)
+		after := reviewNodes(rw)[types.NodeKindReview]
+		p, err := after.Node.ParamsAsReviewNodeParams()
+		if err != nil || after.Node.ID == before.Node.ID || len(p.Roster) != 1 || p.Roster[0].Executor != other || after.State.State != types.NodeStateStateClaimed {
+			t.Fatalf("the review: %s %s, roster %+v (%v)", after.Node.ID, after.State.State, p.Roster, err)
+		}
+		if l, live := leaseOn(rw.w, after.Node.ID); !live || l.Executor != other {
+			t.Fatalf("its lease: %v %+v", live, l)
+		}
+	})
+}
