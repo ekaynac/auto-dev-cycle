@@ -26,7 +26,9 @@
 # would add to an existing list); after the build, the list must hold one
 # image per platform, the pinned Node must start in the image of podman's
 # native platform (podman info), which PLATFORMS must name, and each
-# image's /opt/adc/lib must have the label's adapter digest. Once the build
+# image's /opt/adc/lib must have the label's adapter digest; each image is
+# run by its own ID (the list's instance digest, found in podman's images),
+# as podman 4.9 runs a local list's native image whatever --platform says. Once the build
 # has begun, any failure removes NAME (podman manifest rm) and says not to
 # push it (Opus #390 M1).
 #
@@ -277,17 +279,27 @@ case "${1:-}" in
     # copied out of it, has the label's adapter digest for the platform
     # (Mythos #373 M1: the label pins what COPY put in the image, not only
     # the context).
-    listed="$(pod manifest inspect "$name" | jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' | LC_ALL=C sort)" ||
-      die "cannot list the images of $name (podman manifest inspect, jq)"
+    inspect="$(pod manifest inspect "$name")" || die "cannot list the images of $name (podman manifest inspect)"
+    listed="$(jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' <<<"$inspect" | LC_ALL=C sort)" ||
+      die "cannot list the images of $name (jq)"
     [[ "$listed" == "$(printf '%s\n' "${plats[@]}")" ]] ||
       die "$name lists ${listed//$'\n'/ } rather than one image for each of ${plats[*]}: run 'podman manifest rm $name' and build again"
+    # Each platform's image is run by its own ID: podman (4.9) creates a
+    # container of a local list's native image whatever --platform says, so
+    # NAME would check the native image once per platform.
+    images="$(pod images --all --digests --no-trunc --format '{{.Digest}} {{.ID}}')" || die "cannot list podman's images"
     for p in "${plats[@]}"; do
+      digest="$(jq -r --arg os "${p%%/*}" --arg arch "${p#*/}" \
+        '.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest' <<<"$inspect")" &&
+        id="$(awk -v d="$digest" '$1 == d { print $2 }' <<<"$images")" &&
+        [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ && "$id" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+        die "cannot find the one image of $name for $p (${digest:-no digest}) in podman's storage"
       if [[ "$p" == "$host" ]]; then
         version="$(pin "$p" 2)" || exit 1
         want="$version ${p#linux/}"
         want="${want/%amd64/x64}"
         n="adc-prepare-$$-${p#linux/}"
-        if ! got="$(pod run --rm --name="$n" --pull=never --network=none --platform="$p" "$name" \
+        if ! got="$(pod run --rm --name="$n" --pull=never --network=none --platform="$p" "$id" \
           /opt/adc/lib/node/bin/node -p 'process.version + " " + process.arch')"; then
           pod rm --force --ignore --time=0 "$n" >/dev/null || printf 'prepare-go-image: the container %s may still run\n' "$n" >&2
           die "Node does not start in $name for $p"
@@ -299,7 +311,7 @@ case "${1:-}" in
       out="$ctx/image-${p#linux/}"
       # Named, so it is removed whatever fails, a cut create included (Opus #390 L2).
       n="adc-prepare-$$-copy-${p#linux/}" rc=0
-      pod create --name="$n" --pull=never --network=none --platform="$p" "$name" true >/dev/null || rc=$?
+      pod create --name="$n" --pull=never --network=none --platform="$p" "$id" true >/dev/null || rc=$?
       if ((rc == 0)); then
         pod cp "$n:/opt/adc/lib" "$out" || rc=$?
       fi

@@ -239,16 +239,28 @@ func editFile(p string, edit func(string) string) error {
 //   - hangs (sleep 60) on a call whose words start with STATE/hang's line,
 //     ignoring SIGTERM when STATE/ignoreterm exists;
 //   - answers info with STATE/native (linux/arm64), exists from
-//     STATE/exists-KIND, inspect from STATE/inspect.json, and manifest rm
-//     (failing when STATE/normrm exists);
-//   - runs Node with STATE/node and the platform's arch (failing when
+//     STATE/exists-KIND, inspect from STATE/inspect.json, images from
+//     STATE/images (each platform's instance digest and image ID), and
+//     manifest rm (failing when STATE/normrm exists);
+//   - runs and creates in the image of its ID's platform, and, given NAME,
+//     in the native platform's whatever --platform says (as podman 4.9);
+//   - runs Node with STATE/node and its image's arch (failing when
 //     STATE/nonode exists);
-//   - copies NAME-ARCH:… with the dist's lib/adc of ARCH (failing when
-//     STATE/nocp exists; the other ARCH's when STATE/swap does; with a
-//     byte appended to http-chat's main.ts when STATE/tamper does).
+//   - copies CONTAINER:… with the dist's lib/adc of the container's image's
+//     arch (failing when STATE/nocp exists; the other arch's when STATE/swap
+//     does; with a byte appended to http-chat's main.ts when STATE/tamper
+//     does).
 //
 // A fake uname -m answers STATE/machine (aarch64): the dist's adc is
 // chosen by it, the native platform by podman info.
+// The fake list's instance digests and their images' IDs: the fake
+// podman runs an ID starting sha256:1111 as arm64's, sha256:2222 as
+// amd64's.
+var (
+	armDigest, amdDigest = "sha256:" + strings.Repeat("a", 64), "sha256:" + strings.Repeat("b", 64)
+	armID, amdID         = "sha256:" + strings.Repeat("1", 64), "sha256:" + strings.Repeat("2", 64)
+)
+
 type buildFixture struct {
 	checkout, state, head string
 	env                   []string
@@ -281,19 +293,27 @@ case "$1 $2" in
 "manifest inspect") exec cat "$state/inspect.json" ;;
 "manifest rm") [ -e "$state/normrm" ] && exit 1; exit 0 ;;
 esac
+native="$(cat "$state/native")"
 for a in "$@"; do
-  case "$a" in --platform=linux/amd64) arch=amd64 ;; --platform=linux/arm64) arch=arm64 ;; esac
+  case "$a" in
+  --name=*) cname="${a#--name=}" ;;
+  sha256:1111*) arch=arm64 ;;
+  sha256:2222*) arch=amd64 ;;
+  localhost/adc-test) arch="${native#linux/}" ;;
+  esac
 done
 case "$1" in
-info) exec cat "$state/native" ;;
-build | rm | create) exit 0 ;;
+info) echo "$native" ;;
+images) exec cat "$state/images" ;;
+build | rm) exit 0 ;;
+create) echo "$arch" >"$state/container-$cname" ;;
 run)
   [ -e "$state/nonode" ] && exit 1
   [ "$arch" = amd64 ] && arch=x64
   echo "$(cat "$state/node") $arch" ;;
 cp)
   [ -e "$state/nocp" ] && exit 1
-  arch="${2%%:*}" arch="${arch##*-}"
+  arch="$(cat "$state/container-${2%%:*}")" || exit 1
   if [ -e "$state/swap" ]; then case "$arch" in amd64) arch=arm64 ;; *) arch=amd64 ;; esac; fi
   cp -PR "$dist/linux-$arch/lib/adc" "$3" || exit 1
   [ -e "$state/tamper" ] && echo x >>"$3/adapters/http-chat/src/main.ts"
@@ -316,12 +336,13 @@ esac
 			t.Fatal(err)
 		}
 	}
-	inspect := `{"manifests":[{"platform":{"architecture":"arm64","os":"linux","variant":"v8"}},{"platform":{"architecture":"amd64","os":"linux"}}]}`
+	inspect := `{"manifests":[{"digest":"` + armDigest + `","platform":{"architecture":"arm64","os":"linux","variant":"v8"}},{"digest":"` + amdDigest + `","platform":{"architecture":"amd64","os":"linux"}}]}`
+	images := amdDigest + " " + amdID + "\nsha256:" + strings.Repeat("c", 64) + " sha256:" + strings.Repeat("3", 64) + "\n" + armDigest + " " + armID + "\n"
 	uname := "#!/bin/sh\n[ \"$1\" = -m ] && exec cat '" + state + "/machine'\nexec /usr/bin/uname \"$@\"\n"
 	err = errors.Join(os.Rename(dist, filepath.Join(co, "dist")), os.WriteFile(filepath.Join(bin, "podman"), []byte(podman), 0o755),
 		os.WriteFile(filepath.Join(bin, "uname"), []byte(uname), 0o755), os.WriteFile(filepath.Join(state, "machine"), []byte("aarch64\n"), 0o644),
 		os.WriteFile(filepath.Join(state, "native"), []byte("linux/arm64\n"), 0o644),
-		os.WriteFile(filepath.Join(state, "inspect.json"), []byte(inspect), 0o644),
+		os.WriteFile(filepath.Join(state, "inspect.json"), []byte(inspect), 0o644), os.WriteFile(filepath.Join(state, "images"), []byte(images), 0o644),
 		os.WriteFile(filepath.Join(state, "node"), []byte(nodeVersion+"\n"), 0o644))
 	if err != nil {
 		t.Fatal(err)
@@ -412,7 +433,7 @@ func TestPrepareBuild(t *testing.T) {
 	}
 	label := `,"adapter":{` + strings.Join(adapter, ",") + "}}"
 	want := []string{"info --format {{.Host.OS}}/{{.Host.Arch}}", "manifest exists localhost/adc-test", "image exists localhost/adc-test", "build",
-		"manifest inspect localhost/adc-test"}
+		"manifest inspect localhost/adc-test", "images --all --digests --no-trunc --format {{.Digest}} {{.ID}}"}
 	copied := []string{"create --name=adc-prepare-", "cp adc-prepare-", "rm --force --ignore --time=0 adc-prepare-"}
 	want = append(append(append(want, copied...), "run --rm --name=adc-prepare-"), copied...)
 	if len(calls) != len(want) {
@@ -423,15 +444,17 @@ func TestPrepareBuild(t *testing.T) {
 			t.Errorf("podman call %d: %q, want %q…", i, c, want[i])
 		}
 	}
-	for i, arch := range map[int]string{5: "amd64", 6: "amd64", 7: "amd64", 9: "arm64", 10: "arm64", 11: "arm64"} {
+	for i, arch := range map[int]string{6: "amd64", 7: "amd64", 8: "amd64", 10: "arm64", 11: "arm64", 12: "arm64"} {
 		if !strings.Contains(calls[i], "-copy-"+arch) {
 			t.Errorf("podman call %d: %q is not %s's copy container", i, calls[i], arch)
 		}
 	}
-	if !strings.Contains(calls[5], " --platform=linux/"+"amd64 localhost/adc-test true") {
-		t.Errorf("the create: %q", calls[5])
+	// Each platform's image by its ID, never NAME, which podman (4.9) runs
+	// as the native platform's whatever --platform says.
+	if !strings.Contains(calls[6], " --platform=linux/amd64 "+amdID+" true") || !strings.Contains(calls[10], " --platform=linux/arm64 "+armID+" true") {
+		t.Errorf("the creates: %q, %q", calls[6], calls[10])
 	}
-	if run := calls[8]; !strings.HasSuffix(run, "-arm64 --pull=never --network=none --platform=linux/arm64 localhost/adc-test /opt/adc/lib/node/bin/node -p process.version + \" \" + process.arch") {
+	if run := calls[9]; !strings.HasSuffix(run, "-arm64 --pull=never --network=none --platform=linux/arm64 "+armID+" /opt/adc/lib/node/bin/node -p process.version + \" \" + process.arch") {
 		t.Errorf("the native Node run: %q", run)
 	}
 	if !strings.Contains(out, "Node's start in localhost/adc-test for linux/amd64 is not checked: the platform is emulated on this linux/arm64 host") ||
@@ -447,8 +470,8 @@ func TestPrepareBuild(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(g.state, "native"), []byte("linux/amd64\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if calls, out, err := g.build(t); err != nil || len(calls) != 12 || !strings.HasPrefix(calls[5], "run --rm --name=adc-prepare-") ||
-		!strings.Contains(calls[5], "--platform=linux/amd64 ") || !strings.Contains(out, "for linux/arm64 is not checked") {
+	if calls, out, err := g.build(t); err != nil || len(calls) != 13 || !strings.HasPrefix(calls[6], "run --rm --name=adc-prepare-") ||
+		!strings.Contains(calls[6], "--platform=linux/amd64 "+amdID+" ") || !strings.Contains(out, "for linux/arm64 is not checked") {
 		t.Errorf("podman native on amd64: %v, podman calls %q; %s", err, calls, out)
 	}
 
@@ -492,24 +515,32 @@ func TestPrepareBuild(t *testing.T) {
 			})
 		}, 6, true, "rather than one image"},
 		"a platform missing":   {file("inspect.json", `{"manifests":[{"platform":{"architecture":"arm64","os":"linux"}}]}`), 6, true, "rather than one image"},
-		"Node does not start":  {file("nonode", ""), 11, true, "Node does not start"}, // the run (9), its container's removal, NAME's
-		"another Node version": {file("node", "v21.0.0\n"), 10, true, "reports 'v21.0.0 arm64'"},
+		"Node does not start":  {file("nonode", ""), 12, true, "Node does not start"}, // the run (10), its container's removal, NAME's
+		"another Node version": {file("node", "v21.0.0\n"), 11, true, "reports 'v21.0.0 arm64'"},
+		// A list whose image podman's storage does not hold, or holds twice.
+		"an image not in podman's images": {func(f buildFixture) error {
+			return editFile(filepath.Join(f.state, "images"), func(s string) string { return strings.Replace(s, amdDigest, "sha256:"+strings.Repeat("d", 64), 1) })
+		}, 7, true, "cannot find the one image of localhost/adc-test for linux/amd64"},
+		"an image held twice": {func(f buildFixture) error {
+			return editFile(filepath.Join(f.state, "images"), func(s string) string { return s + amdDigest + " sha256:" + strings.Repeat("4", 64) + "\n" })
+		}, 7, true, "cannot find the one image of localhost/adc-test for linux/amd64"},
 		// Mythos #373 M1: the image's /opt/adc/lib must have the label's digest.
-		"an image whose adapter differs": {file("tamper", ""), 9, true, "not the label's"},
-		"the other platform's adapter":   {file("swap", ""), 9, true, "not the label's"},
-		"a copy that fails":              {file("nocp", ""), 9, true, "or copy /opt/adc/lib out of it"},
-		"NAME cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normrm", "")(f)) }, 11, true,
+		"an image whose adapter differs": {file("tamper", ""), 10, true, "not the label's"},
+		"the other platform's adapter":   {file("swap", ""), 10, true, "not the label's"},
+		"a copy that fails":              {file("nocp", ""), 10, true, "or copy /opt/adc/lib out of it"},
+		"NAME cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normrm", "")(f)) }, 12, true,
 			"could not be removed: do not push it"},
 		// #226 entry 141, Opus #390 M2: every bounded call, cut.
 		"info hangs":             {hang("info", false), 1, false, cut},
 		"manifest exists hangs":  {hang("manifest exists", false), 2, false, cut},
 		"image exists hangs":     {hang("image exists", false), 3, false, cut},
 		"manifest inspect hangs": {hang("manifest inspect", false), 6, true, cut},
-		"create hangs":           {hang("create", false), 8, true, cut}, // its container still removed (7)
-		"cp hangs":               {hang("cp", false), 9, true, cut},
-		"rm hangs":               {hang("rm --force", false), 9, true, cut},
-		"run hangs":              {hang("run", false), 11, true, cut},
-		"run ignores the cut":    {hang("run", true), 11, true, "was cut after 1s or killed (exit 137)"},
+		"images hangs":           {hang("images", false), 7, true, cut},
+		"create hangs":           {hang("create", false), 9, true, cut}, // its container still removed (8)
+		"cp hangs":               {hang("cp", false), 10, true, cut},
+		"rm hangs":               {hang("rm --force", false), 10, true, cut},
+		"run hangs":              {hang("run", false), 12, true, cut},
+		"run ignores the cut":    {hang("run", true), 12, true, "was cut after 1s or killed (exit 137)"},
 	}
 	for name, c := range rows {
 		f := newBuildFixture(t)
@@ -522,7 +553,7 @@ func TestPrepareBuild(t *testing.T) {
 			c.removed && name != "NAME cannot be removed" && !strings.Contains(out, "localhost/adc-test failed and is removed: do not push it") {
 			t.Errorf("%s: %v, podman calls %q; %s", name, err, calls, out)
 		}
-		if strings.HasPrefix(name, "run") && !strings.HasPrefix(calls[9], "rm --force --ignore --time=0 adc-prepare-") {
+		if strings.HasPrefix(name, "run") && !strings.HasPrefix(calls[10], "rm --force --ignore --time=0 adc-prepare-") {
 			t.Errorf("%s: the cut run's container is not removed: %q", name, calls)
 		}
 	}
