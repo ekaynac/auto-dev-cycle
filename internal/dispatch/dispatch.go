@@ -40,12 +40,10 @@
 //     matched again, nor one whose last lease has not settled (P21).
 //   - Lease holds (#226 entry 4) are not written here: every hold P8b
 //     raises is a node hold, which has its id and since.
-//   - Inert (§1's gating table): nothing in adcd constructs a Dispatcher,
-//     so match returns no assignment and no attempt starts until P22a
-//     activates `launch`. P11's gateway (internal/gateway) implements the
-//     credential seam (Credentials), and nothing in adcd constructs it
-//     either; without one, a destination that needs a credential never
-//     launches.
+//   - Inert (§1's gating table): adcd's reconcile loop matches nothing
+//     and starts no attempt until P22a activates `launch`. P11's gateway
+//     (internal/gateway) is adcd's credential seam (Credentials, P22a-5c-2a);
+//     without one, a destination that needs a credential never launches.
 //   - Only the first fallback step exists (fallback chains are M2). The
 //     budget check is the USD rails' (P17b, usd.go); paid authority is not
 //     checked here, as its check says.

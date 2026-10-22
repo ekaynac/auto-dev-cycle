@@ -5,10 +5,12 @@ package session
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -508,5 +510,219 @@ func TestRepeatedSpawnsReleaseEverything(t *testing.T) {
 		p.Kill()
 		_ = p.Wait()
 		p.Stdout().Close()
+	}
+}
+
+// jailProbe reports, one line each, whether the paths in STUB_READ exist,
+// whether STUB_WRITE can be written, whether STUB_UNIX (a unix socket) and
+// STUB_TCP accept a connection, how many processes /proc shows, its IPC
+// and UTS namespaces, and its session.
+func jailProbe() {
+	for _, p := range strings.Split(os.Getenv("STUB_READ"), ":") {
+		_, err := os.Stat(p)
+		fmt.Printf("read %s %v\n", p, err == nil)
+	}
+	err := os.WriteFile(os.Getenv("STUB_WRITE"), []byte("x"), 0o600)
+	fmt.Printf("write %v\n", err == nil)
+	for _, n := range []string{"unix", "tcp"} {
+		c, err := net.DialTimeout(n, os.Getenv("STUB_"+strings.ToUpper(n)), 2*time.Second)
+		fmt.Printf("%s %v\n", n, err == nil)
+		if err == nil {
+			c.Close()
+		}
+	}
+	procs := 0
+	ents, _ := os.ReadDir("/proc")
+	for _, e := range ents {
+		if _, err := strconv.Atoi(e.Name()); err == nil {
+			procs++
+		}
+	}
+	fmt.Printf("procs %d\n", procs)
+	for _, ns := range []string{"ipc", "uts"} {
+		l, _ := os.Readlink("/proc/self/ns/" + ns)
+		fmt.Printf("ns %s %s\n", ns, l)
+	}
+	sid, _ := unix.Getsid(0)
+	fmt.Printf("session %d\n", sid)
+}
+
+func init() { stubs["jail"] = jailProbe }
+
+// outsideTmp is a fresh directory apart from /tmp, which a jail mounts
+// afresh (so a file planted there hides from it whatever the jail binds):
+// under the test sandbox's work directory, else /var/tmp.
+func outsideTmp(t *testing.T) string {
+	t.Helper()
+	base := cmp.Or(os.Getenv("ADC_TEST_WORK"), "/var/tmp")
+	d, err := os.MkdirTemp(base, "jail-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	return d
+}
+
+// Opus 22a-5c-2a M1; 5c-2a-w H2, L1: a jailed adapter sees only what its
+// jail binds. It finds no controller's event store nor secrets file (a
+// state directory apart from /tmp), no /etc/passwd, no home, no /sys, and
+// in /proc only its own processes (at most the namespace's init and
+// itself). It writes its workspace and reaches a unix socket bound into
+// it, and no TCP listener on the host's loopback. Its IPC and UTS
+// namespaces are its own, and its session is one made inside it (5c-2a-w
+// L6).
+// Unjailed, the same probe reaches the state files and both sockets, so the
+// probe itself works.
+func TestTheJail(t *testing.T) {
+	base := outsideTmp(t)
+	state, work, bin := filepath.Join(base, "state"), filepath.Join(base, "work"), filepath.Join(base, "bin")
+	for _, d := range []string{state, work, bin} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, secrets := filepath.Join(state, "events.db"), filepath.Join(state, "secrets.env")
+	for _, f := range []string{store, secrets} {
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	self, err := os.Executable()
+	if err == nil {
+		err = copyFile(self, filepath.Join(bin, "session.test"))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(base, "gw.sock")
+	accept := func(ln net.Listener) {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}
+	for _, addr := range [][2]string{{"tcp", "127.0.0.1:0"}, {"unix", sock}} {
+		ln, err := net.Listen(addr[0], addr[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go accept(ln)
+		if addr[0] == "tcp" {
+			t.Setenv("JAIL_TCP", ln.Addr().String())
+		}
+	}
+	home, _ := os.UserHomeDir()
+	reads := []string{store, secrets, "/etc/passwd", home, "/sys/kernel"}
+	probe := func(jail *Jail) string {
+		spec := stubSpec(t, "jail", "STUB_READ="+strings.Join(reads, ":"), "STUB_WRITE="+filepath.Join(work, "f"), "STUB_UNIX="+sock, "STUB_TCP="+os.Getenv("JAIL_TCP"))
+		spec.Command, spec.Jail = []string{filepath.Join(bin, "session.test")}, jail
+		p := spawn(t, spec)
+		out, _ := io.ReadAll(p.Stdout())
+		if err := p.Wait(); err != nil {
+			t.Fatalf("the probe: %v: %s", err, p.Stderr())
+		}
+		return string(out)
+	}
+	jailed := probe(&Jail{ReadOnly: []string{"/usr", "/lib", "/lib64", "/bin", "/sbin", bin}, Writable: []string{work, sock}})
+	var want strings.Builder
+	for _, r := range reads {
+		fmt.Fprintf(&want, "read %s false\n", r)
+	}
+	want.WriteString("write true\nunix true\ntcp false\n")
+	if !strings.HasPrefix(jailed, want.String()) {
+		t.Errorf("jailed: %q, want %q", jailed, want.String())
+	}
+	var procs int
+	if _, err := fmt.Sscanf(jailed[strings.LastIndex(jailed, "procs "):], "procs %d", &procs); err != nil || procs > 2 {
+		t.Errorf("the jail's /proc shows %d processes (%v), want at most its init and the probe", procs, err)
+	}
+	for _, ns := range []string{"ipc", "uts"} { // Opus 22a-5c-2a-w L6: namespaces of its own
+		host, err := os.Readlink("/proc/self/ns/" + ns)
+		if err != nil || strings.Contains(jailed, "ns "+ns+" "+host+"\n") || !strings.Contains(jailed, "ns "+ns+" "+ns+":[") {
+			t.Errorf("the jail's %s namespace is the host's %s (%v): %q", ns, host, err, jailed)
+		}
+	}
+	// No controlling terminal of adcd's: the probe's session is one made in
+	// its namespace (--new-session), its leader inside it, never the host's
+	// session, whose leader the namespace cannot see (getsid gives 0).
+	if !strings.Contains(jailed, "session ") || strings.Contains(jailed, "session 0\n") {
+		t.Errorf("the jailed probe is in a session from outside its namespace: %q", jailed)
+	}
+	open := probe(nil)
+	for _, line := range []string{"read " + store + " true\n", "read " + secrets + " true\n", "unix true\n", "tcp true\n"} {
+		if !strings.Contains(open, line) {
+			t.Errorf("unjailed, the probe reached less: %q lacks %q", open, line)
+		}
+	}
+}
+
+// copyFile copies the executable src to dst.
+func copyFile(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o700)
+}
+
+func init() {
+	// jailfile writes to STUB_OUT whether STUB_READ exists: a probe whose
+	// stdout a session reads as its protocol.
+	stubs["jailfile"] = func() {
+		_, err := os.Stat(os.Getenv("STUB_READ"))
+		_ = os.WriteFile(os.Getenv("STUB_OUT"), []byte(fmt.Sprintf("read %v\n", err == nil)), 0o600)
+	}
+}
+
+// The lead's check of 5c-2a-w's merge with #374: Open jails a spawned
+// adapter with Config.Jail, and starts a container's client as it is,
+// Jail ignored: the container is the confinement there.
+func TestOpenJailsOnlyASpawn(t *testing.T) {
+	base := outsideTmp(t)
+	state, work, bin := filepath.Join(base, "state"), filepath.Join(base, "work"), filepath.Join(base, "bin")
+	for _, d := range []string{state, work, bin} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secret := filepath.Join(state, "secrets.env")
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err == nil {
+		err = copyFile(self, filepath.Join(bin, "session.test"))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	jail := &Jail{ReadOnly: []string{"/usr", "/lib", "/lib64", "/bin", "/sbin", bin}, Writable: []string{work}}
+	for name, c := range map[string]struct {
+		container bool
+		want      string
+	}{"a spawn": {false, "read false\n"}, "a container's client": {true, "read true\n"}} {
+		out := filepath.Join(work, strings.ReplaceAll(name, " ", "-"))
+		env := append(stubSpec(t, "jailfile").Env, "STUB_READ="+secret, "STUB_OUT="+out)
+		cfg := Config{Command: []string{filepath.Join(bin, "session.test")}, Env: env, Deadline: 30 * time.Second, Jail: jail}
+		if c.container {
+			cfg.Container = &Container{Command: cfg.Command, Env: env, Remove: func(context.Context) error { return nil }}
+		}
+		s, err := Open(cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		select {
+		case <-s.Done():
+		case <-time.After(20 * time.Second):
+			t.Fatalf("%s: the probe never ended", name)
+		}
+		_ = s.Close()
+		if got, err := os.ReadFile(out); err != nil || string(got) != c.want {
+			t.Errorf("%s: the probe saw %q (%v), want %q", name, got, err, c.want)
+		}
 	}
 }

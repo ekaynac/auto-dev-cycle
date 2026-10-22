@@ -41,8 +41,8 @@ package daemon
 // deadline and the stores' own bounds. Inert until launch is active: the
 // loop decides no Run until then. The builder's manifest.intent is recorded
 // in 5c-2b (W17); restart (an attempt left running or finishing with no
-// runner) is 22a-5c-2c's; adcd's wiring of the runner (its adapter, its
-// directories, the egress) is 5c-2a-w's.
+// runner) is 22a-5c-2c's. adcd builds the runner with an adapter and a
+// sandbox (runnerOf, P22a-5c-2a-w).
 
 import (
 	"bytes"
