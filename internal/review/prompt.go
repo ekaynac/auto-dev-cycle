@@ -107,10 +107,17 @@ func Prompt(in PromptInput) ([]byte, error) {
 	gate := fmt.Sprintf("%s (%d passed, %d failed, %d skipped).", verdict, in.Gate.Passed, in.Gate.Failed, in.Gate.Skipped)
 	change := noChange // an empty candidate (patch/empty: no diff) is reviewed too (Astra chunk 3 M2)
 	if strings.TrimSpace(in.Diff) != "" {
-		fence := strings.Repeat("`", max(3, longestRun(in.Diff, '`')+1)) // no line of the diff closes it (Opus #306 L5)
-		change = fence + "diff\n" + strings.TrimRight(in.Diff, "\n") + "\n" + fence
+		change = Fenced(in.Diff)
 	}
 	return fmt.Appendf(nil, promptTemplate, strings.TrimSpace(in.Requirement), gate, change), nil
+}
+
+// Fenced is diff in a diff code fence that no line of it closes (Opus #306
+// L5): the one rendering of a candidate's diff in a prompt (the reviewer's,
+// and a repair builder's, P22a-6d).
+func Fenced(diff string) string {
+	fence := strings.Repeat("`", max(3, longestRun(diff, '`')+1))
+	return fence + "diff\n" + strings.TrimRight(diff, "\n") + "\n" + fence
 }
 
 // noChange is the candidate change section of a candidate with no diff.

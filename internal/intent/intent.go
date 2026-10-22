@@ -334,7 +334,9 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 // readBlob is blob d's bytes, at most limit+1 of them kept, false when
 // they are over limit or are not d's content (then none: its digest is
 // taken over the whole stream first); the one bounded, digest-checked
-// reader of the package (Opus 22a-6b M3, 22a-6c L2).
+// reader of the package (Opus 22a-6b M3, 22a-6c L2). It reads the blob to
+// its end: a blob is bounded where it is published (the store's upload
+// bound), never by this read.
 func readBlob(blobs receipt.Blobs, d types.Digest, limit int64) ([]byte, bool, error) {
 	rc, err := blobs.Open(string(d))
 	if err != nil {

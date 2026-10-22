@@ -591,14 +591,20 @@ func TestOneRunPerBuild(t *testing.T) {
 }
 
 // P22a-5c-3 with 5c-2a: a forged plan brief is never handed to the
-// builder: the run's plan refuses it by the I18 walk (intent.ErrNotTheBrief)
-// before it reads anything else.
+// builder: the run's builder intent (intent.Build, then the I18 walk)
+// refuses it (intent.ErrNotTheBrief), before any workspace (P22a-6d: the
+// plan no longer reads the brief).
 func TestTheRunRefusesAForgedBrief(t *testing.T) {
 	w, x, _, build := forgedPlan(t, ofTask(func(x *types.Task) { x.Spec.Requirement = "CANARY-ACCEPTANCE" }))
 	r := &runner{store: w.s, blobs: w.blobs, env: x.Env}
-	if _, err := r.plan(context.Background(), build, "lea_01m3250v57fhm9v1z9xd1wk8gy"); !errors.Is(err, intent.ErrNotTheBrief) ||
-		strings.Contains(err.Error(), "CANARY") {
-		t.Errorf("the run's plan over a forged brief: %v", err)
+	var pl plan
+	w.view(func(tx *eventstore.Tx) (err error) {
+		pl.view, err = graph.ViewOf(tx, build)
+		return err
+	})
+	if _, prompt, err := r.builderIntent(context.Background(), pl, build, types.AttemptID(newID(t, "att")), types.CallID(newID(t, "cal"))); !errors.Is(err, intent.ErrNotTheBrief) ||
+		strings.Contains(err.Error(), "CANARY") || prompt != nil {
+		t.Errorf("the run's intent over a forged brief: %v, a prompt of %d bytes", err, len(prompt))
 	}
 }
 

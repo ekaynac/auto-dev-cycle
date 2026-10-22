@@ -30,19 +30,20 @@ func TestEvaluationEnv(t *testing.T) {
 	for _, ok := range []struct {
 		node  types.NodeKind
 		takes types.ResultKind
-	}{{types.NodeKindBuild, types.ResultKindPlan}, {types.NodeKindAccept, types.ResultKindPatch}, {types.NodeKindGate, types.ResultKindTree}} {
+	}{{types.NodeKindBuild, types.ResultKindPlan}, {types.NodeKindBuild, types.ResultKindReview}, {types.NodeKindBuild, types.ResultKindPatch}, // a repair round's (P22a-6d)
+		{types.NodeKindAccept, types.ResultKindPatch}, {types.NodeKindGate, types.ResultKindTree}} {
 		if r, err := e.Need(nil, types.Node{Kind: ok.node}, takes(ok.takes)); r != nil || err != nil {
 			t.Errorf("%s taking %s: %v, %v", ok.node, ok.takes, r, err)
 		}
 	}
-	// Opus #325 L6: an allow-list by the pair: a round-2 build taking a
-	// review, a plan taking anything, a gate taking a patch, and a
+	// Opus #325 L6: an allow-list by the pair: a build taking a gate
+	// result, a plan taking anything, a gate taking a patch, and a
 	// requirement taking a tree are refused. A review's gate result takes
 	// the gate requirement the log derives (gateNeed: TestTheReviewsGateRequirement).
 	for _, no := range []struct {
 		node  types.NodeKind
 		takes types.ResultKind
-	}{{types.NodeKindBuild, types.ResultKindReview}, {types.NodeKindPlan, types.ResultKindPlan}, {types.NodeKindGate, types.ResultKindPatch},
+	}{{types.NodeKindBuild, types.ResultKindGateResult}, {types.NodeKindPlan, types.ResultKindPlan}, {types.NodeKindGate, types.ResultKindPatch},
 		{types.NodeKindReviewRequirement, types.ResultKindTree}} {
 		if _, err := e.Need(nil, types.Node{Kind: no.node}, takes(no.takes)); err == nil {
 			t.Errorf("%s taking %s: a requirement resolved", no.node, no.takes)

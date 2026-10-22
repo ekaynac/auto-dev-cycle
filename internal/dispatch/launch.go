@@ -266,7 +266,7 @@ func reason(s string) string {
 // evaluator holds it; Match's refusal of it too (Astra chunk 3 H1).
 func rosterMiss(ni graph.ErrNotIndependent) (*Miss, error) {
 	return held("the registry no longer gives roster member "+string(ni.Executor)+" its family",
-		"reviewer_unavailable", "registry:"+string(ni.Executor), types.OwnerSystem, nil)
+		"reviewer_unavailable", ni.SignalInstance(), types.OwnerSystem, nil) // as graph.HoldNotIndependent's (Opus 22a-6c re-check)
 }
 
 func held(why, hold, signal string, owner types.Owner, ref *string) (*Miss, error) {

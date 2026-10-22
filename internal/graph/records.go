@@ -39,6 +39,14 @@ type RefRecord struct {
 	BuilderSafe   bool
 }
 
+// BuilderSafe is whether r, a ref of rr, a result of a producer of kind,
+// is a builder-safe candidate: a review's findings view (review.Result's).
+// The one rule (Opus 22a-6c M1, #226 entry 157): Records marks it, and a
+// build's context renders a review's result as it alone (renderContext).
+func BuilderSafe(kind types.NodeKind, rr types.ResultRecorded, r types.Ref) bool {
+	return kind == types.NodeKindReview && rr.Result.Kind == types.ResultKindReview && r.Type == types.RefTypeView
+}
+
 // GateShape is whether value is what a gate node's gate_result may hold:
 // at most its receipt and at most its report (a blob), in either order,
 // nothing else (Astra #321 H1: an attachment beside them is refused when
@@ -159,8 +167,7 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		_, gate := GateShape(rr.Result.Value)
 		gate = gate && kind == types.NodeKindGate && rr.Result.Kind == types.ResultKindGateResult
 		for _, r := range rr.Result.Value {
-			safe := kind == types.NodeKindReview && rr.Result.Kind == types.ResultKindReview && r.Type == types.RefTypeView
-			if err := add(r, kind, gate, safe); err != nil {
+			if err := add(r, kind, gate, BuilderSafe(kind, rr, r)); err != nil {
 				return Recorded{}, err
 			}
 		}

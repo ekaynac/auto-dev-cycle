@@ -274,7 +274,7 @@ func TestAnUnreviewableCandidateIsTheReviewsVerdict(t *testing.T) {
 	seen := make(chan reviewerSeen, 4)
 	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, seen))
 	rw.passesFor(t, 8, 0)
-	review := reviewNodes(rw)[types.NodeKindReview]
+	review := roundOf(t, rw, 1).review // round 1's: its verdict repairs the build (P22a-6d)
 	rs := reviewResults(rw, review.Node.ID)
 	if review.State.State != types.NodeStateStateCompleted || len(rs) != 1 || rs[0].Attempt != nil || rs[0].Result.Outcome != types.OutcomeFailed ||
 		rs[0].Result.Reason != vocab.ReasonUnsafeOutput || !strings.Contains(rs[0].Result.Detail, "over 524288 bytes") {

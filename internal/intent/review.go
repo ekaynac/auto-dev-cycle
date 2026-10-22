@@ -46,9 +46,10 @@ import (
 // never the controller's failure (22a-6c; Opus 22a-6b M2).
 var ErrUnreviewable = errors.New("intent: the candidate cannot be reviewed")
 
-// ReviewContext is a review node's rendered prompt and its context as the
-// reviewer's intent states it (the file's comment).
-type ReviewContext struct {
+// PromptContext is a model node's rendered prompt and its context as its
+// consumer's intent states it: a reviewer's (Review) or a builder's
+// (Build).
+type PromptContext struct {
 	Prompt   []byte
 	Included []types.Ref
 	Omitted  []types.ManifestIntentOmittedItem
@@ -56,18 +57,18 @@ type ReviewContext struct {
 	GateIDs  []string               // the gate report's ids (gate.ReportIDs), never rendered: what a findings view redacts
 }
 
-// Rendered is c as the context intent.Reviewer takes.
-func (c ReviewContext) Rendered() graph.Rendered {
+// Rendered is c as the context intent.Reviewer or Builder takes.
+func (c PromptContext) Rendered() graph.Rendered {
 	return graph.Rendered{Included: slices.Clone(c.Included), Omitted: slices.Clone(c.Omitted)}
 }
 
-// Review is node's ReviewContext in tx, rendered its graph.Context.
-func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered graph.Rendered) (ReviewContext, error) {
-	ins, ok, err := graph.ClaimInputs(tx, node)
-	if err != nil || !ok {
-		return ReviewContext{}, errors.Join(err, fmt.Errorf("%w: review %s is not claimed", ErrUnbound, node))
+// Review is node's PromptContext in tx, rendered its graph.Context.
+func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered graph.Rendered) (PromptContext, error) {
+	results, err := claimedResults(tx, node)
+	if err != nil {
+		return PromptContext{}, err
 	}
-	out := ReviewContext{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{}, Bytes: map[types.Digest]int64{}}
+	out := PromptContext{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{}, Bytes: map[types.Digest]int64{}}
 	var whole []types.Ref // the context as graph.Context renders it
 	var in review.PromptInput
 	empty := false // an empty candidate: review.Prompt renders no change
@@ -83,29 +84,18 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 		out.Included, out.Bytes[ref.IdentityDigest] = append(out.Included, ref), int64(len(b))
 		return b, err
 	}
-	for _, c := range ins {
-		if c.Result == nil {
-			return ReviewContext{}, fmt.Errorf("%w: review %s's input %s is no result", ErrUnbound, node, c.Name)
-		}
-		var raw types.ResultRecorded
-		b, found, err := tx.Get(graph.ResultProjection, string(*c.Result))
-		if err == nil && found {
-			err = json.Unmarshal(b, &raw)
-		}
-		if err != nil || !found {
-			return ReviewContext{}, errors.Join(err, fmt.Errorf("%w: review %s's input %s names no recorded result", ErrUnbound, node, c.Name))
-		}
+	for i, raw := range results {
 		v := raw.Result.Value
 		whole = append(whole, v...)
 		switch k := raw.Result.Kind; {
 		case k == types.ResultKindPlan && len(v) == 1:
 			b, err := include(v[0], MaxBrief)
 			if err != nil {
-				return ReviewContext{}, err
+				return PromptContext{}, err
 			}
 			pb, err := brief.Decode(b)
 			if err != nil {
-				return ReviewContext{}, err
+				return PromptContext{}, err
 			}
 			in.Requirement = string(brief.Prompt(pb))
 		case k == types.ResultKindPatch && len(v) == 0: // patch/empty: no diff, and no ref (Astra chunk 3 M2)
@@ -113,7 +103,7 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 		case k == types.ResultKindPatch && len(v) == 1:
 			b, err := include(v[0], review.MaxDiff)
 			if err != nil {
-				return ReviewContext{}, err
+				return PromptContext{}, err
 			}
 			in.Diff = string(b)
 		case k == types.ResultKindGateResult && len(v) == 2 && v[0].Type != v[1].Type && slices.ContainsFunc(v, isReceipt) &&
@@ -121,27 +111,27 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 			rcpt := v[slices.IndexFunc(v, isReceipt)] // by type, in either order (graph.GateShape; Opus 22a-6b L2)
 			b, err := include(v[1-slices.IndexFunc(v, isReceipt)], gate.MaxReportBytes)
 			if err != nil {
-				return ReviewContext{}, err
+				return PromptContext{}, err
 			}
 			s, err := gate.SummaryOf(b)
 			if err == nil {
 				out.GateIDs, err = gate.ReportIDs(b)
 			}
 			if err != nil {
-				return ReviewContext{}, err
+				return PromptContext{}, err
 			}
 			in.Gate = review.Gate{Passed: s.Passed, Failed: s.Failed, Skipped: s.Skipped, Green: s.Green}
 			out.Omitted = append(out.Omitted, types.ManifestIntentOmittedItem{Ref: rcpt, Reason: types.ManifestIntentOmittedItemReasonPolicy})
 		case k == types.ResultKindReviewRequirement && len(v) == 0:
 		default:
-			return ReviewContext{}, fmt.Errorf("%w: review %s's input %s is a %s of %d refs, not what a review renders", ErrUnbound, node, c.Name, k, len(v))
+			return PromptContext{}, fmt.Errorf("%w: review %s's input %d is a %s of %d refs, not what a review renders", ErrUnbound, node, i, k, len(v))
 		}
 	}
 	if len(out.Included) != 3-b2i(empty) || len(rendered.Omitted) != 0 || !sameRefs(rendered.Included, whole) {
-		return ReviewContext{}, fmt.Errorf("%w: review %s's rendered context is not its brief, patch and gate result", ErrUnbound, node)
+		return PromptContext{}, fmt.Errorf("%w: review %s's rendered context is not its brief, patch and gate result", ErrUnbound, node)
 	}
 	if out.Prompt, err = review.Prompt(in); err != nil {
-		return ReviewContext{}, fmt.Errorf("%w: %w", ErrUnreviewable, err)
+		return PromptContext{}, fmt.Errorf("%w: %w", ErrUnreviewable, err)
 	}
 	return out, nil
 }
@@ -151,6 +141,31 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// claimedResults are the results node's claim took, in its declared
+// order: every input a result (a review's and a build's are).
+func claimedResults(tx *eventstore.Tx, node types.NodeID) ([]types.ResultRecorded, error) {
+	ins, ok, err := graph.ClaimInputs(tx, node)
+	if err != nil || !ok {
+		return nil, errors.Join(err, fmt.Errorf("%w: %s is not claimed", ErrUnbound, node))
+	}
+	var out []types.ResultRecorded
+	for _, c := range ins {
+		if c.Result == nil {
+			return nil, fmt.Errorf("%w: %s's input %s is no result", ErrUnbound, node, c.Name)
+		}
+		var raw types.ResultRecorded
+		b, found, err := tx.Get(graph.ResultProjection, string(*c.Result))
+		if err == nil && found {
+			err = json.Unmarshal(b, &raw)
+		}
+		if err != nil || !found {
+			return nil, errors.Join(err, fmt.Errorf("%w: %s's input %s names no recorded result", ErrUnbound, node, c.Name))
+		}
+		out = append(out, raw)
+	}
+	return out, nil
 }
 
 // isReceipt is whether r is a receipt.

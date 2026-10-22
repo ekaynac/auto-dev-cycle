@@ -317,6 +317,24 @@ func CheckView(view, dec []byte, decision string, gateIDs []string) error {
 	return err
 }
 
+// ViewMarkdown is a findings view's findings as a repair builder's prompt
+// lists them (P22a-6d): one "- [severity] title" line each, in order. view
+// is read as CheckView reads it (the I18 walk verified it BuilderSafe).
+func ViewMarkdown(view []byte) (string, error) {
+	var v viewRecord
+	if len(view) > maxDecision {
+		return "", fmt.Errorf("review: a findings view of over %d bytes", maxDecision)
+	}
+	if err := json.Unmarshal(view, &v); err != nil || v.Schema != viewSchema {
+		return "", fmt.Errorf("review: not a findings view: %v", err)
+	}
+	var b strings.Builder
+	for _, f := range v.Findings {
+		fmt.Fprintf(&b, "- [%s] %s\n", f.Severity, f.Title)
+	}
+	return b.String(), nil
+}
+
 // marks are what a view's titles lose: each mark in both forms (spaced,
 // compact: normalize), the longest first in each (no mark redacted inside
 // another's); all is false when an id is not ASCII, so could not be

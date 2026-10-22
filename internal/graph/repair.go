@@ -9,7 +9,15 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
+
+// Unreviewable is whether r, a review's result, is the verdict that its
+// candidate gives no review context: failed/unsafe_output, the
+// candidate's fault (adcd's runner records it with no attempt).
+func Unreviewable(r types.Result) bool {
+	return r.Kind == types.ResultKindReview && r.Outcome == types.OutcomeFailed && r.Reason == vocab.ReasonUnsafeOutput
+}
 
 // Repair is the events recording round n+1 of build, a repair (13
 // "Successor rounds": "round n is a new build node whose inputs include
@@ -19,8 +27,10 @@ import (
 // candidate), named candidate-<n>, n build's round. review must be a
 // review of build's candidate, of its task: its claim fixed build's
 // selected patch as an input (not an earlier patch: the build re-ran
-// since), and its selected result is no_go (found); a go review, or one
-// not selected, repairs nothing. The kinds follow
+// since), and its selected result is no_go (found), or the verdict that
+// the candidate gives no review context (failed/unsafe_output: adcd's
+// unreviewable; P22a-6d, Opus 22a-6c L4); a go review, or one not
+// selected, repairs nothing. The kinds follow
 // from the results taken: only a build records a patch, and only a review
 // a review result. Rails on rounds are P17's.
 func Repair(tx *eventstore.Tx, build, review types.NodeID, auth Authority) ([]eventstore.Event, error) {
@@ -45,7 +55,7 @@ func Repair(tx *eventstore.Tx, build, review types.NodeID, auth Authority) ([]ev
 			return nil, err
 		case why != "":
 			return nil, fmt.Errorf("graph: no repair of %s: %s", build, why)
-		case src == findings && sel.Result.Outcome != types.OutcomeFound:
+		case src == findings && sel.Result.Outcome != types.OutcomeFound && !Unreviewable(sel.Result):
 			return nil, fmt.Errorf("graph: no repair of %s: %s's verdict is not no_go (%s)", build, review, sel.Result.Outcome)
 		case src == candidate && !slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool { return in.Result != nil && *in.Result == sel.Result.ID }):
 			// The review's claim fixed another patch, or none of build's
