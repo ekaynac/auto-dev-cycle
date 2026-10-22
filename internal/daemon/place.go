@@ -17,6 +17,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 )
@@ -169,6 +170,9 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	return card, builders[0], nil
 }
 
+// recordIntent is intent.Record; a test forges the event.
+var recordIntent = intent.Record
+
 // launch starts attempt on node under granted lease l from base, the
 // launch boundary in two steps (I16, I21): the readiness observed outside
 // the writer (dispatch.Dispatcher.Observe), then, in one system command
@@ -176,9 +180,12 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 // starts the attempt or refuses it, releasing the lease and holding the
 // node. The attempt run (22a-5c-2) calls it once its exchange is prepared
 // (adapterhost.Host.Prepare), never before; a miss is returned, nothing
-// started.
+// started. With mi, the attempt's manifest.intent is recorded in the same
+// command, after the attempt.started it binds, and checked by its fold
+// (intent.Projector; P22a-5c-2b-1): an intent the fold refuses refuses
+// the launch, so no attempt starts without its intent.
 func (p placer) launch(ctx context.Context, store *eventstore.Store, system identity.Principal, node types.NodeID, l types.LeaseID,
-	attempt types.AttemptID, base types.AttemptBase) (*dispatch.Miss, error) {
+	attempt types.AttemptID, base types.AttemptBase, mi *types.ManifestIntent) (*dispatch.Miss, error) {
 	var card dispatch.Card
 	var exe types.ExecutorID
 	var rev int64
@@ -207,6 +214,11 @@ func (p placer) launch(ctx context.Context, store *eventstore.Store, system iden
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, m, err := p.d.Launch(tx, l, rev, card, attempt, base, ready)
 			miss = m
+			if err == nil && m == nil && mi != nil {
+				var ev eventstore.Event
+				ev, err = recordIntent(*mi)
+				evs = append(evs, ev)
+			}
 			return evs, json.RawMessage(`{}`), err
 		}))
 	return miss, err

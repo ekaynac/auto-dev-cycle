@@ -40,13 +40,15 @@ package daemon
 // completed as one that never ran. The run is bounded by the session's
 // deadline and the stores' own bounds. Inert until launch is active: the
 // loop decides no Run until then. The builder's manifest.intent is recorded
-// in 5c-2b (W17); restart (an attempt left running or finishing with no
-// runner) is 22a-5c-2c's. adcd builds the runner with an adapter and a
-// sandbox (runnerOf, P22a-5c-2a-w).
+// in the launch command (builderIntent; P22a-5c-2b-1, W17); restart (an
+// attempt left running or finishing with no runner) is 22a-5c-2c's. adcd
+// builds the runner with an adapter and a sandbox (runnerOf, P22a-5c-2a-w).
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,12 +171,13 @@ func (r *runner) Wait() { r.runs.Wait() }
 
 // plan is what an attempt runs over, read in one snapshot.
 type plan struct {
-	view     graph.NodeView
-	profile  types.ProjectProfile
-	lease    types.Lease
-	executor types.RegistryExecutor
-	pin      *types.GitID // the unit's first attempt's base, if any
-	prompt   []byte
+	view       graph.NodeView
+	profile    types.ProjectProfile
+	lease      types.Lease
+	executor   types.RegistryExecutor
+	pin        *types.GitID // the unit's first attempt's base, if any
+	prompt     []byte
+	briefBytes int64 // the brief's size, the intent's included bytes
 }
 
 // attempt is one run of node under l. A panic anywhere in it is recovered
@@ -249,7 +252,11 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
-	miss, err := r.place.launch(ctx, r.store, r.system, node, l, aid, base)
+	mi, err := r.builderIntent(ctx, pl, node, aid, cid)
+	if err != nil {
+		return errors.Join(err, p.Discard(), r.endLease(ctx, l, node, err))
+	}
+	miss, err := r.place.launch(ctx, r.store, r.system, node, l, aid, base, &mi)
 	if err != nil || miss != nil {
 		err = errors.Join(err, p.Discard())
 		if miss != nil { // Launch released the lease and held the node
@@ -288,6 +295,72 @@ func guarded(f func() error) (err error) {
 		}
 	}()
 	return f()
+}
+
+// builderIntent is the manifest.intent of node's attempt aid, its call cid
+// (P22a-5c-2b-1; W17): intent.Builder over the build's rendered context
+// (the plan's brief) and the task's records, so its I18 walk runs again
+// here, and its fold runs it once more as the launch records it. It names:
+//   - the consumer: the builder, the lease's executor, its model, its
+//     adapter (the harness version is described only once the session
+//     runs), and its family as its capability profile;
+//   - the policy: the project's usage profile and its data policy's
+//     digest (authority.PolicyDigest), no renderer;
+//   - the budget: the lease's token reservation and the prompt's bytes;
+//   - the rendered digest: the prompt's;
+//   - the destination and its routing, as the profile's policy states it.
+func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID) (types.ManifestIntent, error) {
+	mid, err := ids.New("cmf")
+	if err != nil {
+		return types.ManifestIntent{}, err
+	}
+	usage := types.ManifestIntentPolicyUsageProfileStandard
+	if o := pl.profile.UsageProfileOverride; o != nil {
+		usage = types.ManifestIntentPolicyUsageProfile(*o)
+	}
+	routing := types.ManifestIntentRoutingVerified
+	if pl.profile.DataPolicy.Routing != types.ProjectProfileDataPolicyRoutingVerified {
+		routing = types.ManifestIntentRoutingReported
+	}
+	var tokens int64
+	for _, res := range pl.lease.Reservations {
+		if res.Unit == types.CapacityUnitTokens {
+			tokens += int64(res.Amount)
+		}
+	}
+	sum := sha256.Sum256(pl.prompt)
+	task := pl.view.Task
+	call := types.ManifestIntent{ID: types.ManifestID(mid), Call: cid, Task: &task, Attempt: &aid,
+		Consumer: types.ManifestIntentConsumer{Executor: pl.lease.Executor, ModelSnapshot: pl.executor.Model, HarnessVersion: string(pl.executor.Adapter),
+			CapabilityProfile: pl.executor.Family},
+		Budget:         types.ManifestIntentBudget{Tokens: tokens, Bytes: int64(len(pl.prompt))},
+		RenderedDigest: types.Digest("sha256:" + hex.EncodeToString(sum[:])), Destination: string(pl.executor.Destination.ID), Routing: routing}
+	var mi types.ManifestIntent
+	err = r.store.View(context.WithoutCancel(ctx), func(tx *eventstore.Tx) error {
+		raw, _, err := authority.ProjectDataPolicy(tx, pl.view.Project)
+		if err != nil {
+			return err
+		}
+		if call.Policy.DataPolicyDigest, err = authority.PolicyDigest(raw); err != nil {
+			return err
+		}
+		call.Policy.UsageProfile, call.Policy.RendererVersions = usage, map[string]string{}
+		rendered, err := graph.Context(tx, node, r.env)
+		if err != nil {
+			return err
+		}
+		recs, err := intent.Load(tx, r.blobs, task)
+		if err != nil {
+			return err
+		}
+		sizes := map[types.Digest]int64{}
+		for _, in := range rendered.Included {
+			sizes[in.IdentityDigest] = pl.briefBytes
+		}
+		mi, err = intent.Builder(intent.In{Call: call, Context: rendered, Bytes: sizes, Records: recs})
+		return err
+	})
+	return mi, err
 }
 
 // newRunIDs are a fresh attempt's id and its call's.
@@ -362,7 +435,7 @@ func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (
 	if err != nil {
 		return pl, err
 	}
-	pl.prompt = brief.Prompt(pb)
+	pl.prompt, pl.briefBytes = brief.Prompt(pb), int64(len(b))
 	return pl, nil
 }
 
