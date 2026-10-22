@@ -324,6 +324,7 @@ type pkgScan struct {
 	aliasMemo map[types.Object]int8     // possiblyTesting's memo per alias: 1 testing, 2 not, 3 being followed
 	skipBad   string                    // why the skip layer's facts are unknown (its bound): its tests unverifiable
 	skipNames map[string]bool           // the skipping helpers' names: an unbound use counts (Astra #356 H1)
+	helperNS  string                    // P14d-w1b: this package and platform's namespace, built once (Astra #384 M2)
 	skipErr   error                     // a done context, seen in the signatures' classification
 	skipSteps int                       // classification steps, for the context's check
 }
@@ -393,11 +394,17 @@ func (s *pkgScan) alias(e ast.Expr) (rhs ast.Expr) {
 
 func (s *pkgScan) assertion(call *ast.CallExpr) bool {
 	passes := slices.ContainsFunc(call.Args, func(a ast.Expr) bool { t := s.tval(a); return t != "" && t != "testing.M" })
-	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	q := s.qual(ast.Unparen(call.Fun))
-	return ok && slices.Contains(goFails, sel.Sel.Name) && s.tval(sel.X) != "" && s.tval(sel.X) != "testing.M" ||
+	return s.direct(call) ||
 		q != "" && slices.Contains(testify, q[:strings.LastIndex(q, ".")]) ||
 		passes && s.asserting[s.callee(call)]
+}
+
+// direct: call is a failing method on an identifier bound to a testing
+// value (t.Fatal), read from the syntax.
+func (s *pkgScan) direct(call *ast.CallExpr) bool {
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	return ok && slices.Contains(goFails, sel.Sel.Name) && s.tval(sel.X) != "" && s.tval(sel.X) != "testing.M"
 }
 
 // mRun: call is os.Exit(m.Run()) on a testing.M, TestMain's one allowed exit.
@@ -684,6 +691,9 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				inits = append(inits, fn.Body) // a function: its body, not its signature
 			} else if hook {
 				hooks = append(hooks, fn.Body)
+			}
+			if test && m.on[pi] > 0 { // P14d-w1b: the test files' functions' own assertions, and the names they use
+				s.helperFacts(fa, plat, dir, name, m.path, d)
 			}
 			if test && !hook && goTest(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
 				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn, fset.File(fn.Pos()), m.src)
