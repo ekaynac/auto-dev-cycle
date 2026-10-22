@@ -252,9 +252,9 @@ func TestTheAdapterContainerRefuses(t *testing.T) {
 // workspace) is started under a profile listing a lockfile: the image's
 // toolchain, lockfile set and adapter are checked, no lockfile is hashed at
 // the workspace, and the workspace is mounted read-only. The same empty
-// workspace without NoBase (a build's) is refused as the profile's
+// workspace without Review (a build's) is refused as the profile's
 // (ErrManifest), and no check is dropped for a run with no base.
-func TestARunWithNoBaseChecksTheImageNotTheWorkspace(t *testing.T) {
+func TestAReviewChecksTheImageNotTheWorkspace(t *testing.T) {
 	w := newContainerWorld(t)
 	if err := os.Remove(filepath.Join(w.run.Workspace, "go.mod")); err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestARunWithNoBaseChecksTheImageNotTheWorkspace(t *testing.T) {
 	if _, err := w.c.Start(context.Background(), w.run); !errors.Is(err, sandbox.ErrManifest) || !configFault(err) {
 		t.Fatalf("a build whose base lacks its lockfile: %v, want the profile's ErrManifest", err)
 	}
-	w.run.NoBase, w.run.ReadOnly = true, true
+	w.run.Review = true
 	s, err := w.c.Start(context.Background(), w.run)
 	if err == nil {
 		err = s.Ready()
@@ -276,7 +276,7 @@ func TestARunWithNoBaseChecksTheImageNotTheWorkspace(t *testing.T) {
 		"another adapter":          func(w *containerWorld) { w.c.Want = "sha256:" + testDigest },
 	} {
 		w := newContainerWorld(t)
-		w.run.NoBase, w.run.ReadOnly = true, true
+		w.run.Review = true
 		edit(&w)
 		if _, err := w.c.Start(context.Background(), w.run); !errors.Is(err, sandbox.ErrManifest) {
 			t.Errorf("no base, %s: %v, want ErrManifest", name, err)

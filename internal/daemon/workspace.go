@@ -90,8 +90,8 @@ func (w *workspace) Keep() error {
 
 // emptyWorkspace is a reviewer attempt's workspace (P22a-6c): a fresh,
 // empty run directory, its base the empty tree, no clone (a reviewer has no
-// tool to read one), mounted read-only (AdapterRun.ReadOnly; Mythos chunk 4a L1)
-// and never hashed for the image's lockfiles (AdapterRun.NoBase, H1).
+// tool to read one), mounted read-only and never hashed for the image's
+// lockfiles (AdapterRun.Review; Mythos chunk 4a H1, L1).
 func emptyWorkspace(host sandbox.Host, attempt types.AttemptID) (*workspace, error) {
 	if err := ids.Check(string(attempt), "att"); err != nil {
 		return nil, err

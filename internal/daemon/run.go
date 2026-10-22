@@ -288,7 +288,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		lockfiles[i] = string(f)
 	}
 	sess, err := r.adapters.Start(ctx, AdapterRun{Attempt: aid, Box: ws.run, Workspace: ws.Path(), Exchange: filepath.Join(r.host.Root, adapterhost.ExchangeName(aid)),
-		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles, NoBase: review, ReadOnly: review})
+		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles, Review: review})
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}

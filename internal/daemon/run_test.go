@@ -418,7 +418,7 @@ func TestTheRunHandsTheContainerItsAttempt(t *testing.T) {
 	}
 	if r.Box == nil || r.Workspace != r.Box.Workspace() || r.Attempt != a || r.Exchange != filepath.Join(rw.exch, "exchange-"+string(a)) ||
 		r.Socket != filepath.Join(rw.r.sockets, string(a)+".sock") || r.Image != image || r.Toolchain != toolchain || !slices.Equal(r.Lockfiles, lockfiles) ||
-		len(lockfiles) == 0 || r.Deadline != sessionDeadline || r.NoBase || r.ReadOnly { // a build: its base hashed, its workspace writable (Mythos chunk 4a)
+		len(lockfiles) == 0 || r.Deadline != sessionDeadline || r.Review { // a build: its base hashed, its workspace writable (Mythos chunk 4a)
 		t.Errorf("the adapter's run: %+v (the attempt %s, the image %s %s, the lockfiles %q)", r, a, toolchain, image, lockfiles)
 	}
 }
