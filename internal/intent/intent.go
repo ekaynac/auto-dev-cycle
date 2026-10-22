@@ -89,6 +89,10 @@ var (
 	// ErrAncestryUnresolved: an input's ancestry is not fully known, so it
 	// cannot be shown free of acceptance; it refuses as ErrAcceptanceInput.
 	ErrAncestryUnresolved = fmt.Errorf("%w: its ancestry is not resolvable", ErrAcceptanceInput)
+	// ErrBlobDamaged: a blob's stored bytes are not its digest's. The
+	// host's store, never the content: the run retries it, bounded, then
+	// holds visibly, never "runner: failed" (Opus 22a-6d H1 re-check L2).
+	ErrBlobDamaged = errors.New("intent: a blob's stored bytes are not its digest's")
 	// ErrNotFresh: a reviewer's context would carry a review's result.
 	ErrNotFresh = errors.New("intent: a review's result among a reviewer's inputs (a fresh context per round)")
 	// ErrConsumer: a recorded intent's task, attempt or role is not its
@@ -598,15 +602,19 @@ func (w *walk) resolve(input, id string) ([]graph.RefRecord, error) {
 		return nil, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
 	}
 	// An id's records differ in their lineage alone (graph.RefRecords), so
-	// its first stands for each here; each lineage is walked (start).
+	// its first stands for each in the checks of its identity and content;
+	// each lineage is walked (start), and the brief's check, which reads
+	// the lineage (a root), runs on each (Opus 22a-6d H1 re-check L1).
 	switch rec := recs[0]; {
 	case rec.ID != id:
 		return nil, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
 	case w.hidden[string(rec.ContentDigest)]:
 		return nil, fmt.Errorf("%w: %s (ancestor %s holds acceptance %s)", ErrAcceptanceInput, input, id, rec.ContentDigest)
 	case rec.Producer == types.NodeKindPlan:
-		if err := w.brief(rec); err != nil {
-			return nil, fmt.Errorf("%s (ancestor %s): %w", input, id, err)
+		for _, r := range recs {
+			if err := w.brief(r); err != nil {
+				return nil, fmt.Errorf("%s (ancestor %s): %w", input, id, err)
+			}
 		}
 	}
 	w.resolved[id] = recs

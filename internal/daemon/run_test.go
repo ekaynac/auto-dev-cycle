@@ -1100,7 +1100,11 @@ func TestARenderedContextRefusalIsContent(t *testing.T) {
 			t.Errorf("%v: not the content's", cause)
 		}
 	}
-	if contentFault(errors.New("a store's error")) {
-		t.Error("a store's error is the content's")
+	// Opus 22a-6d H1 re-check L2: a blob whose bytes are not its digest's
+	// is the host's store, retried (bounded), never the content's.
+	for _, cause := range []error{errors.New("a store's error"), fmt.Errorf("%w: blob x", intent.ErrBlobDamaged)} {
+		if contentFault(cause) {
+			t.Errorf("%v: the content's", cause)
+		}
 	}
 }

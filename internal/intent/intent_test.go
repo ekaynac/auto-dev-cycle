@@ -493,6 +493,14 @@ func TestReadBlob(t *testing.T) {
 	if _, _, err := readBlob(blobs, digest("2"), maxSafeBytes); err == nil {
 		t.Error("a missing blob read")
 	}
+	// Opus 22a-6d H1 re-check L2: another digest's bytes are the host's
+	// store damaged (ErrBlobDamaged), never the content's (ErrUnbound).
+	if _, _, err := readRef(blobs, types.Ref{ContentDigest: digest("1")}, maxSafeBytes); !errors.Is(err, ErrBlobDamaged) || errors.Is(err, ErrUnbound) {
+		t.Errorf("a damaged blob: %v", err)
+	}
+	if b, ok, err := readRef(blobs, types.Ref{ContentDigest: sum(good)}, maxSafeBytes); err != nil || !ok || !bytes.Equal(b, good) {
+		t.Errorf("a blob: %q %v %v", b, ok, err)
+	}
 }
 
 // #226 entry 161: an id a task's rounds record again (a repeated tree or
@@ -524,6 +532,23 @@ func TestIntentRepeatedRecords(t *testing.T) {
 		}
 		if _, err := intent(in(t, tainted, view)); !errors.Is(err, ErrAcceptanceInput) {
 			t.Errorf("%s: one record of an ancestor has an acceptance-derived ancestor: %v", role, err)
+		}
+	}
+	// Opus 22a-6d H1 re-check L1: the brief's check runs on each record of
+	// a plan id, so a later record that is no root refuses it.
+	brief := rec("brief-1", "5", "plan")
+	plans := newStore(brief, rec("spec-1", "6", ""))
+	plans.more["brief-1"] = []graph.RefRecord{rec("brief-1", "5", "plan", "spec-1")}
+	for role, intent := range roles {
+		x := in(t, plans, brief)
+		x.Records.brief = func(r graph.RefRecord) error {
+			if len(r.Lineage) != 0 {
+				return ErrNotTheBrief
+			}
+			return nil
+		}
+		if _, err := intent(x); !errors.Is(err, ErrNotTheBrief) {
+			t.Errorf("%s: a plan id's second record no root: %v", role, err)
 		}
 	}
 	other := rec("tree-1", "1", "accept", "patch-3")

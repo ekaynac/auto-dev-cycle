@@ -79,7 +79,7 @@ func Review(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered 
 		case int64(len(b)) > limit: // the candidate's: a patch over review.MaxDiff (Opus 22a-6b M2)
 			err = fmt.Errorf("%w: blob %s is over %d bytes", ErrUnreviewable, ref.ContentDigest, limit)
 		default:
-			err = fmt.Errorf("%w: blob %s holds other bytes", ErrUnbound, ref.ContentDigest)
+			err = fmt.Errorf("%w: blob %s", ErrBlobDamaged, ref.ContentDigest) // the host's (Opus 22a-6d H1 re-check L2)
 		}
 		out.Included, out.Bytes[ref.IdentityDigest] = append(out.Included, ref), int64(len(b))
 		return b, err

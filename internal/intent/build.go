@@ -43,13 +43,7 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		return PromptContext{}, err
 	}
 	out := PromptContext{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{}, Bytes: map[types.Digest]int64{}}
-	read := func(ref types.Ref, limit int64) ([]byte, bool, error) {
-		b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
-		if err == nil && b == nil {
-			err = fmt.Errorf("%w: blob %s holds other bytes", ErrUnbound, ref.ContentDigest)
-		}
-		return b, ok, err
-	}
+	read := func(ref types.Ref, limit int64) ([]byte, bool, error) { return readRef(blobs, ref, limit) }
 	listed := map[types.Digest]string{} // each ref listed once, under the first input that takes it (a candidate repeated by rounds)
 	var prompt strings.Builder
 	var whole []types.Ref // the context as graph.Context renders it
@@ -134,6 +128,16 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 		return PromptContext{}, fmt.Errorf("%w: the prompt is over %d bytes", ErrUnbound, MaxPrompt)
 	}
 	return out, nil
+}
+
+// readRef is readBlob's for ref, its bytes not its digest's an
+// ErrBlobDamaged (the host's), never ErrUnbound (the content's).
+func readRef(blobs receipt.Blobs, ref types.Ref, limit int64) ([]byte, bool, error) {
+	b, ok, err := readBlob(blobs, ref.ContentDigest, limit)
+	if err == nil && b == nil {
+		err = fmt.Errorf("%w: blob %s", ErrBlobDamaged, ref.ContentDigest)
+	}
+	return b, ok, err
 }
 
 // roundOf is the round an input named findings-<n> or candidate-<n> is of
