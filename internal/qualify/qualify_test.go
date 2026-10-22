@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/brief"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
@@ -367,13 +368,15 @@ func TestPrompt(t *testing.T) {
 		}
 	}
 	// Astra chunk 3 M2: no diff (an empty candidate) renders "no changes",
-	// no fence; M3: the largest brief the schemas admit (a title of 200 and
-	// a requirement of 17,000 four-byte code points) is a requirement.
+	// no fence; M3 (r2 L2): the largest brief the schemas admit, a title of
+	// 200 and a requirement of 20,000 four-byte code points, through
+	// brief.Prompt (80,805 bytes), is a requirement.
 	if p, err := review.Prompt(review.PromptInput{Requirement: in.Requirement}); err != nil || !bytes.Contains(p, []byte("No changes: the candidate's diff against its base is empty.")) || bytes.Contains(p, []byte("```")) {
 		t.Errorf("no diff: %s, %v", p, err)
 	}
-	if _, err := review.Prompt(review.PromptInput{Requirement: "# " + strings.Repeat("𝄞", 200) + "\n\n" + strings.Repeat("𝄞", 17000) + "\n", Diff: in.Diff}); err != nil {
-		t.Errorf("a requirement of 17,000 four-byte characters: %v", err)
+	most := string(brief.Prompt(types.PlanBrief{Title: strings.Repeat("𝄞", 200), Requirement: strings.Repeat("𝄞", 20000)}))
+	if p, err := review.Prompt(review.PromptInput{Requirement: most, Diff: in.Diff}); len(most) != 80805 || err != nil || !bytes.Contains(p, []byte(strings.TrimSpace(most))) {
+		t.Errorf("the largest admitted brief, %d bytes: %v", len(most), err)
 	}
 	// L5: a diff line holding a fence never closes the prompt's.
 	in.Diff = "diff --git a/x b/x\n ```\n+``` ``````\n"
