@@ -241,7 +241,10 @@ func editFile(p string, edit func(string) string) error {
 //   - answers info with STATE/native (linux/arm64), exists from
 //     STATE/exists-KIND, inspect from STATE/inspect.json, images from
 //     STATE/images (each platform's instance digest and image ID), and
-//     manifest rm (failing when STATE/normrm exists);
+//     manifest rm (failing when STATE/normrm exists) and rmi (failing when
+//     STATE/normi exists);
+//   - builds by making STATE/exists-manifest (failing, with none made,
+//     when STATE/nobuild exists);
 //   - runs and creates in the image of its ID's platform, and, given NAME,
 //     in the native platform's whatever --platform says (as podman 4.9);
 //   - runs Node with STATE/node and its image's arch (failing when
@@ -305,7 +308,11 @@ done
 case "$1" in
 info) echo "$native" ;;
 images) exec cat "$state/images" ;;
-build | rm) exit 0 ;;
+build)
+  [ -e "$state/nobuild" ] && exit 1
+  touch "$state/exists-manifest" ;;
+rmi) [ -e "$state/normi" ] && exit 1; exit 0 ;;
+rm) exit 0 ;;
 create) echo "$arch" >"$state/container-$cname" ;;
 run)
   [ -e "$state/nonode" ] && exit 1
@@ -411,10 +418,15 @@ const buildNet = 2 * time.Minute
 // Refused before podman runs: a dirty tree, a dist's adc of another commit
 // or a dirty one, a PREPARE_GO_IMAGE_TIMEOUT that is no number. Refused
 // before the build: PLATFORMS without the native platform, a NAME podman
-// already holds. Refused after it, NAME then removed (Opus #390 M1): a list
-// without exactly one image per platform, a Node that does not start or
-// reports another version, an image whose /opt/adc/lib is not the label's
-// adapter or cannot be copied (its container still removed). Every podman
+// already holds. Refused after it, NAME then removed with its images
+// (Opus #390 M1; podman manifest rm leaves them): a list without exactly
+// one image per platform, a Node that does not start or reports another
+// version, an image whose /opt/adc/lib is not the label's adapter or cannot
+// be copied (its container still removed). A list whose image podman's
+// storage does not hold, or holds twice, is refused and kept, the operator
+// told; a build that made no list leaves nothing. Each image is created and
+// run by its ID, never by NAME, which podman 4.9 runs as the native
+// platform's whatever --platform says. Every podman
 // call but the build is cut by PREPARE_GO_IMAGE_TIMEOUT, killed when it
 // ignores the cut (exit 137), and fails the build (Opus #390 M2).
 func TestPrepareBuild(t *testing.T) {
@@ -477,10 +489,17 @@ func TestPrepareBuild(t *testing.T) {
 
 	type row struct {
 		edit    func(f buildFixture) error
-		calls   int    // podman calls before the refusal, NAME's removal included
-		removed bool   // NAME removed: the last call
-		says    string // in the output
+		calls   int      // podman calls before the cleanup's
+		cleanup []string // the cleanup's podman calls, by prefix
+		says    string   // in the output
 	}
+	exists := "manifest exists localhost/adc-test"
+	found := []string{exists, "manifest inspect localhost/adc-test", "images --all --digests --no-trunc"}
+	removed := func(ids ...string) []string {
+		return append(slices.Clone(found), "manifest rm localhost/adc-test", "rmi -- "+strings.Join(ids, " "))
+	}
+	const isRemoved = "localhost/adc-test failed and is removed, with its images: do not push it"
+	const kept = "localhost/adc-test failed and could not be removed: do not push it; run podman manifest rm localhost/adc-test, and podman rmi its images"
 	file := func(name, body string) func(f buildFixture) error {
 		return func(f buildFixture) error { return os.WriteFile(filepath.Join(f.state, name), []byte(body), 0o644) }
 	}
@@ -496,51 +515,57 @@ func TestPrepareBuild(t *testing.T) {
 	}
 	const cut = "was cut after 1s or killed (exit 124)"
 	rows := map[string]row{
-		"a dirty tree": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.checkout, "new.txt"), nil, 0o644) }, 0, false, "uncommitted changes"},
+		"a dirty tree": {func(f buildFixture) error { return os.WriteFile(filepath.Join(f.checkout, "new.txt"), nil, 0o644) }, 0, nil, "uncommitted changes"},
 		"another commit's adc": {func(f buildFixture) error {
 			f.version(t, "adc 1234567 (commit "+strings.Repeat("0", 40)+", schema set none, go1.27.1, linux/arm64)")
 			return nil
-		}, 0, false, "is not built from"},
+		}, 0, nil, "is not built from"},
 		"a dirty adc": {func(f buildFixture) error {
 			f.version(t, "adc 1234567-dirty (commit "+f.head+", schema set none, go1.27.1, linux/arm64)")
 			return nil
-		}, 0, false, "is not built from"},
-		"a timeout that is no number":           {file("timeout", "abc\n"), 0, false, "PREPARE_GO_IMAGE_TIMEOUT is a number of seconds"},
-		"PLATFORMS without the native platform": {file("native", "linux/riscv64\n"), 1, false, "lacks podman's native platform linux/riscv64"},
-		"an existing list":                      {file("exists-manifest", ""), 2, false, "already exists"},
-		"an existing image":                     {file("exists-image", ""), 3, false, "already exists"},
+		}, 0, nil, "is not built from"},
+		"a timeout that is no number":           {file("timeout", "abc\n"), 0, nil, "PREPARE_GO_IMAGE_TIMEOUT is a number of seconds"},
+		"PLATFORMS without the native platform": {file("native", "linux/riscv64\n"), 1, nil, "lacks podman's native platform linux/riscv64"},
+		"an existing list":                      {file("exists-manifest", ""), 2, nil, "already exists"},
+		"an existing image":                     {file("exists-image", ""), 3, nil, "already exists"},
+		// Mythos chunk 2 L4: a build that made no list leaves nothing to remove.
+		"the build fails": {file("nobuild", ""), 4, []string{exists}, "failed before its list was made: nothing to remove"},
 		"the old images still listed": {func(f buildFixture) error {
 			return editFile(filepath.Join(f.state, "inspect.json"), func(s string) string {
-				return strings.Replace(s, `[`, `[{"platform":{"architecture":"amd64","os":"linux"}},`, 1)
+				return strings.Replace(s, `[`, `[{"digest":"sha256:`+strings.Repeat("c", 64)+`","platform":{"architecture":"amd64","os":"linux"}},`, 1)
 			})
-		}, 6, true, "rather than one image"},
-		"a platform missing":   {file("inspect.json", `{"manifests":[{"platform":{"architecture":"arm64","os":"linux"}}]}`), 6, true, "rather than one image"},
-		"Node does not start":  {file("nonode", ""), 12, true, "Node does not start"}, // the run (10), its container's removal, NAME's
-		"another Node version": {file("node", "v21.0.0\n"), 11, true, "reports 'v21.0.0 arm64'"},
-		// A list whose image podman's storage does not hold, or holds twice.
+		}, 6, removed("sha256:"+strings.Repeat("3", 64), armID, amdID), "rather than one image"},
+		"a platform missing": {file("inspect.json", `{"manifests":[{"digest":"`+armDigest+`","platform":{"architecture":"arm64","os":"linux"}}]}`), 6, removed(armID),
+			"rather than one image"},
+		// A list whose image podman's storage does not hold, or holds twice:
+		// not run, and not removed either (the operator is told what is left).
 		"an image not in podman's images": {func(f buildFixture) error {
 			return editFile(filepath.Join(f.state, "images"), func(s string) string { return strings.Replace(s, amdDigest, "sha256:"+strings.Repeat("d", 64), 1) })
-		}, 7, true, "cannot find the one image of localhost/adc-test for linux/amd64"},
+		}, 6, found, "cannot find each image of localhost/adc-test"},
 		"an image held twice": {func(f buildFixture) error {
 			return editFile(filepath.Join(f.state, "images"), func(s string) string { return s + amdDigest + " sha256:" + strings.Repeat("4", 64) + "\n" })
-		}, 7, true, "cannot find the one image of localhost/adc-test for linux/amd64"},
+		}, 6, found, "cannot find each image of localhost/adc-test"},
+		"Node does not start":  {file("nonode", ""), 11, removed(armID, amdID), "Node does not start"}, // the run (9), its container's removal
+		"another Node version": {file("node", "v21.0.0\n"), 10, removed(armID, amdID), "reports 'v21.0.0 arm64'"},
 		// Mythos #373 M1: the image's /opt/adc/lib must have the label's digest.
-		"an image whose adapter differs": {file("tamper", ""), 10, true, "not the label's"},
-		"the other platform's adapter":   {file("swap", ""), 10, true, "not the label's"},
-		"a copy that fails":              {file("nocp", ""), 10, true, "or copy /opt/adc/lib out of it"},
-		"NAME cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normrm", "")(f)) }, 12, true,
-			"could not be removed: do not push it"},
+		"an image whose adapter differs": {file("tamper", ""), 9, removed(armID, amdID), "not the label's"},
+		"the other platform's adapter":   {file("swap", ""), 9, removed(armID, amdID), "not the label's"},
+		"a copy that fails":              {file("nocp", ""), 9, removed(armID, amdID), "or copy /opt/adc/lib out of it"},
+		"NAME cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normrm", "")(f)) }, 11,
+			removed(armID, amdID)[:4], kept},
+		"its images cannot be removed": {func(f buildFixture) error { return errors.Join(file("nonode", "")(f), file("normi", "")(f)) }, 11,
+			removed(armID, amdID), kept},
 		// #226 entry 141, Opus #390 M2: every bounded call, cut.
-		"info hangs":             {hang("info", false), 1, false, cut},
-		"manifest exists hangs":  {hang("manifest exists", false), 2, false, cut},
-		"image exists hangs":     {hang("image exists", false), 3, false, cut},
-		"manifest inspect hangs": {hang("manifest inspect", false), 6, true, cut},
-		"images hangs":           {hang("images", false), 7, true, cut},
-		"create hangs":           {hang("create", false), 9, true, cut}, // its container still removed (8)
-		"cp hangs":               {hang("cp", false), 10, true, cut},
-		"rm hangs":               {hang("rm --force", false), 10, true, cut},
-		"run hangs":              {hang("run", false), 12, true, cut},
-		"run ignores the cut":    {hang("run", true), 12, true, "was cut after 1s or killed (exit 137)"},
+		"info hangs":             {hang("info", false), 1, nil, cut},
+		"manifest exists hangs":  {hang("manifest exists", false), 2, nil, cut},
+		"image exists hangs":     {hang("image exists", false), 3, nil, cut},
+		"manifest inspect hangs": {hang("manifest inspect", false), 5, found[:2], cut},
+		"images hangs":           {hang("images", false), 6, found, cut},
+		"create hangs":           {hang("create", false), 8, removed(armID, amdID), cut}, // its container still removed (7)
+		"cp hangs":               {hang("cp", false), 9, removed(armID, amdID), cut},
+		"rm hangs":               {hang("rm --force", false), 9, removed(armID, amdID), cut},
+		"run hangs":              {hang("run", false), 11, removed(armID, amdID), cut},
+		"run ignores the cut":    {hang("run", true), 11, removed(armID, amdID), "was cut after 1s or killed (exit 137)"},
 	}
 	for name, c := range rows {
 		f := newBuildFixture(t)
@@ -548,9 +573,22 @@ func TestPrepareBuild(t *testing.T) {
 			t.Fatal(err)
 		}
 		calls, out, err := f.build(t)
-		removed := len(calls) > 0 && calls[len(calls)-1] == "manifest rm localhost/adc-test"
-		if err == nil || len(calls) != c.calls || removed != c.removed || !strings.Contains(out, c.says) ||
-			c.removed && name != "NAME cannot be removed" && !strings.Contains(out, "localhost/adc-test failed and is removed: do not push it") {
+		bad := err == nil || len(calls) != c.calls+len(c.cleanup) || !strings.Contains(out, c.says)
+		for i, p := range c.cleanup {
+			bad = bad || !strings.HasPrefix(calls[c.calls+i], p)
+		}
+		// Removed with its images exactly when the cleanup's last call is
+		// the images' removal and it succeeds; kept, and said so, when the
+		// cleanup ran any other way.
+		all := len(c.cleanup) == 5 && !strings.Contains(name, "cannot be removed")
+		switch {
+		case bad:
+		case all && !strings.Contains(out, isRemoved):
+			bad = true
+		case !all && len(c.cleanup) > 1 && !strings.Contains(out, kept):
+			bad = true
+		}
+		if bad {
 			t.Errorf("%s: %v, podman calls %q; %s", name, err, calls, out)
 		}
 		if strings.HasPrefix(name, "run") && !strings.HasPrefix(calls[10], "rm --force --ignore --time=0 adc-prepare-") {

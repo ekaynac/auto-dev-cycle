@@ -26,11 +26,12 @@
 # would add to an existing list); after the build, the list must hold one
 # image per platform, the pinned Node must start in the image of podman's
 # native platform (podman info), which PLATFORMS must name, and each
-# image's /opt/adc/lib must have the label's adapter digest; each image is
+# image's /opt/adc/lib must have the label's adapter digest. Each image is
 # run by its own ID (the list's instance digest, found in podman's images),
-# as podman 4.9 runs a local list's native image whatever --platform says. Once the build
-# has begun, any failure removes NAME (podman manifest rm) and says not to
-# push it (Opus #390 M1).
+# as podman 4.9 runs a local list's native image whatever --platform says.
+# Once the build has begun, any failure removes NAME (podman manifest rm)
+# and its images (podman rmi), or says what is left, and says not to push
+# it (Opus #390 M1); a build that made no list leaves nothing.
 #
 # Node's start is checked only for the native platform. An emulated
 # platform's run (qemu binfmt) once crashed and hung for hours (#226 entry
@@ -97,6 +98,23 @@ pod() {
     printf 'prepare-go-image: podman %s was cut after %ss or killed (exit %s)\n' "$1" "$step_timeout" "$rc" >&2
   fi
   return "$rc"
+}
+
+# instances NAME: one "OS/ARCH ID" line for each image of the list NAME:
+# its instance digest (podman manifest inspect) and the one image podman's
+# storage holds under it (podman images); fails when there is not exactly
+# one. Each image is run by that ID: podman (4.9) creates a container of a
+# local list's native image whatever --platform says.
+instances() {
+  local inspect images p digest id
+  inspect="$(pod manifest inspect "$1")" &&
+    images="$(pod images --all --digests --no-trunc --format '{{.Digest}} {{.ID}}')" || return 1
+  jq -r '.manifests[] | .platform.os + "/" + .platform.architecture + " " + (.digest // "-")' <<<"$inspect" |
+    while read -r p digest; do
+      id="$(awk -v d="$digest" '$1 == d { print $2 }' <<<"$images")"
+      [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ && "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+      printf '%s %s\n' "$p" "$id"
+    done
 }
 
 # project PROJECT: sets repo, lockfiles (the profile's, in its order) and
@@ -248,16 +266,22 @@ case "${1:-}" in
     ctx="$(mktemp -d)"
     built=""
     # Once the build has begun, a failure removes NAME, which may hold a
-    # list whose checks failed or were never done (Opus #390 M1).
+    # list whose checks failed or were never done (Opus #390 M1), and its
+    # images, which podman manifest rm leaves; a build that made no list
+    # leaves nothing.
     cleanup() {
-      local rc=$?
+      local rc=$? ex=0 found
+      local -a ids
       rm -rf -- "$ctx"
-      if ((rc != 0)) && [[ -n "$built" ]]; then
-        if pod manifest rm "$name" >/dev/null; then
-          printf 'prepare-go-image: %s failed and is removed: do not push it\n' "$name" >&2
-        else
-          printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s\n' "$name" "$name" >&2
-        fi
+      ((rc != 0)) && [[ -n "$built" ]] || return 0
+      pod manifest exists "$name" || ex=$?
+      if ((ex == 1)); then
+        printf 'prepare-go-image: %s failed before its list was made: nothing to remove\n' "$name" >&2
+      elif ((ex == 0)) && found="$(instances "$name")" && mapfile -t ids < <(cut -d' ' -f2 <<<"$found") &&
+        pod manifest rm "$name" >/dev/null && pod rmi -- "${ids[@]}" >/dev/null; then
+        printf 'prepare-go-image: %s failed and is removed, with its images: do not push it\n' "$name" >&2
+      else
+        printf 'prepare-go-image: %s failed and could not be removed: do not push it; run podman manifest rm %s, and podman rmi its images\n' "$name" "$name" >&2
       fi
     }
     trap cleanup EXIT
@@ -279,21 +303,13 @@ case "${1:-}" in
     # copied out of it, has the label's adapter digest for the platform
     # (Mythos #373 M1: the label pins what COPY put in the image, not only
     # the context).
-    inspect="$(pod manifest inspect "$name")" || die "cannot list the images of $name (podman manifest inspect)"
-    listed="$(jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' <<<"$inspect" | LC_ALL=C sort)" ||
-      die "cannot list the images of $name (jq)"
+    found="$(instances "$name")" ||
+      die "cannot find each image of $name in podman's storage (podman manifest inspect, podman images)"
+    listed="$(cut -d' ' -f1 <<<"$found" | LC_ALL=C sort)"
     [[ "$listed" == "$(printf '%s\n' "${plats[@]}")" ]] ||
       die "$name lists ${listed//$'\n'/ } rather than one image for each of ${plats[*]}: run 'podman manifest rm $name' and build again"
-    # Each platform's image is run by its own ID: podman (4.9) creates a
-    # container of a local list's native image whatever --platform says, so
-    # NAME would check the native image once per platform.
-    images="$(pod images --all --digests --no-trunc --format '{{.Digest}} {{.ID}}')" || die "cannot list podman's images"
     for p in "${plats[@]}"; do
-      digest="$(jq -r --arg os "${p%%/*}" --arg arch "${p#*/}" \
-        '.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest' <<<"$inspect")" &&
-        id="$(awk -v d="$digest" '$1 == d { print $2 }' <<<"$images")" &&
-        [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ && "$id" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-        die "cannot find the one image of $name for $p (${digest:-no digest}) in podman's storage"
+      id="$(awk -v p="$p" '$1 == p { print $2 }' <<<"$found")"
       if [[ "$p" == "$host" ]]; then
         version="$(pin "$p" 2)" || exit 1
         want="$version ${p#linux/}"
