@@ -150,12 +150,9 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	if err != nil {
 		return dispatch.Card{}, "", err
 	}
-	if len(prof.Toolchain.Images) != 1 {
-		return dispatch.Card{}, "", &placeConfig{"profile " + string(v.Project), fmt.Sprintf("project %s pins %d toolchain images; M1 places on exactly one", v.Project, len(prof.Toolchain.Images))}
-	}
-	var image string
-	for _, img := range prof.Toolchain.Images {
-		image = string(img)
+	image, _, err := pinnedImage(*prof)
+	if err != nil {
+		return dispatch.Card{}, "", &placeConfig{"profile " + string(v.Project), fmt.Sprintf("project %s %v", v.Project, err)}
 	}
 	card := dispatch.Card{Node: node, Project: v.Project, Policy: prof.DataPolicy, PolicyDigest: pd, Image: image, Priority: prof.Priority,
 		Deadline: types.Time(tx.Now().Add(attemptBound).UTC().Format(time.RFC3339))}
@@ -251,4 +248,16 @@ func (p placer) launch(ctx context.Context, store *eventstore.Store, system iden
 			return evs, json.RawMessage(`{}`), err
 		}))
 	return miss, err
+}
+
+// pinnedImage is p's one pinned toolchain image and its key: M1 places, and
+// runs the adapter's container, on a profile with exactly one.
+func pinnedImage(p types.ProjectProfile) (image, toolchain string, err error) {
+	if len(p.Toolchain.Images) != 1 {
+		return "", "", fmt.Errorf("pins %d toolchain images; M1 places on exactly one", len(p.Toolchain.Images))
+	}
+	for k, img := range p.Toolchain.Images {
+		image, toolchain = string(img), k
+	}
+	return image, toolchain, nil
 }

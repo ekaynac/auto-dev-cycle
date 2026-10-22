@@ -59,7 +59,7 @@ func TestSandboxConfig(t *testing.T) {
 	if err != nil || cfg.Sandbox == nil || cfg.Sandbox.Podman != "/usr/bin/podman" {
 		t.Fatalf("an accepted sandbox: %+v %v", cfg.Sandbox, err)
 	}
-	for _, f := range []string{state, filepath.Join(run, sharedSocket), "/run/podman/podman.sock"} {
+	for _, f := range []string{state, run, "/run/podman/podman.sock"} { // the whole shared run directory (22a-5d-3)
 		if !slices.Contains(cfg.Sandbox.Forbidden, f) {
 			t.Errorf("forbidden %q missing from %q", f, cfg.Sandbox.Forbidden)
 		}
