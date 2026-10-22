@@ -99,7 +99,7 @@ MUTS = [
     ("the prompt digest not over the rendering", P, '\t\th.Write(p)\n', '\t\th.Write(nil)\n'),
     ("a fixed fence", P, 'fence := strings.Repeat("`", max(3, longestRun(in.Diff, \'`\')+1))', 'fence := "```"'),
     ("the gate summary dropped", P, 'strings.TrimSpace(in.Requirement), gate, fence+', 'strings.TrimSpace(in.Requirement), strings.Repeat(gate, 0), fence+'),
-    ("the diff bound off", P, 'case len(in.Requirement) > maxRequirement || len(in.Diff) > maxDiff:', 'case false:'),
+    ("the diff bound off", P, 'case len(in.Requirement) > maxRequirement || len(in.Diff) > MaxDiff:', 'case false:'),
     ("gate always green", W, 'g.Green = err == nil && g.Failed == 0 && g.Passed > 0', 'g.Green = true'),
     ("a build failure green", W, 'g.Green = err == nil && g.Failed == 0 && g.Passed > 0', 'g.Green = g.Failed == 0'),
     ("visible overlay skipped", W, 'if v := filepath.Join(s.taskDir(c), "visible"); exists(v) {', 'if v := filepath.Join(s.taskDir(c), "visible"); false && exists(v) {'),

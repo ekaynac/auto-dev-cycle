@@ -30,7 +30,7 @@ import (
 // The prompt's bounds: the requirement and the diff in bytes.
 const (
 	maxRequirement = 64 << 10
-	maxDiff        = 512 << 10
+	MaxDiff        = 512 << 10 // a reader of a diff for Prompt reads at most MaxDiff+1 bytes
 )
 
 const promptTemplate = `You are reviewing one candidate change to a repository for the task below. The task's own acceptance tests are withheld from you; the repository's tests ran on the candidate, with the result under "Gate".
@@ -56,7 +56,7 @@ Decide "go" only when the change meets every part of the task and introduces no 
 // rendering moves it, and every qualification record goes stale.
 var PromptDigest = func() types.Digest {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d\x00%d\x00", maxRequirement, maxDiff)
+	fmt.Fprintf(h, "%d\x00%d\x00", maxRequirement, MaxDiff)
 	for _, in := range []PromptInput{
 		{Requirement: "Requirement R.", Diff: "diff --git a/x b/x\n+x\n", Gate: Gate{Passed: 3, Green: true}},
 		{Requirement: "Requirement S.", Diff: "diff --git a/y b/y\n+ ```\n+``\n", Gate: Gate{Passed: 2, Failed: 1, Skipped: 1}},
@@ -89,7 +89,7 @@ func Prompt(in PromptInput) ([]byte, error) {
 	switch {
 	case strings.TrimSpace(in.Requirement) == "" || strings.TrimSpace(in.Diff) == "":
 		return nil, fmt.Errorf("review: a prompt needs a requirement and a diff")
-	case len(in.Requirement) > maxRequirement || len(in.Diff) > maxDiff:
+	case len(in.Requirement) > maxRequirement || len(in.Diff) > MaxDiff:
 		return nil, fmt.Errorf("review: a prompt's requirement or diff is over its bound")
 	case !utf8.ValidString(in.Requirement) || !utf8.ValidString(in.Diff):
 		return nil, fmt.Errorf("review: a prompt's requirement or diff is not UTF-8")

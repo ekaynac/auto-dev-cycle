@@ -306,7 +306,7 @@ func TestFindingsView(t *testing.T) {
 	}
 	// A clean gate report's ids, an empty list, are supplied (Astra #321
 	// M3): the no_go's view is published.
-	if f.GateIDs, err = gate.ReportIDs([]byte(`{"schema":"adc.gate-report/v1","blocking":[]}`)); err != nil {
+	if f.GateIDs, err = gate.ReportIDs([]byte(`{"schema":"adc.gate-report/v2","blocking":[]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if r, err := Result(key, f, blobs); err != nil || len(r.Value) != 3 {

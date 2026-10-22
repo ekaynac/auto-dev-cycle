@@ -363,6 +363,58 @@ func guarded(f func() error) (err error) {
 //   - the destination, and its routing as the registry verifies it
 //     (verified or attested: verified; reported: reported).
 func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID) (types.ManifestIntent, error) {
+	return r.intentOf(ctx, pl, node, aid, cid, func(_ *eventstore.Tx, call types.ManifestIntent, rendered graph.Rendered, recs intent.Records) (types.ManifestIntent, error) {
+		if int64(len(pl.prompt)) > maxPrompt {
+			return types.ManifestIntent{}, fmt.Errorf("%w: the prompt is over %d bytes", errContent, maxPrompt)
+		}
+		call.RenderedDigest = promptDigest(pl.prompt)
+		sizes := map[types.Digest]int64{}
+		for _, in := range rendered.Included {
+			sizes[in.IdentityDigest] = int64(len(pl.prompt)) // the brief is all the prompt renders
+		}
+		return intent.Builder(intent.In{Call: call, Context: rendered, Bytes: sizes, Records: recs})
+	})
+}
+
+// reviewerIntent is the manifest.intent of review node's attempt aid, its
+// call cid (P22a-6b; I18), as builderIntent's under the role reviewer, and
+// the prompt it renders: intent.Reviewer over the review's rendered context
+// as intent.Review reads it from the log (the brief, the patch and the
+// gate's report included at their blobs' sizes, its receipt omitted), so
+// the reviewer takes the gate's report only as its Sanitised candidate,
+// verified, never its ids (review.Prompt renders counts and the verdict);
+// its rendered digest review.Prompt's. Its consumer stands in the same way
+// (the family for the capability profile, stated). Run by 22a-6c's
+// reviewer attempt.
+func (r *runner) reviewerIntent(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID) (types.ManifestIntent, []byte, error) {
+	var prompt []byte
+	mi, err := r.intentOf(ctx, pl, node, aid, cid, func(tx *eventstore.Tx, call types.ManifestIntent, rendered graph.Rendered, recs intent.Records) (types.ManifestIntent, error) {
+		rc, err := intent.Review(tx, r.blobs, node, rendered)
+		if err != nil {
+			return types.ManifestIntent{}, err
+		}
+		if int64(len(rc.Prompt)) > maxPrompt {
+			return types.ManifestIntent{}, fmt.Errorf("%w: the prompt is over %d bytes", errContent, maxPrompt)
+		}
+		prompt, call.RenderedDigest = rc.Prompt, promptDigest(rc.Prompt)
+		return intent.Reviewer(intent.In{Call: call, Context: rc.Rendered(), Bytes: rc.Bytes, Records: recs})
+	})
+	return mi, prompt, err
+}
+
+// promptDigest is prompt's sha256 digest.
+func promptDigest(prompt []byte) types.Digest {
+	sum := sha256.Sum256(prompt)
+	return types.Digest("sha256:" + hex.EncodeToString(sum[:]))
+}
+
+// intentOf is the manifest.intent of node's attempt aid under pl, its call
+// cid: its id, call, task, attempt, consumer, policy, budget, destination
+// and routing (builderIntent's comment), finished by finish in a view of
+// the log, over node's rendered context (graph.Context) and the task's
+// records (intent.Load).
+func (r *runner) intentOf(ctx context.Context, pl plan, node types.NodeID, aid types.AttemptID, cid types.CallID,
+	finish func(*eventstore.Tx, types.ManifestIntent, graph.Rendered, intent.Records) (types.ManifestIntent, error)) (types.ManifestIntent, error) {
 	mid, err := ids.New("cmf")
 	if err != nil {
 		return types.ManifestIntent{}, err
@@ -371,9 +423,6 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 	if o := pl.profile.UsageProfileOverride; o != nil {
 		usage = types.ManifestIntentPolicyUsageProfile(*o)
 	}
-	if int64(len(pl.prompt)) > maxPrompt {
-		return types.ManifestIntent{}, fmt.Errorf("%w: the prompt is over %d bytes", errContent, maxPrompt)
-	}
 	routing := routingOf(pl.executor.Destination.Verification)
 	var tokens int64
 	for _, res := range pl.lease.Reservations {
@@ -381,13 +430,11 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 			tokens += int64(res.Amount)
 		}
 	}
-	sum := sha256.Sum256(pl.prompt)
 	task := pl.view.Task
 	call := types.ManifestIntent{ID: types.ManifestID(mid), Call: cid, Task: &task, Attempt: &aid,
 		Consumer: types.ManifestIntentConsumer{Executor: pl.lease.Executor, ModelSnapshot: pl.executor.Model, HarnessVersion: string(pl.executor.Adapter) + "@" + buildinfo.Get("adcd").Version,
 			CapabilityProfile: pl.executor.Family},
-		Budget:         types.ManifestIntentBudget{Tokens: tokens, Bytes: maxPrompt},
-		RenderedDigest: types.Digest("sha256:" + hex.EncodeToString(sum[:])), Destination: string(pl.executor.Destination.ID), Routing: routing}
+		Budget: types.ManifestIntentBudget{Tokens: tokens, Bytes: maxPrompt}, Destination: string(pl.executor.Destination.ID), Routing: routing}
 	var mi types.ManifestIntent
 	err = r.store.View(context.WithoutCancel(ctx), func(tx *eventstore.Tx) error {
 		raw, _, err := authority.ProjectDataPolicy(tx, pl.view.Project)
@@ -406,11 +453,7 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 		if err != nil {
 			return err
 		}
-		sizes := map[types.Digest]int64{}
-		for _, in := range rendered.Included {
-			sizes[in.IdentityDigest] = int64(len(pl.prompt)) // the brief is all the prompt renders
-		}
-		mi, err = intent.Builder(intent.In{Call: call, Context: rendered, Bytes: sizes, Records: recs})
+		mi, err = finish(tx, call, rendered, recs)
 		return err
 	})
 	return mi, err
@@ -506,6 +549,39 @@ func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (
 	}
 	pl.prompt = brief.Prompt(pb)
 	return pl, nil
+}
+
+// reviewPlan reads what review node's attempt under l runs over (P22a-6b;
+// 22a-6c runs it): node, a claimed review, its project's profile, and the
+// lease (granted, on node's unit) and its executor, which must be the
+// review's roster member; no pin and no prompt (reviewerIntent renders it).
+func (r *runner) reviewPlan(ctx context.Context, node types.NodeID, l types.LeaseID) (plan, error) {
+	var pl plan
+	err := r.store.View(ctx, func(tx *eventstore.Tx) error {
+		var err error
+		if pl.view, err = graph.ViewOf(tx, node); err != nil {
+			return err
+		}
+		params, err := pl.view.Node.ParamsAsReviewNodeParams()
+		if err != nil || pl.view.Node.Kind != types.NodeKindReview || pl.view.State.State != types.NodeStateStateClaimed {
+			return errors.Join(err, fmt.Errorf("node %s is no claimed review", node))
+		}
+		prof, ok, err := authority.ProjectProfile(tx, pl.view.Project)
+		if err != nil || !ok {
+			return errors.Join(err, fmt.Errorf("%w: project %s has no adopted profile", errConfig, pl.view.Project))
+		}
+		pl.profile = *prof
+		var found bool
+		if pl.lease, _, found, err = lease.LeaseOf(tx, l); err != nil || !found || pl.lease.State != types.LeaseStateGranted || pl.lease.Unit != graph.UnitOf(node) ||
+			!slices.ContainsFunc(params.Roster, func(m types.RosterMember) bool { return m.Executor == pl.lease.Executor }) {
+			return errors.Join(err, fmt.Errorf("lease %s is no granted lease of review %s on its roster", l, node))
+		}
+		if pl.executor, found = r.place.d.Registry.Executor(pl.lease.Executor); !found {
+			return fmt.Errorf("executor %s is not registered", pl.lease.Executor)
+		}
+		return nil
+	})
+	return pl, err
 }
 
 // started reports whether attempt was started (its launch's command
