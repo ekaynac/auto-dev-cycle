@@ -697,7 +697,11 @@ func TestGateLineage(t *testing.T) {
 			"negative elapsed time":              {func(r *reportRecord) { r.ElapsedMS = -1 }, false},
 			"negative tests":                     {func(r *reportRecord) { r.Tests = -1 }, false},
 			"negative truncated":                 {func(r *reportRecord) { r.Truncated = -1 }, false},
-			"zero counts":                        {func(r *reportRecord) { r.ElapsedMS, r.Tests, r.Truncated = 0, 0, 0 }, true},
+			"zero counts": {func(r *reportRecord) {
+				r.ElapsedMS, r.Tests, r.Truncated, r.Passed, r.Failed, r.Skipped = 0, 0, 0, 0, 0, 0
+			}, true},
+			"negative passed":                     {func(r *reportRecord) { r.Passed, r.Failed = -1, r.Failed+r.Passed+1 }, false},
+			"counts that do not sum to its tests": {func(r *reportRecord) { r.Passed++ }, false},
 		} {
 			r := base
 			r.Blocking = slices.Clone(base.Blocking)
@@ -713,7 +717,7 @@ func TestGateLineage(t *testing.T) {
 	}
 	// A clean report's ids are an empty list, not nil (Astra #321 M3: nil
 	// is "not supplied" to the findings view).
-	if got, err := ReportIDs([]byte(`{"schema":"adc.gate-report/v1","blocking":[]}`)); err != nil || got == nil || len(got) != 0 {
+	if got, err := ReportIDs([]byte(`{"schema":"adc.gate-report/v2","blocking":[]}`)); err != nil || got == nil || len(got) != 0 {
 		t.Errorf("a clean report's ids: %#v, %v", got, err)
 	}
 	if _, err := ReportIDs([]byte(`{"schema":"adc.review-report/v1","blocking":[{"package":"p"}]}`)); !errors.Is(err, ErrSpec) {

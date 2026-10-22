@@ -318,8 +318,8 @@ func TestIntentSafeOutputs(t *testing.T) {
 	}
 	tree := strings.Repeat("ab", 20)
 	reportOf := func(tree, reason, detail string) []byte {
-		return []byte(`{"schema":"adc.gate-report/v1","elapsed_ms":5,"tree":"` + tree + `","outcome":"found","reason":"` + reason + `","detail":"` + detail + `",` +
-			`"tests":2,"blocking":[{"package":"pkg/billing","name":"TestHiddenSecretKey","outcome":"fail"}],"truncated":0,"charge_links":[]}`)
+		return []byte(`{"schema":"adc.gate-report/v2","elapsed_ms":5,"tree":"` + tree + `","outcome":"found","reason":"` + reason + `","detail":"` + detail + `",` +
+			`"tests":2,"passed":1,"failed":1,"skipped":0,"blocking":[{"package":"pkg/billing","name":"TestHiddenSecretKey","outcome":"fail"}],"truncated":0,"charge_links":[]}`)
 	}
 	report := reportOf(tree, "completed_with_findings", "1 tests or packages fail against the baseline")
 	if err := gate.CheckReport(report); err != nil {
