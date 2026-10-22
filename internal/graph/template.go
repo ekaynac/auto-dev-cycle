@@ -20,9 +20,10 @@ import (
 //     (the tree); gate on accept's tree (the gate result). accept and gate
 //     are the controller's own.
 //   - Variant candidate: no merge node, ever (merge-* inactive). The review
-//     with its requirement joins the template only when the review
-//     capability is active (P22a-6); until then the template stops before
-//     review (§1's table).
+//     with its requirement is never the template's: its roster is part of
+//     its identity (roster.go), and is chosen from the registry once the
+//     build and the gate are done, so adcd's loop records it late, under
+//     the review capability (P22a-6a; daemon/reviews.go).
 //   - The guard (CheckSurface) runs on the template before any node is
 //     recorded: the admitting command records nothing when it refuses.
 
