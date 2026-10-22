@@ -24,13 +24,18 @@ import (
 //     which no PromptInput field can carry.
 //   - The template is fixed; PromptDigest covers it and the bounds, so a
 //     change to either is another prompt.
+//   - A candidate with no diff (patch/empty) is reviewed: its change
+//     section is the fixed noChange line, no fence (Astra chunk 3 M2).
 //   - The adapter's system message (adapters/http-chat, the reviewer role)
 //     and its response schema are the route's, not the prompt's.
 
-// The prompt's bounds: the requirement and the diff in bytes.
+// The prompt's bounds: the requirement and the diff in bytes. The
+// requirement's covers brief.Prompt of the largest brief its schema admits
+// (a title of 200 and a requirement of 20,000 code points, 4 bytes each:
+// 80,805 bytes; Astra chunk 3 M3), so every admitted task can be reviewed.
 const (
-	maxRequirement = 64 << 10
-	maxDiff        = 512 << 10
+	maxRequirement = 96 << 10
+	MaxDiff        = 512 << 10 // a reader of a diff for Prompt reads at most MaxDiff+1 bytes
 )
 
 const promptTemplate = `You are reviewing one candidate change to a repository for the task below. The task's own acceptance tests are withheld from you; the repository's tests ran on the candidate, with the result under "Gate".
@@ -56,10 +61,11 @@ Decide "go" only when the change meets every part of the task and introduces no 
 // rendering moves it, and every qualification record goes stale.
 var PromptDigest = func() types.Digest {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d\x00%d\x00", maxRequirement, maxDiff)
+	fmt.Fprintf(h, "%d\x00%d\x00", maxRequirement, MaxDiff)
 	for _, in := range []PromptInput{
 		{Requirement: "Requirement R.", Diff: "diff --git a/x b/x\n+x\n", Gate: Gate{Passed: 3, Green: true}},
 		{Requirement: "Requirement S.", Diff: "diff --git a/y b/y\n+ ```\n+``\n", Gate: Gate{Passed: 2, Failed: 1, Skipped: 1}},
+		{Requirement: "Requirement T.", Gate: Gate{Passed: 1, Green: true}}, // no change (Astra chunk 3 M2)
 	} {
 		p, err := Prompt(in)
 		if err != nil {
@@ -87,9 +93,9 @@ type PromptInput struct {
 // Prompt is the reviewer's prompt for in: valid UTF-8 within its bounds.
 func Prompt(in PromptInput) ([]byte, error) {
 	switch {
-	case strings.TrimSpace(in.Requirement) == "" || strings.TrimSpace(in.Diff) == "":
-		return nil, fmt.Errorf("review: a prompt needs a requirement and a diff")
-	case len(in.Requirement) > maxRequirement || len(in.Diff) > maxDiff:
+	case strings.TrimSpace(in.Requirement) == "":
+		return nil, fmt.Errorf("review: a prompt needs a requirement")
+	case len(in.Requirement) > maxRequirement || len(in.Diff) > MaxDiff:
 		return nil, fmt.Errorf("review: a prompt's requirement or diff is over its bound")
 	case !utf8.ValidString(in.Requirement) || !utf8.ValidString(in.Diff):
 		return nil, fmt.Errorf("review: a prompt's requirement or diff is not UTF-8")
@@ -99,9 +105,16 @@ func Prompt(in PromptInput) ([]byte, error) {
 		verdict = "green: every test it ran passed"
 	}
 	gate := fmt.Sprintf("%s (%d passed, %d failed, %d skipped).", verdict, in.Gate.Passed, in.Gate.Failed, in.Gate.Skipped)
-	fence := strings.Repeat("`", max(3, longestRun(in.Diff, '`')+1)) // no line of the diff closes it (Opus #306 L5)
-	return fmt.Appendf(nil, promptTemplate, strings.TrimSpace(in.Requirement), gate, fence+"diff\n"+strings.TrimRight(in.Diff, "\n")+"\n"+fence), nil
+	change := noChange // an empty candidate (patch/empty: no diff) is reviewed too (Astra chunk 3 M2)
+	if strings.TrimSpace(in.Diff) != "" {
+		fence := strings.Repeat("`", max(3, longestRun(in.Diff, '`')+1)) // no line of the diff closes it (Opus #306 L5)
+		change = fence + "diff\n" + strings.TrimRight(in.Diff, "\n") + "\n" + fence
+	}
+	return fmt.Appendf(nil, promptTemplate, strings.TrimSpace(in.Requirement), gate, change), nil
 }
+
+// noChange is the candidate change section of a candidate with no diff.
+const noChange = "No changes: the candidate's diff against its base is empty."
 
 // longestRun is the length of the longest run of c in s.
 func longestRun(s string, c byte) int {

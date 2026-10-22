@@ -480,11 +480,11 @@ func TestReadBlob(t *testing.T) {
 		d  types.Digest
 		ok bool
 	}{"its content": {sum(good), true}, "at the bound": {sum(at), true}, "past the bound": {sum(big), false}, "another digest's content": {digest("1"), false}} {
-		if _, ok, err := readBlob(blobs, c.d); err != nil || ok != c.ok {
+		if _, ok, err := readBlob(blobs, c.d, maxSafeBytes); err != nil || ok != c.ok {
 			t.Errorf("%s: %v %v", name, ok, err)
 		}
 	}
-	if _, _, err := readBlob(blobs, digest("2")); err == nil {
+	if _, _, err := readBlob(blobs, digest("2"), maxSafeBytes); err == nil {
 		t.Error("a missing blob read")
 	}
 }

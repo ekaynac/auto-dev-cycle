@@ -697,7 +697,11 @@ func TestGateLineage(t *testing.T) {
 			"negative elapsed time":              {func(r *reportRecord) { r.ElapsedMS = -1 }, false},
 			"negative tests":                     {func(r *reportRecord) { r.Tests = -1 }, false},
 			"negative truncated":                 {func(r *reportRecord) { r.Truncated = -1 }, false},
-			"zero counts":                        {func(r *reportRecord) { r.ElapsedMS, r.Tests, r.Truncated = 0, 0, 0 }, true},
+			"zero counts": {func(r *reportRecord) {
+				r.ElapsedMS, r.Tests, r.Truncated, r.Passed, r.Failed, r.Skipped = 0, 0, 0, 0, 0, 0
+			}, true},
+			"negative passed":                     {func(r *reportRecord) { r.Passed, r.Failed = -1, r.Failed+r.Passed+1 }, false},
+			"counts that do not sum to its tests": {func(r *reportRecord) { r.Passed++ }, false},
 		} {
 			r := base
 			r.Blocking = slices.Clone(base.Blocking)
@@ -713,7 +717,7 @@ func TestGateLineage(t *testing.T) {
 	}
 	// A clean report's ids are an empty list, not nil (Astra #321 M3: nil
 	// is "not supplied" to the findings view).
-	if got, err := ReportIDs([]byte(`{"schema":"adc.gate-report/v1","blocking":[]}`)); err != nil || got == nil || len(got) != 0 {
+	if got, err := ReportIDs([]byte(`{"schema":"adc.gate-report/v2","blocking":[]}`)); err != nil || got == nil || len(got) != 0 {
 		t.Errorf("a clean report's ids: %#v, %v", got, err)
 	}
 	if _, err := ReportIDs([]byte(`{"schema":"adc.review-report/v1","blocking":[{"package":"p"}]}`)); !errors.Is(err, ErrSpec) {
@@ -735,3 +739,23 @@ func TestGateLineage(t *testing.T) {
 // reportRecord is Report's record, under a name a test's report bytes do
 // not shadow.
 type reportRecord = report
+
+// Opus 22a-6b M2: a report is bounded after escaping: a candidate's 1,000
+// failing tests named by 256 '<' each (json escapes '<' as 6 bytes) give
+// a report within MaxReportBytes that CheckReport passes, the findings
+// past the bound counted, and its counts still the run's.
+func TestAReportIsBoundedEncoded(t *testing.T) {
+	var rs []results.Result
+	for i := range 1000 {
+		rs = append(rs, results.Result{Test: results.Test{Package: "p", Name: fmt.Sprintf("%d%s", i, strings.Repeat("<", 250))}, Outcome: results.Fail})
+	}
+	b, err := Verdict{Tree: strings.Repeat("ab", 20), Outcome: vocab.Found, Reason: vocab.ReasonGateTestFailed, Why: whyNonePassed,
+		Results: results.Report{Results: rs, Packages: map[string]results.Outcome{"p": results.Fail}}}.Report()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r reportRecord
+	if err := json.Unmarshal(b, &r); err != nil || len(b) > MaxReportBytes || CheckReport(b) != nil || r.Truncated == 0 || r.Failed != 1000 {
+		t.Fatalf("%d bytes, truncated %d, failed %d: %v / %v", len(b), r.Truncated, r.Failed, err, CheckReport(b))
+	}
+}

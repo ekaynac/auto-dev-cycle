@@ -46,9 +46,9 @@ import (
 )
 
 const (
-	reportSchema = "adc.gate-report/v1"
-	maxReported  = 1000 // blocking findings in a report
-	maxID        = 256  // bytes of a reported package or test name
+	reportSchema = "adc.gate-report/v2" // v2: its counts (P22a-6b)
+	maxReported  = 1000                 // blocking findings in a report
+	maxID        = 256                  // bytes of a reported package or test name
 	evidenceType = "application/x-go-test-json"
 	// instrumentName is the instrument of every gate receipt Result makes:
 	// Contract's name for the one result adapter Run accepts.
@@ -210,7 +210,8 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 }
 
 // Report is the D55 record of one gate node: the run's elapsed time, its
-// verdict and blocking findings (test ids and outcomes, at most
+// verdict, its tests' counts (passed, skipped, and failed: any other
+// outcome; P22a-6b, what review.Prompt renders) and blocking findings (test ids and outcomes, at most
 // maxReported, the rest counted, each id cut to at most maxID bytes, its
 // ellipsis included: a name is the candidate's text, Opus #286 L2), and
 // its charge links (none). It holds at most about maxReported × 2 maxID
@@ -233,9 +234,54 @@ func (v Verdict) Report() ([]byte, error) {
 	for _, p := range slices.Sorted(maps.Keys(pkgs)) {
 		blocking = append(blocking, reportFinding{Package: id(p), Outcome: pkgs[p]})
 	}
-	truncated := max(0, len(blocking)-maxReported)
-	return json.Marshal(report{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, len(v.Results.Results),
+	// At most maxReported findings, within the bytes MaxReportBytes leaves
+	// them encoded (json escapes '<' as 6 bytes: a candidate's test names
+	// may be all '<'; Opus 22a-6b M2): the rest counted.
+	kept, size := 0, 0
+	for ; kept < len(blocking) && kept < maxReported; kept++ {
+		b, err := json.Marshal(blocking[kept])
+		if err != nil {
+			return nil, err
+		}
+		if size += len(b) + 1; size > MaxReportBytes-reportRoom {
+			break
+		}
+	}
+	truncated := len(blocking) - kept
+	var passed, skipped int
+	for _, x := range v.Results.Results {
+		passed, skipped = passed+b2i(x.Outcome == results.Pass), skipped+b2i(x.Outcome == results.Skip)
+	}
+	n := len(v.Results.Results)
+	return json.Marshal(report{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, n, passed, n - passed - skipped, skipped,
 		append([]reportFinding{}, blocking[:len(blocking)-truncated]...), truncated, []types.CallID{}})
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// Summary is a gate report's verdict and counts, what a reviewer sees of
+// it (review.Gate): report checked as CheckReport checks it; green is its
+// outcome empty (every test it ran passed).
+type Summary struct {
+	Passed, Failed, Skipped int
+	Green                   bool
+}
+
+// SummaryOf is b's Summary, b a gate report (P22a-6b).
+func SummaryOf(b []byte) (Summary, error) {
+	if err := CheckReport(b); err != nil {
+		return Summary{}, err
+	}
+	var r report
+	if err := json.Unmarshal(b, &r); err != nil {
+		return Summary{}, err
+	}
+	return Summary{Passed: r.Passed, Failed: r.Failed, Skipped: r.Skipped, Green: r.Outcome == vocab.Empty}, nil
 }
 
 // report is Report's record.
@@ -247,6 +293,9 @@ type report struct {
 	Reason      string          `json:"reason"`
 	Detail      string          `json:"detail"`
 	Tests       int             `json:"tests"`
+	Passed      int             `json:"passed"`
+	Failed      int             `json:"failed"`
+	Skipped     int             `json:"skipped"`
 	Blocking    []reportFinding `json:"blocking"`
 	Truncated   int             `json:"truncated"`
 	ChargeLinks []types.CallID  `json:"charge_links"`
@@ -258,9 +307,13 @@ type reportFinding struct {
 	Outcome results.Outcome `json:"outcome"`
 }
 
-// maxReportBytes bounds a report CheckReport reads: maxReported findings
-// of two ids, with room for the rest.
-const maxReportBytes = 2*maxReported*(2*maxID+64) + 64<<10
+// MaxReportBytes bounds a report CheckReport reads, and a reader of a
+// report reads: maxReported findings of two ids, with reportRoom for the
+// rest; Report keeps its encoded findings within it.
+const (
+	MaxReportBytes = 2*maxReported*(2*maxID+64) + reportRoom
+	reportRoom     = 64 << 10
+)
 
 // MaxDetail bounds a gate receipt's free text a reviewer may take (Opus
 // #321 r2 M2; Mythos #348 M1): its detail and its predicates', its
@@ -280,8 +333,8 @@ func CheckReport(b []byte) error {
 	var r report
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
-	if len(b) > maxReportBytes {
-		return fmt.Errorf("%w: a gate report of over %d bytes", ErrSpec, maxReportBytes)
+	if len(b) > MaxReportBytes {
+		return fmt.Errorf("%w: a gate report of over %d bytes", ErrSpec, MaxReportBytes)
 	}
 	if err := dec.Decode(&r); err != nil || r.Schema != reportSchema || len(r.Blocking) > maxReported || len(r.ChargeLinks) != 0 {
 		return fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
@@ -296,8 +349,10 @@ func CheckReport(b []byte) error {
 		return fmt.Errorf("%w: a gate report's tree is no git id", ErrSpec)
 	case !isWhy(r.Detail):
 		return fmt.Errorf("%w: a gate report's detail is none of the controller's phrases", ErrSpec)
-	case r.ElapsedMS < 0 || r.Tests < 0 || r.Truncated < 0:
+	case r.ElapsedMS < 0 || r.Tests < 0 || r.Truncated < 0 || r.Passed < 0 || r.Failed < 0 || r.Skipped < 0:
 		return fmt.Errorf("%w: a gate report's count below 0", ErrSpec)
+	case r.Passed+r.Failed+r.Skipped != r.Tests:
+		return fmt.Errorf("%w: a gate report's counts do not sum to its tests", ErrSpec)
 	}
 	for _, f := range r.Blocking {
 		if len(f.Package) > maxID || len(f.Name) > maxID {

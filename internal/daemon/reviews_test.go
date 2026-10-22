@@ -397,7 +397,7 @@ func heldChain(rw *runWorld) types.HoldID {
 // The review state table (Opus 22a-6a re-check H1, L1; pr-6a.md): from
 // each reachable cell (the live requirement × the live review), each
 // registry event (a restart to no independent roster, back to the
-// original, to another independent roster) ends with the review claimed
+// original, to another independent roster) ends with the review claimed and placed
 // on the registry's independent roster, or held while none exists and
 // claimed on it once a restart restores it; a review claimed before the
 // event stays claimed (its commit's, 22a-6c: L2); no review action is
@@ -415,6 +415,7 @@ func TestTheReviewStateTable(t *testing.T) {
 		{"requirement completed, review waiting", []tableStep{{regA, 3}}, "completed/waiting"},
 		{"requirement completed, review held", []tableStep{{regA, 2}, {regN, 3}}, "completed/held"},
 		{"requirement completed, review claimed", []tableStep{{regA, 6}}, "completed/claimed"},
+		{"requirement completed, review claimed, unplaced", []tableStep{{regA, 4}}, "completed/claimed"},
 		{"a replacement held, its requirement held", []tableStep{{regA, 2}, {regN, 3}, {regB, 1}, {regNX, 3}}, "held/held"},
 		{"requirement held, another roster independent", []tableStep{{regA, 1}, {regB, 1}}, "held/waiting"},
 		{"a replacement waiting on its requirement, moved off a held one", []tableStep{{regA, 1}, {regB, 2}}, "runnable/waiting"},
@@ -444,6 +445,10 @@ func TestTheReviewStateTable(t *testing.T) {
 					t.Fatalf("the start: %s, want %s", start, s.cell)
 				}
 				before := reviewNodes(rw)[types.NodeKindReview]
+				_, placed := leaseOn(rw.w, before.Node.ID)
+				if before.State.State == types.NodeStateStateClaimed && strings.HasSuffix(s.name, "unplaced") == placed {
+					t.Fatalf("the start: placed %v", placed)
+				}
 				var log bytes.Buffer
 				event := func(k tableRegistry) {
 					rw.reviewing(k.of(t, unknown))
@@ -452,9 +457,15 @@ func TestTheReviewStateTable(t *testing.T) {
 				}
 				event(e.reg)
 				want := e.family
-				if before.State.State == types.NodeStateStateClaimed { // L2: the commit's
+				if before.State.State == types.NodeStateStateClaimed && want == "" { // its roster is still the registry's: Match places it; its contributor is the commit's to refuse (L2, 22a-6c)
+					want = "stub-reviewer"
+				}
+				if before.State.State == types.NodeStateStateClaimed && placed { // L2: the commit's (22a-6c)
 					if after := reviewNodes(rw)[types.NodeKindReview]; after.Node.ID != before.Node.ID || after.State.State != types.NodeStateStateClaimed {
 						t.Fatalf("the claimed review after the event: %s %s", after.Node.ID, after.State.State)
+					}
+					if l, live := leaseOn(rw.w, before.Node.ID); !live || l.Executor != stubReviewer {
+						t.Fatalf("its lease: %v %+v", live, l)
 					}
 					return
 				}
@@ -474,6 +485,9 @@ func TestTheReviewStateTable(t *testing.T) {
 				p, err := review.Node.ParamsAsReviewNodeParams()
 				if err != nil || len(p.Roster) != 1 || p.Roster[0].Family != want || review.State.State != types.NodeStateStateClaimed {
 					t.Fatalf("from %s: %s, roster %+v (%v), want claimed on %s", start, cellOf(rw), p.Roster, err, want)
+				}
+				if l, live := leaseOn(rw.w, review.Node.ID); !live || l.Executor != p.Roster[0].Executor { // placed on it (Astra chunk 3 H1)
+					t.Fatalf("from %s: its lease %v %+v", start, live, l)
 				}
 				if log.Len() != 0 {
 					t.Errorf("the loop logged: %s", log.String())
@@ -735,41 +749,156 @@ func TestAMeasurementIsTheGatesOwn(t *testing.T) {
 	}
 }
 
-// Opus 22a-6a′ M1: a gate result with no recorded measurement (its record
-// dropped here, as a result recorded before 6a′ would have none) does not
-// serve the review, a receipt_incomplete refusal: the review waits, and the
-// rest of the task evaluates (its requirement completes), with no
-// evaluation refused.
-func TestAnUnmeasuredGateResultServesNoReview(t *testing.T) {
+// Opus 22a-6a′ M1, P22a-6b (Main's decision: the wait shown with its
+// reason): a gate result whose requirement cannot be derived holds the
+// review awaiting_receipt, its reason in the signal instance, and the rest
+// of the task evaluates (the requirement completes), with no evaluation
+// refused:
+//   - no recorded measurement (its record dropped here, as a result
+//     recorded before 6a′ would have none): receipt_incomplete;
+//   - then measured in an image the project does not pin: the hold
+//     re-raised on instrument_changed, the first cleared;
+//   - then its own measurement again: the hold cleared, the review claimed.
+func TestARefusedGateReceiptHoldsTheReviewWithItsReason(t *testing.T) {
 	rw := gateCompleted(t)
 	gateNode := templateNodes(rw.w, rw.task)[types.NodeKindGate]
-	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	var result types.ResultID
+	var own types.GateMeasured
+	rw.w.view(func(tx *eventstore.Tx) error {
 		g, err := graph.ViewOf(tx, gateNode)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			result = *g.State.Result
+			own, _, err = gate.MeasurementOf(tx, result)
 		}
-		return nil, tx.Delete(gate.MeasuredProjection, string(*g.State.Result))
-	}); err != nil {
-		t.Fatal(err)
+		return err
+	})
+	measure := func(m *types.GateMeasured) {
+		t.Helper()
+		if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if m == nil {
+				return nil, tx.Delete(gate.MeasuredProjection, string(result))
+			}
+			raw, err := json.Marshal(*m)
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Put(gate.MeasuredProjection, string(result), raw)
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	held := func(signal string) types.HoldID {
+		t.Helper()
+		review := reviewNodes(rw)[types.NodeKindReview]
+		if review.State.State != types.NodeStateStateHeld || len(review.State.Holds) != 1 || review.State.Holds[0].Hold != vocab.HoldAwaitingReceipt ||
+			review.State.Holds[0].SignalInstance != signal || review.State.Holds[0].Reason != nil {
+			t.Fatalf("the review: %s, holds %+v, want held awaiting_receipt on %s", review.State.State, review.State.Holds, signal)
+		}
+		return review.State.Holds[0].ID
+	}
+	measure(nil)
 	var log bytes.Buffer
 	rw.reviewing(stubRegistry(t, nil, nil))
 	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, &log)
 	rw.passesFor(t, 6, 0)
-	got := reviewNodes(rw)
-	if req, review := got[types.NodeKindReviewRequirement], got[types.NodeKindReview]; req.State.State != types.NodeStateStateCompleted ||
-		review.State.State != types.NodeStateStateWaiting {
-		t.Fatalf("the requirement %s, the review %s (holds %+v)", req.State.State, review.State.State, review.State.Holds)
+	if req := reviewNodes(rw)[types.NodeKindReviewRequirement]; req.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the requirement: %s", req.State.State)
 	}
+	first := held("receipt:gate:receipt_incomplete")
+	rw.passesFor(t, 3, 0)
+	if again := held("receipt:gate:receipt_incomplete"); again != first {
+		t.Fatalf("the hold did not stay: %s, was %s", again, first)
+	}
+	unpinned := own
+	unpinned.Image.Pinned = "localhost/adc/other@sha256:" + strings.Repeat("e", 64)
+	measure(&unpinned)
+	rw.passesFor(t, 3, 0)
+	if next := held("receipt:gate:instrument_changed"); next == first {
+		t.Fatalf("the changed reason kept the hold %s", first)
+	}
+	measure(&own)
+	rw.passesFor(t, 1, 0) // the hold cleared and the review claimed in one evaluation
+	if review := reviewNodes(rw)[types.NodeKindReview]; review.State.State != types.NodeStateStateClaimed || len(review.State.Holds) != 0 {
+		t.Fatalf("the review once its receipt serves: %s, holds %+v", review.State.State, review.State.Holds)
+	}
+	rw.passesFor(t, 4, 0)
 	if log.Len() != 0 {
 		t.Errorf("the loop logged: %s", log.String())
 	}
-	rw.w.view(func(tx *eventstore.Tx) error {
-		_, err := gateNeed(tx, gateNode)
-		var refused *receipt.Refusal
-		if !errors.As(err, &refused) || refused.Reason != vocab.ReasonReceiptIncomplete {
-			t.Errorf("the requirement of an unmeasured gate result: %v", err)
+}
+
+// Opus 22a-6b M1: the evaluator clears only the awaiting_receipt holds it
+// raised (graph.ReceiptWait): another's, on evidence:rcp_x (as graph.Retry
+// raises one), stays held while the review's inputs would serve.
+func TestAnotherReceiptWaitIsNotTheEvaluators(t *testing.T) {
+	rw := gateCompleted(t)
+	rw.reviewing(stubRegistry(t, nil, nil))
+	rw.passesFor(t, 1, 0)
+	review := reviewNodes(rw)[types.NodeKindReview].Node.ID
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Raise(tx, review, types.NodeHold{ID: types.HoldID(newID(t, "hld")), Hold: vocab.HoldAwaitingReceipt, SignalInstance: "evidence:rcp_x",
+			Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rw.passesFor(t, 6, 0)
+	v := reviewNodes(rw)[types.NodeKindReview]
+	if v.State.State != types.NodeStateStateHeld || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != "evidence:rcp_x" {
+		t.Fatalf("the review: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+}
+
+// Astra chunk 3 r2 L1: a claimed review not yet placed recovers from a
+// restart whatever the registry does:
+//   - to no independent reviewer (regNB: its reviewer of another family,
+//     the build's executor unknown), then back: held reviewer_unavailable,
+//     the same hold over passes and no lease while it lasts, then cleared
+//     and the same review placed;
+//   - its reviewer removed, another independent one registered: superseded
+//     onto it, claimed and placed on it.
+func TestAClaimedUnplacedReviewRecovers(t *testing.T) {
+	unplaced := func(t *testing.T) (*runWorld, graph.NodeView) {
+		rw := gateCompleted(t)
+		rw.reviewing(stubRegistry(t, nil, nil))
+		rw.passesFor(t, 4, 0)
+		v := reviewNodes(rw)[types.NodeKindReview]
+		if _, live := leaseOn(rw.w, v.Node.ID); live || v.State.State != types.NodeStateStateClaimed {
+			t.Fatalf("the start: %s, placed %v", v.State.State, live)
 		}
-		return nil
+		return rw, v
+	}
+	t.Run("to no independent reviewer, then back", func(t *testing.T) {
+		rw, before := unplaced(t)
+		unknown := types.ExecutorID(newID(t, "exe"))
+		rw.reviewing(regNB.of(t, unknown))
+		rw.passesFor(t, 3, 0)
+		held := heldChain(rw)
+		if held == "" || reviewNodes(rw)[types.NodeKindReview].State.Holds[0].Hold != vocab.HoldReviewerUnavailable {
+			t.Fatalf("not held: %s", cellOf(rw))
+		}
+		rw.passesFor(t, 4, 0)
+		if _, live := leaseOn(rw.w, before.Node.ID); live || heldChain(rw) != held {
+			t.Fatalf("while unavailable: placed %v, hold %s, was %s", live, heldChain(rw), held)
+		}
+		rw.reviewing(regA.of(t, unknown))
+		rw.passesFor(t, 6, 0)
+		after := reviewNodes(rw)[types.NodeKindReview]
+		if l, live := leaseOn(rw.w, after.Node.ID); after.Node.ID != before.Node.ID || after.State.State != types.NodeStateStateClaimed || !live || l.Executor != stubReviewer {
+			t.Fatalf("after the restore: %s %s, lease %v %+v", after.Node.ID, after.State.State, live, l)
+		}
+	})
+	t.Run("its reviewer removed, another registered", func(t *testing.T) {
+		rw, before := unplaced(t)
+		other := types.ExecutorID(newID(t, "exe"))
+		rw.reviewing(stubRegistry(t, nil, map[types.ExecutorID]types.Name{other: "fam-b"}))
+		rw.passesFor(t, 10, 0)
+		after := reviewNodes(rw)[types.NodeKindReview]
+		p, err := after.Node.ParamsAsReviewNodeParams()
+		if err != nil || after.Node.ID == before.Node.ID || len(p.Roster) != 1 || p.Roster[0].Executor != other || after.State.State != types.NodeStateStateClaimed {
+			t.Fatalf("the review: %s %s, roster %+v (%v)", after.Node.ID, after.State.State, p.Roster, err)
+		}
+		if l, live := leaseOn(rw.w, after.Node.ID); !live || l.Executor != other {
+			t.Fatalf("its lease: %v %+v", live, l)
+		}
 	})
 }

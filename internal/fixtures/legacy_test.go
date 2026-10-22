@@ -536,8 +536,12 @@ func walkDemandSteps(t *testing.T, l legacy) ([]Step, []string, error) {
 	if err == nil {
 		st, _, serr := g.node(review)
 		err = serr
-		o.check(st.State == types.NodeStateStateWaiting && len(st.Holds) == 0 && st.Result == nil,
-			"the review is not in a structural wait: %s, holds %v", st.State, st.Holds)
+		// P22a-6b (Main's decision): a refused receipt is a wait shown with
+		// its reason, awaiting_receipt on receipt:<input>:<reason>, no
+		// longer a structural wait with none.
+		o.check(st.State == types.NodeStateStateHeld && len(st.Holds) == 1 && st.Holds[0].Hold == vocab.HoldAwaitingReceipt &&
+			st.Holds[0].SignalInstance == "receipt:gate:evidence_inapplicable" && st.Result == nil,
+			"the review is not held awaiting its receipt: %s, holds %v", st.State, st.Holds)
 	}
 	if err == nil {
 		err = walkAttempts(g, &o, w, oldKey, newKey)

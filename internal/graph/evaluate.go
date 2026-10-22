@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -202,6 +203,9 @@ func (e *evaluation) visit(n types.NodeID) error {
 	if err != nil || stale {
 		return err // a stale answer: a structural wait for the successor at the current revision
 	}
+	if held, err := e.receipts(rec, answered); err != nil || held {
+		return err
+	}
 	if held, err := e.clear(rec, answered); err != nil || held {
 		return err
 	}
@@ -219,6 +223,9 @@ func (e *evaluation) visit(n types.NodeID) error {
 // remains.
 func (e *evaluation) clear(rec nodeRecord, answered map[string]Resolved) (held bool, err error) {
 	for _, h := range rec.State.Holds {
+		if ReceiptWait(h) {
+			continue // receipts': none remains
+		}
 		i := slices.IndexFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
 			ask, ok := in.Source.Variant.(*types.AnswerSource)
 			return ok && h.Hold == "awaiting_input" && h.SignalInstance == awaitSignal(ask)
@@ -236,9 +243,97 @@ func (e *evaluation) clear(rec nodeRecord, answered map[string]Resolved) (held b
 	return held, nil
 }
 
-// await raises awaiting_input for each missing answer not yet awaited.
+// ReceiptWait is whether h is an awaiting_receipt hold the evaluator raised
+// (holdReceipt: no reason, on receipt:<input>:<reason>), the only one it
+// clears; another's (graph.Retry's, with its result's reason) is never
+// its (Opus 22a-6b M1).
+func ReceiptWait(h types.NodeHold) bool {
+	return h.Hold == vocab.HoldAwaitingReceipt && h.Reason == nil && strings.HasPrefix(h.SignalInstance, "receipt:")
+}
+
+// receiptSignal is the signal instance of the awaiting_receipt hold on m, a
+// result input whose producer's selected result does not serve, refused
+// (Missing.Refusal): receipt:<input>:<reason> ("": m is no such input). The
+// reason is in the instance, never the hold's reason, which only a result
+// sets (holdRaised; P22a-6b, Main's decision).
+func receiptSignal(m Missing) string {
+	if m.Refusal == nil {
+		return ""
+	}
+	return "receipt:" + string(m.Name) + ":" + m.Refusal.Reason.String()
+}
+
+// receipts re-resolves rec, holding awaiting_receipt: each hold whose
+// refusal no longer stands is cleared (its input resolves, or is refused
+// for another reason), and each refusal not held raised (a new signal
+// instance); held: a receipt hold remains or is raised (P22a-6b; Opus
+// 22a-6a′ M1: the wait shown with its reason).
+func (e *evaluation) receipts(rec nodeRecord, answered map[string]Resolved) (held bool, err error) {
+	var holds []types.NodeHold
+	for _, h := range rec.State.Holds {
+		if ReceiptWait(h) {
+			holds = append(holds, h)
+		}
+	}
+	if len(holds) == 0 {
+		return false, nil
+	}
+	_, missing, err := Resolve(e.tx, rec.Recorded.Node.ID, answered, e.env.Need, e.env.Blobs, e.tx.Now())
+	if err != nil {
+		return true, err
+	}
+	want := map[string]bool{}
+	for _, m := range missing {
+		if s := receiptSignal(m); s != "" {
+			want[s] = true
+		}
+	}
+	for _, h := range holds {
+		if want[h.SignalInstance] {
+			held, want[h.SignalInstance] = true, false
+			continue
+		}
+		evs, err := Clear(e.tx, rec.Recorded.Node.ID, h.ID, h.SignalInstance)
+		if err != nil {
+			return true, err
+		}
+		e.evs = append(e.evs, evs...)
+	}
+	for _, m := range missing {
+		if want[receiptSignal(m)] {
+			if err := e.holdReceipt(rec, m); err != nil {
+				return true, err
+			}
+			held = true
+		}
+	}
+	return held, nil
+}
+
+// holdReceipt raises awaiting_receipt on rec for m, a refused input, on its
+// receiptSignal.
+func (e *evaluation) holdReceipt(rec nodeRecord, m Missing) error {
+	id, err := ids.New("hld")
+	if err != nil {
+		return err
+	}
+	signal := receiptSignal(m)
+	evs, err := Raise(e.tx, rec.Recorded.Node.ID, types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldAwaitingReceipt, SignalInstance: signal,
+		Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+	e.evs = append(e.evs, evs...)
+	return err
+}
+
+// await raises awaiting_input for each missing answer not yet awaited, and
+// awaiting_receipt for each result input refused (receipts).
 func (e *evaluation) await(rec nodeRecord, missing []Missing) error {
 	for _, m := range missing {
+		if receiptSignal(m) != "" {
+			if err := e.holdReceipt(rec, m); err != nil {
+				return err
+			}
+			continue
+		}
 		i := slices.IndexFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool { return in.Name == m.Name })
 		ask, ok := rec.Recorded.Node.Inputs[i].Source.Variant.(*types.AnswerSource)
 		if !ok {
