@@ -20,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
 // attemptBound is one attempt's whole bound: a lease's deadline is its
@@ -170,8 +171,33 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	return card, builders[0], nil
 }
 
-// recordIntent is intent.Record; a test forges the event.
-var recordIntent = intent.Record
+// recordIntent is intent.Record, and checkRegistered registered; a test
+// forges the event, or reaches the intent's fold alone.
+var (
+	recordIntent    = intent.Record
+	checkRegistered = registered
+)
+
+// registered refuses an intent event that does not state its lease's
+// executor exe as reg registers it: its destination, the routing its
+// verification gives (routingOf) and its model (Mythos 22a-5c-2b-1 M1).
+// The registry is configuration, not the log, so the launch command checks
+// it, not the intent's fold: a replay under a changed registry refolds the
+// same log.
+func registered(ev eventstore.Event, reg registry.Registry, exe types.ExecutorID) error {
+	var mi types.ManifestIntent
+	if err := json.Unmarshal(ev.Payload, &mi); err != nil {
+		return err
+	}
+	e, ok := reg.Executor(exe)
+	switch {
+	case !ok:
+		return fmt.Errorf("%w: executor %s is not registered", intent.ErrUnbound, exe)
+	case mi.Destination != string(e.Destination.ID) || mi.Routing != routingOf(e.Destination.Verification) || mi.Consumer.ModelSnapshot != e.Model:
+		return fmt.Errorf("%w: its destination, routing or model is not executor %s's as registered", intent.ErrUnbound, exe)
+	}
+	return nil
+}
 
 // launch starts attempt on node under granted lease l from base, the
 // launch boundary in two steps (I16, I21): the readiness observed outside
@@ -217,6 +243,9 @@ func (p placer) launch(ctx context.Context, store *eventstore.Store, system iden
 			if err == nil && m == nil && mi != nil {
 				var ev eventstore.Event
 				ev, err = recordIntent(*mi)
+				if err == nil {
+					err = checkRegistered(ev, p.d.Registry, exe)
+				}
 				evs = append(evs, ev)
 			}
 			return evs, json.RawMessage(`{}`), err

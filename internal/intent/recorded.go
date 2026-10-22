@@ -20,13 +20,14 @@ package intent
 //     included refs exactly its node's rendered context at its claim
 //     (graph.Context), the brief rendered into the prompt whose digest and
 //     size it states, its executor its attempt's lease's, its tokens
-//     within that lease's token reservation, its included bytes within its
-//     byte budget, its data policy digest the project's adopted policy's
+//     within that lease's token reservation, its byte budget MaxPrompt
+//     (which a brief of at most MaxBrief renders well within), its data policy digest the project's adopted policy's
 //     and each listed restriction's, and its destination and routing
 //     allowed by each listed restriction.
 //
-// Its call is bound as it is first used: the attempt's submitted result and
-// each usage measurement of the attempt name the call its intent recorded
+// Its call is bound as it is first used: the attempt's model call binding,
+// its submitted result and each usage measurement of the attempt name the
+// call its intent recorded
 // (a fact of another call is refused). A refused intent refuses its
 // command: the launch starts nothing.
 //
@@ -53,6 +54,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 )
 
 // The recorded intent's event kind and projection.
@@ -85,7 +87,7 @@ type Projector struct{ Env graph.Env }
 // Project folds evs' recorded intents (the file's comment).
 func (p Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
-		if ev.Kind == lease.ResultSubmitted+"/v1" || ev.Kind == ledger.Measured {
+		if ev.Kind == lease.ResultSubmitted+"/v1" || ev.Kind == ledger.Measured || ev.Kind == modelcall.Intended {
 			if err := calledAs(tx, ev); err != nil {
 				return err
 			}
@@ -141,8 +143,13 @@ func RecordedOf(tx *eventstore.Tx, attempt types.AttemptID) (types.ManifestInten
 // attempt, or a fact of its attempt under another call than its intent's.
 var ErrUnbound = errors.New("intent: the intent does not state what its attempt was given")
 
-// maxBrief bounds the brief blob bind reads.
-const maxBrief = 1 << 20
+// MaxBrief bounds the brief blob a builder's run and bind read; MaxPrompt
+// bounds the prompt a brief renders into, a builder intent's byte budget:
+// 09's text bound (adapterhost.BoundText).
+const (
+	MaxBrief  = 1 << 20
+	MaxPrompt = 16 << 20
+)
 
 // bind checks mi, a recorded intent CheckRecorded passed, against what the
 // log holds of its attempt (the file's comment).
@@ -188,8 +195,8 @@ func (p Projector) bind(tx *eventstore.Tx, mi types.ManifestIntent) error {
 	switch {
 	case len(mi.Inputs) != 1 || len(mi.Included) != 1 || len(rendered.Omitted) != 0 || mi.Included[0].Ref.IdentityDigest != rendered.Included[0].IdentityDigest:
 		return fmt.Errorf("%w: its inputs are not its node's rendered context, the brief included", ErrUnbound)
-	case mi.Included[0].Bytes != int64(len(prompt)) || mi.Included[0].Bytes > mi.Budget.Bytes:
-		return fmt.Errorf("%w: the brief renders into %d bytes, within its budget's %d", ErrUnbound, len(prompt), mi.Budget.Bytes)
+	case mi.Included[0].Bytes != int64(len(prompt)) || mi.Budget.Bytes != MaxPrompt:
+		return fmt.Errorf("%w: the brief renders into %d bytes, its intent states %d under a budget of %d, not MaxPrompt %d", ErrUnbound, len(prompt), mi.Included[0].Bytes, mi.Budget.Bytes, MaxPrompt)
 	case mi.RenderedDigest != types.Digest("sha256:"+hex.EncodeToString(sum[:])):
 		return fmt.Errorf("%w: its rendered digest is not the rendered brief's", ErrUnbound)
 	case mi.Consumer.Executor != l.Executor:
@@ -224,12 +231,12 @@ func (p Projector) prompt(rendered graph.Rendered) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := io.ReadAll(io.LimitReader(rc, maxBrief+1))
+	b, err := io.ReadAll(io.LimitReader(rc, MaxBrief+1))
 	if err = errors.Join(err, rc.Close()); err != nil {
 		return nil, err
 	}
-	if len(b) > maxBrief {
-		return nil, fmt.Errorf("%w: the brief is over %d bytes", ErrUnbound, maxBrief)
+	if len(b) > MaxBrief {
+		return nil, fmt.Errorf("%w: the brief is over %d bytes", ErrUnbound, MaxBrief)
 	}
 	pb, err := brief.Decode(b)
 	if err != nil {
@@ -238,18 +245,26 @@ func (p Projector) prompt(rendered graph.Rendered) ([]byte, error) {
 	return bytes.Clone(brief.Prompt(pb)), nil
 }
 
-// calledAs refuses ev, an attempt's submitted result or a usage
-// measurement, when its attempt recorded an intent under another call.
+// calledAs refuses ev, an attempt's submitted result, a usage measurement
+// or a model call's binding (modelcall.Intended; Mythos 22a-5c-2b-1 L1),
+// when its attempt recorded an intent under another call.
 func calledAs(tx *eventstore.Tx, ev eventstore.Event) error {
 	var attempt types.AttemptID
 	var call types.CallID
-	if ev.Kind == ledger.Measured {
+	switch ev.Kind {
+	case modelcall.Intended:
+		var m types.ModelCall
+		if err := json.Unmarshal(ev.Payload, &m); err != nil {
+			return err
+		}
+		attempt, call = m.Attempt, m.Call
+	case ledger.Measured:
 		var m types.UsageMeasurement
 		if err := json.Unmarshal(ev.Payload, &m); err != nil {
 			return err
 		}
 		attempt, call = m.Attempt, m.Call
-	} else {
+	default:
 		var s struct {
 			Result *types.SubmittedResult `json:"result"`
 		}

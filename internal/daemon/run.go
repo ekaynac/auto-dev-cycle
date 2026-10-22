@@ -106,9 +106,6 @@ const builderOutputTokens = 8000
 // the tree is the candidate's fault, unsafe_output.
 const maxTree = 1 << 30
 
-// maxBrief bounds the brief the run reads.
-const maxBrief = 1 << 20
-
 // runner runs placed builds' attempts (see the file's comment).
 type runner struct {
 	ctx      context.Context // the daemon's: a run outlives the pass that started it
@@ -284,7 +281,26 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	out, runErr := runPrepared(p, ctx)
 	unverified = errors.Is(out.Session, session.ErrUnverified) || errors.Is(runErr, session.ErrUnverified)
 	endErr := endGateway()
+	if !unverified && errors.Is(runErr, adapterhost.ErrRecord) && r.otherCall(ctx, aid, cid) {
+		// The fold refused the attempt's facts (intent.ErrUnbound): what it
+		// made is not under its intent's call, so no diff of it is sealed
+		// (Mythos 22a-5c-2b-1 L2).
+		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed,
+			"the attempt's facts were refused: its intent names another call than the one it ran under"))
+	}
 	return errors.Join(runErr, endErr, r.complete(ctx, pl, node, aid, ws, out, obs, unverified))
+}
+
+// otherCall reports whether attempt's recorded intent names another call
+// than cid, the one its run was bound to; false when it cannot be read.
+func (r *runner) otherCall(ctx context.Context, attempt types.AttemptID, cid types.CallID) bool {
+	var other bool
+	_ = r.store.View(context.WithoutCancel(ctx), func(tx *eventstore.Tx) error {
+		mi, ok, err := intent.RecordedOf(tx, attempt)
+		other = ok && mi.Call != cid
+		return err
+	})
+	return other
 }
 
 // guarded is f, a panic in it returned as an error.
@@ -328,10 +344,7 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 	if int64(len(pl.prompt)) > maxPrompt {
 		return types.ManifestIntent{}, fmt.Errorf("%w: the prompt is over %d bytes", errContent, maxPrompt)
 	}
-	routing := types.ManifestIntentRoutingVerified
-	if pl.executor.Destination.Verification == types.RegistryDestinationVerificationReported {
-		routing = types.ManifestIntentRoutingReported
-	}
+	routing := routingOf(pl.executor.Destination.Verification)
 	var tokens int64
 	for _, res := range pl.lease.Reservations {
 		if res.Unit == types.CapacityUnitTokens {
@@ -374,8 +387,17 @@ func (r *runner) builderIntent(ctx context.Context, pl plan, node types.NodeID, 
 }
 
 // maxPrompt bounds a builder's prompt: 09's text bound
-// (adapterhost.BoundText), its intent's byte budget.
-const maxPrompt = adapterhost.BoundText
+// (adapterhost.BoundText), its intent's byte budget, as its fold checks it.
+const maxPrompt = intent.MaxPrompt
+
+// routingOf is the routing a destination's verification gives an intent:
+// verified or attested is verified, reported reported.
+func routingOf(v types.RegistryDestinationVerification) types.ManifestIntentRouting {
+	if v == types.RegistryDestinationVerificationReported {
+		return types.ManifestIntentRoutingReported
+	}
+	return types.ManifestIntentRoutingVerified
+}
 
 // newRunIDs are a fresh attempt's id and its call's.
 func newRunIDs() (types.AttemptID, types.CallID, error) {
@@ -441,9 +463,12 @@ func (r *runner) plan(ctx context.Context, node types.NodeID, l types.LeaseID) (
 	if err != nil {
 		return pl, err
 	}
-	b, err := io.ReadAll(io.LimitReader(rc, maxBrief))
+	b, err := io.ReadAll(io.LimitReader(rc, intent.MaxBrief+1)) // as the intent's fold reads it (Mythos 22a-5c-2b-1 L4)
 	if err = errors.Join(err, rc.Close()); err != nil {
 		return pl, err
+	}
+	if len(b) > intent.MaxBrief {
+		return pl, fmt.Errorf("%w: the brief is over %d bytes", errContent, intent.MaxBrief)
 	}
 	pb, err := brief.Decode(b)
 	if err != nil {
