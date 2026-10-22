@@ -238,7 +238,7 @@ func completePlan(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID)
 		}
 		r := types.Result{ID: types.ResultID(newID(t, "res")), Computation: key.Key, Kind: types.ResultKindPlan, Value: []types.Ref{},
 			Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
-		none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+		none := func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 		return nil, graph.Commit(tx, plan, r, graph.Env{Need: none, Authority: authority.Answers{}})
 	})
 }

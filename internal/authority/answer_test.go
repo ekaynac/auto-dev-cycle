@@ -407,7 +407,7 @@ func TestAnswersUnderEvaluation(t *testing.T) {
 	b := openAnswers(t)
 	ask := &types.AnswerSource{Type: "answer", OwedInput: b.owed.ID, Revision: 1}
 	next := b.node(prjA, &b.asker, []types.InputSpec{{Name: "ruling", Source: types.InputSpecSource{Variant: ask}}})
-	none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+	none := func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 	env := graph.Env{Need: none, Authority: authority.Answers{}}
 	evaluate := func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Evaluate(tx, []types.NodeID{next}, env)
@@ -464,7 +464,7 @@ func TestAnswerFoldsReadTheAuthority(t *testing.T) {
 	b := openAnswers(t)
 	ask := &types.AnswerSource{Type: "answer", OwedInput: b.owed.ID, Revision: 1}
 	next := b.node(prjA, &b.asker, []types.InputSpec{{Name: "ruling", Source: types.InputSpecSource{Variant: ask}}})
-	none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+	none := func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 	env := graph.Env{Need: none, Authority: authority.Answers{}}
 	try := func(apply applyFn) error {
 		cmd := newID(t, "cmd")

@@ -126,7 +126,7 @@ implementation item.
 |---|---|---|---|
 | admission | `graph.Claim` → `claimNode` (`graph/events.go`) over `graph.Resolve` → `applies` → `receipt.Applies`; `graph.ClaimReview` against the registry. `dispatch.Match` (P8b, #247) is the one entry point: before it reserves, it re-checks that the lease's unit is the claimed node's, of the card's project, and the roster against the registry (13:106; `graph.Units.Placement`). Kept in code, inert until P22a's reconcile loop | kept + GAP | P22a (P22a-5: before `launch` is active, the reconcile loop's `graph.Env` in `adcd` carries `Need`, the gate's requirements, and `Blobs`, the receipt blobs, without which every evaluation is refused; Opus #312 L5) |
 | fold/replay | `claimed`, `resultRecorded`, `selected` (`graph/events.go`, `graph/lifecycle.go`) refuse a result whose claimed result inputs are no longer selected; approvals are I1 | kept | — |
-| consumption | `graph.Commit` → `revalidate` (`graph/evaluate.go`); `CarryOver`, `carryInputs`, `roleInput` (`graph/queue.go`). `graph.Requirements` exist only in fixtures: there is no gate contract and no review or merge requirement for a real gate | kept + GAP | P15 (the gate requirement), P16 (the review's) |
+| consumption | `graph.Commit` → `revalidate` (`graph/evaluate.go`); `CarryOver`, `carryInputs`, `roleInput` (`graph/queue.go`). `graph.Requirements` read the log (P22a-6a′: `Requirements(tx, node, input)`). adcd's review takes its gate's result under the gate requirement the log derives (`daemon/gateneed.go`): accept's selected tree, `gate.Contract` over the project's gate in the image its result was measured in (`gate.measured/v1`, recorded with the result; the image must be the project's pinned one), and the demand key of the recorded baseline's digest, never read off the receipt it checks. The merge's requirement is P18's | kept + GAP | P16 (the review's requirement in adcd, 22a-6), P18 (the merge's) |
 | effect | merge only: `graph.Operate` → `revalidate`; `inputsFenced`, `subjectFenced` (`graph/fence.go`) | kept | — |
 
 ## I6. Effect intent: intended before egress, one live operation per target, resumed without re-validation
@@ -220,7 +220,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `receipt.Check`, `Derive` (`receipt/receipt.go`); no gate contract or result adapter exists | kept + GAP | P15 |
+| admission | `receipt.Check`, `Derive` (`receipt/receipt.go`). The gate's contract (`gate.Contract`) and its go_test_json adapter exist (P15); adcd runs the gate (P22a-5c-2b-3) and records what each result was measured against (`gate.measured/v1`, P22a-6a′; its fold admits one per gate result, under its gate node). Inert until launch is active | kept + GAP | P22a (launch's activation) |
 | fold/replay | `refreshed` (`graph/resolve.go`), `resultSemantics` (`graph/queue.go`) | kept | — |
 | consumption | `graph.Resolve` → `receipt.Applies` (subject, tree, environment, demand) | kept | — |
 | effect | `mergeInputs` (`graph/queue.go`): the merge takes exactly its generation's refreshed checks on the prospective tree | kept | — |

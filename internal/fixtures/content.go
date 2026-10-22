@@ -143,7 +143,7 @@ func emptyIsolationNeverPublished(ctx context.Context, dir string) (steps []Step
 // walkNeed requires of an evidence input a walk receipt about tree under
 // demand; other inputs need none.
 func walkNeed(tree string, demand types.Digest) graph.Requirements {
-	return func(_ types.Node, in types.InputSpec) (*receipt.Requirement, error) {
+	return func(_ *eventstore.Tx, _ types.Node, in types.InputSpec) (*receipt.Requirement, error) {
 		if src, ok := in.Source.Variant.(*types.ResultSource); !ok || src.ResultKind != types.ResultKindEvidence {
 			return nil, nil
 		}

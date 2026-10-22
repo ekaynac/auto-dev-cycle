@@ -47,11 +47,11 @@ func answer(owed types.OwedInputID, owner types.ActorID, approval *types.Approva
 
 // gatesOn is gateOn for gate result inputs; the others need no receipt.
 func gatesOn(tree string, demand types.Digest) Requirements {
-	return func(n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
+	return func(_ *eventstore.Tx, n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
 		if src, ok := in.Source.Variant.(*types.ResultSource); !ok || src.ResultKind != types.ResultKindGateResult {
 			return nil, nil
 		}
-		return gateOn(tree, demand)(n, in)
+		return gateOn(tree, demand)(nil, n, in)
 	}
 }
 

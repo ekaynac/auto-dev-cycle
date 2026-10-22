@@ -22,9 +22,9 @@ import (
 // mergeNeed is the merge kind's requirement of a refreshed gate: a go-test
 // receipt about tree under demand A; other inputs need none.
 func mergeNeed(tree string) Requirements {
-	return func(n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
+	return func(_ *eventstore.Tx, n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
 		if src, ok := in.Source.Variant.(*types.ResultSource); ok && n.Kind == types.NodeKindMerge && carriesConclusions(src.ResultKind) {
-			return gateOn(tree, demandA)(n, in)
+			return gateOn(tree, demandA)(nil, n, in)
 		}
 		return nil, nil
 	}

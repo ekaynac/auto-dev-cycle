@@ -33,7 +33,9 @@ func contractsOf(c types.InstrumentContract) Contracts {
 	}
 }
 
-func noReceipts(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+func noReceipts(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) {
+	return nil, nil
+}
 
 func withContracts(e Env, c Contracts) Env { e.Contracts = c; return e }
 

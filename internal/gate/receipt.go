@@ -94,6 +94,11 @@ func subject(tree string, img sandbox.Image, s Subject, b *Baseline) (types.Subj
 	if err != nil {
 		return types.Subject{}, err
 	}
+	return subjectAt(tree, img, s, key)
+}
+
+// subjectAt is subject, its demand key given.
+func subjectAt(tree string, img sandbox.Image, s Subject, key types.Digest) (types.Subject, error) {
 	run, err := ids.New("run")
 	return types.Subject{Variant: &types.TreeSubject{Type: "tree", Project: s.Project, Tree: types.GitID("git:" + tree),
 		Environment:      types.Environment{Identity: types.Digest("sha256:" + img.ID), Description: img.OS + "/" + img.Arch},
@@ -109,8 +114,13 @@ func demand(b *Baseline) (types.Digest, error) {
 		return "", fmt.Errorf("%w: a gate receipt needs its baseline: a measurement is no gate result", ErrSpec)
 	}
 	d, err := b.Digest()
+	return demandOf(d), err
+}
+
+// demandOf is the demand key of a baseline whose content digest is d.
+func demandOf(d types.Digest) types.Digest {
 	sum := sha256.Sum256([]byte("adc.gate-baseline/v1\x00" + string(d)))
-	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), err
+	return types.Digest("sha256:" + hex.EncodeToString(sum[:]))
 }
 
 // Requirement is what a gate receipt must be to serve tree against b.

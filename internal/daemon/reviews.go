@@ -17,12 +17,9 @@ package daemon
 //   - a review_requirement node (no inputs; its params its subject, roster,
 //     definition version and revision), and a review node on the plan (the
 //     requirement review.Prompt renders), the build's patch (the
-//     candidate) and the requirement, each recorded through
-//     graph.RecordReview (the registry derives its roster). The gate's
-//     result is no input yet: a gate_result input needs its receipt
-//     requirement (graph.Resolve, I13), which adcd cannot derive yet; the
-//     gate's completion is the recording's precondition (stated; the gate
-//     input is the lead's decision, open).
+//     candidate), the gate's result under the gate requirement the log
+//     derives (gateNeed, P22a-6a′) and the requirement, each recorded
+//     through graph.RecordReview (the registry derives its roster).
 //
 // The requirement is the controller's: claimed by the evaluator
 // (graph.ClaimReview), its result committed by Require, its conclusions
@@ -84,14 +81,24 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	if err != nil {
 		return nil, err
 	}
-	producer := map[types.NodeKind]types.NodeID{}
 	for _, n := range nodes {
 		if n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement {
 			return nil, nil // recorded already
 		}
-		if n.State.State != types.NodeStateStateSuperseded {
-			producer[n.Node.Kind] = n.Node.ID
-		}
+	}
+	// The candidate the gate checked: its chain back, gate → accept → build
+	// → plan, never the task's last node of each kind (Opus 22a-6a L1).
+	accept, err := producerOf(tx, gate, types.ResultKindTree)
+	if err != nil {
+		return nil, err
+	}
+	build, err := producerOf(tx, accept, types.ResultKindPatch)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := producerOf(tx, build, types.ResultKindPlan)
+	if err != nil {
+		return nil, err
 	}
 	roster, ok, err := r.roster(tx, g.Task, g.Project)
 	if err != nil || !ok {
@@ -115,8 +122,8 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	reviewer, read := types.Name(types.RegistryExecutorRoleReviewer), types.Name("review") // a model kind's role and capability (records/node)
 	review := types.NodeRecorded{Task: g.Task, Project: g.Project, Node: types.Node{ID: types.NodeID(id), Kind: types.NodeKindReview,
 		DefinitionVersion: graph.TemplateVersion, Round: 1, Params: params,
-		Inputs: []types.InputSpec{on("plan", producer[types.NodeKindPlan], types.ResultKindPlan), on("patch", producer[types.NodeKindBuild], types.ResultKindPatch),
-			on("required", req.Node.ID, types.ResultKindReviewRequirement)},
+		Inputs: []types.InputSpec{on("plan", plan, types.ResultKindPlan), on("patch", build, types.ResultKindPatch),
+			on("gate", gate, types.ResultKindGateResult), on("required", req.Node.ID, types.ResultKindReviewRequirement)},
 		Requires: types.NodeRequires{Role: &reviewer, Capability: &read, Resources: []types.ResourceGroupKind{types.ResourceGroupKindAccountQuota}}}}
 	evs, err := graph.RecordReview(req, r.reg)
 	if err != nil {
@@ -124,6 +131,20 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	}
 	more, err := graph.RecordReview(review, r.reg)
 	return append(evs, more...), err
+}
+
+// producerOf is the producer of node's one input of kind.
+func producerOf(tx *eventstore.Tx, node types.NodeID, kind types.ResultKind) (types.NodeID, error) {
+	v, err := graph.ViewOf(tx, node)
+	if err != nil {
+		return "", err
+	}
+	for _, in := range v.Node.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == kind {
+			return src.Producer, nil
+		}
+	}
+	return "", fmt.Errorf("daemon: node %s takes no %s", node, kind)
 }
 
 // requirement is task's review_requirement node at revision, of roster.

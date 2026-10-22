@@ -44,9 +44,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// Requirements is a kind's: the receipt an input's result must carry, or
+// Requirements is a kind's: the receipt an input's result must carry, read in
+// tx (a requirement the log derives: P22a-6a′), or
 // nil when the input carries none.
-type Requirements func(n types.Node, in types.InputSpec) (*receipt.Requirement, error)
+type Requirements func(tx *eventstore.Tx, n types.Node, in types.InputSpec) (*receipt.Requirement, error)
 
 // Missing is an input that did not resolve: a structural wait (Refusal
 // nil), or a result that does not serve, with the refusal saying why.
@@ -88,7 +89,7 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 			resolved[in.Name] = Resolved{Result: r.Result.ID}
 			continue
 		}
-		req, err := need(rec.Recorded.Node, in)
+		req, err := need(tx, rec.Recorded.Node, in)
 		if err == nil && req == nil && carriesConclusions(src.ResultKind) {
 			err = fmt.Errorf("graph: input %s takes a %s and has no receipt requirement", in.Name, src.ResultKind)
 		}

@@ -183,7 +183,14 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		if err != nil {
 			return err
 		}
-		return graph.Commit(tx, node, res, r.env)
+		if err := graph.Commit(tx, node, res, r.env); err != nil {
+			return err
+		}
+		ev, err := gate.RecordMeasured(node, res.ID, base, img) // what it was measured against: a consumer's requirement derives from it (P22a-6a′)
+		if err != nil {
+			return err
+		}
+		return tx.Emit(ev)
 	}
 	if v.Outcome == vocab.CouldNotRun {
 		// The gate's own could_not_run (results it cannot read: a candidate

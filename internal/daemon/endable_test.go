@@ -57,7 +57,7 @@ func planResultBy(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID,
 		}
 		r := types.Result{ID: types.ResultID(newID(t, "res")), Computation: key.Key, Kind: types.ResultKindPlan, Value: []types.Ref{},
 			Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
-		none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+		none := func(*eventstore.Tx, types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 		env := graph.Env{Need: none, Authority: authority.Answers{}}
 		if attempt != nil {
 			return nil, graph.CommitAttempt(tx, plan, r, *attempt, env)
