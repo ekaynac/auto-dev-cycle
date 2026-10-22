@@ -84,7 +84,7 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	// review would record requirement revision 1 again, which the fold
 	// refuses; 22a-6d's repair records the next round's review itself.
 	for _, n := range nodes {
-		if n.Node.Kind == types.NodeKindReview && takesGate(n.Node, gate) {
+		if graph.TakesGate(n.Node, gate) {
 			return nil, nil
 		}
 	}
@@ -133,14 +133,6 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 	}
 	more, err := graph.RecordReview(review, r.reg)
 	return append(evs, more...), err
-}
-
-// takesGate is whether review takes gate's result.
-func takesGate(review types.Node, gate types.NodeID) bool {
-	return slices.ContainsFunc(review.Inputs, func(in types.InputSpec) bool {
-		src, ok := in.Source.Variant.(*types.ResultSource)
-		return ok && src.ResultKind == types.ResultKindGateResult && src.Producer == gate
-	})
 }
 
 // producerOf is the producer of node's one input of kind.

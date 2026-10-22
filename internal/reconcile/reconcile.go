@@ -406,7 +406,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
 	reviews := g.Evaluates && g.Reviews
 	var gates []Versioned               // the task's completed gates
-	reviewed := map[types.NodeID]bool{} // the gates a review node takes, in any state
+	var reviewNodes []types.Node        // the task's review nodes, in any state: which gates they take (graph.TakesGate)
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
 	var heldReqs []Held
@@ -415,13 +415,12 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			continue
 		}
 		v := Versioned{ID: string(n.Node.ID)}
+		if n.Node.Kind == types.NodeKindReview {
+			reviewNodes = append(reviewNodes, n.Node)
+		}
 		for _, in := range n.Node.Inputs {
-			src, ok := in.Source.Variant.(*types.ResultSource)
-			switch {
-			case !ok || n.Node.Kind != types.NodeKindReview:
-			case src.ResultKind == types.ResultKindGateResult:
-				reviewed[src.Producer] = true
-			case src.ResultKind == types.ResultKindReviewRequirement && n.State.State != types.NodeStateStateSuperseded:
+			if src, ok := in.Source.Variant.(*types.ResultSource); ok && n.Node.Kind == types.NodeKindReview &&
+				src.ResultKind == types.ResultKindReviewRequirement && n.State.State != types.NodeStateStateSuperseded {
 				required[src.Producer] = true
 			}
 		}
@@ -506,7 +505,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		}
 	}
 	for _, gate := range gates { // keyed by gate (Opus 22a-6a′ L2): a later round's gate is reviewable too
-		if err == nil && reviews && !reviewed[types.NodeID(gate.ID)] {
+		if err == nil && reviews && !slices.ContainsFunc(reviewNodes, func(r types.Node) bool { return graph.TakesGate(r, types.NodeID(gate.ID)) }) {
 			gate.Version, err = tx.SubjectVersion(gate.ID)
 			s.Reviewable = gate
 			break
