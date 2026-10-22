@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
@@ -83,7 +85,8 @@ func stubRegistry(t *testing.T, builders, reviewers map[types.ExecutorID]types.N
 
 // reviewing makes rw's loop act on reviews under reg (an adcd start with
 // it): the review gate open, the reviews and the placer under reg; a
-// gate's run is 22a-5c-2b-3's (gateWorld).
+// gate's run is 22a-5c-2b-3's (gateWorld). A granted review is not run
+// (buildsOnly): its run's rows are reviewRunning's (22a-6c).
 func (rw *runWorld) reviewing(reg registry.Registry) {
 	rw.x.Env.Families = reg
 	rw.x.Reviews = reviews{reg: reg, env: rw.x.Env}
@@ -91,7 +94,28 @@ func (rw *runWorld) reviewing(reg registry.Registry) {
 	pl.d.Registry = reg
 	rw.x.Placer = pl
 	rw.x.Acceptor = rw.r
+	rw.x.Runner = buildsOnly{rw}
 	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, io.Discard)
+}
+
+// reviewRunning is reviewing, with a granted review run by rw's runner
+// (22a-6c), its adapter peer (reviewer: its decision) and the runner's
+// families reg.
+func (rw *runWorld) reviewRunning(reg registry.Registry, peer *inproc.Peer) {
+	rw.reviewing(reg)
+	rw.r.env.Families, rw.r.adapters = reg, &peerStarter{peer: peer}
+	rw.x.Runner = rw.runs
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true}, time.Hour, io.Discard)
+}
+
+// buildsOnly runs rw's granted builds, never a review.
+type buildsOnly struct{ rw *runWorld }
+
+func (b buildsOnly) Run(node types.NodeID, l types.LeaseID) bool {
+	if review, err := b.rw.r.isReview(context.Background(), node); err != nil || review {
+		return false
+	}
+	return b.rw.runs.Run(node, l)
 }
 
 // reviewNodes are the task's review and requirement nodes, by kind, the

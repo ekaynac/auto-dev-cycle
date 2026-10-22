@@ -43,7 +43,12 @@ package daemon
 // completed as one that never ran. The run is bounded by the session's
 // deadline and the stores' own bounds. Inert until launch is active: the
 // loop decides no Run until then. The builder's manifest.intent is recorded
-// in the launch command (builderIntent; P22a-5c-2b-1, W17); restart (an
+// in the launch command (builderIntent; P22a-5c-2b-1, W17). A placed
+// review runs the same way (22a-6c): its reviewer's intent and prompt
+// (reviewerIntent), an empty read-only workspace (emptyWorkspace), no
+// tool and qualify's limits, its result review.Result's (completeReview);
+// a candidate that gives no review context is the review's
+// failed/unsafe_output verdict, unlaunched (unreviewable). Restart (an
 // attempt left running or finishing with no runner) is 22a-5c-2c's. adcd
 // builds the runner with a sandbox (runnerOf, P22a-5c-2a-w; 22a-5d).
 
@@ -80,7 +85,9 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab/exitmap"
@@ -192,6 +199,7 @@ type plan struct {
 	executor types.RegistryExecutor
 	pin      *types.GitID // the unit's first attempt's base, if any
 	prompt   []byte
+	started  time.Time // when its session ran (a review's Elapsed)
 }
 
 // attempt is one run of node under l. A panic anywhere in it is recovered
@@ -214,7 +222,12 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 			}))
 		}
 	}()
-	pl, err = r.plan(ctx, node, l)
+	review, err := r.isReview(ctx, node)
+	if err == nil && review {
+		pl, err = r.reviewPlan(ctx, node, l)
+	} else if err == nil {
+		pl, err = r.plan(ctx, node, l)
+	}
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
@@ -222,7 +235,24 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
-	ws, err := openWorkspace(ctx, r.box, r.clones, pl.profile, aid, pl.pin)
+	var mi types.ManifestIntent
+	if review {
+		mi, pl.prompt, err = r.reviewerIntent(ctx, pl, node, aid, cid)
+	} else {
+		mi, err = r.builderIntent(ctx, pl, node, aid, cid)
+	}
+	if errors.Is(err, intent.ErrUnreviewable) { // the candidate's, not the run's: the review's verdict, no attempt
+		return r.unreviewable(ctx, l, node, err)
+	}
+	if err != nil {
+		return errors.Join(err, r.endLease(ctx, l, node, err))
+	}
+	var ws *workspace
+	if review {
+		ws, err = emptyWorkspace(r.box, aid)
+	} else {
+		ws, err = openWorkspace(ctx, r.box, r.clones, pl.profile, aid, pl.pin)
+	}
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
@@ -264,14 +294,20 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
 	base := types.AttemptBase{Tree: ws.Base, ContractRevision: buildContractRevision}
-	p, err := r.host.Prepare(adapterhost.Spec{Lease: l, Attempt: aid, Base: base, Call: cid, Adapter: sess.Config, Prompt: pl.prompt, Bounds: runBounds,
+	spec := adapterhost.Spec{Lease: l, Attempt: aid, Base: base, Call: cid, Adapter: sess.Config, Prompt: pl.prompt, Bounds: runBounds,
 		Tools: adapterhost.EditLoopTools(), Path: sess.Path, Check: sess.Within,
 		Prepare: types.AdapterPrepareParams{Role: "builder", Executor: pl.lease.Executor, Model: types.AdapterLabel(pl.executor.Model),
 			Workspace: types.AdapterPrepareParamsWorkspace{Path: sess.Path(ws.Path()), Writable: true},
 			Limits: types.AdapterPrepareParamsLimits{MaxTurns: max(pl.lease.Footprint.ExpectedTurns, 1), MaxOutputTokens: builderOutputTokens,
 				WallSeconds: int64(runBounds.Result / time.Second)},
 			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: adapterhost.EditLoopTools(), Mediated: []types.AdapterLabel{}},
-			Gateway:    &gv}})
+			Gateway:    &gv}}
+	if review { // as qualify's reviewer (qualify.Route.Review): no tool, a read-only workspace, the qualified limits
+		spec.Tools, spec.Prepare.Role, spec.Prepare.Workspace.Writable = nil, "reviewer", false
+		spec.Prepare.Limits.MaxTurns, spec.Prepare.Limits.MaxOutputTokens = qualify.MaxTurns, qualify.MaxOutputTokens
+		spec.Prepare.ToolPolicy.Allowed = []types.AdapterLabel{}
+	}
+	p, err := r.host.Prepare(spec)
 	if err == nil && sess.Ready != nil { // the exchange is made: the container's command can be
 		if err = sess.Ready(); err != nil {
 			err = errors.Join(err, p.Discard())
@@ -279,10 +315,6 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 	}
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
-	}
-	mi, err := r.builderIntent(ctx, pl, node, aid, cid)
-	if err != nil {
-		return errors.Join(err, p.Discard(), r.endLease(ctx, l, node, err))
 	}
 	miss, err := r.place.launch(ctx, r.store, r.system, node, l, aid, base, &mi)
 	if err != nil || miss != nil {
@@ -306,6 +338,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return errors.Join(err, endGateway(), r.abandon(ctx, pl, node, aid, vocab.ReasonAmbiguousState, "the launch's command failed after it applied")) // no adapter ran (Mythos L3)
 	}
 	launched = true
+	pl.started = time.Now()
 	out, runErr := runPrepared(p, ctx)
 	unverified = errors.Is(out.Session, session.ErrUnverified) || errors.Is(runErr, session.ErrUnverified)
 	endErr := endGateway()
@@ -340,7 +373,104 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonPreconditionFailed,
 			"the attempt's facts were refused: its intent names another call than the one it ran under"))
 	}
+	if review && over != "" { // a reviewer's run past its disk bound is the reviewer's fault, never the candidate's: abandoned, matched again (#403's bound)
+		return errors.Join(runErr, endErr, r.abandon(ctx, pl, node, aid, vocab.ReasonAmbiguousState, over))
+	}
+	if review {
+		return errors.Join(runErr, endErr, r.completeReview(ctx, pl, node, aid, cid, out, obs, unverified))
+	}
 	return errors.Join(runErr, endErr, r.complete(ctx, pl, node, aid, ws, out, obs, unverified, over))
+}
+
+// isReview reports whether node is a review: its attempt is a reviewer's
+// (P22a-6c), else a builder's.
+func (r *runner) isReview(ctx context.Context, node types.NodeID) (bool, error) {
+	var v graph.NodeView
+	err := r.store.View(ctx, func(tx *eventstore.Tx) (err error) {
+		v, err = graph.ViewOf(tx, node)
+		return err
+	})
+	return v.Node.Kind == types.NodeKindReview, err
+}
+
+// completeReview ends review node's attempt (P22a-6c) as complete ends a
+// build's, with review.Result over its facts in place of a diff: the
+// decision its reviewer submitted (none, or one review.Parse refuses:
+// could_not_run), its exit, the candidate's round (its patch's producer's),
+// its roster, its call, its elapsed time, and the refs its claim rendered
+// (the decision's lineage) with the ids of the gate report among them
+// (gate.ReportIDs: kept out of a no_go's findings view). review.Result
+// publishes the report; the commit checks its reviewer's independence
+// (graph.reviewIndependent).
+func (r *runner) completeReview(ctx context.Context, pl plan, node types.NodeID, attempt types.AttemptID, cid types.CallID, out adapterhost.Outcome,
+	obs gateway.Observed, unverified bool) error {
+	stopped, err := r.stopped(ctx, attempt)
+	if err != nil {
+		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonStoreUnreadable, "the attempt's record could not be read"))
+	}
+	if unverified {
+		return r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the session's end is unverified")
+	}
+	params, err := pl.view.Node.ParamsAsReviewNodeParams()
+	if err != nil {
+		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the review's roster could not be read"))
+	}
+	f := review.Facts{Exit: exitmap.Exit{StopRequested: stopped, Protocol: out.Result == nil && !stopped, Statuses: slices.Clone(obs.Statuses), Hints: slices.Clone(out.Hints)},
+		Roster: params.Roster, Calls: []types.CallID{cid}, Elapsed: time.Since(pl.started), Project: pl.view.Project, Inputs: []string{}, GateIDs: []string{}}
+	if out.Submitted != nil && out.Submitted.Blob != nil {
+		f.Submitted, f.Decision = true, *out.Submitted.Blob
+	}
+	err = r.store.View(context.WithoutCancel(ctx), func(tx *eventstore.Tx) error {
+		rendered, err := graph.Context(tx, node, r.env)
+		if err != nil {
+			return err
+		}
+		rc, err := intent.Review(tx, r.blobs, node, rendered)
+		if err != nil {
+			return err
+		}
+		for _, ref := range rendered.Included {
+			f.Inputs = append(f.Inputs, ref.ID)
+		}
+		f.GateIDs = rc.GateIDs
+		f.CandidateRound, err = candidateRound(tx, pl.view.Node)
+		return err
+	})
+	if err != nil {
+		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the review's facts could not be gathered"))
+	}
+	return r.record(ctx, pl.lease.ID, node, attempt, f.Submitted, nil, nil, func(key types.ComputationKey) (types.Result, error) {
+		return review.Result(key, f, r.blobs)
+	})
+}
+
+// unreviewable records review node's verdict on a candidate that gives no
+// review context (intent.ErrUnreviewable): failed/unsafe_output, the cause
+// named, with no attempt, then ends its lease l unlaunched; if the verdict
+// cannot be recorded, the lease is ended holding node, as any failure
+// before the launch.
+func (r *runner) unreviewable(ctx context.Context, l types.LeaseID, node types.NodeID, cause error) error {
+	var recorded *types.Result
+	err := r.command(ctx, r.commitStep(node, nil, func(key types.ComputationKey) (types.Result, error) {
+		id, err := ids.New("res")
+		return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindReview, Value: []types.Ref{}, Outcome: types.OutcomeFailed,
+			Reason: vocab.ReasonUnsafeOutput, Detail: cause.Error(), Completed: true}, err
+	}, &recorded))
+	if err != nil {
+		return errors.Join(err, r.endLease(ctx, l, node, err))
+	}
+	return r.endLease(ctx, l, node, nil)
+}
+
+// candidateRound is the round of the build whose patch review takes.
+func candidateRound(tx *eventstore.Tx, review types.Node) (int64, error) {
+	for _, in := range review.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindPatch {
+			v, err := graph.ViewOf(tx, src.Producer)
+			return v.Node.Round, err
+		}
+	}
+	return 0, fmt.Errorf("review %s takes no patch", review.ID)
 }
 
 // otherCall reports whether attempt's recorded intent names another call
@@ -896,9 +1026,13 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 // 22a-5c-2a H1, M2): could_not_run for reason, with no attempt and no diff,
 // every step of record taken.
 func (r *runner) abandon(ctx context.Context, pl plan, node types.NodeID, attempt types.AttemptID, reason vocab.Reason, detail string) error {
+	kind := types.ResultKindPatch
+	if pl.view.Node.Kind == types.NodeKindReview {
+		kind = types.ResultKindReview
+	}
 	return r.record(context.WithoutCancel(ctx), pl.lease.ID, node, attempt, false, nil, nil, func(key types.ComputationKey) (types.Result, error) {
 		id, err := ids.New("res")
-		return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindPatch, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
+		return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: kind, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
 			Reason: reason, Detail: detail}, err
 	})
 }
@@ -949,11 +1083,37 @@ func (r *runner) commitStep(node types.NodeID, attempt *types.AttemptID, result 
 		} else if err == nil {
 			err = graph.Commit(tx, node, res, r.env)
 		}
+		var evs []eventstore.Event
+		if ni := (graph.ErrNotIndependent{}); errors.As(err, &ni) && attempt != nil {
+			res, evs, err = r.notIndependent(tx, node, *attempt, *v.State.Key, ni)
+		}
 		if err == nil {
 			*recorded = &res
 		}
-		return nil, err
+		return evs, err
 	}
+}
+
+// notIndependent records review node's result by attempt as its commit
+// refused it (graph.ErrNotIndependent: its roster no longer independent of
+// the candidate's contributors, P16b's commit half; 22a-6c):
+// could_not_run/reviewer_not_independent, which the commit exempts, and
+// holds node reviewer_unavailable on the refusal's signal, as the claim's
+// refusal does, so reviews.Unheld re-derives its roster.
+func (r *runner) notIndependent(tx *eventstore.Tx, node types.NodeID, attempt types.AttemptID, key types.ComputationKey, ni graph.ErrNotIndependent) (types.Result, []eventstore.Event, error) {
+	id, err := ids.New("res")
+	hid, herr := ids.New("hld")
+	if err = errors.Join(err, herr); err != nil {
+		return types.Result{}, nil, err
+	}
+	res := types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindReview, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
+		Reason: ni.Reason(), Detail: ni.Error()}
+	if err := graph.CommitAttempt(tx, node, res, attempt, r.env); err != nil {
+		return types.Result{}, nil, err
+	}
+	evs, err := graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(hid), Hold: vocab.HoldReviewerUnavailable, SignalInstance: ni.SignalInstance(),
+		Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+	return res, evs, err
 }
 
 // sealStep is the command step sealing attempt with diff and ignored.

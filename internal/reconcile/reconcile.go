@@ -162,8 +162,8 @@ type Snapshot struct {
 	// Unsealed are its claimed accept nodes whose input's build attempt is
 	// not sealed yet: the seal the controller re-runs (P22a-5c-2c).
 	Unsealed []Versioned
-	// Reviewable is the admitted task's completed gate when the task has no
-	// review node yet (ID "": none): its review is recorded (RecordReview).
+	// Reviewable is the admitted task's first completed gate no review node
+	// takes (ID "": none): its review is recorded (RecordReview).
 	// Requirements are its claimed review_requirement nodes a review that
 	// is not superseded takes, and ReviewHeld its review nodes held
 	// reviewer_unavailable, and the requirement nodes so held that such a
@@ -405,8 +405,8 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	}
 	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
 	reviews := g.Evaluates && g.Reviews
-	var gate Versioned
-	reviewed := false                   // the task has a review node, in any state
+	var gates []Versioned               // the task's completed gates
+	reviewed := map[types.NodeID]bool{} // the gates a review node takes, in any state
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
 	var heldReqs []Held
@@ -415,17 +415,19 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			continue
 		}
 		v := Versioned{ID: string(n.Node.ID)}
-		reviewed = reviewed || n.Node.Kind == types.NodeKindReview
-		if n.Node.Kind == types.NodeKindReview && n.State.State != types.NodeStateStateSuperseded {
-			for _, in := range n.Node.Inputs {
-				if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
-					required[src.Producer] = true
-				}
+		for _, in := range n.Node.Inputs {
+			src, ok := in.Source.Variant.(*types.ResultSource)
+			switch {
+			case !ok || n.Node.Kind != types.NodeKindReview:
+			case src.ResultKind == types.ResultKindGateResult:
+				reviewed[src.Producer] = true
+			case src.ResultKind == types.ResultKindReviewRequirement && n.State.State != types.NodeStateStateSuperseded:
+				required[src.Producer] = true
 			}
 		}
 		switch st := n.State.State; {
 		case st == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindGate:
-			gate.ID = v.ID
+			gates = append(gates, v)
 		case st == types.NodeStateStateClaimed && reviews && n.Node.Kind == types.NodeKindReviewRequirement:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			claimedReqs = append(claimedReqs, v)
@@ -470,7 +472,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			if free, err = dispatch.Unplaced(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
 				v.Version, err = tx.SubjectVersion(v.ID)
 				s.Unplaced = append(s.Unplaced, v)
-			} else if err == nil && slices.Contains(Placed, n.Node.Kind) { // a granted review's run is 22a-6c's
+			} else if err == nil { // a granted build's, or review's (P22a-6c), run
 				var l types.LeaseID
 				if l, free, err = granted(tx, graph.UnitOf(n.Node.ID)); err == nil && free {
 					v.Version, err = tx.SubjectVersion(v.ID)
@@ -503,9 +505,12 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			s.ReviewHeld = append(s.ReviewHeld, h)
 		}
 	}
-	if err == nil && reviews && gate.ID != "" && !reviewed {
-		gate.Version, err = tx.SubjectVersion(gate.ID)
-		s.Reviewable = gate
+	for _, gate := range gates { // keyed by gate (Opus 22a-6a′ L2): a later round's gate is reviewable too
+		if err == nil && reviews && !reviewed[types.NodeID(gate.ID)] {
+			gate.Version, err = tx.SubjectVersion(gate.ID)
+			s.Reviewable = gate
+			break
+		}
 	}
 	return s, err
 }
