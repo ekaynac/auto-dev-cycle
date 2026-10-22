@@ -64,6 +64,12 @@ func SealReason(a types.Attempt) (types.AttemptRecordSealReason, error) {
 // controller-side diff's published blob, nil when the attempt changed
 // nothing; units gives its unit's project and task.
 func SealMinimal(tx *eventstore.Tx, id types.AttemptID, expected int64, units Units, blobs Publisher, diff *types.Digest, by types.ActorID) ([]eventstore.Event, error) {
+	return SealWith(tx, id, expected, units, blobs, diff, nil, by)
+}
+
+// SealWith is SealMinimal whose record also lists ignored, the output
+// files .gitignore kept out of diff (ignored_files; none: absent).
+func SealWith(tx *eventstore.Tx, id types.AttemptID, expected int64, units Units, blobs Publisher, diff *types.Digest, ignored []string, by types.ActorID) ([]eventstore.Event, error) {
 	if tx.Now().IsZero() || units == nil {
 		return nil, errors.New("lease: a seal runs in a command's transaction, with the unit binding")
 	}
@@ -83,10 +89,14 @@ func SealMinimal(tx *eventstore.Tx, id types.AttemptID, expected int64, units Un
 	if err != nil {
 		return nil, err
 	}
-	b, err := contract.Encode("records/attempt-record", types.AttemptRecord{Attempt: a.ID, Project: project, Task: task,
+	rec := types.AttemptRecord{Attempt: a.ID, Project: project, Task: task,
 		ContractRevision: a.Base.ContractRevision, FencingToken: a.FencingToken, BaseTree: a.Base.Tree, PartialDiff: diff,
 		FailingTests: []string{}, Trail: types.Digest(empty), EvidenceManifest: types.Digest(empty),
-		Seal: types.AttemptRecordSeal{Reason: reason, At: types.Time(tx.Now().UTC().Format(time.RFC3339Nano)), SealedBy: by}})
+		Seal: types.AttemptRecordSeal{Reason: reason, At: types.Time(tx.Now().UTC().Format(time.RFC3339Nano)), SealedBy: by}}
+	if len(ignored) > 0 {
+		rec.IgnoredFiles = &ignored
+	}
+	b, err := contract.Encode("records/attempt-record", rec)
 	if err != nil {
 		return nil, err
 	}

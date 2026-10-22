@@ -268,7 +268,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 			return errors.Join(err, r.endLease(ctx, l, node, err))
 		}
 		launched = true
-		return errors.Join(err, endGateway(), r.complete(ctx, pl, node, aid, ws, adapterhost.Outcome{}, obs, false))
+		return errors.Join(err, endGateway(), r.abandon(ctx, pl, node, aid, vocab.ReasonAmbiguousState, "the launch's command failed after it applied")) // no adapter ran (Mythos L3)
 	}
 	launched = true
 	r.mu.Lock()
@@ -378,8 +378,9 @@ func (r *runner) started(ctx context.Context, attempt types.AttemptID) (bool, er
 }
 
 // endLease ends l, granted and never launched (Mythos 22a-5c-1 M2): its
-// start refused, then released, so its unit is unplaced and its
-// reservation freed. A lease already past either step is left as it is.
+// start refused and its release in one command (lease.RefuseStart), so its
+// unit is unplaced and its reservation freed; a lease found releasing is
+// released. A lease past both is left as it is.
 // With cause, a failure before the launch that is no shutdown, node is
 // held source_invalid_config on a runner signal (holdOn) in the same
 // command as the refusal (Opus 22a-5c-2a H2), so no pass matches it again
@@ -389,32 +390,32 @@ func (r *runner) endLease(ctx context.Context, l types.LeaseID, node types.NodeI
 	hold := cause != nil && ctx.Err() == nil
 	dirs := r.dirsReady()
 	tries := 0 // the retry count of the hold raised, once its command applies
-	for _, step := range []struct {
-		from types.LeaseState
-		e    lease.LeaseEvent
-	}{
-		{types.LeaseStateGranted, lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}},
-		{types.LeaseStateReleasing, lease.LeaseEvent{Kind: lease.Released}},
-	} {
-		if err := r.command(ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			cur, rev, ok, err := lease.LeaseOf(tx, l)
-			if err != nil || !ok || cur.State != step.from {
-				return nil, err
-			}
-			evs, err := lease.ChangeLease(tx, l, rev, step.e, nil)
-			if err != nil || !hold || step.e.Kind != lease.StartRefused {
-				return evs, err
-			}
-			held, n, herr := r.holdOn(tx, node, dirs, cause)
-			if herr != nil {
-				r.logf("adcd: the runner's hold on %s could not be written: %v", node, herr)
-				return evs, nil
-			}
-			tries = n
-			return append(evs, held...), nil
-		}); err != nil {
-			return err
+	if err := r.command(ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		cur, rev, ok, err := lease.LeaseOf(tx, l)
+		switch {
+		case err != nil || !ok:
+			return nil, err
+		case cur.State == types.LeaseStateReleasing: // a release left over
+			return lease.ChangeLease(tx, l, rev, lease.LeaseEvent{Kind: lease.Released}, nil)
+		case cur.State != types.LeaseStateGranted:
+			return nil, nil
 		}
+		// Refused and released in one command, with the hold (Mythos L1): a
+		// lease left releasing would hold its reservation while the unit
+		// was placed again.
+		evs, err := lease.RefuseStart(tx, l, rev, vocab.ReasonPreconditionFailed.String())
+		if err != nil || !hold {
+			return evs, err
+		}
+		held, n, herr := r.holdOn(tx, node, dirs, cause)
+		if herr != nil {
+			r.logf("adcd: the runner's hold on %s could not be written: %v", node, herr)
+			return evs, nil
+		}
+		tries = n
+		return append(evs, held...), nil
+	}); err != nil {
+		return err
 	}
 	if tries > 0 { // the hold applied: the try is spent (r3 L4)
 		r.mu.Lock()
@@ -590,7 +591,7 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 	if unverified { // the run's own verdict (r3 L1): a tree something may still write is never diffed (09), whatever was submitted (r2 N1)
 		return r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the session's end is unverified")
 	}
-	patch, unsafe, err := r.diff(ctx, ws, attempt)
+	patch, ignored, unsafe, err := r.diff(ctx, ws, attempt)
 	if err != nil {
 		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the controller's diff of the workspace could not be taken"))
 	}
@@ -603,7 +604,8 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 		facts.Diff = types.Digest(d)
 		diff = &facts.Diff
 	}
-	return r.record(ctx, pl.lease.ID, node, attempt, facts.Submitted, diff, func(key types.ComputationKey) (types.Result, error) {
+	facts.Ignored = ignored
+	return r.record(ctx, pl.lease.ID, node, attempt, facts.Submitted, diff, ignored, func(key types.ComputationKey) (types.Result, error) {
 		if unsafe != "" {
 			id, err := ids.New("res")
 			return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindPatch, Value: []types.Ref{}, Outcome: types.OutcomeFailed,
@@ -617,7 +619,7 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 // 22a-5c-2a H1, M2): could_not_run for reason, with no attempt and no diff,
 // every step of record taken.
 func (r *runner) abandon(ctx context.Context, pl plan, node types.NodeID, attempt types.AttemptID, reason vocab.Reason, detail string) error {
-	return r.record(context.WithoutCancel(ctx), pl.lease.ID, node, attempt, false, nil, func(key types.ComputationKey) (types.Result, error) {
+	return r.record(context.WithoutCancel(ctx), pl.lease.ID, node, attempt, false, nil, nil, func(key types.ComputationKey) (types.Result, error) {
 		id, err := ids.New("res")
 		return types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindPatch, Value: []types.Ref{}, Outcome: types.OutcomeCouldNotRun,
 			Reason: reason, Detail: detail}, err
@@ -635,7 +637,7 @@ func (r *runner) abandon(ctx context.Context, pl plan, node types.NodeID, attemp
 //     completed; otherwise the unit continues (the sealed attempt is
 //     superseded by the next launch) and the lease is revoked with the
 //     result's reason. The lease then settles (capacity.Settlement).
-func (r *runner) record(ctx context.Context, l types.LeaseID, node types.NodeID, attempt types.AttemptID, submitted bool, diff *types.Digest,
+func (r *runner) record(ctx context.Context, l types.LeaseID, node types.NodeID, attempt types.AttemptID, submitted bool, diff *types.Digest, ignored []string,
 	result func(types.ComputationKey) (types.Result, error)) error {
 	var recorded *types.Result
 	commit := func(withAttempt bool) func(*eventstore.Tx) ([]eventstore.Event, error) {
@@ -661,7 +663,7 @@ func (r *runner) record(ctx context.Context, l types.LeaseID, node types.NodeID,
 		if err != nil {
 			return nil, err
 		}
-		return lease.SealMinimal(tx, attempt, rev, graph.Units{Tasks: authority.Tasks{}}, r.blobs, diff, r.system.Actor())
+		return lease.SealWith(tx, attempt, rev, graph.Units{Tasks: authority.Tasks{}}, r.blobs, diff, ignored, r.system.Actor())
 	}
 	var steps []func(*eventstore.Tx) ([]eventstore.Event, error)
 	if submitted {
@@ -714,27 +716,29 @@ const maxEntries = 1 << 20
 var diffOf = accept.Diff
 
 // diff is the controller's own diff of ws against its base, within
-// diffBound, over a copy of its tree without .git: an unsafe tree's reason
-// instead (screen, or accept's), and no diff.
-func (r *runner) diff(ctx context.Context, ws *workspace, attempt types.AttemptID) (patch []byte, unsafe string, err error) {
+// diffBound, over a copy of its tree, and the output files .gitignore kept
+// out of it (accept.Diff's ignored, sealed with the attempt for the
+// acceptance: Mythos 22a-5c-2a M1): an unsafe tree's reason instead
+// (screen, or accept's), and no diff.
+func (r *runner) diff(ctx context.Context, ws *workspace, attempt types.AttemptID) (patch []byte, ignored []string, unsafe string, err error) {
 	if unsafe, err = screen(ws.Path()); err != nil || unsafe != "" {
-		return nil, unsafe, err
+		return nil, nil, unsafe, err
 	}
 	tree := filepath.Join(r.clones, string(attempt)+".tree")
 	defer func() { err = errors.Join(err, os.RemoveAll(tree)) }()
 	switch err := ws.run.CopyTree(tree, maxTree); {
 	case errors.Is(err, sandbox.ErrSpec):
-		return nil, "the output tree is past its bound or holds what no tree may", nil
+		return nil, nil, "the output tree is past its bound or holds what no tree may", nil
 	case err != nil:
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), diffBound)
 	defer cancel()
-	patch, _, err = diffOf(dctx, ws.repo, string(ws.Base[len("git:"):]), tree)
+	patch, ignored, err = diffOf(dctx, ws.repo, string(ws.Base[len("git:"):]), tree)
 	if errors.Is(err, accept.ErrUnsafeTree) {
-		return nil, "the output tree is unsafe: a git directory or a look-alike, a path git refuses, or a diff past its bound", nil
+		return nil, nil, "the output tree is unsafe: a git directory or a look-alike, a path git refuses, or a diff past its bound", nil
 	}
-	return patch, "", err
+	return patch, ignored, "", err
 }
 
 // leaves reports whether target, a relative link's, from dir (relative to
@@ -764,10 +768,12 @@ func leaves(root, dir, target string) bool {
 }
 
 // screen is why the tree at root is unsafe_output, "" when it is not (Opus
-// 22a-5c-2a L1, L2): a .git below its root (CopyTree would drop it, so the
-// patch would not be what the tree holds; a top-level .git is ignored, the
-// workspace having none of its own), a symlink whose target leaves the
-// tree, or more than maxEntries entries.
+// 22a-5c-2a L1, L2; Mythos L2): a .git anywhere (CopyTree would drop it,
+// so the patch would not be what the tree holds; the workspace has none of
+// its own), an entry that is no file, directory or symlink (a FIFO, a
+// socket, a device: CopyTree drops those too), a symlink whose target
+// leaves the tree or passes through another symlink, or more than
+// maxEntries entries.
 func screen(root string) (string, error) {
 	why, n := "", 0
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -781,10 +787,10 @@ func screen(root string) (string, error) {
 		switch n++; {
 		case n > maxEntries:
 			why = fmt.Sprintf("the output tree holds more than %d entries", maxEntries)
-		case rel == ".git":
-			return fs.SkipDir
-		case d.Name() == ".git":
-			why = "the output tree holds a .git below its root: " + rel
+		case d.Name() == ".git": // at the top too: the workspace has none of its own (Mythos L2)
+			why = "the output tree holds a .git: " + rel
+		case d.Type()&(fs.ModeNamedPipe|fs.ModeSocket|fs.ModeDevice|fs.ModeCharDevice|fs.ModeIrregular) != 0:
+			why = "the output tree holds an entry that is no file, directory or symlink: " + rel
 		case d.Type()&fs.ModeSymlink != 0:
 			target, err := os.Readlink(p)
 			if err != nil {

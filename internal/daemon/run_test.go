@@ -10,9 +10,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -607,18 +609,20 @@ func TestAPanickingRunStillEndsTheAttempt(t *testing.T) {
 	}
 }
 
-// Opus 22a-5c-2a L1, L2: a .git below the tree's root (CopyTree would drop
-// it from the patch) and a symlink whose target leaves the tree are
-// unsafe_output, never a found patch; a top-level .git is ignored.
+// Opus 22a-5c-2a L1, L2; Mythos L2: a .git anywhere, at the top too
+// (CopyTree would drop it from the patch), a FIFO (dropped as well), and a
+// symlink whose target leaves the tree are unsafe_output, never a found
+// patch.
 func TestScreen(t *testing.T) {
 	for name, c := range map[string]struct {
 		make   func(root string) error
 		unsafe bool
 	}{
 		"a clean tree": {func(root string) error { return os.WriteFile(filepath.Join(root, "a.go"), nil, 0o600) }, false},
-		"a top-level .git": {func(root string) error {
+		"a top-level .git (Mythos L2)": {func(root string) error {
 			return os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o700)
-		}, false},
+		}, true},
+		"a FIFO (Mythos L2)": {func(root string) error { return syscall.Mkfifo(filepath.Join(root, "pipe"), 0o600) }, true},
 		"a nested .git": {func(root string) error {
 			if err := os.MkdirAll(filepath.Join(root, "sub", ".git"), 0o700); err != nil {
 				return err
@@ -805,5 +809,31 @@ func TestAnUnwrittenHoldSpendsNoTry(t *testing.T) {
 	rw.passesFor(t, 3, 0)
 	if h := rw.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("retry 1 until ")) {
 		t.Errorf("the next failure is held on %q, want the first retry", h)
+	}
+}
+
+// Mythos 22a-5c-2a M1: the output files .gitignore kept out of the
+// controller's diff are sealed with the attempt (ignored_files), for the
+// acceptance to report: the builder's gen/x.go, ignored by the .gitignore
+// it wrote, is listed, and the patch holds its edit and its .gitignore.
+func TestTheIgnoredFilesAreSealed(t *testing.T) {
+	rw := newRunWorld(t, true, builder(func(ws string) {
+		_ = os.WriteFile(filepath.Join(ws, ".gitignore"), []byte("gen/\n"), 0o600)
+		_ = os.MkdirAll(filepath.Join(ws, "gen"), 0o700)
+		_ = os.WriteFile(filepath.Join(ws, "gen", "x.go"), []byte("package gen\n"), 0o600)
+		_ = os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nconst X = 1\n"), 0o600)
+	}, false, nil))
+	rw.untilRun(t)
+	a, _ := rw.attemptOf(t)
+	if a.Checkpoint == nil {
+		t.Fatalf("the attempt was not sealed: %+v", a)
+	}
+	b, err := blobOf(t, rw.w, *a.Checkpoint)
+	var rec types.AttemptRecord
+	if err == nil {
+		err = json.Unmarshal(b, &rec)
+	}
+	if err != nil || rec.IgnoredFiles == nil || !slices.ContainsFunc(*rec.IgnoredFiles, func(f string) bool { return strings.HasPrefix(f, "gen/") }) {
+		t.Errorf("the sealed record's ignored files: %v (%v)", rec.IgnoredFiles, err)
 	}
 }
