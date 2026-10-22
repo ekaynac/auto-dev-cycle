@@ -264,6 +264,17 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 	return m, nil
 }
 
+// ErrGuardRun is a guard that did not run to its verdict (Astra chunk 1
+// H2): its process not dispatched, not started, ended without its result
+// or past its whole-run deadline, or a sandbox run of go list that did not
+// run (didNotRun). It is no finding on the candidate: the caller records
+// it as one that could not run, and retries. What the guard found, go
+// list's own failure on the candidate's code included, is a block.
+var ErrGuardRun = errors.New("accept: the integrity guard did not run")
+
+// guardRun is ErrGuardRun for why.
+func guardRun(why string) error { return fmt.Errorf("%w: %s", ErrGuardRun, why) }
+
 // Integrity is the integrity guard for a candidate of base in repo, for
 // Accept's In.Guard: the base's files listed here through a temporary
 // index, the guard in a child process reading blobs through read and
@@ -280,7 +291,7 @@ func Integrity(repo sandbox.Repo, base string, list Lister, scratch string) Guar
 		case ctx.Err() != nil:
 			return nil, nil, ctx.Err()
 		case runCtx.Err() != nil: // a result past it, too
-			return unverifiable("the guard did not finish by its whole-run deadline"), nil, nil
+			return nil, nil, guardRun("the guard did not finish by its whole-run deadline")
 		}
 		return blocks, warnings, err
 	}
@@ -295,7 +306,7 @@ func unverifiable(why string) []Block {
 // the directory's removal.
 func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Change, read Reader, list Lister, scratch string) ([]Block, []Block, error) {
 	if !dispatches.Load() {
-		return unverifiable("this binary does not dispatch the guard's process"), nil, nil
+		return nil, nil, guardRun("this binary does not dispatch the guard's process")
 	}
 	files, links, err := listBase(ctx, repo, base)
 	if err != nil {
@@ -319,7 +330,7 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 	}()
 	exe, err := os.Executable()
 	if err != nil {
-		return unverifiable("the guard's process did not start"), nil, nil
+		return nil, nil, guardRun("the guard's process did not start")
 	}
 	cmd, stderr := exec.CommandContext(ctx, exe, childArg), &head{n: 4096}
 	cmd.Env, cmd.Dir, cmd.Stderr, cmd.WaitDelay = []string{childEnv + "=" + strconv.Itoa(os.Getpid())}, "/", stderr, time.Second
@@ -330,7 +341,7 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 		err = cmd.Start()
 	}
 	if err != nil {
-		return unverifiable("the guard's process did not start"), nil, nil
+		return nil, nil, guardRun("the guard's process did not start")
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }() // its abandoned type checks with it
 	// The kernel's first choice when memory runs out: the child, not the controller.
@@ -344,7 +355,7 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 	if !ok {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait() // its stderr is whole once Wait returns
-		return unverifiable(fmt.Sprintf("the guard's process ended without its result (%s)", bytes.TrimSpace(stderr.b))), nil, nil
+		return nil, nil, guardRun(fmt.Sprintf("the guard's process ended without its result (%s)", bytes.TrimSpace(stderr.b)))
 	}
 	return blocks, warnings, err
 }
@@ -375,6 +386,7 @@ type service struct {
 	failed          string // the block the result must hold unless it acknowledges the panic
 	panicked        string // the first panic's text, "" included: the guard's recovers wrap it as "unverifiable: …(text)"
 	listFailed      string // a listing's failure: the result must block (Astra #287 r2 #5)
+	listDidNotRun   error  // a listing that did not run (ErrGuardRun): the result is that error
 }
 
 // converse serves the child on in and out until its result (ok), ctx's end
@@ -398,6 +410,8 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
 				return blocks, warnings, s.readErr, true, nil
+			case s.listDidNotRun != nil: // no verdict: a listing it needed did not run
+				return nil, nil, s.listDidNotRun, true, nil
 			case s.latched && !slices.ContainsFunc(c.blocks, s.acknowledges):
 				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
 			case s.listFailed != "" && len(blocks) == 0:
@@ -467,6 +481,9 @@ func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	lctx, cancel := context.WithDeadline(ctx, s.req.ListEnd)
 	defer cancel()
 	l, err := s.list(lctx, s.req.Dir, c.platform, c.gomod, c.gosum, c.paths)
+	if errors.Is(err, ErrGuardRun) && s.listDidNotRun == nil {
+		s.listDidNotRun = err
+	}
 	if err != nil {
 		s.listFailed = cmp.Or(s.listFailed, "unverifiable: go list failed ("+errText(err)+")")
 	}

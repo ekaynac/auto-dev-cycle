@@ -178,8 +178,9 @@ func TestTheGateRunGatesTheAcceptedTree(t *testing.T) {
 // P22a-5c-2b-3: a gate that cannot run is could_not_run/
 // controller_run_failed, never a green, recorded with no attempt, and the
 // node is held, never run again by the next pass: a base whose gate is not
-// green, held at once ("runner: failed": Opus 22a-5c-2b-3 M2), and a
-// sandbox that fails the run, held for a retry.
+// green, held at once ("runner: failed": Opus 22a-5c-2b-3 M2), its only
+// package failing to build with no test result among them (Astra chunk 1
+// M2), and a sandbox that fails the run, held for a retry.
 func TestAGateThatCannotRunCouldNotRun(t *testing.T) {
 	for name, c := range map[string]struct {
 		base   string
@@ -187,7 +188,9 @@ func TestAGateThatCannotRunCouldNotRun(t *testing.T) {
 		detail string
 		held   string
 	}{
-		"a red base":         {base: goEvents("TestA=fail"), detail: "not green", held: string(runnerFailed)},
+		"a red base": {base: goEvents("TestA=fail"), detail: "not green", held: string(runnerFailed)},
+		"a base that does not build": {base: fmt.Sprintf(`{"Action":"start","Package":%q}`+"\n"+`{"Action":"output","Package":%q,"Output":"FAIL\t%s [build failed]\n"}`+"\n"+`{"Action":"fail","Package":%q}`+"\n",
+			gateModule, gateModule, gateModule, gateModule), detail: "not green", held: string(runnerFailed)},
 		"the sandbox failed": {base: goEvents("TestA=pass"), fail: errors.New("podman: the run failed"), detail: "could not run", held: reconcile.RunnerSignal("retry 1 until ")},
 	} {
 		t.Run(name, func(t *testing.T) {

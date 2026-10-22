@@ -428,3 +428,49 @@ func TestASealThatNeverLandsIsHeld(t *testing.T) {
 		t.Errorf("the accept node after its input's seal never landed: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 }
+
+// Astra chunk 1 H2: the guard that did not run (here, a go list run the
+// sandbox did not start) is the controller's, never the candidate's
+// refusal: could_not_run/controller_run_failed recorded with no attempt,
+// nothing selected, and the node held for a bounded retry.
+func TestAGuardThatDidNotRunCouldNotRun(t *testing.T) {
+	rw := goTestWorld(t)
+	v := rw.accepting(t, func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
+		return nil, fmt.Errorf("%w: go list did not run in the sandbox: %w", accept.ErrGuardRun, sandbox.ErrHost)
+	})
+	got := resultsOn(t, rw.w, v.Node.ID)
+	if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 ||
+		!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) ||
+		len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonControllerRunFailed ||
+		!strings.Contains(got[0].Result.Detail, "did not run") {
+		t.Errorf("accept after its guard did not run: %s, holds %+v, results %+v", v.State.State, v.State.Holds, got)
+	}
+}
+
+// Astra chunk 1 M1: accept's final commit refused (its input invalidated
+// while the guard ran: graph.Invalidate on the build) records nothing and
+// never reruns at once: the accept node, still holding the claim its run
+// was of, is held for a bounded retry, so the passes that follow start no
+// second run of it.
+func TestARefusedAcceptCommitIsHeld(t *testing.T) {
+	rw := goTestWorld(t)
+	var invalidated error
+	v := rw.accepting(t, func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
+		invalidated = rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Invalidate(tx, rw.build)
+		})
+		return nil, errors.New("no listing")
+	})
+	if invalidated != nil {
+		t.Fatalf("the build's invalidation: %v", invalidated)
+	}
+	c := &countAccepts{r: rw.r}
+	rw.x.Acceptor = c
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	rw.passesFor(t, 4, 0)
+	v = nodesOf(rw.w, rw.task)[types.NodeKindAccept]
+	if got := resultsOn(t, rw.w, v.Node.ID); len(got) != 0 || c.n.Load() != 0 || len(v.State.Holds) != 1 ||
+		!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) {
+		t.Errorf("accept after its refused commit: %s, holds %+v, %d more runs, results %+v", v.State.State, v.State.Holds, c.n.Load(), got)
+	}
+}

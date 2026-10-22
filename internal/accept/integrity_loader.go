@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -151,6 +152,9 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	}
 	argv := slices.Concat([]string{"env", "-i"}, goImage, GoEnv, []string{"GOOS=" + pl[0], "GOARCH=" + pl[1], "sh", "-c", listScript, "sh", sandbox.ResultsDir}, paths)
 	if _, err := h.Start(ctx, sandbox.Run{Image: img, Mode: sandbox.Gate, Attempt: a, Limits: lim, Argv: argv}); err != nil {
+		if didNotRun(err) {
+			return nil, fmt.Errorf("%w: go list did not run in the sandbox: %w", ErrGuardRun, err)
+		}
 		return nil, err
 	}
 	out, err := os.MkdirTemp(dir, "list-")
@@ -172,6 +176,26 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 		return nil, err
 	}
 	return readListing(out, x)
+}
+
+// didNotRun reports whether err, a sandbox run's, is a run that did not
+// run (Astra chunk 1 H2): the sandbox refused it (sandbox.ErrSpec,
+// sandbox.ErrHost) before it ran, podman failed itself (exit status
+// 125-127), or no status came back at all (the client not started). A run
+// that ran and exited with its own status, was cut by its timeout or a
+// signal, or left more than its bounds (sandbox.ErrLeft) is go list's on
+// the candidate's code: a finding.
+func didNotRun(err error) bool {
+	var exit *exec.ExitError
+	switch {
+	case errors.Is(err, sandbox.ErrLeft), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return false
+	case errors.Is(err, sandbox.ErrSpec), errors.Is(err, sandbox.ErrHost):
+		return true
+	case errors.As(err, &exit):
+		return exit.ExitCode() >= 125 && exit.ExitCode() <= 127
+	}
+	return true
 }
 
 // readListing reads a listing's version and list, each bounded before it

@@ -186,23 +186,40 @@ func TestTheStartSweepRefusesAnOrphansOutput(t *testing.T) {
 	}
 }
 
-// Opus 22a-5c-2c M2: one adcd a sandbox root: a second lock on it is
-// refused controller_already_running while the first is held, and taken
-// once it is released.
+// Opus 22a-5c-2c M2, Astra chunk 1 H1: one adcd a sandbox root and a run
+// directory: a second lock on the root is refused
+// controller_already_running while the first is held, and so is a lock on
+// another root whose runs/ is the same directory through a symlink; each
+// is taken once the first is released.
 func TestOneAdcdASandboxRoot(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "sbx")
+	base := t.TempDir()
+	root, other, shared := filepath.Join(base, "sbx"), filepath.Join(base, "sbx-b"), filepath.Join(base, "shared-runs")
+	for _, d := range []string{root, other, shared} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range []string{root, other} {
+		if err := os.Symlink(shared, filepath.Join(r, "runs")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	unlock, err := lockSandbox(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = lockSandbox(root)
-	startErr(t, err, vocab.CouldNotRun, vocab.ReasonControllerAlreadyRunning)
-	unlock()
-	again, err := lockSandbox(root)
-	if err != nil {
-		t.Fatalf("the lock after its release: %v", err)
+	for _, r := range []string{root, other} {
+		_, err = lockSandbox(r)
+		startErr(t, err, vocab.CouldNotRun, vocab.ReasonControllerAlreadyRunning)
 	}
-	again()
+	unlock()
+	for _, r := range []string{root, other} {
+		again, err := lockSandbox(r)
+		if err != nil {
+			t.Fatalf("the lock on %s after its release: %v", filepath.Base(r), err)
+		}
+		again()
+	}
 }
 
 // unsealedRun is a run world whose build ran, recorded its patch and never

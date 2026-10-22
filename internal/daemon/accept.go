@@ -146,7 +146,7 @@ func (r *runner) acceptNode(node types.NodeID) (err error) {
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
 	}
-	return r.command(r.ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) { // past the bound's work: its deadline cuts no record
+	err = r.command(r.ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) { // past the bound's work: its deadline cuts no record
 		cur, err := graph.ViewOf(tx, node)
 		if err != nil || cur.State.State != types.NodeStateStateClaimed || cur.State.Key == nil {
 			return nil, errors.Join(err, fmt.Errorf("accept node %s holds no claim", node))
@@ -157,6 +157,30 @@ func (r *runner) acceptNode(node types.NodeID) (err error) {
 		}
 		return nil, graph.Commit(tx, node, res, r.env)
 	})
+	if err != nil { // the commit refused (a stale input, say): held, never run again at once (Astra chunk 1 M1)
+		return errors.Join(err, r.holdClaimed(node, a.view.State.Key, err))
+	}
+	return nil
+}
+
+// errClaimMoved: the node no longer holds the claim a run was of.
+var errClaimMoved = errors.New("the node's claim moved on")
+
+// holdClaimed holds node for cause (holdOn) only while it still holds key,
+// the claim its run was of: a node claimed anew, or no longer claimed, is
+// the next pass's, and nothing is held.
+func (r *runner) holdClaimed(node types.NodeID, key *types.ComputationKey, cause error) error {
+	err := r.holdAfter(node, cause, func(tx *eventstore.Tx) error {
+		cur, err := graph.ViewOf(tx, node)
+		if err == nil && (cur.State.State != types.NodeStateStateClaimed || cur.State.Key == nil || key == nil || cur.State.Key.Key != key.Key) {
+			return errClaimMoved
+		}
+		return err
+	})
+	if errors.Is(err, errClaimMoved) {
+		return nil
+	}
+	return err
 }
 
 // acceptance reads what node's accept run takes (acceptance's fields): its

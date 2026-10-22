@@ -39,12 +39,23 @@ func TestMain(m *testing.M) {
 // guard in its own process.
 func (f fixture) loaded(t *testing.T, list Lister, files map[string]string, gone ...string) Verdict {
 	t.Helper()
-	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
-		Guard: Integrity(f.repo, f.base, list, "")})
+	v, err := f.loadedErr(t, list, files, gone...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// loadedErr is loaded, its error returned.
+func (f fixture) loadedErr(t *testing.T, list Lister, files map[string]string, gone ...string) (Verdict, error) {
+	t.Helper()
+	return Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
+		Guard: Integrity(f.repo, f.base, list, "")})
+}
+
+// didNotRunErr reports whether err is ErrGuardRun saying why.
+func didNotRunErr(err error, why string) bool {
+	return errors.Is(err, ErrGuardRun) && strings.Contains(err.Error(), why)
 }
 
 // children records each run's child, and kills any left at the end.
@@ -392,13 +403,16 @@ func TestIntegrityProcess(t *testing.T) {
 	t.Cleanup(func() { maxListTime, maxRunTime = oldList, oldRun })
 	maxListTime, maxRunTime = time.Hour, 2*baseline+time.Second
 	n, begin := len(procs()), time.Now()
-	done := make(chan Verdict, 1)
-	go func() { done <- f.loaded(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}) }()
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.loadedErr(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()})
+		done <- err
+	}()
 	select {
-	case v := <-done:
+	case err := <-done: // Astra chunk 1 H2: past its whole-run deadline, the guard did not run, no finding
 		took := time.Since(begin)
-		if !finds(v.Blocks, "unverifiable: the guard did not finish by its whole-run deadline") || took > maxRunTime+2*baseline+5*time.Second {
-			t.Errorf("a type check that never ends: %v (deadline %v), %q", took, maxRunTime, whats(v.Blocks))
+		if !didNotRunErr(err, "the guard did not finish by its whole-run deadline") || took > maxRunTime+2*baseline+5*time.Second {
+			t.Errorf("a type check that never ends: %v (deadline %v), %v", took, maxRunTime, err)
 		}
 	case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
 		t.Fatalf("a type check that never ends: no verdict in %v", time.Since(begin))
@@ -426,11 +440,12 @@ func TestIntegrityProcess(t *testing.T) {
 	if v := f.loaded(t, testLister(t), plainGo); !v.Accepted() {
 		t.Errorf("a run after an abandoned check: %q", whats(v.Blocks))
 	}
-	// A child that ends without its result, or writes past its bound, blocks.
+	// A child that ends without its result, or writes past its bound: the
+	// guard did not run (Astra chunk 1 H2).
 	maxProcOut = 64
-	v := f.loaded(t, testLister(t), plainGo)
-	if maxProcOut = oldOut; !finds(v.Blocks, "unverifiable: the guard's process ended without its result") {
-		t.Errorf("a child over its output bound: %q", whats(v.Blocks))
+	_, err := f.loadedErr(t, testLister(t), plainGo)
+	if maxProcOut = oldOut; !didNotRunErr(err, "the guard's process ended without its result") {
+		t.Errorf("a child over its output bound: %v", err)
 	}
 	// H3 (Astra #287): one deadline for the whole run. A reader that waits
 	// for its context, and one that does not: the run ends at the deadline,
@@ -449,20 +464,20 @@ func TestIntegrityProcess(t *testing.T) {
 		maxRunTime = baseline + 250*time.Millisecond // the run reaches its first read well within a whole run's time
 		scratch, n, begin := t.TempDir(), len(procs()), time.Now()
 		g := Integrity(f.repo, f.base, testLister(t), scratch)
-		done := make(chan Verdict, 1)
+		done := make(chan error, 1)
 		go func() {
-			v, _ := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, plainGo), Policy: f.policy,
+			_, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, plainGo), Policy: f.policy,
 				Guard: func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) {
 					return g(ctx, c, read)
 				}})
-			done <- v
+			done <- err
 		}()
 		select {
-		case v := <-done:
+		case err := <-done:
 			left, _ := os.ReadDir(scratch)
 			stuckCall := name == "a reader that never returns" // its call still runs: its directory stays
-			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || stuckCall && len(left) != 1 {
-				t.Errorf("%s: %q, %d children, left %d", name, whats(v.Blocks), len(ps)-n, len(left))
+			if ps := procs(); !didNotRunErr(err, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || stuckCall && len(left) != 1 {
+				t.Errorf("%s: %v, %d children, left %d", name, err, len(ps)-n, len(left))
 			}
 			if stuckCall {
 				once.Do(func() { close(stuck) })
