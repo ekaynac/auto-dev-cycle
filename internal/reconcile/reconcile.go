@@ -423,8 +423,8 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 				}
 			}
 		case st == types.NodeStateStateRunnable || st == types.NodeStateStateWaiting || st == types.NodeStateStateHeld && len(n.State.Holds) > 0 &&
-			!slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold != vocab.HoldAwaitingReceipt }):
-			// A node held only awaiting_receipt is a goal: the evaluator
+			!slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return !graph.ReceiptWait(h) }):
+			// A node held only by the evaluator's awaiting_receipt (graph.ReceiptWait) is a goal: the evaluator
 			// re-resolves it, clearing or re-raising its holds (P22a-6b).
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Open = append(s.Open, v)

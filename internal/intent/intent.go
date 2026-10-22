@@ -219,7 +219,7 @@ func (o own) check(blobs receipt.Blobs) func(graph.RefRecord) error {
 		case len(rec.Restrictions) != 1 || !graph.SameRestriction(rec.Restrictions[0], o.restriction):
 			return fmt.Errorf("%w: %s does not carry its project's data policy as its restriction", ErrNotTheBrief, rec.ID)
 		}
-		_, ok, err := readBlob(blobs, rec.ContentDigest)
+		_, ok, err := readBlob(blobs, rec.ContentDigest, maxSafeBytes)
 		switch {
 		case err != nil:
 			return err
@@ -269,7 +269,7 @@ func (r Records) Reviewed(d types.Digest) bool { return r.reviewed[d] }
 // blob not read.
 func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecord) (bool, error) {
 	report := func(rec graph.RefRecord) ([]byte, bool, error) {
-		b, ok, err := readBlob(blobs, rec.ContentDigest)
+		b, ok, err := readBlob(blobs, rec.ContentDigest, gate.MaxReportBytes)
 		if err != nil || !ok || gate.CheckReport(b) != nil {
 			return nil, false, err
 		}
@@ -278,7 +278,7 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 	return func(rec graph.RefRecord) (bool, error) {
 		switch {
 		case rec.Sanitised && rec.Type == types.RefTypeReceipt:
-			b, ok, err := readBlob(blobs, rec.ContentDigest)
+			b, ok, err := readBlob(blobs, rec.ContentDigest, maxSafeBytes)
 			if err != nil || !ok {
 				return false, err
 			}
@@ -319,11 +319,11 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 				}
 			}
 		}
-		view, ok, err := readBlob(blobs, rec.ContentDigest)
+		view, ok, err := readBlob(blobs, rec.ContentDigest, maxSafeBytes)
 		if err != nil || !ok {
 			return false, err
 		}
-		decision, ok, err := readBlob(blobs, dec.ContentDigest)
+		decision, ok, err := readBlob(blobs, dec.ContentDigest, maxSafeBytes)
 		if err != nil || !ok {
 			return false, err
 		}
@@ -331,19 +331,20 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 	}
 }
 
-// readBlob is blob d's bytes, false when they are over maxSafeBytes or
-// are not d's content.
-func readBlob(blobs receipt.Blobs, d types.Digest) ([]byte, bool, error) {
+// readBlob is blob d's bytes, read to at most limit+1 bytes, false when
+// they are over limit or are not d's content: the one bounded,
+// digest-checked reader of the package (Opus 22a-6b M3).
+func readBlob(blobs receipt.Blobs, d types.Digest, limit int64) ([]byte, bool, error) {
 	rc, err := blobs.Open(string(d))
 	if err != nil {
 		return nil, false, err
 	}
-	b, err := io.ReadAll(io.LimitReader(rc, maxSafeBytes+1))
+	b, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err = errors.Join(err, rc.Close()); err != nil {
 		return nil, false, err
 	}
 	sum := sha256.Sum256(b)
-	return b, len(b) <= maxSafeBytes && bytes.Equal([]byte(d), fmt.Appendf(nil, "sha256:%x", sum)), nil
+	return b, int64(len(b)) <= limit && bytes.Equal([]byte(d), fmt.Appendf(nil, "sha256:%x", sum)), nil
 }
 
 // In is what an intent is built from: the call's record (id, call,

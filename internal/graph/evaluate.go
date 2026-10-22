@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -222,7 +223,7 @@ func (e *evaluation) visit(n types.NodeID) error {
 // remains.
 func (e *evaluation) clear(rec nodeRecord, answered map[string]Resolved) (held bool, err error) {
 	for _, h := range rec.State.Holds {
-		if h.Hold == vocab.HoldAwaitingReceipt {
+		if ReceiptWait(h) {
 			continue // receipts': none remains
 		}
 		i := slices.IndexFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
@@ -240,6 +241,14 @@ func (e *evaluation) clear(rec nodeRecord, answered map[string]Resolved) (held b
 		e.evs = append(e.evs, evs...)
 	}
 	return held, nil
+}
+
+// ReceiptWait is whether h is an awaiting_receipt hold the evaluator raised
+// (holdReceipt: no reason, on receipt:<input>:<reason>), the only one it
+// clears; another's (graph.Retry's, with its result's reason) is never
+// its (Opus 22a-6b M1).
+func ReceiptWait(h types.NodeHold) bool {
+	return h.Hold == vocab.HoldAwaitingReceipt && h.Reason == nil && strings.HasPrefix(h.SignalInstance, "receipt:")
 }
 
 // receiptSignal is the signal instance of the awaiting_receipt hold on m, a
@@ -262,7 +271,7 @@ func receiptSignal(m Missing) string {
 func (e *evaluation) receipts(rec nodeRecord, answered map[string]Resolved) (held bool, err error) {
 	var holds []types.NodeHold
 	for _, h := range rec.State.Holds {
-		if h.Hold == vocab.HoldAwaitingReceipt {
+		if ReceiptWait(h) {
 			holds = append(holds, h)
 		}
 	}
