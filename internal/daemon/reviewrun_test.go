@@ -20,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -365,5 +366,31 @@ func TestAnUnverifiedReviewIsAbandoned(t *testing.T) {
 	if len(rs) == 0 || rs[0].Result.Kind != types.ResultKindReview || rs[0].Result.Outcome != types.OutcomeCouldNotRun ||
 		rs[0].Result.Reason != vocab.ReasonAmbiguousState || review.State.State == types.NodeStateStateCompleted {
 		t.Fatalf("the review: %s, results %+v", review.State.State, rs)
+	}
+}
+
+// #403 with P22a-6c: a reviewer's run past its disk bound (sandbox.ErrLeft,
+// measured) is the reviewer's fault, never the candidate's: the review's
+// attempt is abandoned (could_not_run/ambiguous_state, a review's), never
+// the unreviewable verdict, and the review is matched again.
+func TestAReviewPastItsDiskBoundIsAbandoned(t *testing.T) {
+	rw := gateCompleted(t)
+	runPrepared = func(p *adapterhost.Prepared, ctx context.Context) (adapterhost.Outcome, error) {
+		out, err := p.Run(ctx)
+		out.Checked = sandbox.ErrLeft
+		return out, err
+	}
+	t.Cleanup(func() { runPrepared = (*adapterhost.Prepared).Run })
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil))
+	rw.passesFor(t, 8, 0)
+	review := reviewNodes(rw)[types.NodeKindReview]
+	rs := reviewResults(rw, review.Node.ID)
+	if len(rs) == 0 || review.State.State == types.NodeStateStateCompleted {
+		t.Fatalf("the review: %s, results %+v", review.State.State, rs)
+	}
+	for _, rr := range rs {
+		if rr.Result.Kind != types.ResultKindReview || rr.Result.Outcome != types.OutcomeCouldNotRun || rr.Result.Reason != vocab.ReasonAmbiguousState {
+			t.Errorf("a result: %+v", rr.Result)
+		}
 	}
 }
