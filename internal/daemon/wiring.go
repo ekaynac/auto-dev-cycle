@@ -80,8 +80,19 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 	if every == 0 {
 		every = reconcileEvery
 	}
+	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+	if run != nil {
+		run.done = l.Nudge
+	}
+	return l
+}
+
+// executorOf is the reconcile loop's executor: adcd's placer, planner,
+// and run, its Runner and its Acceptor (nil: no attempt, accept or gate
+// runs; Run, Accept and Gate change nothing).
+func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds dispatch.Credentials, run *runner) reconcile.Executor {
 	pl := placerOf(reg, images, creds)
-	if run != nil { // nil: no attempt runs, Run changes nothing
+	if run != nil {
 		pl.ready = run.cleared
 	}
 	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: pl,
@@ -89,11 +100,7 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 	if run != nil {
 		x.Runner, x.Acceptor = run, run
 	}
-	l := reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
-	if run != nil {
-		run.done = l.Nudge
-	}
-	return l
+	return x
 }
 
 // runnerOf is adcd's attempt runner (P22a-5c-2a), under ctx, the daemon's:

@@ -15,9 +15,11 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -125,12 +127,14 @@ func goTestWorld(t *testing.T) *runWorld {
 	return rw
 }
 
-// P22a-5c-2b-2: accept's run that fails is could_not_run/runner_fault,
-// recorded with no attempt, never an accepted tree, and the node is held
-// for a retry, so the next pass does not run it again:
+// P22a-5c-2b-2: accept's run that fails is could_not_run/
+// controller_run_failed (Opus 22a-5c-2b-2 M2: accept's own reason, its
+// hold the runner's), recorded with no attempt, never an accepted tree,
+// and the node is held, so the next pass does not run it again:
 //   - a guard that does not end is cut at acceptBound, the candidate's
-//     integrity unverifiable;
-//   - a sandbox failure: the pinned image does not resolve.
+//     integrity unverifiable: held for a retry;
+//   - the pinned image not present: the configuration's, held on the
+//     profile.
 func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 	hang := func(ctx context.Context, _ string, _ [2]string, _, _ []byte, _ []string) (map[string]accept.Listed, error) {
 		<-ctx.Done()
@@ -139,9 +143,10 @@ func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 	for name, c := range map[string]struct {
 		noImage bool
 		detail  string
+		held    string
 	}{
-		"a hanging guard":   {detail: "integrity is unverifiable"},
-		"a sandbox failure": {noImage: true, detail: "accept could not run"},
+		"a hanging guard":       {detail: "integrity is unverifiable", held: "retry 1 until "},
+		"the image not present": {noImage: true, detail: "accept could not run", held: "profile "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := goTestWorld(t)
@@ -158,11 +163,11 @@ func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 					held = h.SignalInstance
 				}
 			}
-			if !strings.HasPrefix(held, reconcile.RunnerSignal("retry 1 until ")) {
+			if !strings.HasPrefix(held, reconcile.RunnerSignal(c.held)) {
 				t.Errorf("the accept node after its run failed: %s, held on %q", v.State.State, held)
 			}
 			got := resultsOn(t, rw.w, v.Node.ID)
-			if len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonRunnerFault ||
+			if len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonControllerRunFailed ||
 				!strings.Contains(got[0].Result.Detail, c.detail) || len(got[0].Result.Value) != 0 {
 				t.Errorf("accept's results: %+v", got)
 			}
@@ -187,19 +192,26 @@ func TestAFailedGoListRefusesTheCandidate(t *testing.T) {
 }
 
 // Opus 22a-5c-2b-2 H1: a runner hold on an accept node clears as a build's
-// does: a transient failure (the image misses once) holds the node for a
-// retry; once its time passes, a pass clears it and the next run completes
-// the node.
+// does: a transient failure (the guard cut at the run's bound) holds the
+// node for a retry; once its time passes, a pass clears it and the next
+// run (its go list now ending) completes the node.
 func TestAnAcceptRetryClears(t *testing.T) {
-	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
-	rw.untilRun(t)
+	rw := goTestWorld(t)
 	retryBase = 300 * time.Millisecond
-	t.Cleanup(func() { retryBase = time.Minute })
-	rw.r.place.d.Images = fakeImages{false}
-	if v := rw.accepting(t, nil); len(v.State.Holds) == 0 {
+	bound := acceptBound
+	acceptBound = 2 * time.Second
+	t.Cleanup(func() { retryBase, acceptBound = time.Minute, bound })
+	if v := rw.accepting(t, func(ctx context.Context, _ string, _ [2]string, _, _ []byte, _ []string) (map[string]accept.Listed, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}); len(v.State.Holds) == 0 {
 		t.Fatalf("the accept node after a transient failure: %s, no hold", v.State.State)
 	}
-	rw.r.place.d.Images = fakeImages{true}
+	acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister {
+		return func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
+			return nil, errors.New("no listing")
+		}
+	}
 	time.Sleep(retryBase)
 	var v graph.NodeView
 	for range 6 {
@@ -214,7 +226,62 @@ func TestAnAcceptRetryClears(t *testing.T) {
 	if v.State.State != types.NodeStateStateCompleted {
 		t.Fatalf("the accept node after its retry's time: %s, holds %+v", v.State.State, v.State.Holds)
 	}
-	if res := resultOf(t, rw.w, v).Result; res.Outcome != types.OutcomeEmpty {
-		t.Errorf("the retried accept's result: %s/%s", res.Outcome, res.Reason)
+}
+
+// Opus 22a-5c-2b-2 L3: adcd's executor runs builds, accepts and gates
+// through its runner, and none without one.
+func TestTheExecutorRunsThroughTheRunner(t *testing.T) {
+	r := &runner{}
+	x := executorOf(&Daemon{}, registry.Registry{}, fakeImages{true}, fakeCredentials{}, r)
+	if x.Runner != reconcile.Runner(r) || x.Acceptor != reconcile.Acceptor(r) {
+		t.Errorf("the executor's runner %v and acceptor %v, want %p", x.Runner, x.Acceptor, r)
+	}
+	if x := executorOf(&Daemon{}, registry.Registry{}, fakeImages{true}, fakeCredentials{}, nil); x.Runner != nil || x.Acceptor != nil {
+		t.Errorf("an executor with no runner: %v %v", x.Runner, x.Acceptor)
+	}
+}
+
+// Opus 22a-5c-2b-2 L2: a profile pinning other than one image is the
+// configuration's: the run's checkout refuses it before any clone.
+func TestACheckoutNeedsOneImage(t *testing.T) {
+	r := &runner{}
+	for _, images := range []map[string]types.PinnedImage{{}, {"a": "x", "b": "y"}} {
+		var p types.ProjectProfile
+		p.Toolchain.Images = images
+		if _, _, err := r.checkout(context.Background(), p, t.TempDir()); !errors.Is(err, errConfig) || !strings.Contains(err.Error(), "images, not one") {
+			t.Errorf("%d images: %v", len(images), err)
+		}
+	}
+}
+
+// Opus 22a-5c-2b-2 L1: a blob read by its digest is refused when its bytes
+// are not that digest's (damaged on disk), or over the read's bound.
+func TestABlobIsReadByItsDigest(t *testing.T) {
+	dir := t.TempDir()
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := blobs.Put(strings.NewReader("the patch"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{blobs: blobs}
+	if b, err := r.readBlob(types.Digest(d), 64); err != nil || string(b) != "the patch" {
+		t.Fatalf("the blob: %q %v", b, err)
+	}
+	if _, err := r.readBlob(types.Digest(d), 4); err == nil {
+		t.Error("a blob over its bound was read")
+	}
+	hexsum := strings.TrimPrefix(d, "sha256:")
+	p := filepath.Join(dir, "blobs", "sha256", hexsum[:2], hexsum[2:4], hexsum)
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("the other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.readBlob(types.Digest(d), 64); err == nil {
+		t.Error("a damaged blob was read as its digest's")
 	}
 }

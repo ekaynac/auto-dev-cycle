@@ -27,8 +27,9 @@
 //     placed builds whose lease is granted, no attempt started on it
 //     (P22a-5c-2a: the Runner, adcd's, starts the attempt's run outside any
 //     command and returns; a run already going starts nothing); and Accept
-//     each of its claimed accept nodes, the controller's (P22a-5c-2b-2: the
-//     Acceptor, adcd's, likewise). Holds are collected for
+//     each of its claimed accept nodes and Gate each of its claimed gate
+//     nodes, the controller's (P22a-5c-2b-2, P22a-5c-2b-3: the Acceptor,
+//     adcd's, likewise). Holds are collected for
 //     the kinds Match places only (Mythos L1). Nothing else. The Placer (adcd's) makes a Match's card and executor and a
 //     ClearRail's check.
 //   - Executor.Run runs one action in one command. The command expects each
@@ -104,9 +105,10 @@ var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, 
 var Placed = []types.NodeKind{types.NodeKindBuild}
 
 // ControllerRun are the node kinds the controller runs itself, no lease:
-// accept (P22a-5c-2b-2). Their runner holds are offered to Unblock as a
-// placed node's are (Opus 22a-5c-2b-2 H1), so a bounded retry clears.
-var ControllerRun = []types.NodeKind{types.NodeKindAccept}
+// accept and the gate (P22a-5c-2b-2, P22a-5c-2b-3). Their runner holds
+// are offered to Unblock as a placed node's are (Opus 22a-5c-2b-2 H1), so
+// a bounded retry clears.
+var ControllerRun = []types.NodeKind{types.NodeKindAccept, types.NodeKindGate}
 
 // Versioned is a subject read at a version: the seq of its last event.
 type Versioned struct {
@@ -143,9 +145,10 @@ type Snapshot struct {
 	// Granted are its claimed nodes of a Placed kind whose live lease is
 	// granted, no attempt started on it: the runs to start.
 	Granted []Granted
-	// Accepts are its claimed accept nodes, which the controller runs
-	// (P22a-5c-2b-2).
+	// Accepts are its claimed accept nodes, and Gated its claimed gate
+	// nodes, which the controller runs (P22a-5c-2b-2, P22a-5c-2b-3).
 	Accepts []Versioned
+	Gated   []Versioned
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
 	Next Versioned
@@ -216,6 +219,16 @@ type Accept struct{ Node Versioned }
 func (Accept) action() string    { return RunAction }
 func (a Accept) subject() string { return a.Node.ID }
 func (Accept) expected() []eventstore.Expectation {
+	return nil
+}
+
+// Gate starts the controller's run of a claimed gate node (Acceptor's
+// Gate): never a command of its own.
+type Gate struct{ Node Versioned }
+
+func (Gate) action() string    { return RunAction }
+func (g Gate) subject() string { return g.Node.ID }
+func (Gate) expected() []eventstore.Expectation {
 	return nil
 }
 
@@ -320,6 +333,9 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindAccept:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Accepts = append(s.Accepts, v)
+		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindGate:
+			v.Version, err = tx.SubjectVersion(v.ID)
+			s.Gated = append(s.Gated, v)
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindPlan:
 			v.Version, err = tx.SubjectVersion(v.ID)
 			s.Plans = append(s.Plans, v)
@@ -393,6 +409,9 @@ func Decide(s Snapshot) []Action {
 		for _, n := range s.Accepts {
 			out = append(out, Accept{Node: n})
 		}
+		for _, n := range s.Gated {
+			out = append(out, Gate{Node: n})
+		}
 		return out
 	}
 	return nil
@@ -420,11 +439,14 @@ type Executor struct {
 	Acceptor Acceptor
 }
 
-// Acceptor is what Accept does, outside any command.
+// Acceptor is what Accept and Gate do, outside any command: the
+// controller's own runs of a task's checks.
 type Acceptor interface {
 	// Accept starts node's accept run and returns: false when one is
 	// already going for node, starting nothing.
 	Accept(node types.NodeID) bool
+	// Gate starts node's gate run, likewise.
+	Gate(node types.NodeID) bool
 }
 
 // Runner is what Run does, outside any command.
@@ -470,6 +492,12 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 	}
 	if acc, ok := a.(Accept); ok {
 		if x.Acceptor == nil || !x.Acceptor.Accept(types.NodeID(acc.Node.ID)) {
+			return errNothing
+		}
+		return nil
+	}
+	if g, ok := a.(Gate); ok {
+		if x.Acceptor == nil || !x.Acceptor.Gate(types.NodeID(g.Node.ID)) {
 			return errNothing
 		}
 		return nil

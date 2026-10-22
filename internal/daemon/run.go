@@ -963,7 +963,13 @@ func (r *runner) command(ctx context.Context, logic func(*eventstore.Tx) ([]even
 	if err != nil {
 		return err
 	}
-	_, err = r.store.SubmitApplied(context.WithoutCancel(ctx), r.system.Command(cmd, reconcile.RunAction, cmd, json.RawMessage(`{}`), nil),
+	return r.commandAs(ctx, types.CommandID(cmd), logic)
+}
+
+// commandAs is command under the id cmd (a gate's receipt names the
+// command that records it).
+func (r *runner) commandAs(ctx context.Context, cmd types.CommandID, logic func(*eventstore.Tx) ([]eventstore.Event, error)) error {
+	_, err := r.store.SubmitApplied(context.WithoutCancel(ctx), r.system.Command(string(cmd), reconcile.RunAction, string(cmd), json.RawMessage(`{}`), nil),
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := logic(tx)
 			if err == nil && len(evs) == 0 && tx.Emitted() == 0 {

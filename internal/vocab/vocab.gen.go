@@ -55,6 +55,8 @@ var (
 	ReasonConfirmationRefused = types.ReasonCodeOf("confirmation_refused")
 	// ReasonControllerAlreadyRunning: Another adcd holds the state directory lock.
 	ReasonControllerAlreadyRunning = types.ReasonCodeOf("controller_already_running")
+	// ReasonControllerRunFailed: The controller's own run of an accept or gate node failed before its verdict: its sandbox, its clone or image (the configuration's), its run or its bound. Never a green; the node holds source_invalid_config on the runner's signal, a bounded retry or the profile's.
+	ReasonControllerRunFailed = types.ReasonCodeOf("controller_run_failed")
 	// ReasonCoverageClaimContradicted: A finalized manifest's coverage differs from what its delivery evidence derives; a declaration alone never makes it complete.
 	ReasonCoverageClaimContradicted = types.ReasonCodeOf("coverage_claim_contradicted")
 	// ReasonDegenerateOutput: The model's output degenerated (repetition, truncation or garbage) and the run was abandoned.

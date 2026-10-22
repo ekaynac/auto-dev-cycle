@@ -67,7 +67,7 @@ var (
 		"check_unloadable", "view_stale", "evidence_inapplicable", "budget_rail_reached"}
 	ran = []string{"quota_exhausted", "broker_credit_exhausted", "runner_fault", "receipt_incomplete",
 		"attempt_stopped", "adapter_protocol_error", "provider_request_refused", "provider_unavailable", "stream_idle_cut", "degenerate_output",
-		"executor_incomplete", "isolation_unproven"}
+		"executor_incomplete", "isolation_unproven", "controller_run_failed"}
 )
 
 // count is one counter and the cap it is bound to.
