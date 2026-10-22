@@ -87,7 +87,7 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: pl,
 		Planner: planner{blobs: d.blobs, env: env(d, reg)}}
 	if run != nil {
-		x.Runner = run
+		x.Runner, x.Acceptor = run, run
 	}
 	l := reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
 	if run != nil {

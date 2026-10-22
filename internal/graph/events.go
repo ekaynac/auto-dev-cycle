@@ -137,6 +137,13 @@ type claim struct {
 	Command *string              `json:"command"`
 }
 
+// ClaimInputs are node's claim's resolved inputs: the result each input
+// took, as the claim fixed it; false when node holds no claim.
+func ClaimInputs(tx *eventstore.Tx, node types.NodeID) ([]types.ClaimedInput, bool, error) {
+	c, ok, err := load[claim](tx, ClaimProjection, string(node))
+	return c.Inputs, ok, err
+}
+
 func keyIndex(task types.TaskID, key types.Digest) string { return string(task) + "/" + string(key) }
 
 func load[T any](tx *eventstore.Tx, projection, key string) (T, bool, error) {

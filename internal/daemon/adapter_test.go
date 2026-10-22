@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/ekaynac/auto-dev-cycle/internal/accept"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 const jailProbeName = "adc-jail-probe"
 
 func TestMain(m *testing.M) {
+	accept.RunChildIfAsked() // the integrity guard's child, as adcd's main runs it first
 	if filepath.Base(os.Args[0]) == jailProbeName {
 		c, err := net.Dial("unix", os.Getenv("ADC_GATEWAY_SOCKET"))
 		if err != nil {
