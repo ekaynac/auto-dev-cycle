@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// The guard's loader: go list in the prepared image, its output checked,
+// for the type checks' imports.
+//
+// A stated residual (#226 entry 148; Astra chunk 1 r3): a host fault inside
+// the guard's listing or type check (copy-out, measurement, the go list
+// wrapper shell, a malformed listing, export-data reads) may be recorded as
+// the candidate's refusal. It is never an acceptance; the cost is one
+// wasted round with a misleading finding. Item P14e-attr (#226 entry 148).
 package accept
 
 import (
