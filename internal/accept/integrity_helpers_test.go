@@ -702,8 +702,8 @@ func TestIntegrityHelpersFindingCharge(t *testing.T) {
 	old := maxCaseWork
 	t.Cleanup(func() { maxCaseWork = old })
 	ns, msg := "p d:n", "a helper's assertions weakened (1 → 0)"
-	b := pkgFacts{helpers: map[string]map[string][]fnStat{ns: {"h": {{live: 1, short: "h"}}}}}
-	a := pkgFacts{helpers: map[string]map[string][]fnStat{ns: {"h": {{short: "h"}}}}}
+	b := pkgFacts{helpers: map[string]fnStats{ns: {"h": {{live: 1, short: "h"}}}}}
+	a := pkgFacts{helpers: map[string]fnStats{ns: {"h": {{short: "h"}}}}}
 	add := func(bs *[]Block, k, w string) { *bs = append(*bs, Block{Path: k, What: w}) }
 	maxCaseWork = 1 << 30
 	r := &run{ctx: context.Background()}

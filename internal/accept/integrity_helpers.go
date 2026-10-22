@@ -58,6 +58,13 @@ type fnStat struct {
 	plat, short string
 }
 
+// fnStats is a package and platform's functions, by short identity, each
+// one's declarations; nameSet, the names a platform's test files use.
+type (
+	fnStats map[string][]fnStat
+	nameSet map[string]bool
+)
+
 // blankKey is a package's blank initializers (var _ = …), one entry, their
 // sum (Astra #384 H1). A space: no identifier spells it.
 const blankKey = "var _"
@@ -76,10 +83,10 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 		s.caseCharge(len(s.helperNS))
 	}
 	if fa.helpers[s.helperNS] == nil {
-		fa.helpers[s.helperNS] = map[string][]fnStat{}
+		fa.helpers[s.helperNS] = fnStats{}
 	}
 	if fa.names[plat] == nil {
-		fa.names[plat] = map[string]bool{}
+		fa.names[plat] = nameSet{}
 	}
 	fns, names := fa.helpers[s.helperNS], fa.names[plat]
 	var walk func(root ast.Node, dead bool, st *fnStat)
@@ -195,7 +202,7 @@ func (r *run) compareHelpers(add func(*[]Block, string, string), b, a pkgFacts) 
 
 // helperFinding is what bs, a function's base declarations, show against
 // the head's ah ("": nothing).
-func helperFinding(short string, bs []fnStat, ah map[string][]fnStat, names map[string]map[string]bool) string {
+func helperFinding(short string, bs []fnStat, ah fnStats, names map[string]nameSet) string {
 	bl, bd := liveDead(bs)
 	as, ok := ah[short]
 	switch {

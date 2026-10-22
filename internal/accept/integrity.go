@@ -56,19 +56,19 @@ type stat struct {
 
 // pkgFacts is what the guard reads of one version of a package directory.
 type pkgFacts struct {
-	tests                       map[string]*stat               // "platform dir:package.Name"
-	ambient, forged, twentyTwos []int                          // per platform: skips outside tests, forging markers, …
-	refs                        map[string]int                 // "file\x00reference into S\x00function"
-	init                        map[string]int                 // what initialization reaches
-	warn                        map[string]string              // TestMain(*testing.M), compared whole
-	flags                       map[string][]string            // per file: linkname, unsafe, …
-	bad                         map[string]string              // per file: why it is not verified
-	untyped                     map[string]string              // per package: why its real types are not read (P14e)
-	typed                       map[string]int                 // "file\x00function\x00fact" the real types show (P14e)
-	cases                       map[string]caseAlts            // per test, its cases per build constraint (P14d-b)
-	helpers                     map[string]map[string][]fnStat // per package and platform, per function of its test files, its assertions per declaration (P14d-w1b)
-	names                       map[string]map[string]bool     // per platform, the names the test files use (P14d-w1b)
-	tree                        *tree                          // the version read
+	tests                       map[string]*stat    // "platform dir:package.Name"
+	ambient, forged, twentyTwos []int               // per platform: skips outside tests, forging markers, …
+	refs                        map[string]int      // "file\x00reference into S\x00function"
+	init                        map[string]int      // what initialization reaches
+	warn                        map[string]string   // TestMain(*testing.M), compared whole
+	flags                       map[string][]string // per file: linkname, unsafe, …
+	bad                         map[string]string   // per file: why it is not verified
+	untyped                     map[string]string   // per package: why its real types are not read (P14e)
+	typed                       map[string]int      // "file\x00function\x00fact" the real types show (P14e)
+	cases                       map[string]caseAlts // per test, its cases per build constraint (P14d-b)
+	helpers                     map[string]fnStats  // per package and platform, per function of its test files, its assertions per declaration (P14d-w1b)
+	names                       map[string]nameSet  // per platform, the names the test files use (P14d-w1b)
+	tree                        *tree               // the version read
 }
 
 // integrity is the guard in this process: Integrity's child runs it
@@ -338,7 +338,7 @@ func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
 		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
 		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, cases: map[string]caseAlts{},
-		helpers: map[string]map[string][]fnStat{}, names: map[string]map[string]bool{}, tree: t}
+		helpers: map[string]fnStats{}, names: map[string]nameSet{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" {
