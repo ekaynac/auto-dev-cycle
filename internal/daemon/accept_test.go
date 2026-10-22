@@ -298,9 +298,10 @@ type countAccepts struct {
 	n atomic.Int32
 }
 
-func (c *countAccepts) Accept(node types.NodeID) bool    { c.n.Add(1); return c.r.Accept(node) }
-func (c *countAccepts) Gate(node types.NodeID) bool      { c.n.Add(1); return c.r.Gate(node) }
-func (c *countAccepts) Reseal(nodes []types.NodeID) bool { return c.r.Reseal(nodes) }
+func (c *countAccepts) Accept(node types.NodeID) bool                 { c.n.Add(1); return c.r.Accept(node) }
+func (c *countAccepts) Gate(node types.NodeID) bool                   { c.n.Add(1); return c.r.Gate(node) }
+func (c *countAccepts) Reseal(nodes []types.NodeID) bool              { return c.r.Reseal(nodes) }
+func (c *countAccepts) End(task types.TaskID, node types.NodeID) bool { return c.r.End(task, node) }
 
 // Opus 22a-5c-2b-3 H2 (and 22a-5c-2b-2 M1, L1): while the build attempt
 // that recorded accept's input is not sealed, the loop decides no Accept:

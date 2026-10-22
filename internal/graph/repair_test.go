@@ -160,3 +160,32 @@ func TestTheLastRoundsCandidate(t *testing.T) {
 		}
 	}
 }
+
+// Opus #408 M1 (E1), L1: a review that is not completed is no candidate
+// whatever its outcome (superseded after a go, or renewed and claimed);
+// a stage's round is its candidate's.
+func TestACandidateIsACompletedReview(t *testing.T) {
+	empty := types.OutcomeEmpty
+	patch := func(b string) types.InputSpec {
+		return types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(b), ResultKind: types.ResultKindPatch}}}
+	}
+	tree := func(a string) types.InputSpec {
+		return types.InputSpec{Name: "tree", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(a), ResultKind: types.ResultKindTree}}}
+	}
+	v := func(id string, kind types.NodeKind, round int64, st types.NodeStateState, o *types.Outcome, in ...types.InputSpec) NodeView {
+		return NodeView{Node: types.Node{ID: types.NodeID(id), Kind: kind, Round: round, Inputs: append([]types.InputSpec{}, in...)}, State: types.NodeState{State: st}, Outcome: o}
+	}
+	b1, b2 := v("b1", types.NodeKindBuild, 1, types.NodeStateStateCompleted, &empty), v("b2", types.NodeKindBuild, 2, types.NodeStateStateCompleted, &empty)
+	for name, st := range map[string]types.NodeStateState{"superseded": types.NodeStateStateSuperseded, "claimed": types.NodeStateStateClaimed} {
+		if CandidateGo([]NodeView{b1, v("r1", types.NodeKindReview, 1, st, &empty, patch("b1"))}) {
+			t.Errorf("a %s review with a go outcome is a candidate", name)
+		}
+	}
+	nodes := []NodeView{b1, b2, v("a2", types.NodeKindAccept, 1, types.NodeStateStateCompleted, &empty, patch("b2")),
+		v("g2", types.NodeKindGate, 1, types.NodeStateStateRunnable, nil, tree("a2")), v("r2", types.NodeKindReview, 1, types.NodeStateStateWaiting, nil, patch("b2"))}
+	for _, n := range nodes {
+		if want := map[types.NodeID]int64{"b1": 1, "b2": 2, "a2": 2, "g2": 2, "r2": 2}[n.Node.ID]; CandidateRound(nodes, n.Node) != want {
+			t.Errorf("%s's candidate round %d, want %d", n.Node.ID, CandidateRound(nodes, n.Node), want)
+		}
+	}
+}

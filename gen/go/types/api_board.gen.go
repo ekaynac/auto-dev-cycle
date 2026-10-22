@@ -103,11 +103,26 @@ type BoardPlacedCard struct {
 	Cancelled bool `json:"cancelled"`
 	// The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done.
 	Abandoned bool `json:"abandoned"`
+	// Ending blocked: the admitted task's candidate is decided, but a unit of it still runs, so its task.done waits (authority.Endable's refusal, the loop's own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise.
+	EndingBlocked *BoardEndingBlocked `json:"ending_blocked"`
 	// Its spec's approval: none, in force, or revoked.
 	Approval  BoardPlacedCardApproval `json:"approval"`
 	CreatedAt Time                    `json:"created_at"`
 	// The task's nodes in node id order, superseded ones included as history.
 	Nodes []BoardNodeCard `json:"nodes"`
+}
+
+type BoardEndingBlockedCause string
+
+const (
+	BoardEndingBlockedCauseTheAttemptSSealDidNotLand BoardEndingBlockedCause = "the attempt's seal did not land"
+	BoardEndingBlockedCauseTheLeaseDidNotEnd         BoardEndingBlockedCause = "the lease did not end"
+)
+
+// BoardEndingBlocked: What still runs of a decided candidate's task: its unit, and the controller's phrase for why (never the error's own text, which stays in the log).
+type BoardEndingBlocked struct {
+	Unit  UnitID                  `json:"unit"`
+	Cause BoardEndingBlockedCause `json:"cause"`
 }
 
 // BoardUnplacedCardReason: task_unrecorded: nodes of no task record; nodes_before_admission: nodes of a task not admitted; unknown_state: a task state or approval status the board does not know; deferred_node_kind: a node kind outside M1(a)'s template; node_in_another_project: a node outside its task's project; undeclared_wait: a wait on an input the node does not declare; damaged_record: a record that cannot be read as one (a task record, a selected result, a hold's since).

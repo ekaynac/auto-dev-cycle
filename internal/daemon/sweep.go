@@ -40,6 +40,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"time"
 
@@ -135,33 +136,10 @@ func (r *runner) endLeft(ctx context.Context) error {
 	err := r.store.View(ctx, func(tx *eventstore.Tx) error {
 		keys, err := tx.Keys(lease.AttemptProjection, "")
 		for _, k := range keys {
-			a, _, ok, aerr := lease.AttemptAt(tx, types.AttemptID(k))
-			if aerr != nil || !ok {
-				err = errors.Join(err, aerr)
-				continue
+			lf, ok, lerr := leftAt(tx, types.AttemptID(k))
+			if err = errors.Join(err, lerr); ok {
+				todo = append(todo, lf)
 			}
-			if a.Status != types.AttemptStatusFinishing && a.Status != types.AttemptStatusSealed && a.Status != types.AttemptStatusCompleted {
-				continue
-			}
-			l, _, ok, lerr := lease.LeaseOf(tx, a.Lease)
-			ending := ok && (l.State == types.LeaseStateActive || l.State == types.LeaseStateSettling)
-			if lerr != nil || !ok || a.Status != types.AttemptStatusFinishing && !ending {
-				err = errors.Join(err, lerr)
-				continue
-			}
-			n, ok, nerr := graph.AttemptNode(tx, a.ID)
-			if nerr != nil || !ok {
-				err = errors.Join(err, nerr, fmt.Errorf("attempt %s ran for no node", a.ID))
-				continue
-			}
-			lf := left{attempt: a, node: n.Node.ID}
-			if res, byAttempt, rerr := graph.AttemptResult(tx, a.ID); rerr != nil {
-				err = errors.Join(err, rerr)
-				continue
-			} else if byAttempt {
-				lf.result = &res
-			}
-			todo = append(todo, lf)
 		}
 		return err
 	})
@@ -170,6 +148,101 @@ func (r *runner) endLeft(ctx context.Context) error {
 		errs = append(errs, r.endOne(ctx, lf))
 	}
 	return errors.Join(errs...)
+}
+
+// leftAt is attempt as one left to end (left's): finishing, or sealed or
+// completed with its lease active or settling; false otherwise.
+func leftAt(tx *eventstore.Tx, attempt types.AttemptID) (left, bool, error) {
+	a, _, ok, err := lease.AttemptAt(tx, attempt)
+	if err != nil || !ok || a.Status != types.AttemptStatusFinishing && a.Status != types.AttemptStatusSealed && a.Status != types.AttemptStatusCompleted {
+		return left{}, false, err
+	}
+	l, _, ok, err := lease.LeaseOf(tx, a.Lease)
+	ending := ok && (l.State == types.LeaseStateActive || l.State == types.LeaseStateSettling)
+	if err != nil || !ok || a.Status != types.AttemptStatusFinishing && !ending {
+		return left{}, false, err
+	}
+	n, ok, err := graph.AttemptNode(tx, a.ID)
+	if err != nil || !ok {
+		return left{}, false, errors.Join(err, fmt.Errorf("attempt %s ran for no node", a.ID))
+	}
+	lf := left{attempt: a, node: n.Node.ID}
+	res, byAttempt, err := graph.AttemptResult(tx, a.ID)
+	if err != nil {
+		return left{}, false, err
+	}
+	if byAttempt {
+		lf.result = &res
+	}
+	return lf, true, nil
+}
+
+// freshIDs are the type ids an error names (a try's own command and event
+// ids among them): End compares causes without them.
+var freshIDs = regexp.MustCompile(`\b[a-z]{3}_[0-7][0-9a-hjkmnp-tv-z]{25}\b`)
+
+// errEndRetried is End's failed try, logged by end itself (once per cause)
+// and retried with backoff: start logs nothing more.
+var errEndRetried = errors.New("daemon: the ending is retried")
+
+// endRetry is a decided candidate's node End ends at runtime: when its next
+// try is due, its failed tries in a row, and the last cause it logged.
+type endRetry struct {
+	next  time.Time
+	tries int
+	cause string
+}
+
+// End ends what node of task, a decided candidate's, still runs (Opus #408
+// H1; #226 entry 166), as the start sweep would (endOne), when its retry is
+// due: retryBase, doubling, capped at retryBase·2^(maxTries-1), with no
+// limit on the tries (a fault that clears needs no restart), kept in memory
+// as Reseal keeps its clocks. A cause is logged only when it changes. No
+// hold: node is completed, which carries none (records/node-state.json);
+// the board and task show read the same refusal (authority.Endable) as the
+// card's ending_blocked. True when it started a try.
+func (r *runner) End(task types.TaskID, node types.NodeID) bool {
+	r.mu.Lock()
+	due := !time.Now().Before(r.ending[node].next)
+	r.mu.Unlock()
+	return due && r.start(node, func() error { return r.end(node) })
+}
+
+// end is one try of End.
+func (r *runner) end(node types.NodeID) error {
+	var todo []left
+	err := r.store.View(r.ctx, func(tx *eventstore.Tx) error {
+		id, ok, err := lease.CurrentAttempt(tx, graph.UnitOf(node))
+		if err != nil || !ok {
+			return errors.Join(err, fmt.Errorf("node %s's unit has no attempt to end", node))
+		}
+		lf, ok, err := leftAt(tx, id)
+		if ok {
+			todo = append(todo, lf)
+		}
+		return err
+	})
+	for _, lf := range todo {
+		err = errors.Join(err, r.endOne(r.ctx, lf))
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		delete(r.ending, node)
+		return nil
+	}
+	if r.ending == nil {
+		r.ending = map[types.NodeID]endRetry{}
+	}
+	e := r.ending[node]
+	e.tries++
+	e.next = time.Now().Add(retryBase << min(e.tries-1, maxTries-1))
+	if msg := freshIDs.ReplaceAllString(err.Error(), "<id>"); msg != e.cause { // a cause, not the ids each try mints
+		e.cause = msg
+		r.logf("adcd: what node %s still runs could not be ended (retried with backoff): %v", node, err)
+	}
+	r.ending[node] = e
+	return errEndRetried
 }
 
 // endOne ends lf as the run would have: sealed (a finishing attempt; its

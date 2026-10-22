@@ -139,6 +139,7 @@ type runner struct {
 	// seal; resealTries: the failed seals of it in a row (Reseal).
 	waiting     map[types.NodeID]time.Time
 	resealTries map[types.NodeID]int
+	ending      map[types.NodeID]endRetry // End's retries, by node
 	runs        sync.WaitGroup
 }
 
@@ -174,7 +175,7 @@ func (r *runner) start(node types.NodeID, run func() error) bool {
 			r.mu.Unlock()
 		}()
 		err := run()
-		if errors.Is(err, errNotSealed) { // the input's seal not yet recorded: nothing to log, no nudge
+		if errors.Is(err, errNotSealed) || errors.Is(err, errEndRetried) { // nothing to log (End logs its own), no nudge
 			return
 		}
 		if err != nil && r.log != nil {

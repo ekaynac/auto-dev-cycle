@@ -24,9 +24,23 @@ A document is one of: [BoardPlacedCard](#boardplacedcard) or [BoardUnplacedCard]
 | `admitted` | yes | boolean | The admitted badge: the task holds admitted WIP, held or not. |
 | `cancelled` | yes | boolean | The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done. |
 | `abandoned` | yes | boolean | The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done. |
+| `ending_blocked` | yes | null or [BoardEndingBlocked](#boardendingblocked) | Ending blocked: the admitted task's candidate is decided, but a unit of it still runs, so its task.done waits (authority.Endable's refusal, the loop's own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise. |
 | `approval` | yes | one of `none`, `in_force`, `revoked` | Its spec's approval: none, in force, or revoked. |
 | `created_at` | yes | [Time](common-defs.md#time) |  |
 | `nodes` | yes | array of [BoardNodeCard](#boardnodecard) | The task's nodes in node id order, superseded ones included as history. |
+
+No other fields are allowed.
+
+### BoardEndingBlocked
+
+What still runs of a decided candidate's task: its unit, and the controller's phrase for why (never the error's own text, which stays in the log).
+
+#### Fields of BoardEndingBlocked
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `unit` | yes | [UnitID](common-defs.md#unitid) |  |
+| `cause` | yes | one of `the attempt's seal did not land`, `the lease did not end` |  |
 
 No other fields are allowed.
 

@@ -58,7 +58,12 @@ func Candidate(task types.TaskID, project types.ProjectID) ([]types.NodeRecorded
 }
 
 // Checked is the accept and gate nodes that check build's candidate, as
-// the template records them (Candidate): a repair round's (P22a-6d).
+// the template records them (Candidate): a repair round's (P22a-6d). They
+// are new nodes, not successors, so recorded in round 1 whatever build's
+// round (the node.recorded fold: a node with no predecessor is round 1),
+// and so is the round's review: a node's Round counts its build's
+// successor lineage only, and a stage's round is its candidate's
+// (CandidateRound; Opus #408 L1).
 func Checked(task types.TaskID, project types.ProjectID, build types.NodeID) ([]types.NodeRecorded, error) {
 	accept, err := ids.New("nod")
 	gate, gerr := ids.New("nod")

@@ -39,20 +39,37 @@ func LastBuildRound(nodes []NodeView) int64 {
 	return last
 }
 
+// CandidateRound is the round of the candidate n checks, n a node of
+// nodes (a task's): a build's or a plan's own round; an accept's or a
+// review's, the round of the build whose patch it takes; a gate's, its
+// accept's. A repair's accept, gate and review are new nodes, so recorded
+// in round 1 (the node.recorded fold: a node with no predecessor is round
+// 1; Checked); a stage's round is its candidate's (Opus #408 L1). 0 when
+// its producer is not among nodes.
+func CandidateRound(nodes []NodeView, n types.Node) int64 {
+	if n.Kind != types.NodeKindAccept && n.Kind != types.NodeKindGate && n.Kind != types.NodeKindReview {
+		return n.Round
+	}
+	for _, in := range n.Inputs {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		if !ok || src.ResultKind != types.ResultKindPatch && !(n.Kind == types.NodeKindGate && src.ResultKind == types.ResultKindTree) {
+			continue
+		}
+		for _, p := range nodes {
+			if p.Node.ID == src.Producer {
+				return CandidateRound(nodes, p.Node)
+			}
+		}
+	}
+	return 0
+}
+
 // OfLastRound reports whether review, a review node of nodes (a task's),
-// takes the candidate of the task's last build round: its patch input is
-// a build node's of LastBuildRound (a repair's accept, gate and review are
-// recorded in round 1 too; only the build's round counts). The one rule
-// for "the last round's review": Repairable's (reconcile.Observe) and
-// CandidateGo's.
+// takes the candidate of the task's last build round (CandidateRound):
+// Repairable's (reconcile.Observe) and CandidateGo's one rule.
 func OfLastRound(nodes []NodeView, review types.Node) bool {
 	last := LastBuildRound(nodes)
-	return last > 0 && slices.ContainsFunc(review.Inputs, func(in types.InputSpec) bool {
-		src, ok := in.Source.Variant.(*types.ResultSource)
-		return ok && src.ResultKind == types.ResultKindPatch && slices.ContainsFunc(nodes, func(n NodeView) bool {
-			return n.Node.ID == src.Producer && n.Node.Kind == types.NodeKindBuild && n.Node.Round == last
-		})
-	})
+	return last > 0 && review.Kind == types.NodeKindReview && CandidateRound(nodes, review) == last
 }
 
 // CandidateGo reports whether nodes, a task's, decide its candidate: a

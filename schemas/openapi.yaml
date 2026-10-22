@@ -1094,6 +1094,7 @@ components:
             - approval
             - created_at
             - nodes
+            - ending_blocked
           properties:
             type:
               const: placed
@@ -1123,6 +1124,11 @@ components:
             abandoned:
               description: 'The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done.'
               type: boolean
+            ending_blocked:
+              description: 'Ending blocked: the admitted task''s candidate is decided, but a unit of it still runs, so its task.done waits (authority.Endable''s refusal, the loop''s own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise.'
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/BoardEndingBlocked'
             approval:
               description: 'Its spec''s approval: none, in force, or revoked.'
               enum:
@@ -1136,6 +1142,20 @@ components:
               type: array
               items:
                 $ref: '#/$defs/BoardNodeCard'
+        BoardEndingBlocked:
+          description: 'What still runs of a decided candidate''s task: its unit, and the controller''s phrase for why (never the error''s own text, which stays in the log).'
+          type: object
+          additionalProperties: false
+          required:
+            - unit
+            - cause
+          properties:
+            unit:
+              $ref: ../common/defs.json#/$defs/UnitID
+            cause:
+              enum:
+                - the attempt's seal did not land
+                - the lease did not end
         BoardUnplacedCard:
           description: 'A task whose column its records do not determine: never placed. Its project is its task record''s, else the one its nodes pinned; null (read only under an every-project read) when neither is readable.'
           type: object

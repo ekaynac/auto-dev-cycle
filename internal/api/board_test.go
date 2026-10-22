@@ -378,3 +378,56 @@ func TestBoardUnderivable(t *testing.T) {
 		}
 	}
 }
+
+// #226 entry 166: ending_blocked's cause is one of the controller's
+// phrases, authority.EndingCauses, exactly the schema's enum, never an
+// error's own text; each ErrEnding gives one of them.
+func TestEndingCausesAreTheSchemas(t *testing.T) {
+	raw, err := os.ReadFile("../../schemas/api/board.json")
+	var doc struct {
+		Defs map[string]struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &doc)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Defs["BoardEndingBlocked"].Properties["cause"].Enum; !slices.Equal(got, authority.EndingCauses) {
+		t.Errorf("the schema's causes %q, authority's %q", got, authority.EndingCauses)
+	}
+	for _, e := range []authority.ErrEnding{{Lease: true, What: "lease lea_x is active"}, {What: "attempt att_x is finishing at /var/lib/adc"}} {
+		if !slices.Contains(authority.EndingCauses, e.Cause()) {
+			t.Errorf("%+v's cause %q", e, e.Cause())
+		}
+	}
+}
+
+// Opus #408 L1: a node card's round is its candidate's: a repair's
+// accept, gate and review, recorded in round 1, show their build's round
+// 2; round 1's nodes show 1.
+func TestBoardStageRounds(t *testing.T) {
+	takes := func(kind types.ResultKind, p graph.NodeView) types.InputSpec {
+		return types.InputSpec{Name: types.Name(kind), Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: p.Node.ID, ResultKind: kind}}}
+	}
+	b1 := completed(node(t, types.NodeKindBuild, types.NodeStateStateClaimed), types.OutcomeFound)
+	r1 := completed(node(t, types.NodeKindReview, types.NodeStateStateClaimed, takes(types.ResultKindPatch, b1)), types.OutcomeFound)
+	b2 := round(node(t, types.NodeKindBuild, types.NodeStateStateClaimed), 2)
+	a2 := node(t, types.NodeKindAccept, types.NodeStateStateWaiting, takes(types.ResultKindPatch, b2))
+	g2 := node(t, types.NodeKindGate, types.NodeStateStateWaiting, takes(types.ResultKindTree, a2))
+	r2 := node(t, types.NodeKindReview, types.NodeStateStateWaiting, takes(types.ResultKindPatch, b2))
+	nodes := []graph.NodeView{b1, r1, b2, a2, g2, r2}
+	card, ok := api.BoardCard(taskIn(t, authority.TaskAdmitted, nil), nodes, since, true).Variant.(*types.BoardPlacedCard)
+	if !ok || len(card.Nodes) != len(nodes) {
+		t.Fatalf("%+v", card)
+	}
+	for i, want := range []int64{1, 1, 2, 2, 2, 2} {
+		if card.Nodes[i].Round != want {
+			t.Errorf("the %s card's round %d, want %d", card.Nodes[i].Kind, card.Nodes[i].Round, want)
+		}
+	}
+}

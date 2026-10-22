@@ -76,7 +76,11 @@ var tasks = Resource{
 			if !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) { // a damaged record is the board's to show
 				continue
 			}
-			read := types.TaskRead{ID: id, Project: t.Project, Card: boardCard(t, byTask[id], at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project))}
+			ending, err := endingOf(tx, t, byTask[id])
+			if err != nil {
+				return nil, err
+			}
+			read := types.TaskRead{ID: id, Project: t.Project, Card: boardCard(t, byTask[id], at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project), ending)}
 			if at.Scope.ReadsRecord(attemptDomain, &t.Project) {
 				f, ok, err := firstAttempt(tx, byTask[id])
 				if err == nil && ok {

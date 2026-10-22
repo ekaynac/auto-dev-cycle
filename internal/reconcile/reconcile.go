@@ -15,8 +15,12 @@
 //     (#226 entry 100: it can run nothing more). End it Done, as a
 //     candidate, once its candidate is decided (graph.CandidateGo: a review
 //     of its last build round completed go, the board's done_candidate
-//     rule) and none of its nodes is claimed or held: it frees admission
-//     (22a-7). Only when the snapshot
+//     rule) and it may end (authority.Endable, DoneTask's own rule: no
+//     node claimed or held, every lease ended, every attempt sealed): it
+//     frees admission (22a-7). While a unit of it still runs (a seal that
+//     did not land), End it at runtime (Ending: the Acceptor's End, a
+//     capped backoff, no hold, since a completed node carries none;
+//     Opus #408 H1). Only when the snapshot
 //     allows evaluation (the launch capability is active: until then a
 //     claimed node would wait for an attempt nothing can start): Evaluate
 //     the admitted task's open nodes; Plan each of its claimed plan nodes,
@@ -43,7 +47,7 @@
 //     check), and its logic rechecks the authority in its own transaction:
 //     AdmitTask the task's Ready state, approval and the admitted slot;
 //     AbandonTask the revoked approval and that nothing runs the task's
-//     nodes; DoneTask that none of its nodes is claimed, held or runs;
+//     nodes; DoneTask Endable (its refusal never stale: logged);
 //     Evaluate that the task is still the admitted one with its
 //     approval in force (authority.Tasks, Opus #309 L5: a refusal the loop
 //     reads, never a fold error), then graph.Evaluate, whose claims adcd's
@@ -150,8 +154,10 @@ type Snapshot struct {
 	Admitted Versioned
 	Revoked  bool
 	// Candidate: the admitted task's candidate is decided
-	// (graph.CandidateGo) and none of its nodes is claimed or held.
+	// (graph.CandidateGo) and it may end (authority.Endable). Ending: it is
+	// decided, but a unit of it still runs (authority.ErrEnding).
 	Candidate bool
+	Ending    *Ending
 	Open      []Versioned
 	// Unplaced are its claimed nodes of a Placed kind that nothing is
 	// placed on (dispatch.Unplaced), DayHeld its nodes held on the day's
@@ -250,6 +256,18 @@ type Abandon struct{ Task Versioned }
 // Done ends Task, read at its version, as a candidate: its candidate is
 // decided and nothing of it is claimed or held (22a-7).
 type Done struct{ Task Versioned }
+
+// Ending ends, at runtime, what Node of Task, a decided candidate, still
+// runs: the attempt its seal did not land on, its lease (Acceptor's End;
+// Opus #408 H1). A command of the runner's, outside the pass's.
+type Ending struct {
+	Task types.TaskID
+	Node types.NodeID
+}
+
+func (Ending) action() string                     { return RunAction }
+func (e Ending) subject() string                  { return string(e.Node) }
+func (Ending) expected() []eventstore.Expectation { return nil }
 
 // Evaluate evaluates Task's Goals, each read at its version.
 type Evaluate struct {
@@ -444,11 +462,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
 	var heldReqs []Held
-	settled := true // none of the task's nodes is claimed or held
 	for _, n := range nodes {
-		if st := n.State.State; n.Task == admitted && (st == types.NodeStateStateClaimed || st == types.NodeStateStateHeld) {
-			settled = false
-		}
 		if err != nil || n.Task != admitted {
 			continue
 		}
@@ -562,7 +576,19 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			break
 		}
 	}
-	s.Candidate = err == nil && settled && graph.CandidateGo(nodes) // the board's done_candidate rule (22a-7)
+	if err == nil && graph.CandidateGo(nodes) { // the board's done_candidate rule (22a-7)
+		// authority.Endable, DoneTask's own rule (Opus #408 H1): ended, or a
+		// unit still running, which the runner ends (End).
+		var ending authority.ErrEnding
+		switch eerr := authority.Endable(tx, admitted, types.TaskDoneAsCandidate); {
+		case eerr == nil:
+			s.Candidate = true
+		case errors.As(eerr, &ending):
+			s.Ending = &Ending{Task: admitted, Node: ending.Node}
+		case !errors.Is(eerr, authority.ErrNotEndable):
+			err = eerr
+		}
+	}
 	return s, err
 }
 
@@ -586,6 +612,8 @@ func Decide(s Snapshot) []Action {
 		return []Action{Abandon{Task: s.Admitted}}
 	case s.Admitted.ID != "" && s.Candidate:
 		return []Action{Done{Task: s.Admitted}}
+	case s.Admitted.ID != "" && s.Ending != nil:
+		return []Action{*s.Ending}
 	case s.Admitted.ID != "" && s.Evaluates:
 		var out []Action
 		if len(s.Open) > 0 {
@@ -689,6 +717,9 @@ type Acceptor interface {
 	// it is due, forgetting any other it waited on, and returns false when
 	// it starts nothing (none due, or each going).
 	Reseal(nodes []types.NodeID) bool
+	// End ends what node, of a decided candidate's task, still runs, when
+	// its retry is due, and returns false when it starts nothing.
+	End(task types.TaskID, node types.NodeID) bool
 }
 
 // Runner is what Run does, outside any command.
@@ -740,6 +771,12 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 	}
 	if g, ok := a.(Gate); ok {
 		if x.Acceptor == nil || !x.Acceptor.Gate(types.NodeID(g.Node.ID)) {
+			return errNothing
+		}
+		return nil
+	}
+	if e, ok := a.(Ending); ok {
+		if x.Acceptor == nil || !x.Acceptor.End(e.Task, e.Node) {
 			return errNothing
 		}
 		return nil

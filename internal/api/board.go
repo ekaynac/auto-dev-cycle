@@ -21,6 +21,13 @@ package api
 //     column and carries its hold badges. A done task (task.done) is
 //     done_candidate as a candidate, or done with the abandoned badge when
 //     abandoned (its approval revoked), with its nodes and no admitted badge.
+//     While its candidate is decided but a unit of it still runs, its card
+//     says so (ending_blocked: authority.Endable's refusal, the loop's own
+//     rule, with the controller's phrase; a visible state, not a hold, as
+//     a completed node carries none).
+//   - A node card's round is its candidate's (graph.CandidateRound): a
+//     repair's accept, gate and review, recorded in round 1, show their
+//     build's round (Opus #408 L1).
 //   - A column is never guessed. A task whose records do not determine one
 //     (an unknown state, a node kind outside M1(a)'s template, nodes of a
 //     task not admitted or not recorded, a damaged record, ...) is listed
@@ -43,6 +50,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -104,7 +112,11 @@ var board = Resource{
 			case !recorded:
 				out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonDamagedRecord))
 			default:
-				out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project)))
+				ending, err := endingOf(tx, t, ns)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project), ending))
 			}
 		}
 		return out, nil
@@ -123,7 +135,7 @@ var board = Resource{
 		_, _, project, err := boardTask(tx, id)
 		return project, err
 	},
-	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "abandoned", "approval", "created_at", "nodes", "reason"},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "abandoned", "approval", "created_at", "nodes", "ending_blocked", "reason"},
 }
 
 // boardTask is task id's record (recorded: it exists and reads as one)
@@ -159,12 +171,13 @@ func unplaced(id types.TaskID, project *types.ProjectID, reason types.BoardUnpla
 }
 
 // boardCard is t's card over its nodes (node id order), its hold badges
-// aged at now, with their owner_ref only when ownerRefs; or t unplaced
-// when its records do not determine its column.
-func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool) types.BoardCard {
+// aged at now, with their owner_ref only when ownerRefs, and ending, its
+// ending_blocked (endingOf); or t unplaced when its records do not
+// determine its column.
+func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool, ending *types.BoardEndingBlocked) types.BoardCard {
 	project := t.Project
 	c := &types.BoardPlacedCard{Type: "placed", ID: t.ID, Project: t.Project, Title: t.Spec.Title, Admitted: t.State == authority.TaskAdmitted,
-		Approval: types.BoardPlacedCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardNodeCard{}}
+		Approval: types.BoardPlacedCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardNodeCard{}, EndingBlocked: ending}
 	if a := t.Approval; a != nil {
 		if a.Status != authority.ApprovalInForce && a.Status != authority.ApprovalRevoked {
 			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
@@ -198,6 +211,9 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonDamagedRecord)
 		}
 		card, reason := nodeCard(n, now, ownerRefs)
+		if r := graph.CandidateRound(nodes, n.Node); r > 0 { // a stage's round is its candidate's (Opus #408 L1)
+			card.Round = r
+		}
 		if reason != "" {
 			return unplaced(t.ID, &project, reason)
 		}
@@ -223,6 +239,26 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 		}
 	}
 	return types.BoardCard{Variant: c}
+}
+
+// endingOf is t's ending_blocked: its candidate decided (graph.CandidateGo,
+// the loop's rule) while authority.Endable, the loop's and DoneTask's rule,
+// refuses its end because a unit of it still runs (authority.ErrEnding),
+// with that refusal's phrase, never its text (#226 entry 166); nil
+// otherwise.
+func endingOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) (*types.BoardEndingBlocked, error) {
+	if t.State != authority.TaskAdmitted || !graph.CandidateGo(nodes) {
+		return nil, nil
+	}
+	var e authority.ErrEnding
+	switch err := authority.Endable(tx, t.ID, types.TaskDoneAsCandidate); {
+	case errors.As(err, &e):
+		return &types.BoardEndingBlocked{Unit: e.Unit, Cause: types.BoardEndingBlockedCause(e.Cause())}, nil
+	case err == nil, errors.Is(err, authority.ErrNotEndable):
+		return nil, nil
+	default:
+		return nil, err
+	}
 }
 
 // nodeCard is n's card: a badge per hold (hold, signal, owner, age at now)

@@ -137,7 +137,7 @@ func TestAdmission(t *testing.T) {
 	if _, ok := b.admitted(); ok || b.admitNext() != nil || b.head() != h {
 		t.Fatalf("a second admission while %s is admitted and held", first)
 	}
-	if err := b.done(first); !errors.Is(err, eventstore.ErrStaleExpectedState) {
+	if err := b.done(first); !errors.Is(err, authority.ErrNotEndable) {
 		t.Errorf("a done while the build is held: %v", err)
 	}
 	if err := b.raw(authority.TaskDoneEvent, first, func(at types.Time) any {
@@ -315,7 +315,7 @@ func TestAdmissionRevokedApproval(t *testing.T) {
 			return authority.AbandonTask(tx, types.TaskID(admitted))
 		})
 	}
-	if err := abandon(); !errors.Is(err, eventstore.ErrStaleExpectedState) {
+	if err := abandon(); !errors.Is(err, authority.ErrNotEndable) {
 		t.Errorf("abandoning a task whose approval is in force: %v", err)
 	}
 	if err := b.as(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {

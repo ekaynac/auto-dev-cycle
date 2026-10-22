@@ -24,8 +24,9 @@ package daemon
 //     abandoned (Done, abandoned).
 //
 // No read holds the acceptance digest or the canary (the hidden test's
-// name, which only the gate's stream carries): every read the CLI has but
-// the event stream (the log, which is the record), as the operator.
+// name, which only the gate's stream carries, passing or failing): every
+// read the CLI has, the event stream included (Opus #408 L2, L3), as the
+// operator.
 
 import (
 	"bytes"
@@ -35,6 +36,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,21 +151,24 @@ func (r restarted) wait(t *testing.T, task types.TaskID, state string) int {
 // noLeak requires that no read the CLI has (every one but the event
 // stream), as the operator, holds the acceptance digest or the canary,
 // in task's show and every other read.
-func (r restarted) noLeak(t *testing.T, task types.TaskID) {
+func (r restarted) noLeak(t *testing.T, task types.TaskID, canaries ...string) {
 	t.Helper()
 	for resource, line := range cli.ReadCommands() {
-		if resource == "events" {
-			continue // the log is the record, not a read of it
-		}
 		args := append(strings.Fields(strings.TrimPrefix(line, "adc ")), "--json")
 		if resource == "tasks" {
 			args = []string{"task", "show", string(task), "--json"}
 		}
-		code, out, errb := r.c.adc(r.tok, args...)
-		if code != entry.ExitOK {
+		var code int
+		var out, errb string
+		if resource == "events" { // the stream from its start, read for a bounded time: it has no end (Opus #408 L2)
+			code, out, errb = r.c.adcWithin(3*time.Second, r.tok, "events", "--follow", "--after", "0", "--json")
+			if !strings.Contains(out, `"seq":1,`) {
+				t.Errorf("the event stream read nothing: %d %s", code, errb)
+			}
+		} else if code, out, errb = r.c.adc(r.tok, args...); code != entry.ExitOK {
 			t.Errorf("%s: %d %s", line, code, errb)
 		}
-		for _, secret := range []string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary} {
+		for _, secret := range append([]string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary}, canaries...) {
 			if strings.Contains(out, secret) {
 				t.Errorf("%s holds %q: %s", line, secret, out)
 			}
@@ -428,13 +433,27 @@ func TestTheLoopEndsADecidedCandidate(t *testing.T) {
 	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Claim(tx, plan.ID, map[string]graph.Resolved{}, 1)
 	})
-	rw.w.view(func(tx *eventstore.Tx) error {
-		s, err := reconcile.Observe(tx, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true})
-		if err != nil || s.Candidate || slices.ContainsFunc(reconcile.Decide(s), func(a reconcile.Action) bool { _, done := a.(reconcile.Done); return done }) {
-			t.Errorf("a decided candidate with a node claimed: candidate %v, %v", s.Candidate, err)
-		}
-		return nil
+	noDone := func(what string) {
+		rw.w.view(func(tx *eventstore.Tx) error {
+			s, err := reconcile.Observe(tx, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true})
+			if err != nil || s.Candidate || s.Ending != nil || slices.ContainsFunc(reconcile.Decide(s), func(a reconcile.Action) bool {
+				_, done := a.(reconcile.Done)
+				return done
+			}) {
+				t.Errorf("a decided candidate with a node %s: candidate %v, ending %v, %v", what, s.Candidate, s.Ending, err)
+			}
+			return nil
+		})
+	}
+	noDone("claimed")
+	// Opus #408 M1 (E2): a held node, likewise.
+	hid := types.HoldID(newID(t, "hld"))
+	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Raise(tx, plan.ID, types.NodeHold{ID: hid, Hold: vocab.HoldReviewerUnavailable, SignalInstance: "test:held", Owner: types.OwnerSystem,
+			Pages: []types.NodeHoldPagesItem{}}, nil)
 	})
+	noDone("held")
+	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Clear(tx, plan.ID, hid, "test:held") })
 	rw.passesFor(t, 6, 0) // the loop records the plan, then ends the task
 	rw.w.view(func(tx *eventstore.Tx) error {
 		v, err := graph.ViewOf(tx, plan.ID)
@@ -518,6 +537,117 @@ func TestADoneCandidateIsTheLastRounds(t *testing.T) {
 		rw.passesFor(t, 4, 0)
 		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
 			t.Error("the task is done with its last round held")
+		}
+		// Opus #408 L3: a gate red on the hidden test keeps its name off
+		// every read, the hold badges and task show included.
+		restartOn(t, rw).noLeak(t, rw.task, hiddenTest)
+	})
+}
+
+// unsealedReview is candidateRun whose review's go result is committed
+// and whose seal fails (sealWith) from the review's run on, failing at
+// most fails seals (-1: every one): its attempt left finishing, its
+// lease active, as a failed blob publish leaves it (Opus #408 H1). The
+// runner's log is returned; retryBase is a minute, so a pass never
+// retries twice in the rows' time.
+func unsealedReview(t *testing.T, fails int) (*runWorld, *logBuffer) {
+	t.Helper()
+	var n atomic.Int64
+	log := &logBuffer{}
+	rw := candidateRun(t, func(rw *runWorld) {
+		rw.r.log = log
+		sealWith = func(tx *eventstore.Tx, a types.AttemptID, rev int64, u lease.Units, p lease.Publisher, d *types.Digest, ig []string, by types.ActorID) ([]eventstore.Event, error) {
+			if fails < 0 || n.Add(1) <= int64(fails) {
+				return nil, errors.New("the seal's blob could not be published under /var/lib/adc/blobs")
+			}
+			return lease.SealWith(tx, a, rev, u, p, d, ig, by)
+		}
+	})
+	t.Cleanup(func() { sealWith = lease.SealWith })
+	return rw, log
+}
+
+// endingCard is the task read's card for task, as the operator, through
+// the API (no restart: the restart's sweep would end what still runs).
+func endingCard(t *testing.T, rw *runWorld) types.BoardPlacedCard {
+	t.Helper()
+	placed, ok := taskReadAs(t, rw.w, rw.w.op, rw.task).Card.Variant.(*types.BoardPlacedCard)
+	if !ok {
+		t.Fatal("the task's card is not placed")
+	}
+	return *placed
+}
+
+// Opus #408 H1 (#226 entry 166): a decided candidate whose review attempt
+// did not end is ended at runtime, by the runner's End (endOne), never by
+// a restart:
+//   - its seal failing once: the task ends at runtime;
+//   - its seal never landing: End retries with backoff (one try per
+//     retryBase, however many passes), the cause logged once; the card
+//     says ending_blocked, with the unit and the controller's phrase (one
+//     of authority.EndingCauses, never the error's text); the task is not
+//     done; once the fault clears and the retry is due, the task ends with
+//     no restart.
+func TestADecidedCandidateEndsAtRuntime(t *testing.T) {
+	t.Run("the seal fails once", func(t *testing.T) {
+		rw, _ := unsealedReview(t, 1)
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+			t.Fatalf("the task after one failed seal: %s %s", st, as)
+		}
+	})
+	t.Run("the seal never lands, then does", func(t *testing.T) {
+		rw, log := unsealedReview(t, -1)
+		review := reviewNodes(rw)[types.NodeKindReview]
+		if review.State.State != types.NodeStateStateCompleted {
+			t.Fatalf("the review: %s", review.State.State)
+		}
+		rw.passesFor(t, 12, 0)
+		rw.r.mu.Lock()
+		tries := rw.r.ending[review.Node.ID].tries
+		rw.r.mu.Unlock()
+		if tries != 1 {
+			t.Errorf("End tried %d times in 12 passes within retryBase, want 1", tries)
+		}
+		if n := strings.Count(log.String(), "could not be ended"); n != 1 {
+			t.Errorf("the cause logged %d times: %s", n, log.String())
+		}
+		rw.r.mu.Lock()
+		e := rw.r.ending[review.Node.ID]
+		e.next = time.Now() // a second try due, the same cause: not logged again
+		rw.r.ending[review.Node.ID] = e
+		rw.r.mu.Unlock()
+		rw.passesFor(t, 4, 0)
+		rw.r.mu.Lock()
+		tries = rw.r.ending[review.Node.ID].tries
+		rw.r.mu.Unlock()
+		if n := strings.Count(log.String(), "could not be ended"); tries != 2 || n != 1 {
+			t.Errorf("a second try: %d tries, the cause logged %d times: %s", tries, n, log.String())
+		}
+		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+			t.Fatal("the task is done with its review's attempt unsealed")
+		}
+		c := endingCard(t, rw)
+		if c.EndingBlocked == nil || c.EndingBlocked.Unit != graph.UnitOf(review.Node.ID) || string(c.EndingBlocked.Cause) != authority.EndingSeal ||
+			c.Column != types.BoardPlacedCardColumnDoneCandidate {
+			t.Fatalf("the card: %+v (blocked %+v)", c, c.EndingBlocked)
+		}
+		raw, _ := json.Marshal(c)
+		if !slices.Contains(authority.EndingCauses, string(c.EndingBlocked.Cause)) || bytes.Contains(raw, []byte("/var/lib")) || bytes.Contains(raw, []byte("blob")) {
+			t.Errorf("the card's cause is not one of the controller's phrases: %s", raw)
+		}
+		sealWith = lease.SealWith // the fault clears
+		rw.r.mu.Lock()
+		e = rw.r.ending[review.Node.ID]
+		e.next = time.Now() // the retry is due (retryBase passed)
+		rw.r.ending[review.Node.ID] = e
+		rw.r.mu.Unlock()
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+			t.Fatalf("the task once the fault cleared: %s %s", st, as)
+		}
+		if c := endingCard(t, rw); c.EndingBlocked != nil {
+			t.Errorf("the ended task's card: %+v", c.EndingBlocked)
 		}
 	})
 }
