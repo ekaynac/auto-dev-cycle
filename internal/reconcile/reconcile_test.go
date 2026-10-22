@@ -42,6 +42,8 @@ func TestDecide(t *testing.T) {
 		"a build to place, nothing open":         {Snapshot{Admitted: admitted, Unplaced: []Versioned{build}, Evaluates: true}, []Action{Match{Node: build}}},
 		"a build to place, evaluation off":       {Snapshot{Admitted: admitted, Unplaced: []Versioned{build}, DayHeld: []Held{held}}, nil},
 		"a build to place, the approval revoked": {Snapshot{Admitted: admitted, Revoked: true, Unplaced: []Versioned{build}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
+		"a plan to record, then a build":         {Snapshot{Admitted: admitted, Plans: []Versioned{plan}, Unplaced: []Versioned{build}, Evaluates: true}, []Action{Plan{Node: plan}, Match{Node: build}}},
+		"a plan to record, evaluation off":       {Snapshot{Admitted: admitted, Plans: []Versioned{plan}}, nil},
 	} {
 		if got := Decide(c.s); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %#v, want %#v", name, got, c.want)

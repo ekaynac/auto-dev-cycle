@@ -75,7 +75,8 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, every 
 	if every == 0 {
 		every = reconcileEvery
 	}
-	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: placerOf(reg, images)}
+	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: placerOf(reg, images),
+		Planner: planner{blobs: d.blobs, env: env(d, reg)}}
 	return reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
 }
 

@@ -117,6 +117,16 @@ func TaskAcceptance(tx *eventstore.Tx, id types.TaskID) ([]types.Digest, error) 
 	return out, nil
 }
 
+// TaskOf is task id's record (Task: its spec, digest and acceptance); an
+// unrecorded task is an error.
+func TaskOf(tx *eventstore.Tx, id types.TaskID) (types.Task, error) {
+	t, ok, err := loadJSON[TaskRecord](tx, TaskProjection, id)
+	if err == nil && !ok {
+		err = fmt.Errorf("authority: task %s has no record", id)
+	}
+	return t.Task, err
+}
+
 // TaskCreateHandler derives task.create.
 type TaskCreateHandler struct{}
 

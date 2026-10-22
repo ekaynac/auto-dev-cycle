@@ -84,6 +84,7 @@ func placingWith(t *testing.T, perDay *int64, edit func(map[string]any)) (*seede
 	}
 	x := reconcile.Executor{Store: w.s, System: p, Kinds: nodeKinds(), Placer: pl,
 		Env: graph.Env{Authority: authority.Answers{}, Need: needs, Blobs: w.blobs, Families: reg, Rails: rails}}
+	x.Planner = planner{blobs: w.blobs, env: x.Env} // the loop records the plan's brief itself (22a-5c-3)
 	// The project's profile allows the stub destination.
 	op := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(op) })
@@ -161,10 +162,7 @@ func TestTheLoopPlacesTheBuild(t *testing.T) {
 			_, task := readyTask(t, w, sys)
 			l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
 			passes(t, l)
-			plan, build := templateNodes(w, task)[types.NodeKindPlan], templateNodes(w, task)[types.NodeKindBuild]
-			if err := planResult(t, w, sys, plan); err != nil {
-				t.Fatal(err)
-			}
+			build := templateNodes(w, task)[types.NodeKindBuild]
 			passes(t, l)
 			if c.perDay < 1<<50 {
 				st := nodesOf(w, task)[types.NodeKindBuild].State
@@ -221,10 +219,7 @@ func TestTheLaunchStartsTheMatchedBuild(t *testing.T) {
 			_, task := readyTask(t, w, sys)
 			l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
 			passes(t, l)
-			plan, build := templateNodes(w, task)[types.NodeKindPlan], templateNodes(w, task)[types.NodeKindBuild]
-			if err := planResult(t, w, sys, plan); err != nil {
-				t.Fatal(err)
-			}
+			build := templateNodes(w, task)[types.NodeKindBuild]
 			passes(t, l)
 			ls, live := leaseOn(w, build)
 			if !live {
@@ -282,10 +277,7 @@ func TestAConfigurationRefusalHoldsTheBuild(t *testing.T) {
 			var log bytes.Buffer
 			l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, &log)
 			passes(t, l)
-			plan, build := templateNodes(w, task)[types.NodeKindPlan], templateNodes(w, task)[types.NodeKindBuild]
-			if err := planResult(t, w, sys, plan); err != nil {
-				t.Fatal(err)
-			}
+			build := templateNodes(w, task)[types.NodeKindBuild]
 			passes(t, l)
 			st := nodesOf(w, task)[types.NodeKindBuild].State
 			if st.State != types.NodeStateStateHeld || len(st.Holds) != 1 || st.Holds[0].Hold != "source_invalid_config" ||
@@ -326,19 +318,17 @@ func TestTheLoopLogsEachRefusalOnce(t *testing.T) {
 	wide := int64(1 << 50)
 	w, sys, x, _ := placing(t, &wide)
 	_, task := readyTask(t, w, sys)
+	reasons := refusing{}
+	x.Placer = reasons // nothing is placed
 	l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
 	passes(t, l)
-	plan, build := templateNodes(w, task)[types.NodeKindPlan], templateNodes(w, task)[types.NodeKindBuild]
-	if err := planResult(t, w, sys, plan); err != nil {
-		t.Fatal(err)
-	}
+	build := templateNodes(w, task)[types.NodeKindBuild]
 	other := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindBuild, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
 		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 	w.do(sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Record(types.NodeRecorded{Task: task, Project: graphProject, Node: other})
 	})
-	reasons := refusing{build: "the first reason", other.ID: "the second reason"}
-	x.Placer = reasons
+	reasons[build], reasons[other.ID] = "the first reason", "the second reason"
 	var log bytes.Buffer
 	l = reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, &log)
 	for range 4 {
@@ -369,10 +359,7 @@ func TestAPlacementHoldClearsOnceConfigured(t *testing.T) {
 	_, task := readyTask(t, w, sys)
 	l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
 	passes(t, l)
-	plan, build := templateNodes(w, task)[types.NodeKindPlan], templateNodes(w, task)[types.NodeKindBuild]
-	if err := planResult(t, w, sys, plan); err != nil {
-		t.Fatal(err)
-	}
+	build := templateNodes(w, task)[types.NodeKindBuild]
 	passes(t, l)
 	if st := nodesOf(w, task)[types.NodeKindBuild].State; st.State != types.NodeStateStateHeld {
 		t.Fatalf("the build under no USD rail: %+v", st)
@@ -407,6 +394,7 @@ func TestAPlacementHoldClearsOnceConfigured(t *testing.T) {
 func TestADayHoldOnAPlanIsNotReopened(t *testing.T) {
 	wide := int64(1 << 50)
 	w, sys, x, _ := placing(t, &wide)
+	x.Planner = nil // the plan stays claimed
 	_, task := readyTask(t, w, sys)
 	var log bytes.Buffer
 	l := reconcile.NewLoop(x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, &log)

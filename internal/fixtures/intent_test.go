@@ -51,8 +51,10 @@ func TestIntentLoad(t *testing.T) {
 	alias, tree, clean := refOf("alias-1", accepted), refOf("tree-1", digest("1"), "alias-1"), refOf("tree-2", digest("2"))
 	decision, relay := refOf("decision-1", digest("9")), refOf("relay-1", digest("9"))
 	for i, value := range [][]types.Ref{{alias, tree}, {clean}, {relay}} {
-		if _, _, err := g.complete(types.NodeKindPlan, json.RawMessage(`{"n":`+string(rune('0'+i))+`}`), []types.InputSpec{}, map[string]graph.Resolved{},
-			types.ResultKindPlan, value, nil); err != nil {
+		// Built: a plan node's ref is honoured only as its task's own brief
+		// (#226 entry 117; TestThePlanBrief).
+		if _, _, err := g.complete(types.NodeKindBuild, json.RawMessage(`{"n":`+string(rune('0'+i))+`}`), []types.InputSpec{}, map[string]graph.Resolved{},
+			types.ResultKindPatch, value, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

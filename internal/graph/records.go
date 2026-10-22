@@ -31,6 +31,9 @@ type RefRecord struct {
 	Type          types.RefType
 	ContentDigest types.Digest
 	Lineage       []string
+	Restrictions  []types.Restriction // the ref's, as recorded: a plan brief's is checked (intent, Opus 22a-5c-3 M1)
+	Project       types.ProjectID     // the ref's scope's project, "" when none: a plan brief's is checked (r2 L2)
+	Framework     bool                // the ref's scope is the framework's: never a plan brief's (Mythos L2)
 	Producer      types.NodeKind
 	Sanitised     bool
 	BuilderSafe   bool
@@ -106,10 +109,10 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		if n > maxTaskRefs || lineage > maxTaskLineage || idBytes > maxTaskIDBytes {
 			return fmt.Errorf("graph: task %s holds over %d refs, %d lineage entries or %d bytes of ids", task, maxTaskRefs, maxTaskLineage, maxTaskIDBytes)
 		}
-		rec := RefRecord{ID: r.ID, Type: r.Type, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Producer: producer,
-			Sanitised: sanitised, BuilderSafe: safe}
+		rec := RefRecord{ID: r.ID, Type: r.Type, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Restrictions: cloneRestrictions(r.Restrictions),
+			Project: ScopeProject(r.Scope), Framework: r.Scope.Framework, Producer: producer, Sanitised: sanitised, BuilderSafe: safe}
 		if prior, ok := byID[r.ID]; ok && (prior.Type != rec.Type || prior.ContentDigest != rec.ContentDigest || !slices.Equal(prior.Lineage, rec.Lineage) || prior.Producer != rec.Producer ||
-			prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe) {
+			prior.Sanitised != rec.Sanitised || prior.BuilderSafe != rec.BuilderSafe || prior.Project != rec.Project || prior.Framework != rec.Framework || !slices.EqualFunc(prior.Restrictions, rec.Restrictions, SameRestriction)) {
 			ambiguous[r.ID] = true
 		}
 		if producer == types.NodeKindReview {
@@ -169,9 +172,34 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 	}
 	return Recorded{Resolve: func(id string) (RefRecord, bool, error) {
 		rec, ok := byID[id]
-		rec.Lineage = slices.Clone(rec.Lineage)
+		rec.Lineage, rec.Restrictions = slices.Clone(rec.Lineage), cloneRestrictions(rec.Restrictions)
 		return rec, ok && !ambiguous[id], nil
 	}, Reviewed: reviewed}, nil
+}
+
+// SameRestriction: a and b are one restriction, an empty list of allowed
+// destinations equal to a missing one (Opus 22a-5c-3 r2 L3).
+func SameRestriction(a, b types.Restriction) bool {
+	return a.Project == b.Project && a.PolicyDigest == b.PolicyDigest && a.Floor == b.Floor && a.Routing == b.Routing &&
+		slices.Equal(a.AllowedDestinations, b.AllowedDestinations)
+}
+
+// ScopeProject is s's project, "" when it names none.
+func ScopeProject(s types.RefScope) types.ProjectID {
+	if s.Project == nil {
+		return ""
+	}
+	return *s.Project
+}
+
+// cloneRestrictions is a deep copy of rs.
+func cloneRestrictions(rs []types.Restriction) []types.Restriction {
+	out := make([]types.Restriction, len(rs))
+	for i, r := range rs {
+		out[i] = r
+		out[i].AllowedDestinations = slices.Clone(r.AllowedDestinations)
+	}
+	return out
 }
 
 // AttemptNode is the node attempt ran for, as recorded (its task and

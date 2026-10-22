@@ -190,6 +190,9 @@ func (t *Tx) Emit(evs ...Event) error {
 	return nil
 }
 
+// Emitted is how many events the logic has emitted so far (Emit).
+func (t *Tx) Emitted() int { return len(t.emitted) }
+
 // Now is the command's one clock reading: every time decision in the
 // command (authorization, grant validity, proposal creation, the logic's
 // times) reads it, and every event the command appends is recorded at it
