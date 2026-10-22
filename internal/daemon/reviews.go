@@ -36,7 +36,11 @@ package daemon
 // 22a-6a H1, re-check H1); a held requirement it moves off is retired with
 // it (the supersession's fold). No independent roster: the hold stays. A
 // roster that changes after the review's claim is caught at the commit
-// (graph.reviewIndependent, 22a-6c; stated, Opus 22a-6a L2).
+// (graph.reviewIndependent, 22a-6c; stated, Opus 22a-6a L2); one that
+// changes after the claim and before the placement leaves the review
+// claimed and unplaced: dispatch.Match refuses it (logged once per start),
+// and 22a-6c re-derives it as Unheld does: releases its claim, holds it,
+// or supersedes it (OBLIGATION, Opus 22a-6a round 3 M1).
 
 import (
 	"encoding/json"
