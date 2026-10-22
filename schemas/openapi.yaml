@@ -2039,6 +2039,7 @@ components:
             - outcome
             - reason
             - tokens
+            - charge
           properties:
             attempt:
               $ref: ../common/defs.json#/$defs/AttemptID
@@ -2073,6 +2074,38 @@ components:
               oneOf:
                 - type: "null"
                 - $ref: '#/$defs/Tokens'
+            charge:
+              description: What the model calls bound to the attempt's lease cost, at the lease's registry price (Lease.Price, ledger.PriceMicros); null with no call, and null unless the reader also reads model calls in the task's project.
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/Charge'
+        Charge:
+          type: object
+          additionalProperties: false
+          required:
+            - settled_usd_micros
+            - outstanding_usd_micros
+            - outstanding_calls
+          properties:
+            settled_usd_micros:
+              description: The settled calls' usage at the lease's price, in USD micros; null when it is unknown (the lease records no price, or a settled call's usage is unknown, saturated or inconsistent), never zero for unknown.
+              oneOf:
+                - type: "null"
+                - type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+            outstanding_usd_micros:
+              description: 'The calls not settled yet, listed apart, as the USD rail counts them: while the lease is live, its reservation or the usage so far, the larger, at the higher token rate; once it has ended, the liability its settlement kept. Null when the lease records no price, or the figure passes the contract''s integers.'
+              oneOf:
+                - type: "null"
+                - type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+            outstanding_calls:
+              description: How many calls are not settled yet.
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
         Tokens:
           type: object
           additionalProperties: false

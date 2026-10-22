@@ -149,6 +149,9 @@ type Snapshot struct {
 	// nodes, which the controller runs (P22a-5c-2b-2, P22a-5c-2b-3).
 	Accepts []Versioned
 	Gated   []Versioned
+	// Unsealed are its claimed accept nodes whose input's build attempt is
+	// not sealed yet: the seal the controller re-runs (P22a-5c-2c).
+	Unsealed []Versioned
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
 	Next Versioned
@@ -229,6 +232,17 @@ type Gate struct{ Node Versioned }
 func (Gate) action() string    { return RunAction }
 func (g Gate) subject() string { return g.Node.ID }
 func (Gate) expected() []eventstore.Expectation {
+	return nil
+}
+
+// Reseal starts the controller's seals of the build attempts claimed
+// accept nodes' inputs wait on (Acceptor's Reseal), the pass's whole list:
+// never a command of its own.
+type Reseal struct{ Nodes []Versioned }
+
+func (Reseal) action() string  { return RunAction }
+func (Reseal) subject() string { return "unsealed" }
+func (Reseal) expected() []eventstore.Expectation {
 	return nil
 }
 
@@ -332,9 +346,13 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			s.Open = append(s.Open, v)
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindAccept:
 			var sealed bool
-			if sealed, err = SealedInput(tx, n.Node.ID); err == nil && sealed {
+			if sealed, err = SealedInput(tx, n.Node.ID); err == nil {
 				v.Version, err = tx.SubjectVersion(v.ID)
-				s.Accepts = append(s.Accepts, v)
+				if sealed {
+					s.Accepts = append(s.Accepts, v)
+				} else {
+					s.Unsealed = append(s.Unsealed, v)
+				}
 			}
 		case st == types.NodeStateStateClaimed && g.Evaluates && n.Node.Kind == types.NodeKindGate:
 			v.Version, err = tx.SubjectVersion(v.ID)
@@ -415,6 +433,9 @@ func Decide(s Snapshot) []Action {
 		for _, n := range s.Gated {
 			out = append(out, Gate{Node: n})
 		}
+		if len(s.Unsealed) > 0 {
+			out = append(out, Reseal{Nodes: slices.Clone(s.Unsealed)})
+		}
 		return out
 	}
 	return nil
@@ -450,6 +471,11 @@ type Acceptor interface {
 	Accept(node types.NodeID) bool
 	// Gate starts node's gate run, likewise.
 	Gate(node types.NodeID) bool
+	// Reseal starts the seal of the build attempt each accept node of nodes
+	// (every one the pass found waiting on its input's seal) waits on, when
+	// it is due, forgetting any other it waited on, and returns false when
+	// it starts nothing (none due, or each going).
+	Reseal(nodes []types.NodeID) bool
 }
 
 // Runner is what Run does, outside any command.
@@ -501,6 +527,16 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 	}
 	if g, ok := a.(Gate); ok {
 		if x.Acceptor == nil || !x.Acceptor.Gate(types.NodeID(g.Node.ID)) {
+			return errNothing
+		}
+		return nil
+	}
+	if rs, ok := a.(Reseal); ok {
+		nodes := make([]types.NodeID, 0, len(rs.Nodes))
+		for _, n := range rs.Nodes {
+			nodes = append(nodes, types.NodeID(n.ID))
+		}
+		if x.Acceptor == nil || !x.Acceptor.Reseal(nodes) {
 			return errNothing
 		}
 		return nil

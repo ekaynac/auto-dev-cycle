@@ -168,6 +168,10 @@ export interface FirstAttempt {
    * The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call, and null unless the reader also reads model calls (the model_call read kind) in the task's project.
    */
   tokens: null | Tokens;
+  /**
+   * What the model calls bound to the attempt's lease cost, at the lease's registry price (Lease.Price, ledger.PriceMicros); null with no call, and null unless the reader also reads model calls in the task's project.
+   */
+  charge: null | Charge;
 }
 /**
  * This interface was referenced by `TaskRead`'s JSON-Schema
@@ -176,4 +180,22 @@ export interface FirstAttempt {
 export interface Tokens {
   in: number;
   out: number;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "Charge".
+ */
+export interface Charge {
+  /**
+   * The settled calls' usage at the lease's price, in USD micros; null when it is unknown (the lease records no price, or a settled call's usage is unknown, saturated or inconsistent), never zero for unknown.
+   */
+  settled_usd_micros: null | number;
+  /**
+   * The calls not settled yet, listed apart, as the USD rail counts them: while the lease is live, its reservation or the usage so far, the larger, at the higher token rate; once it has ended, the liability its settlement kept. Null when the lease records no price, or the figure passes the contract's integers.
+   */
+  outstanding_usd_micros: null | number;
+  /**
+   * How many calls are not settled yet.
+   */
+  outstanding_calls: number;
 }

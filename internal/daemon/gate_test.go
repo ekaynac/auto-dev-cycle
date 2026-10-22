@@ -178,15 +178,20 @@ func TestTheGateRunGatesTheAcceptedTree(t *testing.T) {
 // P22a-5c-2b-3: a gate that cannot run is could_not_run/
 // controller_run_failed, never a green, recorded with no attempt, and the
 // node is held, never run again by the next pass: a base whose gate is not
-// green, and a sandbox that fails the run.
+// green, held at once ("runner: failed": Opus 22a-5c-2b-3 M2), its only
+// package failing to build with no test result among them (Astra chunk 1
+// M2), and a sandbox that fails the run, held for a retry.
 func TestAGateThatCannotRunCouldNotRun(t *testing.T) {
 	for name, c := range map[string]struct {
 		base   string
 		fail   error
 		detail string
+		held   string
 	}{
-		"a red base":         {base: goEvents("TestA=fail"), detail: "not green"},
-		"the sandbox failed": {base: goEvents("TestA=pass"), fail: errors.New("podman: the run failed"), detail: "could not run"},
+		"a red base": {base: goEvents("TestA=fail"), detail: "not green", held: string(runnerFailed)},
+		"a base that does not build": {base: fmt.Sprintf(`{"Action":"start","Package":%q}`+"\n"+`{"Action":"output","Package":%q,"Output":"FAIL\t%s [build failed]\n"}`+"\n"+`{"Action":"fail","Package":%q}`+"\n",
+			gateModule, gateModule, gateModule, gateModule), detail: "not green", held: string(runnerFailed)},
+		"the sandbox failed": {base: goEvents("TestA=pass"), fail: errors.New("podman: the run failed"), detail: "could not run", held: reconcile.RunnerSignal("retry 1 until ")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := gateWorld(t, c.base, map[string]string{"README.md": "hello\n"}, c.fail)
@@ -198,7 +203,7 @@ func TestAGateThatCannotRunCouldNotRun(t *testing.T) {
 				}
 			}
 			got := resultsOn(t, rw.w, v.Node.ID)
-			if held == "" || len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun ||
+			if !strings.HasPrefix(held, c.held) || len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun ||
 				got[0].Result.Reason != vocab.ReasonControllerRunFailed || !strings.Contains(got[0].Result.Detail, c.detail) {
 				t.Errorf("the gate after it could not run: %s, held on %q, results %+v", v.State.State, held, got)
 			}

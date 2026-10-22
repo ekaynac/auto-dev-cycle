@@ -128,7 +128,11 @@ type runner struct {
 	mu    sync.Mutex
 	live  map[types.NodeID]bool
 	tries map[types.NodeID]int // failures before the launch in a row, by node (holdOn)
-	runs  sync.WaitGroup
+	// waiting: since when each claimed accept node waits on its input's
+	// seal; resealTries: the failed seals of it in a row (Reseal).
+	waiting     map[types.NodeID]time.Time
+	resealTries map[types.NodeID]int
+	runs        sync.WaitGroup
 }
 
 var _ reconcile.Runner = (*runner)(nil)
@@ -636,6 +640,10 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 	signal := runnerDirs
 	switch {
 	case !dirs:
+	case errors.Is(cause, errImageMissing):
+		signal = runnerImage
+	case errors.Is(cause, accept.ErrGuardRun): // a guard that did not run: a bounded retry, whatever it wraps (a sandbox.ErrSpec included; #226 entry 147)
+		n, signal = r.retrySignal(tx, node)
 	case configFault(cause):
 		d, _, err := authority.ProjectProfileDigest(tx, v.Project)
 		if err != nil {
@@ -645,14 +653,7 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 	case contentFault(cause):
 		signal = runnerFailed
 	default:
-		r.mu.Lock()
-		n = r.tries[node] + 1
-		r.mu.Unlock()
-		signal = runnerFailed
-		if n < maxTries {
-			until := tx.Now().Add(retryBase << (n - 1)).UTC().Format(time.RFC3339Nano)
-			signal = reconcile.RunnerSignal(fmt.Sprintf("retry %d until %s", n, until))
-		}
+		n, signal = r.retrySignal(tx, node)
 	}
 	id, err := ids.New("hld")
 	if err != nil {
@@ -664,6 +665,48 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 		return nil, 0, err
 	}
 	return evs, n, nil
+}
+
+// runnerImage is the hold of a node whose run found its profile's pinned
+// image absent (errImageMissing).
+var runnerImage = reconcile.RunnerSignal("image")
+
+// imageResolveBound bounds the image's resolution a hold's check makes,
+// in the writer's command (Unblock), as the launch's readiness does
+// outside it.
+const imageResolveBound = 5 * time.Second
+
+// imageReady reports whether node's project's one pinned image resolves
+// now: its image hold clears (Opus 22a-5c-2b-3 M1).
+func (r *runner) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) {
+	v, err := graph.ViewOf(tx, node)
+	if err != nil {
+		return false, err
+	}
+	prof, ok, err := authority.ProjectProfile(tx, v.Project)
+	if err != nil || !ok || len(prof.Toolchain.Images) != 1 {
+		return false, err
+	}
+	for _, ref := range prof.Toolchain.Images {
+		ctx, cancel := context.WithTimeout(context.Background(), imageResolveBound)
+		_, rerr := r.place.d.Images.Resolve(ctx, string(ref))
+		cancel()
+		return rerr == nil, nil
+	}
+	return false, nil
+}
+
+// retrySignal is node's next bounded retry: its count, and "retry <n>
+// until <time>", or "failed" once maxTries are spent.
+func (r *runner) retrySignal(tx *eventstore.Tx, node types.NodeID) (int, string) {
+	r.mu.Lock()
+	n := r.tries[node] + 1
+	r.mu.Unlock()
+	if n >= maxTries {
+		return n, runnerFailed
+	}
+	until := tx.Now().Add(retryBase << (n - 1)).UTC().Format(time.RFC3339Nano)
+	return n, reconcile.RunnerSignal(fmt.Sprintf("retry %d until %s", n, until))
 }
 
 // raise is graph.Raise; a test makes it fail.
@@ -691,6 +734,8 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 		return r.dirsReady(), nil
 	case signal == runnerFailed:
 		return false, nil
+	case signal == runnerImage:
+		return r.imageReady(tx, node)
 	}
 	if _, err := fmt.Sscanf(signal, reconcile.RunnerSignal("retry %d until %s"), &n, &until); err == nil {
 		t, err := time.Parse(time.RFC3339Nano, until)
@@ -781,43 +826,62 @@ func (r *runner) abandon(ctx context.Context, pl plan, node types.NodeID, attemp
 func (r *runner) record(ctx context.Context, l types.LeaseID, node types.NodeID, attempt types.AttemptID, submitted bool, diff *types.Digest, ignored []string,
 	result func(types.ComputationKey) (types.Result, error)) error {
 	var recorded *types.Result
-	commit := func(withAttempt bool) func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			v, err := graph.ViewOf(tx, node)
-			if err != nil || v.State.Key == nil {
-				return nil, errors.Join(err, fmt.Errorf("node %s holds no claim", node))
-			}
-			res, err := result(*v.State.Key)
-			if err == nil && withAttempt {
-				err = graph.CommitAttempt(tx, node, res, attempt, r.env)
-			} else if err == nil {
-				err = graph.Commit(tx, node, res, r.env)
-			}
-			if err == nil {
-				recorded = &res
-			}
-			return nil, err
-		}
+	seal := r.sealStep(attempt, diff, ignored)
+	var steps []func(*eventstore.Tx) ([]eventstore.Event, error)
+	if submitted {
+		steps = append(steps, r.commitStep(node, &attempt, result, &recorded), seal)
+	} else {
+		steps = append(steps, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.LoseRunning(tx, attempt, types.AttemptLostReasonValueAgentDisconnect)
+		}, seal, r.commitStep(node, nil, result, &recorded))
 	}
-	seal := func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	var errs []error
+	for _, step := range steps {
+		errs = append(errs, r.command(ctx, step))
+	}
+	return errors.Join(append(errs, r.endAttempt(ctx, l, attempt, recorded))...)
+}
+
+// commitStep is the command step recording node's result over its claim's
+// key: by attempt (graph.CommitAttempt), or with none when attempt is nil
+// (graph.Commit); *recorded is the result once it is.
+func (r *runner) commitStep(node types.NodeID, attempt *types.AttemptID, result func(types.ComputationKey) (types.Result, error),
+	recorded **types.Result) func(*eventstore.Tx) ([]eventstore.Event, error) {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		v, err := graph.ViewOf(tx, node)
+		if err != nil || v.State.Key == nil {
+			return nil, errors.Join(err, fmt.Errorf("node %s holds no claim", node))
+		}
+		res, err := result(*v.State.Key)
+		if err == nil && attempt != nil {
+			err = graph.CommitAttempt(tx, node, res, *attempt, r.env)
+		} else if err == nil {
+			err = graph.Commit(tx, node, res, r.env)
+		}
+		if err == nil {
+			*recorded = &res
+		}
+		return nil, err
+	}
+}
+
+// sealStep is the command step sealing attempt with diff and ignored.
+func (r *runner) sealStep(attempt types.AttemptID, diff *types.Digest, ignored []string) func(*eventstore.Tx) ([]eventstore.Event, error) {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		_, rev, _, err := lease.AttemptAt(tx, attempt)
 		if err != nil {
 			return nil, err
 		}
 		return sealWith(tx, attempt, rev, graph.Units{Tasks: authority.Tasks{}}, r.blobs, diff, ignored, r.system.Actor())
 	}
-	var steps []func(*eventstore.Tx) ([]eventstore.Event, error)
-	if submitted {
-		steps = append(steps, commit(true), seal)
-	} else {
-		steps = append(steps, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.LoseRunning(tx, attempt, types.AttemptLostReasonValueAgentDisconnect)
-		}, seal, commit(false))
-	}
+}
+
+// endAttempt ends sealed attempt and its lease l by recorded, its unit's
+// result if any (record's last steps): a result selected completes the
+// attempt and the lease; otherwise the lease is revoked with the result's
+// reason (no_result with none). The lease then settles.
+func (r *runner) endAttempt(ctx context.Context, l types.LeaseID, attempt types.AttemptID, recorded *types.Result) error {
 	var errs []error
-	for _, step := range steps {
-		errs = append(errs, r.command(ctx, step))
-	}
 	end := lease.LeaseEvent{Kind: lease.Revoked, Reason: "no_result"}
 	if recorded != nil && recorded.Outcome != types.OutcomeCouldNotRun {
 		end = lease.LeaseEvent{Kind: lease.Completed}

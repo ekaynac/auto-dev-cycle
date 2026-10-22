@@ -235,6 +235,14 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if cfg.Sandbox != nil {
 		images = *cfg.Sandbox
 	}
+	if cfg.Sandbox != nil { // one adcd a sandbox root: its start sweep removes every stale run there (Opus 22a-5c-2c M2)
+		unlock, err := lockSandbox(cfg.Sandbox.Root)
+		if err != nil {
+			_ = d.Close()
+			return err
+		}
+		defer unlock()
+	}
 	eg, err := newEgress(d, reg, cfg.CaptureEgress) // the one gateway (Opus #322 L5)
 	var run *runner
 	if err == nil {
@@ -243,6 +251,11 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		_ = d.Close()
 		return err
+	}
+	if run != nil { // before the loop's first Run (sweep.go); its failures never block the start
+		if err := run.sweep(ctx); err != nil {
+			fmt.Fprintf(logw, "adcd: the start sweep left work for the next start: %v\n", err)
+		}
 	}
 	loop := reconciler(d, reg, images, eg.gw, run, cfg.reconcileEvery, logw)
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,

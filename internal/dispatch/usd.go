@@ -152,7 +152,7 @@ func spent(tx *eventstore.Tx, task types.TaskID, project types.ProjectID, day st
 		if t != task && !onDay {
 			continue
 		}
-		c, err := cost(tx, l)
+		c, err := Cost(tx, l)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -166,8 +166,16 @@ func spent(tx *eventstore.Tx, task types.TaskID, project types.ProjectID, day st
 	return perTask, perDay, nil
 }
 
-// cost is lease l's spend, in USD micros, saturating.
-func cost(tx *eventstore.Tx, l types.Lease) (int64, error) {
+// Unaffordable is Cost's saturated figure: a spend past the contract's
+// integers, or one no price bounds (a saturated report).
+const Unaffordable = unaffordable
+
+// Cost is lease l's spend, in USD micros, saturating, as the USD rails
+// count it (and the task read's outstanding charge reads it): nothing with
+// no price; its settled call at its usage; while it is live, its
+// reservation or its usage so far, the larger, at the higher token rate;
+// once it has ended, the liability its settlement kept.
+func Cost(tx *eventstore.Tx, l types.Lease) (int64, error) {
 	if l.Price == nil {
 		return 0, nil
 	}

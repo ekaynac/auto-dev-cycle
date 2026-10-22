@@ -335,7 +335,7 @@ func TestProcDispatch(t *testing.T) {
 	procStarted = func(*os.Process) { started = true }
 	defer func() { procStarted = nil }()
 	blocks, _, err := isolated(context.Background(), sandbox.Repo{}, "", nil, nil, nil, t.TempDir())
-	if err != nil || started || len(blocks) != 1 || blocks[0].What != "unverifiable: this binary does not dispatch the guard's process" {
+	if !errors.Is(err, ErrGuardRun) || started || len(blocks) != 0 || !strings.Contains(err.Error(), "this binary does not dispatch the guard's process") {
 		t.Errorf("no dispatch: %q %v, started %v", whats(blocks), err, started)
 	}
 	exe, err := os.Executable()

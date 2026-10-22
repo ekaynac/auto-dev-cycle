@@ -267,7 +267,7 @@ func TestUSDCost(t *testing.T) {
 				l.Price = &p
 				c.edit(&l)
 			}
-			if got, err := cost(tx, l); err != nil || got != c.want {
+			if got, err := Cost(tx, l); err != nil || got != c.want {
 				t.Errorf("%s: %d, %v; want %d", name, got, err, c.want)
 			}
 		}
@@ -277,7 +277,7 @@ func TestUSDCost(t *testing.T) {
 			return err
 		}
 		l.Reservations = append(l.Reservations, l.Reservations[0])
-		if _, err := cost(tx, l); err == nil || !strings.Contains(err.Error(), "reserves 2 groups") {
+		if _, err := Cost(tx, l); err == nil || !strings.Contains(err.Error(), "reserves 2 groups") {
 			t.Errorf("a lease of two groups: %v", err)
 		}
 		return nil

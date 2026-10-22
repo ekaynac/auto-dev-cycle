@@ -60,7 +60,7 @@ func startedTask(t *testing.T, w *seeder, res []types.LeaseReservationsItem, cal
 		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
 	})
 	ls := w.lease(4)
-	ls.Unit, ls.Reservations = graph.UnitOf(plan), res
+	ls.Unit, ls.Reservations, ls.Price = graph.UnitOf(plan), res, startedPrice
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
@@ -77,7 +77,7 @@ func startedTask(t *testing.T, w *seeder, res []types.LeaseReservationsItem, cal
 		return modelcall.Intend(tx, gateway.Binding{Lease: ls.ID, Attempt: attempt, Call: call}, "stub")
 	})
 	m := types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: call, Attempt: attempt, Lease: ls.ID, Kind: types.UsageMeasurementKindDelta,
-		Sequence: 1, Tokens: types.UsageMeasurementTokens{In: 300, Out: 200}, Turns: 1, Milliseconds: 5,
+		Sequence: 1, Tokens: startedTokens, Turns: 1, Milliseconds: 5,
 		Cost:          types.UsageMeasurementCost{AmountMicros: 1, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
 		SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport}
 	w.do(w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
@@ -86,6 +86,13 @@ func startedTask(t *testing.T, w *seeder, res []types.LeaseReservationsItem, cal
 	})
 	return running, done, plan, attempt
 }
+
+// startedPrice is the price startedTask's lease records (nil: none), and
+// startedTokens the tokens its call reports.
+var (
+	startedPrice  *types.RegistryPrice
+	startedTokens = types.UsageMeasurementTokens{In: 300, Out: 200}
+)
 
 // taskReadAs is task's record as actor reads it, the zero record when it
 // reads none.
@@ -163,7 +170,8 @@ func TestTaskReadMetrics(t *testing.T) {
 	f := rec.FirstAttempt
 	if err != nil || contract.Validate("api/task", raw) != nil || card == nil || !card.Admitted || card.Column != types.BoardPlacedCardColumnRunning ||
 		f == nil || f.Attempt != attempt || f.Node != plan || f.Status != string(types.AttemptStatusRunning) || (f.SecondsAfterApproval == nil || *f.SecondsAfterApproval > 60) ||
-		f.Outcome != nil || f.Reason != nil || f.Tokens == nil || f.Tokens.In != 300 || f.Tokens.Out != 200 {
+		f.Outcome != nil || f.Reason != nil || f.Tokens == nil || f.Tokens.In != 300 || f.Tokens.Out != 200 ||
+		f.Charge == nil || f.Charge.OutstandingCalls != 1 || f.Charge.SettledUsdMicros != nil || f.Charge.OutstandingUsdMicros != nil {
 		t.Fatalf("the running task's record: %s, %v", raw, err)
 	}
 	commitPlan(t, w, plan, &attempt)
@@ -450,5 +458,43 @@ func TestTaskShowAndWait(t *testing.T) {
 	}
 	if code, out, errb := c.adc(op, "task", "show", newID(t, "tsk")); code != entry.ExitRefused {
 		t.Errorf("task show of no task: %d %s %s", code, out, errb)
+	}
+}
+
+// P22a-5c-2c (Astra #335 L3; slice plan §4.3; Opus 22a-5c-2c M1): the
+// first attempt's charge is priced at its lease's registry price, never
+// from a reported cost. Its call not settled yet is listed apart, as the
+// USD rail counts it (dispatch.Cost): on a live lease, the reservation or
+// the usage so far, the larger, at the higher token rate. The settled
+// charge is 0 with no settled call. With no price on the lease
+// (TestTaskReadMetrics) both are unknown (null), never zero.
+//   - 300 in and 200 out reported on a 4-token reservation: 500 tokens at
+//     10 USD/Mtok, 5000 micros;
+//   - a zero report (#226 entry 69) on a 100-token reservation: at least
+//     the priced reservation, 1000 micros, never 0.
+func TestTaskReadCharge(t *testing.T) {
+	startedPrice = &types.RegistryPrice{InputUsdMicrosPerMtok: 2_000_000, OutputUsdMicrosPerMtok: 10_000_000}
+	t.Cleanup(func() { startedPrice, startedTokens = nil, types.UsageMeasurementTokens{In: 300, Out: 200} })
+	for name, c := range map[string]struct {
+		reserve int64
+		tokens  types.UsageMeasurementTokens
+		want    int64
+	}{
+		"usage past the reservation": {4, types.UsageMeasurementTokens{In: 300, Out: 200}, 5000},
+		"a zero report":              {100, types.UsageMeasurementTokens{}, 1000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			startedTokens = c.tokens
+			w := seed(t, stateDir(t), daemonProjection(t, tokens(1000)))
+			fullHistory(t, w)
+			running, _, _, _ := startedTask(t, w, w.lease(c.reserve).Reservations, true)
+			rec := taskReadAs(t, w, w.op, running)
+			raw, err := json.Marshal(rec)
+			ch := rec.FirstAttempt.Charge
+			if err != nil || contract.Validate("api/task", raw) != nil || ch == nil || ch.OutstandingCalls != 1 || ch.OutstandingUsdMicros == nil ||
+				*ch.OutstandingUsdMicros != c.want || ch.SettledUsdMicros == nil || *ch.SettledUsdMicros != 0 {
+				t.Fatalf("the priced first attempt's charge: %s, %v", raw, err)
+			}
+		})
 	}
 }

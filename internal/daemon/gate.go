@@ -32,7 +32,12 @@ package daemon
 // decides it. A gate the profile does not let gate run (gate.ErrSpec:
 // another result adapter, environment or platform) holds the node on the
 // configuration; a failure before the run records nothing and holds it.
-// Inert until launch is active: the loop decides no Gate until then.
+// A base that is not green is held at once ("runner: failed"): its gate
+// does not change. The gate's own could_not_run (results it cannot read)
+// is held in its result's command, a bounded retry. A shutdown during a
+// gate run records nothing and holds nothing (the daemon's context ended):
+// the next start runs the gate again (stated, Opus 22a-5c-2b-3 L2). Inert
+// until launch is active: the loop decides no Gate until then.
 
 import (
 	"bytes"
@@ -40,7 +45,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,6 +57,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/results"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -138,8 +146,14 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		return errors.Join(err, r.hold(node, err))
 	case err != nil:
 		return notRun(err.Error(), err)
-	case measured.Outcome != vocab.Empty:
-		cause := fmt.Errorf("the base tree's gate is not green: %s", measured.Why)
+	case measured.Outcome != vocab.Empty && redBase(measured.Results):
+		// A red base: it does not change, so no retry helps; it is held at
+		// once ("runner: failed"), the measure's why its detail (Opus
+		// 22a-5c-2b-3 M2).
+		cause := fmt.Errorf("%w: the base tree's gate is not green: %s", errContent, measured.Why)
+		return notRun(cause.Error(), cause)
+	case measured.Outcome != vocab.Empty: // no results, or a run that did not end on its own: the sandbox's, a bounded retry
+		cause := fmt.Errorf("the base tree's gate did not measure: %s", measured.Why)
 		return notRun(cause.Error(), cause)
 	}
 	in.Tree, in.Baseline = g.tree, &base
@@ -182,10 +196,19 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 			return nil, commit(tx)
 		})
 	}
-	if err != nil {
-		return errors.Join(err, r.hold(node, err))
+	if err != nil { // the commit refused: held while its claim holds (Astra chunk 1 M1)
+		return errors.Join(err, r.holdClaimed(node, g.view.State.Key, err))
 	}
 	return nil
+}
+
+// redBase reports whether r, a base's measured report, is red: a test or
+// a package failed, a package that failed to build with no test result
+// included (Astra chunk 1 M2). A report with neither (no results, or a run
+// that did not end on its own) is no red base: its measure is retried.
+func redBase(r results.Report) bool {
+	return slices.ContainsFunc(r.Results, func(x results.Result) bool { return x.Outcome == results.Fail }) ||
+		slices.Contains(slices.Collect(maps.Values(r.Packages)), results.Fail)
 }
 
 // gating reads what node's gate run takes (gating's fields): its claim's
