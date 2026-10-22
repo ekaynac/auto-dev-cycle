@@ -40,7 +40,7 @@ func (b *fakeBox) Interactive(r sandbox.Run, attempt string) (sandbox.Interactiv
 	if b.interact != nil {
 		return sandbox.Interactive{}, b.interact
 	}
-	return sandbox.Interactive{Command: []string{"/usr/bin/podman", "run", "x"}, Env: []string{"HOME=/h"}, Deadline: r.Limits.Timeout,
+	return sandbox.Interactive{Command: []string{"/usr/bin/podman", "run", "x"}, Env: []string{"PATH=/usr/bin"}, Deadline: r.Limits.Timeout,
 		Remove: func(context.Context) error { return nil }}, nil
 }
 
@@ -135,7 +135,7 @@ func TestTheAdapterStartsInTheAttemptsContainer(t *testing.T) {
 		!slices.Equal(r.Argv, []string{"/opt/adc/lib/node/bin/node", "/opt/adc/lib/adapters/http-chat/src/main.ts"}) {
 		t.Fatalf("the interactive run: %+v (%q)", r, w.box.attempts)
 	}
-	if !slices.Equal(ct.Command, []string{"/usr/bin/podman", "run", "x"}) || !slices.Equal(ct.Env, []string{"HOME=/h"}) || ct.Remove == nil {
+	if !slices.Equal(ct.Command, []string{"/usr/bin/podman", "run", "x"}) || !slices.Equal(ct.Env, []string{"PATH=/usr/bin"}) || ct.Remove == nil {
 		t.Errorf("the container after Ready: %+v", ct)
 	}
 	for host, inside := range map[string]string{w.run.Workspace: "/workspace", filepath.Join(w.run.Exchange, "in"): "/exchange/in",
