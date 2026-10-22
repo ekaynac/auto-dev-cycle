@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -71,23 +73,67 @@ const reconcileEvery = 5 * time.Second
 // reconcileEvery): it admits only while the admission capability is active
 // (Opus #312 L4), and evaluates the admitted task's nodes only once launch
 // is active, under adcd's Env (env).
-func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, every time.Duration, logw io.Writer) *reconcile.Loop {
+func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, creds dispatch.Credentials, run *runner, every time.Duration, logw io.Writer) *reconcile.Loop {
 	admission, _ := capability.Of("admission")
 	launch, _ := capability.Of("launch")
 	if every == 0 {
 		every = reconcileEvery
 	}
-	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: placerOf(reg, images),
+	pl := placerOf(reg, images, creds)
+	if run != nil { // nil: no attempt runs, Run changes nothing
+		pl.ready = run.cleared
+	}
+	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: pl,
 		Planner: planner{blobs: d.blobs, env: env(d, reg)}}
-	return reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+	if run != nil {
+		x.Runner = run
+	}
+	l := reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+	if run != nil {
+		run.done = l.Nudge
+	}
+	return l
+}
+
+// runnerOf is adcd's attempt runner (P22a-5c-2a), under ctx, the daemon's:
+// nil with no sandbox or no adapter configured. The workspaces are cloned
+// and copied under <state>/clones, which only the controller's git reads;
+// the exchanges (adapterhost.Host.Root, one value 22a-5d's container
+// mounts) and the gateway sockets are made under <sandbox root>/runs. The
+// adapter's jail (hostAdapter) binds the attempt's workspace, exchange and
+// socket, and nothing of the state directory (Opus 22a-5c-2a M1).
+func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry, eg *egress, logw io.Writer) (*runner, error) {
+	if cfg.Sandbox == nil || cfg.Adapter == "" {
+		return nil, nil
+	}
+	adapter, err := hostAdapterOf(cfg)
+	if err != nil {
+		return nil, err
+	}
+	clones, exchanges, sockets := filepath.Join(cfg.StateDir, "clones"), filepath.Join(cfg.Sandbox.Root, "runs", "exchange"), filepath.Join(cfg.Sandbox.Root, "runs", "gateway")
+	for _, dir := range []string{clones, exchanges, sockets} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	return &runner{ctx: ctx, store: d.store, system: d.system, blobs: d.blobs, place: placerOf(reg, *cfg.Sandbox, eg.gw), env: env(d, reg),
+		host: &adapterhost.Host{Store: d.store, Blobs: d.blobs, Actor: string(d.system.Actor()), Principal: d.system, Root: exchanges},
+		box:  *cfg.Sandbox, clones: clones, sockets: sockets, gateway: eg.open,
+		adapters: adapter, log: logw}, nil
+}
+
+// hostAdapterOf is cfg's adapter on the host, checked again now the state
+// directory is made (adapterPath): its resolved path, whose directory is
+// what its jail binds (Opus 22a-5c-2a-w H1, L3).
+func hostAdapterOf(cfg Config) (hostAdapter, error) {
+	adapter, err := cfg.adapterPath()
+	return hostAdapter{Command: []string{adapter}, Env: adapterEnv}, err
 }
 
 // placerOf is adcd's placer over reg: the task's rails (authority.Rails)
-// and, for the launch, the sandbox's images; the gateway confirms
-// credentials once the attempt run constructs it (22a-5c-2), so until then
-// a credentialed launch misses (fail closed).
-func placerOf(reg registry.Registry, images dispatch.Images) placer {
-	return placer{d: dispatch.Dispatcher{Registry: reg, Images: images, Rails: authority.Rails}}
+// and, for the launch, the sandbox's images and the gateway's credentials.
+func placerOf(reg registry.Registry, images dispatch.Images, creds dispatch.Credentials) placer {
+	return placer{d: dispatch.Dispatcher{Registry: reg, Images: images, Credentials: creds, Rails: authority.Rails}}
 }
 
 // env is what evaluation reads in adcd (P22a-5b; Opus #312 L5): the

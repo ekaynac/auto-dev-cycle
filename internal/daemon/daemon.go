@@ -235,7 +235,16 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if cfg.Sandbox != nil {
 		images = *cfg.Sandbox
 	}
-	loop := reconciler(d, reg, images, cfg.reconcileEvery, logw)
+	eg, err := newEgress(d, reg, cfg.CaptureEgress) // the one gateway (Opus #322 L5)
+	var run *runner
+	if err == nil {
+		run, err = runnerOf(ctx, d, cfg, reg, eg, logw)
+	}
+	if err != nil {
+		_ = d.Close()
+		return err
+	}
+	loop := reconciler(d, reg, images, eg.gw, run, cfg.reconcileEvery, logw)
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {
@@ -272,6 +281,9 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	stopPurge()
 	<-purged
 	<-reconciled
+	if run != nil {
+		run.Wait() // ctx ended each run's conversation; its completion records under a context of its own (WithoutCancel)
+	}
 	serr := srv.close()
 	if err := d.Close(); err != nil {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", err)
