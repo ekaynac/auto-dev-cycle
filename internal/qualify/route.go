@@ -123,21 +123,25 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 		Reservations: []types.LeaseReservationsItem{{Group: e.Group, Amount: 200_000, Unit: types.CapacityUnitTokens}},
 		Footprint:    types.LeaseFootprint{ContextTokens: 100_000, ExpectedTurns: 1}, Deadline: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 		PlacementChecks: types.LeasePlacementChecks{DataFloor: ok2, Destinations: ok2, Capability: ok2, Independence: ok2, PaidAuthority: ok2, Budget: ok2, FallbackScope: ok2}}
+	submit := func(step func(*eventstore.Tx) ([]eventstore.Event, error)) error {
+		cmd, err := ids.New("cmd")
+		if err != nil {
+			return err
+		}
+		_, err = s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: idv["act"], Action: "qualify.lease", IdempotencyKey: cmd, Input: []byte(`{}`)},
+			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+				evs, err := step(tx)
+				return evs, json.RawMessage(`{}`), err
+			}))
+		return err
+	}
 	for _, step := range []func(*eventstore.Tx) ([]eventstore.Event, error){
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) },
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, reg.Holds)
 		},
 	} {
-		cmd, err := ids.New("cmd")
-		if err != nil {
-			return o, err
-		}
-		if _, err := s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: idv["act"], Action: "qualify.lease", IdempotencyKey: cmd, Input: []byte(`{}`)},
-			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-				evs, err := step(tx)
-				return evs, json.RawMessage(`{}`), err
-			})); err != nil {
+		if err := submit(step); err != nil {
 			return o, err
 		}
 	}
@@ -165,7 +169,7 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 	// Tools: adcd's launch allowance, the edit loop's own tools, which the
 	// http-chat adapter always describes; a reviewer is prepared with none
 	// (ToolPolicy.Allowed is empty, and the adapter sends no tools).
-	spec := adapterhost.Spec{Tools: adapterhost.EditLoopTools(), Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: call, Prompt: prompt,
+	spec := adapterhost.Spec{Tools: adapterhost.EditLoopTools(), Lease: l.ID, Attempt: types.AttemptID(idv["att"]), Call: call, Prompt: prompt,
 		Bounds: r.Bounds, Adapter: adapter,
 		Base: types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
 		Prepare: types.AdapterPrepareParams{Role: "reviewer", Executor: e.ID, Model: e.Model, Limits: limits,
@@ -173,7 +177,19 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 			Gateway:    &types.AdapterPrepareParamsGatewayValue{BaseUrl: "http://gateway", Token: token},
 			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: []string{}, Mediated: []string{}}}}
 	start := time.Now()
-	out, err := (&adapterhost.Host{Store: s, Blobs: blobs, Actor: idv["act"], Root: root}).Run(ctx, spec)
+	// The host never starts an attempt (P22a-5c-w): the exchange is
+	// prepared and checked, then the run, its own controller, starts the
+	// attempt on its granted lease, then the host runs it.
+	p, err := (&adapterhost.Host{Store: s, Blobs: blobs, Actor: idv["act"], Root: root}).Prepare(spec)
+	if err != nil {
+		return o, err
+	}
+	if err := submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, l.ID, 2, spec.Attempt, spec.Base)
+	}); err != nil {
+		return o, errors.Join(err, p.Discard())
+	}
+	out, err := p.Run(ctx)
 	if err != nil {
 		return o, err
 	}
