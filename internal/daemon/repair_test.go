@@ -12,11 +12,14 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/accept"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -499,5 +502,38 @@ func TestARefusedRepairRoundCarriesItsReview(t *testing.T) {
 		if v.State.State != types.NodeStateStateWaiting || len(v.State.Holds) != 0 {
 			t.Errorf("round 2's %s over a refused tree: %s, holds %+v", v.Node.Kind, v.State.State, v.State.Holds)
 		}
+	}
+}
+
+// Main (#410, with #226 entry 164): a refused candidate's repair runs to a
+// decided task. Round 1's accept refuses its candidate (a protected path, a
+// finding about its code); round 2's builder writes a clean one, accepted,
+// gated green and reviewed go; and the task can end as a candidate
+// (authority.DoneTask: no node claimed or held, nothing running), the
+// refused round's gate and review waiting, never held.
+func TestARefusedCandidateIsRepairedToADecidedTask(t *testing.T) {
+	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"pyproject.toml": "[x]\n"}, nil)
+	acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister { return nil }
+	t.Cleanup(func() { acceptLister = defaultLister })
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil, writes(map[string]string{"README.md": "hello\n"})))
+	var two round
+	for range 40 {
+		rw.passesFor(t, 1, 0)
+		if two = roundOf(t, rw, 2); two.review.State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	one := roundOf(t, rw, 1)
+	if rr := selectedOf(t, rw.w, one.accept); rr.Result.Reason != vocab.ReasonProtectedPath {
+		t.Fatalf("round 1's accept: %s/%s", rr.Result.Outcome, rr.Result.Reason)
+	}
+	if two.review.State.State != types.NodeStateStateCompleted || two.review.Outcome == nil || *two.review.Outcome != types.OutcomeEmpty {
+		t.Fatalf("round 2's review: %s, outcome %v; accept %s, gate %s", two.review.State.State, two.review.Outcome, two.accept.State.State, two.gate.State.State)
+	}
+	if three := roundOf(t, rw, 3); three.build.Node.ID != "" {
+		t.Errorf("a third round after a go: %+v", three.build.Node)
+	}
+	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, rw.task) }); err != nil {
+		t.Errorf("the task does not end as a candidate: %v", err)
 	}
 }

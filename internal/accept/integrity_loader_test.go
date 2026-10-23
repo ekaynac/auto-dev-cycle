@@ -149,10 +149,10 @@ func TestIntegrityProcess(t *testing.T) {
 			t.Errorf("%s: %d warnings in this process, %d in its own; %q", name, len(in.Warnings), len(out.Warnings), whats(out.Blocks))
 		}
 	}
-	// A Lister's or a Reader's long panic (Astra #311 r2 #1): one block,
-	// its text whole, as in this process: the controller's latch finds it in
-	// the child's result, and adds none. Multi-byte text, cut by nothing
-	// wherever a bound of 4,096 bytes would fall.
+	// A Lister's or a Reader's long panic (Astra #311 r2 #1): the guard's
+	// run failing (ErrGuardRun; #226 entry 168), never a block, in this
+	// process and in its own, the panic's text whole: multi-byte text, cut by
+	// nothing wherever a bound of 4,096 bytes would fall.
 	change := map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n"}
 	g := newGuardFixture(t)
 	for _, lead := range []int{0, 1, 2} {
@@ -165,10 +165,11 @@ func TestIntegrityProcess(t *testing.T) {
 			"a Lister's": {integrity(g.repo, g.base, listPanic), Integrity(g.repo, g.base, listPanic, "")},
 			"a Reader's": {wrapRead(integrity(g.repo, g.base, testLister(t)), readPanic), wrapRead(Integrity(g.repo, g.base, testLister(t), ""), readPanic)},
 		} {
-			in, out := g.withIgnored(t, guards[0], change, nil), g.withIgnored(t, guards[1], change, nil)
-			in.Elapsed, out.Elapsed = 0, 0
-			if len(out.Blocks) != 1 || !reflect.DeepEqual(in.Blocks, out.Blocks) || !sameVerdict(t, in, out) || !strings.HasSuffix(out.Blocks[0].What, text+")") {
-				t.Errorf("%s long panic (lead %d): %d blocks in this process, %d in its own", name, lead, len(in.Blocks), len(out.Blocks))
+			for i, guard := range guards {
+				_, err := Accept(context.Background(), In{Repo: g.repo, Base: g.base, Patch: g.patch(t, change), Policy: g.policy, Guard: guard})
+				if !errors.Is(err, ErrGuardRun) || !strings.HasSuffix(err.Error(), text+")") {
+					t.Errorf("%s long panic (lead %d, in its own process %v): %.80v", name, lead, i == 1, err)
+				}
 			}
 		}
 	}
@@ -224,11 +225,11 @@ func TestIntegrityProcess(t *testing.T) {
 			t.Errorf("%s: in this process %.300q, in its own %.300q", name, whats(in.Blocks), whats(out.Blocks))
 		}
 	}
-	// Every recover of the guard's that turns a service's panic into a block
-	// (Opus #339 M1): the guard's own ("the guard failed") and decision A's
-	// ("…outside-initialization check failed", reading vendor/modules.txt
-	// first, Opus's input). The child's block acknowledges the panic; the
-	// latch adds none. Enumerated: a Reader panicking on each blob a change
+	// Every recover of the guard's a service's panic reaches (Opus #339 M1):
+	// the guard's own ("the guard failed") and decision A's ("…outside-
+	// initialization check failed", reading vendor/modules.txt first, Opus's
+	// input). Each is the guard's run failing, ErrGuardRun, never a block,
+	// in this process and in its own (#226 entry 168). Enumerated: a Reader panicking on each blob a change
 	// reads, in turn, and a Lister on each of its calls, so every recover a
 	// service call reaches is met; the others (pyLex's, the Python scan's,
 	// the types checks' workers) run no service call (the PR lists them).
@@ -290,13 +291,16 @@ func TestIntegrityProcess(t *testing.T) {
 					})
 				}
 			}
-			in := vb.withIgnored(t, panicking(func(l Lister) Guard { return integrity(vb.repo, vb.base, l) }), change, nil)
-			out := vb.withIgnored(t, panicking(func(l Lister) Guard { return Integrity(vb.repo, vb.base, l, "") }), change, nil)
-			in.Elapsed, out.Elapsed = 0, 0
-			if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !sameVerdict(t, in, out) {
-				t.Errorf("%s, a panic %q at %.60s: in this process %q, in its own %q", name, text, at, whats(in.Blocks), whats(out.Blocks))
+			run := func(guard Guard) error {
+				_, err := Accept(context.Background(), In{Repo: vb.repo, Base: vb.base, Patch: vb.patch(t, change), Policy: vb.policy, Guard: guard})
+				return err
 			}
-			if bytes.Contains([]byte(strings.Join(whats(in.Blocks), "\n")), []byte("decision A's outside-initialization check failed ("+text+")")) {
+			in := run(panicking(func(l Lister) Guard { return integrity(vb.repo, vb.base, l) }))
+			out := run(panicking(func(l Lister) Guard { return Integrity(vb.repo, vb.base, l, "") }))
+			if !errors.Is(in, ErrGuardRun) || !errors.Is(out, ErrGuardRun) || !strings.HasSuffix(in.Error(), "("+text+")") || !strings.HasSuffix(out.Error(), "("+text+")") {
+				t.Errorf("%s, a panic %q at %.60s: in this process %v, in its own %v", name, text, at, in, out)
+			}
+			if in != nil && strings.Contains(in.Error(), "decision A's outside-initialization check failed ("+text+")") {
 				decisionA, emptyA = decisionA || text != "", emptyA || text == ""
 			}
 		}
@@ -424,14 +428,15 @@ func TestIntegrityProcess(t *testing.T) {
 	if v := f.loaded(t, testLister(t), plainGo); !v.Accepted() {
 		t.Errorf("a run after the kill: %q", whats(v.Blocks))
 	}
-	// Past the type check deadline in the child: abandoned there (main's
-	// block), the child ended with its result, and a later run accepted
-	// (main blocked it while the check ran: a reviewed relaxation). The
-	// deadline is the baseline's twice: listing is over by then (Astra L7).
+	// Past the type check deadline in the child: abandoned there, the
+	// guard's run failing (ErrGuardRun: the host's, retried, never a
+	// refusal; #226 entry 168), the child ended with its result, and a later
+	// run accepted. The deadline is the baseline's twice: listing is over by
+	// then (Astra L7).
 	maxListTime = 2*baseline + time.Second
 	n = len(procs())
-	if v := f.loaded(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}); !finds(v.Blocks, "unverifiable: the guard failed (a type check over the guard's deadline (") {
-		t.Errorf("past the type check deadline: %q", whats(v.Blocks))
+	if v, err := f.loadedErr(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}); !didNotRunErr(err, "the guard failed (a type check over the guard's deadline (") {
+		t.Errorf("past the type check deadline: %v %q", err, whats(v.Blocks))
 	}
 	maxListTime = oldList
 	if ps := procs(); len(ps) != n+1 || !exited(ps[n]) {
