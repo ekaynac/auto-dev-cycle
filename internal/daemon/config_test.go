@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
 func writeFile(t *testing.T, content string) string {
@@ -91,6 +93,18 @@ func TestLoadConfigRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	same := writeFile(t, strings.Replace(string(raw), `"family": "stub-reviewer"`, `"family": "stub-builder"`, 1))
+	// Opus #417 M1: a footprint_prior below its role's per-call floor
+	// (callFloors) is refused at load, its numbers named.
+	prior := func(from string, ctx int64) string {
+		if !strings.Contains(string(raw), from) {
+			t.Fatalf("the stub registry holds no %s", from)
+		}
+		return writeFile(t, strings.Replace(string(raw), from, fmt.Sprintf(`{"context_tokens": %d, "expected_turns": 2}`, ctx), 1))
+	}
+	reviewer := callFloors[types.RegistryExecutorRoleReviewer]
+	builder := callFloors[types.RegistryExecutorRoleBuilder]
+	lowReviewer := prior(`{"context_tokens": 36000, "expected_turns": 2}`, reviewer/2-1)
+	lowBuilder := prior(`{"context_tokens": 64000, "expected_turns": 2}`, builder/2-1)
 	for name, c := range map[string]struct {
 		args []string
 		rule string
@@ -99,6 +113,10 @@ func TestLoadConfigRegistry(t *testing.T) {
 		"same family":    {[]string{"--resource-groups", groups, "--registry", same}, "executor 1: a reviewer's family"},
 		"missing file":   {[]string{"--resource-groups", groups, "--registry", filepath.Join(t.TempDir(), "absent.json")}, "the registry cannot be opened"},
 		"not a registry": {[]string{"--resource-groups", groups, "--registry", groups}, "does not satisfy config/executor-registry"},
+		"a reviewer's prior below its floor": {[]string{"--resource-groups", groups, "--registry", lowReviewer},
+			fmt.Sprintf("executor 1: %s: %d × 2 = %d tokens, below the reviewer's %d", registry.RuleFootprint, reviewer/2-1, 2*(reviewer/2-1), reviewer)},
+		"a builder's prior below its floor": {[]string{"--resource-groups", groups, "--registry", lowBuilder},
+			fmt.Sprintf("executor 0: %s: %d × 2 = %d tokens, below the builder's %d", registry.RuleFootprint, builder/2-1, 2*(builder/2-1), builder)},
 	} {
 		_, err := LoadConfig(append([]string{"--state-dir", state}, c.args...))
 		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), c.rule) {

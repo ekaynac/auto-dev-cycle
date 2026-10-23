@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -77,6 +78,7 @@ const (
 	RuleRouting       Rule = "the project requires verified routing"
 	RuleNotAllowed    Rule = "the destination is not among the project's allowed destinations"
 	RuleUsageProfile  Rule = "an empty allowed_destinations derives from a usage profile, which M1 does not have"
+	RuleFootprint     Rule = "a direct API's footprint_prior (context_tokens × expected_turns) is below one request's floor for its role"
 )
 
 // Refusal is New's or Admits' refusal: the executor's index in the
@@ -157,6 +159,29 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 		return Registry{}, err
 	}
 	return r, r.distinct(doc.Executors)
+}
+
+// Floors are the tokens one request of each role can count at the gateway
+// before its usage is read (adcd's: daemon callFloors).
+type Floors map[types.RegistryExecutorRole]int64
+
+// CheckFloors refuses doc's first direct API executor whose footprint_prior
+// (context_tokens × expected_turns, its unpriced reservation) is below its
+// role's floor (Opus #417 M1): a lease of it could never cover one request's
+// floor, so a call would owe more than admission priced. An executor with
+// no footprint_prior is refused at placement instead, and a local endpoint
+// reserves a slot, not tokens.
+func CheckFloors(doc types.ExecutorRegistry, floors Floors) error {
+	for i, e := range doc.Executors {
+		p, floor := e.FootprintPrior, floors[e.Role]
+		if p == nil || e.Destination.Kind != types.RegistryDestinationKindDirectApi {
+			continue
+		}
+		if fp := p.ContextTokens * p.ExpectedTurns; p.ContextTokens <= math.MaxInt64/max(p.ExpectedTurns, 1) && fp < floor {
+			return fmt.Errorf("%w: %d × %d = %d tokens, below the %s's %d", &Refusal{Executor: i, Rule: RuleFootprint}, p.ContextTokens, p.ExpectedTurns, fp, e.Role, floor)
+		}
+	}
+	return nil
 }
 
 // origin is the destination's normalised origin, scheme://host:port in

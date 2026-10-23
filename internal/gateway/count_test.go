@@ -28,7 +28,7 @@ func sentFloor(t *testing.T, up *upstream) Count {
 	if len(got) != 1 {
 		t.Fatalf("upstream saw %d requests", len(got))
 	}
-	return Count{In: tokens(len(got[0].body)), Out: 64}
+	return Count{In: Tokens(len(got[0].body)), Out: 64}
 }
 
 func countsOf(g *Gateway) *counts { return g.cfg.Counts.(*counts) }

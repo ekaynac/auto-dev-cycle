@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -190,15 +191,11 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 	if err != nil {
 		return o, err
 	}
-	// The charge link: the call, only when the gateway counted a request of
-	// it (its floor or count, ledger.Measurements). An adapter that ended
-	// before any request (one that never started) made no call to link.
+	// The charge link (chargeLinks).
 	var calls []types.CallID
 	if err := s.View(ctx, func(tx *eventstore.Tx) error {
 		ms, err := ledger.Measurements(tx, call)
-		if len(ms) > 0 {
-			calls = []types.CallID{call}
-		}
+		calls = chargeLinks(call, ms)
 		return err
 	}); err != nil {
 		return o, err
@@ -266,4 +263,18 @@ func cmpDur(d, otherwise time.Duration) time.Duration {
 		return d
 	}
 	return otherwise
+}
+
+// chargeLinks is a review's charge links: its call, only when the gateway
+// counted a request of it in ms (a gateway_floor or gateway_count
+// measurement; an adapter's own usage report is no request, Opus #417 L1).
+// An adapter that ended before any request (one that never started) made
+// no call to link.
+func chargeLinks(call types.CallID, ms []types.UsageMeasurement) []types.CallID {
+	if slices.ContainsFunc(ms, func(m types.UsageMeasurement) bool {
+		return m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor || m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount
+	}) {
+		return []types.CallID{call}
+	}
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -415,4 +416,15 @@ func blobText(t *testing.T, blobs *blobstore.Store, d types.Digest) string {
 		t.Fatal(err)
 	}
 	return b.String()
+}
+
+// Opus #417 M1: MaxPromptBytes is the prompt Prompt renders at its bounds
+// (a requirement and a diff at their bounds, the longest gate summary).
+func TestMaxPromptBytesIsThePromptAtItsBounds(t *testing.T) {
+	in := PromptInput{Requirement: strings.Repeat("r", maxRequirement), Diff: strings.Repeat("d", MaxDiff),
+		Gate: Gate{Passed: math.MinInt, Failed: math.MinInt, Skipped: math.MinInt, Green: true}}
+	p, err := Prompt(in)
+	if err != nil || len(p) != MaxPromptBytes {
+		t.Fatalf("the prompt at its bounds: %d bytes, %v; MaxPromptBytes %d", len(p), err, MaxPromptBytes)
+	}
 }

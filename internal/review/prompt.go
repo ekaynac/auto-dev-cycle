@@ -38,6 +38,19 @@ const (
 	MaxDiff        = 512 << 10 // a reader of a diff for Prompt reads at most MaxDiff+1 bytes
 )
 
+// MaxPromptBytes is a prompt's size at its bounds: the template, a
+// requirement of maxRequirement, the longest gate summary, and a diff of
+// MaxDiff in the shortest fence. adcd's registry load reads it for a
+// reviewer's per-call floor (Opus #417 M1). A diff holding a run of three
+// or more backticks is fenced longer (Fenced), by twice the run's excess:
+// a hostile candidate can pass it, by at most 2 × MaxDiff bytes, which
+// only raises one review call's gateway floor past what admission priced.
+const MaxPromptBytes = len(promptTemplate) - 3*len("%s") + maxRequirement + maxGate + len("```diff\n") + MaxDiff + len("\n```")
+
+// maxGate is the longest gate summary Prompt renders: the longer verdict
+// and three counts of the most digits an int has.
+const maxGate = len("green: every test it ran passed") + len(" ( passed,  failed,  skipped).") + 3*len("-9223372036854775808")
+
 const promptTemplate = `You are reviewing one candidate change to a repository for the task below. The task's own acceptance tests are withheld from you; the repository's tests ran on the candidate, with the result under "Gate".
 
 Decide "go" only when the change meets every part of the task and introduces no defect: a wrong result, an input it fails on (a panic included), an edge case it gets wrong, or a test it deletes or weakens. Decide "no_go" otherwise, with one finding per problem.

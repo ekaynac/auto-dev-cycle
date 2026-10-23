@@ -325,10 +325,7 @@ const second = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pc")
 // price.
 func twoBuilders(t *testing.T, price types.RegistryPrice) (registry.Registry, []types.ResourceGroup) {
 	_, gs := stub(t, nil)
-	doc, err := registry.Load(config + "registry-stub.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := stubDoc(t)
 	own := gs[0]
 	own.ID, own.Members = "rg_01m4tm99haemtbemfkdve21grh", []types.ExecutorID{second}
 	for i := range doc.Executors {
@@ -512,10 +509,7 @@ func TestUSDRetiredAndUnpriced(t *testing.T) {
 	e.spentOn(d, e.nodeIn(task), e.hostileZeroFinal)
 	const successor = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pb")
 	retired := d
-	doc, err := registry.Load(config + "registry-stub.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := stubDoc(t)
 	for i := range doc.Executors {
 		if doc.Executors[i].ID == builder {
 			doc.Executors[i].ID = successor
@@ -530,6 +524,7 @@ func TestUSDRetiredAndUnpriced(t *testing.T) {
 			}
 		}
 	}
+	var err error
 	if retired.Registry, err = registry.New(doc, groups); err != nil {
 		t.Fatal(err)
 	}

@@ -86,6 +86,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -107,9 +108,26 @@ var runBounds = adapterhost.Bounds{Start: 30 * time.Second, Handshake: 30 * time
 // minute for the host's own steps.
 var sessionDeadline = runBounds.Start + runBounds.Handshake + runBounds.Result + runBounds.Shutdown + time.Minute
 
-// builderOutputTokens is prepare's max_output_tokens, one call's: the
-// lease's reservation, which the gateway enforces, bounds the attempt.
-const builderOutputTokens = 8000
+// builderOutputTokens is prepare's max_output_tokens for a build: the
+// output of the builder's whole edit loop (http-chat asks each turn for
+// what is left of it), so its first request's max_tokens too. A reasoning
+// model's thinking counts in it, so it leaves room for thinking over many
+// turns (#226 entry 175; Opus #417 M2): at 8000 a reasoning builder would
+// end most attempts cut short (executor_incomplete). The lease's
+// reservation, which the gateway enforces, bounds the attempt.
+const builderOutputTokens = 128000
+
+// callFloors are the tokens one request of a role can count at the
+// gateway before its usage is read (its floor: the request's max_tokens,
+// and its prompt at the gateway's bytes per token), which adcd's registry
+// load requires each executor's footprint_prior to cover (Opus #417 M1):
+// a builder's first request asks for builderOutputTokens; a reviewer's
+// one request for qualify.MaxOutputTokens over a prompt of at most
+// review.MaxPromptBytes.
+var callFloors = registry.Floors{
+	types.RegistryExecutorRoleBuilder:  builderOutputTokens,
+	types.RegistryExecutorRoleReviewer: qualify.MaxOutputTokens + gateway.Tokens(review.MaxPromptBytes),
+}
 
 // maxTree bounds the output tree the completion copies to diff; past it
 // the tree is the candidate's fault, unsafe_output.

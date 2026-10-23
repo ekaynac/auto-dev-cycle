@@ -461,3 +461,37 @@ func TestRegistryIsImmutable(t *testing.T) {
 		t.Fatalf("the registry changed under it: credential %s, price %d", *again.CredentialRef, again.Price.InputUsdMicrosPerMtok)
 	}
 }
+
+// Opus #417 M1: CheckFloors refuses a direct API whose footprint_prior is
+// below its role's floor, naming the executor, the rule and the numbers; a
+// prior at the floor, none, a local endpoint's and one past int64 pass.
+func TestCheckFloors(t *testing.T) {
+	floors := Floors{types.RegistryExecutorRoleBuilder: 1000, types.RegistryExecutorRoleReviewer: 700}
+	with := func(i int, ctx, turns int64, edit func(*types.RegistryExecutor)) types.ExecutorRegistry {
+		doc := clone(t, load(t, "registry-stub.json"))
+		doc.Executors[i].FootprintPrior = &types.FootprintPrior{ContextTokens: ctx, ExpectedTurns: turns}
+		if edit != nil {
+			edit(&doc.Executors[i])
+		}
+		return doc
+	}
+	local := func(e *types.RegistryExecutor) { e.Destination.Kind = types.RegistryDestinationKindLocalEndpoint }
+	for name, c := range map[string]struct {
+		doc  types.ExecutorRegistry
+		want string
+	}{
+		"a builder at its floor":  {with(0, 500, 2, nil), ""},
+		"a builder below":         {with(0, 499, 2, nil), "registry: executor 0: " + string(RuleFootprint) + ": 499 × 2 = 998 tokens, below the builder's 1000"},
+		"a reviewer below":        {with(1, 699, 1, nil), "registry: executor 1: " + string(RuleFootprint) + ": 699 × 1 = 699 tokens, below the reviewer's 700"},
+		"a reviewer at its floor": {with(1, 350, 2, nil), ""},
+		"a local endpoint below":  {with(0, 1, 1, local), ""},
+		"a product past int64":    {with(0, 1<<62, 4, nil), ""},
+		"no footprint_prior":      {with(0, 1, 1, func(e *types.RegistryExecutor) { e.FootprintPrior = nil }), ""},
+	} {
+		err := CheckFloors(c.doc, floors)
+		var r *Refusal
+		if c.want == "" && err != nil || c.want != "" && (err == nil || err.Error() != c.want || !errors.As(err, &r) || r.Rule != RuleFootprint) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+}

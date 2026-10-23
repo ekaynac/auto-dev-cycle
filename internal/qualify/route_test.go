@@ -368,3 +368,25 @@ func TestReviewerPrepare(t *testing.T) {
 		t.Errorf("a reviewer's prepare params: %+v", p)
 	}
 }
+
+// Opus #417 L1: a review links its call only on the gateway's own floor or
+// count of a request; an adapter's usage report alone links none.
+func TestChargeLinksAreTheGatewaysCount(t *testing.T) {
+	const call = types.CallID("cal_01m4tm99haemqt8es2qfbwj8pb")
+	m := func(src types.UsageMeasurementSourceOfTruth) types.UsageMeasurement {
+		return types.UsageMeasurement{Call: call, SourceOfTruth: src}
+	}
+	for name, c := range map[string]struct {
+		ms   []types.UsageMeasurement
+		want []types.CallID
+	}{
+		"no measurement":                {nil, nil},
+		"an adapter's report alone":     {[]types.UsageMeasurement{m(types.UsageMeasurementSourceOfTruthAdapterReport)}, nil},
+		"the gateway's floor":           {[]types.UsageMeasurement{m(types.UsageMeasurementSourceOfTruthGatewayFloor)}, []types.CallID{call}},
+		"the gateway's count, a report": {[]types.UsageMeasurement{m(types.UsageMeasurementSourceOfTruthAdapterReport), m(types.UsageMeasurementSourceOfTruthGatewayCount)}, []types.CallID{call}},
+	} {
+		if got := chargeLinks(call, c.ms); !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+}

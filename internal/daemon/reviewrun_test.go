@@ -19,8 +19,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
+	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -416,5 +418,29 @@ func TestAReviewPastItsDiskBoundIsAbandoned(t *testing.T) {
 		if rr.Result.Kind != types.ResultKindReview || rr.Result.Outcome != types.OutcomeCouldNotRun || rr.Result.Reason != vocab.ReasonAmbiguousState {
 			t.Errorf("a result: %+v", rr.Result)
 		}
+	}
+}
+
+// #226 entry 175, Opus #417 M2: a reasoning model's thinking counts in its
+// output tokens, and one reviewer turn needs qualify.MaxOutputTokens for it;
+// the builder's whole edit loop (builderOutputTokens) has room for several
+// such turns, so a reasoning builder is not cut short (executor_incomplete)
+// as a rule. Its first request's floor is the builder's in callFloors.
+func TestTheBuildersBudgetHasRoomToThink(t *testing.T) {
+	if builderOutputTokens < 4*qualify.MaxOutputTokens || callFloors[types.RegistryExecutorRoleBuilder] != builderOutputTokens {
+		t.Errorf("builderOutputTokens %d, callFloors %v; want at least 4 reviewer turns' %d, and the builder's floor it", builderOutputTokens, callFloors, qualify.MaxOutputTokens)
+	}
+}
+
+// Opus #417 M1: the reviewer's floor covers its one request at the
+// gateway: its max_tokens and a prompt at its bounds, counted as the
+// gateway counts it before the upstream's usage.
+func TestTheReviewersFloorCoversItsPrompt(t *testing.T) {
+	p, err := review.Prompt(review.PromptInput{Requirement: strings.Repeat("r", 96<<10), Diff: strings.Repeat("d", review.MaxDiff), Gate: review.Gate{Green: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := qualify.MaxOutputTokens + gateway.Tokens(len(p)); callFloors[types.RegistryExecutorRoleReviewer] < want {
+		t.Errorf("the reviewer's floor %d is below its request's %d", callFloors[types.RegistryExecutorRoleReviewer], want)
 	}
 }
