@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -831,11 +832,11 @@ func TestReadListing(t *testing.T) {
 		"a line of tabs":           {[]byte(runtime.Version()), bytes.Repeat([]byte("\t"), 1<<20), "an unreadable list", 3<<20 + 1<<20},
 	} {
 		out := t.TempDir()
-		write(t, out, map[string]string{"version": string(c.version), "list": string(c.list)})
+		write(t, out, map[string]string{"version": string(c.version)})
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
-		_, err := readListing(out, t.TempDir())
+		_, err := readListing(out, t.TempDir(), c.list)
 		runtime.ReadMemStats(&after)
 		if err == nil || !strings.Contains(err.Error(), c.why) || after.TotalAlloc-before.TotalAlloc > c.alloc {
 			t.Errorf("%s: %v, %d bytes allocated", name, err, after.TotalAlloc-before.TotalAlloc)
@@ -953,16 +954,17 @@ func wrapRead(guard Guard, read Reader) Guard {
 	return func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) { return guard(ctx, c, read) }
 }
 
-// Opus #412 B1-B3 and H1' (the lead's decision, #226 entry 170): a
-// listing's failure is the candidate's only when it is of the candidate's
-// version, on evidence against its code, and the base's listing on the same
-// platform succeeded in the same guard run (listVerdict). The candidate's
-// go.mod carries a comment, so the stand-in sandbox fails its listing alone.
-// Each the host's (ErrGuardRun): the candidate's run left an unmeasured
-// tree (B1); killed by a signal (137, B2); the script's own failure (3,
-// B3); go list's recorded status a signal's (137, B2). The candidate's:
-// go list's own status 1, a measured bound broken. The base's listing
-// failing too: the host's, whatever the candidate's.
+// Opus #412 B1-B3 and H1' (the lead's decisions, #226 entries 170 and
+// 176): a listing's failure is the candidate's only by candidateListing,
+// through the sandbox's lister. The candidate's go.mod carries a comment,
+// so the stand-in sandbox fails its listing alone. Each the host's
+// (ErrGuardRun): the candidate's run left an unmeasured tree (B1); killed
+// by a signal (137, B2); the script's own failure (3, B3); go list's
+// recorded status a signal's (137, B2); a signal with a bound (Astra #418
+// H1); an oversized listing, with a kill line or without (H3). The
+// candidate's: go list's own status 1, a measured bound broken alone, a
+// go.mod naming an invalid module (M4). The base's listing failing too:
+// the host's, whatever the candidate's.
 func TestTheListingVerdict(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -976,14 +978,18 @@ func TestTheListingVerdict(t *testing.T) {
 	forgedLine := "example.com/missing\t\t" + strconv.Quote(`missing go.sum entry for module providing package example.com/missing (replaced by example.com/signal: killed v1.0.0)`) + "\n"
 	candidate := func(mod []byte) bool { return strings.Contains(string(mod), "// the candidate's") }
 	exit := func(code int) error { return &sandbox.WorkloadExit{Code: code, Err: exitErr(t, code)} }
+	oversized := strings.Repeat("example.com/p\t\t"+strconv.Quote("x")+"\n", int(maxList)/10+1)
 	for name, c := range map[string]struct {
-		fail    error  // the candidate's run's error
-		status  string // go list's status the candidate's run records
-		all     bool   // the base's listing fails too
-		base    bool   // the base's listing alone fails
-		killed  bool   // the candidate's list records a step killed by a signal
-		forged  bool   // the candidate's list records a diagnostic naming "signal: killed" (Astra chunk 5b M3)
-		refusal bool
+		fail      error  // the candidate's run's error
+		status    string // go list's status the candidate's run records
+		all       bool   // the base's listing fails too
+		base      bool   // the base's listing alone fails
+		killed    bool   // the candidate's list records a step killed by a signal
+		forged    bool   // the candidate's list records a diagnostic naming "signal: killed" (Astra chunk 5b M3)
+		oversized bool   // the candidate's list past maxList
+		version   bool   // the candidate's version file past maxVersion
+		gomod     string // added to the candidate's go.mod
+		refusal   bool
 	}{
 		"an unmeasured tree (B1)":                             {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
 		"killed by a signal (B2)":                             {fail: exit(137)},
@@ -998,7 +1004,15 @@ func TestTheListingVerdict(t *testing.T) {
 		"a step killed, status 0 (L2)":                        {killed: true},
 		"a refusal joined to the run's failure (Astra 5b H1)": {fail: errors.Join(sandbox.ErrLeft, guardRun("the run's teardown: an I/O error"))},
 		"a diagnostic naming signal: killed (Astra 5b M3)":    {status: "1", forged: true, refusal: true},
+		"a signal and a bound (Astra #418 H1)":                {fail: errors.Join(exit(137), sandbox.ErrLeft)},
+		"an oversized list, a kill line (Astra #418 H3)":      {status: "1", killed: true, oversized: true},
+		"an oversized list, status 0":                         {oversized: true},
+		"an oversized list, status 1":                         {status: "1", oversized: true},
+		"a version past its bound":                            {version: true},
+		"a forged kill line in a replacement (Astra #418 M4)": {gomod: "require example.com/dep v1.0.0\nreplace example.com/dep => \"example.com/x\\n" + imageGOROOT + "/pkg/tool/linux_amd64/compile: signal: killed\\nx\" v1.0.0\n", refusal: true},
 	} {
+		change := maps.Clone(change)
+		change["go.mod"] += c.gomod
 		failing := func(mod []byte) bool { return c.all || c.base != candidate(mod) }
 		box.fail = func(mod []byte) error {
 			if failing(mod) {
@@ -1013,9 +1027,17 @@ func TestTheListingVerdict(t *testing.T) {
 			return ""
 		}
 		box.edit = func(mod []byte, results string) {
-			if (c.killed || c.forged) && candidate(mod) {
+			if c.version && candidate(mod) {
+				_ = os.WriteFile(filepath.Join(results, "version"), []byte(runtime.Version()+strings.Repeat(" ", int(maxVersion))), 0o600)
+			}
+			if (c.killed || c.forged || c.oversized) && candidate(mod) {
 				f, _ := os.OpenFile(filepath.Join(results, "list"), os.O_APPEND|os.O_WRONLY, 0)
-				_, _ = f.WriteString(map[bool]string{true: killedLine, false: forgedLine}[c.killed])
+				if c.killed || c.forged {
+					_, _ = f.WriteString(map[bool]string{true: killedLine, false: forgedLine}[c.killed])
+				}
+				if c.oversized {
+					_, _ = f.WriteString(oversized)
+				}
 				_ = f.Close()
 			}
 		}
@@ -1023,6 +1045,8 @@ func TestTheListingVerdict(t *testing.T) {
 		switch {
 		case c.refusal && (err != nil || !finds(v.Blocks, "go list in the prepared image")):
 			t.Errorf("%s: the candidate's, a block: %v %q", name, err, whats(v.Blocks))
+		case c.gomod != "" && !finds(v.Blocks, "go.mod names an invalid module"):
+			t.Errorf("%s: not the module path's refusal: %q", name, whats(v.Blocks))
 		case !c.refusal && (!errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0):
 			t.Errorf("%s: the host's, ErrGuardRun: %v %q", name, err, whats(v.Blocks))
 		}
@@ -1031,30 +1055,23 @@ func TestTheListingVerdict(t *testing.T) {
 	if v := f.loaded(t, list, change); !v.Accepted() {
 		t.Errorf("no fault: %q", whats(v.Blocks))
 	}
-	// LocalLister, the same rule (goListExit): a go that exits 1 on the
-	// candidate's go.mod alone is the candidate's; one killed by a signal
-	// there is the host's.
+	// LocalLister never refuses (#226 entry 176): a go that exits 1 on the
+	// candidate's go.mod alone, one killed by a signal there, and one
+	// printing a kill line, are the host's.
 	root := t.TempDir()
 	write(t, root, map[string]string{"VERSION": runtime.Version() + "\n"})
-	for name, c := range map[string]struct {
-		act     string
-		refusal bool
-	}{
-		"exit 1 on the candidate's":               {"exit 1", true},
-		"killed on the candidate's":               {"kill -KILL $$", false},
-		"a step killed on the candidate's (L2)":   {`printf '{"ImportPath":"example.com/k","Error":{"Err":"` + root + `/pkg/tool/` + runtime.GOOS + `_` + runtime.GOARCH + `/compile: signal: killed"}}\n'; exit 1`, false},
-		"a diagnostic naming signal: killed (M3)": {`printf '{"ImportPath":"example.com/m","Error":{"Err":"(replaced by example.com/signal: killed v1.0.0)"}}\n'; exit 1`, true},
+	for name, act := range map[string]string{
+		"exit 1 on the candidate's":             "exit 1",
+		"killed on the candidate's":             "kill -KILL $$",
+		"a step killed on the candidate's (L2)": `printf '{"ImportPath":"example.com/k","Error":{"Err":"` + root + `/pkg/tool/` + runtime.GOOS + `_` + runtime.GOARCH + `/compile: signal: killed"}}\n'; exit 1`,
 	} {
-		write(t, root, map[string]string{"bin/go": "#!/bin/sh\nif grep -q \"the candidate's\" go.mod 2>/dev/null; then " + c.act + "; fi\nexec " + box.gobin + " \"$@\"\n"})
+		write(t, root, map[string]string{"bin/go": "#!/bin/sh\nif grep -q \"the candidate's\" go.mod 2>/dev/null; then " + act + "; fi\nexec " + box.gobin + " \"$@\"\n"})
 		if err := os.Chmod(filepath.Join(root, "bin/go"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		local := LocalLister(filepath.Join(root, "bin/go"), []string{"GOCACHE=" + box.caches[0], "GOMODCACHE=" + box.caches[1]}, 5*time.Minute, 8<<30)
 		v, err := f.loadedErr(t, local, change)
-		switch {
-		case c.refusal && (err != nil || !finds(v.Blocks, "the listing failed on the candidate")):
-			t.Errorf("LocalLister, %s: the candidate's, a block: %v %q", name, err, whats(v.Blocks))
-		case !c.refusal && (!errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0):
+		if !errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0 {
 			t.Errorf("LocalLister, %s: the host's: %v %q", name, err, whats(v.Blocks))
 		}
 	}
@@ -1094,29 +1111,88 @@ func TestKilledStep(t *testing.T) {
 // host's.
 func TestGoListStatus(t *testing.T) {
 	dir := t.TempDir()
-	for body, want := range map[string]string{
-		"0\n":   "",
-		"1\n":   "refused",
-		"124\n": "refused",
-		"137\n": "host",
-		"0":     "host",
-		"0 \n":  "host",
-		"0\n\n": "host",
-		"00\n":  "host",
-		"0" + strings.Repeat(" ", 15) + "garbage": "host",
-		"": "host",
+	for body, want := range map[string]int{ // -1: the host's
+		"0\n":   0,
+		"1\n":   1,
+		"124\n": 124,
+		"137\n": 137,
+		"0":     -1,
+		"0 \n":  -1,
+		"0\n\n": -1,
+		"00\n":  -1,
+		"0" + strings.Repeat(" ", 15) + "garbage": -1,
+		"": -1,
 	} {
 		p := filepath.Join(dir, "golist")
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		err := goListStatus(p)
-		got := map[bool]string{true: "refused", false: map[bool]string{true: "host", false: ""}[errors.Is(err, ErrGuardRun)]}[errors.Is(err, errRefused) && !errors.Is(err, ErrGuardRun)]
-		if got != want {
-			t.Errorf("%q: %v, want %s", body, err, want)
+		got, err := goListStatus(p)
+		if err != nil && !errors.Is(err, ErrGuardRun) || err != nil && want != -1 || err == nil && got != want {
+			t.Errorf("%q: %d, %v, want %d", body, got, err, want)
 		}
 	}
-	if err := goListStatus(filepath.Join(dir, "none")); !errors.Is(err, ErrGuardRun) {
+	if _, err := goListStatus(filepath.Join(dir, "none")); !errors.Is(err, ErrGuardRun) {
 		t.Errorf("a missing status: %v", err)
+	}
+}
+
+// Decision A (#226 entry 176; Astra #418): candidateListing is the one
+// allowlist. The clean cases are the candidate's; dropping any one
+// condition, or Astra's three Highs, is the host's.
+func TestCandidateListing(t *testing.T) {
+	cand, pl := [2]string{"linux", "amd64"}, [2]string{"linux", "amd64"}
+	status := func(code int, complete, killed bool) *listFailure {
+		return &listFailure{kind: refusalStatus, err: fmt.Errorf("go list exited %d", code), status: code, complete: complete, killed: killed}
+	}
+	bound := func(err error) *listFailure { return &listFailure{kind: refusalBound, err: err} }
+	left := errors.Join(sandbox.ErrLeft, fmt.Errorf("%w: the run left more than 1 bytes or 64 levels", sandbox.ErrSpec))
+	copyBound := fmt.Errorf("%w: %w: more than 1 bytes", sandbox.ErrSpec, sandbox.ErrBound)
+	denied := errors.Join(sandbox.ErrLeft, fmt.Errorf("%w: the run left what cannot be measured: %w", sandbox.ErrSpec, &fs.PathError{Op: "open", Path: "/w/x", Err: syscall.EACCES}))
+	for name, c := range map[string]struct {
+		l      listing
+		baseOK bool
+		want   bool
+	}{
+		"go list's status 1, whole, no kill":      {listing{platform: pl, err: status(1, true, false)}, true, true},
+		"go list's status 124":                    {listing{platform: pl, err: status(124, true, false)}, true, true},
+		"an input refused":                        {listing{platform: pl, err: &listFailure{kind: refusalInput, err: errors.New("go.mod names an invalid module")}}, true, true},
+		"a measured bound alone":                  {listing{platform: pl, err: bound(left)}, true, true},
+		"a bound in the candidate's denied tree":  {listing{platform: pl, err: bound(denied)}, true, true},
+		"a copy bound alone":                      {listing{platform: pl, err: bound(copyBound)}, true, true},
+		"the run's copy budget":                   {listing{platform: pl, err: bound(fmt.Errorf("%w: over the guard run's export data bound", sandbox.ErrBound))}, true, true},
+		"no: the base's version":                  {listing{base: true, platform: pl, err: status(1, true, false)}, true, false},
+		"no: the base not clean on the platform":  {listing{platform: cand, err: status(1, true, false)}, false, false},
+		"no: joined to another error":             {listing{platform: pl, err: errors.Join(status(1, true, false), guardRun("the run's teardown"))}, true, false},
+		"no: wrapped":                             {listing{platform: pl, err: fmt.Errorf("go list: %w", status(1, true, false))}, true, false},
+		"no: not a listFailure":                   {listing{platform: pl, err: errors.New("go list exited 1")}, true, false},
+		"no: go list's status 0":                  {listing{platform: pl, err: status(0, true, false)}, true, false},
+		"no: go list's status 125":                {listing{platform: pl, err: status(125, true, false)}, true, false},
+		"no: go list's status 137 (a signal)":     {listing{platform: pl, err: status(137, true, false)}, true, false},
+		"no: the list not read whole":             {listing{platform: pl, err: status(1, false, false)}, true, false},
+		"no: a kill line in the list":             {listing{platform: pl, err: status(1, true, true)}, true, false},
+		"no: an unknown kind":                     {listing{platform: pl, err: &listFailure{err: errors.New("x")}}, true, false},
+		"no: a bound that is no bound":            {listing{platform: pl, err: bound(errors.New("go list exited 1"))}, true, false},
+		"no: a bound and an unmeasured tree":      {listing{platform: pl, err: bound(errors.Join(left, sandbox.ErrUnmeasured))}, true, false},
+		"no: a bound and its cleanup":             {listing{platform: pl, err: bound(errors.Join(left, fmt.Errorf("%w: rm", sandbox.ErrCleanup)))}, true, false},
+		"no: a copy bound denied (no run's tree)": {listing{platform: pl, err: bound(errors.Join(copyBound, &fs.PathError{Op: "open", Path: "/r/x", Err: syscall.EACCES}))}, true, false},
+		"Astra #418 H1: a signal and a bound":     {listing{platform: pl, err: bound(errors.Join(&sandbox.WorkloadExit{Code: 137, Err: errors.New("signal: killed")}, left))}, true, false},
+		"Astra #418 H1: a copy bound and a close": {listing{platform: pl, err: bound(errors.Join(copyBound, &fs.PathError{Op: "close", Path: "/r/list", Err: syscall.EIO}))}, true, false},
+		"Astra #418 H3: oversized, a kill line":   {listing{platform: pl, err: status(1, false, true)}, true, false},
+		"a bound and the guard's own failure":     {listing{platform: pl, err: bound(errors.Join(left, guardRun("x")))}, true, false},
+	} {
+		if got := candidateListing(c.l, c.baseOK); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+		if c.want { // through listVerdict, with the base's listing as baseOK says
+			continue
+		}
+		ls := []listing{c.l}
+		if c.baseOK {
+			ls = append(ls, listing{base: true, platform: c.l.platform})
+		}
+		if r, h := listVerdict(ls); r != "" || !errors.Is(h, ErrGuardRun) {
+			t.Errorf("%s: listVerdict %q, %v; want the host's", name, r, h)
+		}
 	}
 }

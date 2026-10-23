@@ -269,8 +269,7 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 // H2; Lead decisions, #226 entries 147 and 168): its process not
 // dispatched, not started, ended without its result or past its whole-run
 // deadline; a go list that failed but for the candidate's code (only
-// boxList's positive evidence, errRefused, is the candidate's: its go list
-// exiting nonzero on the candidate, a bound its run broke); a panic in the
+// candidateListing's allowlist is the candidate's, #226 entry 176);
 // guard or in its service, a type check past the guard's deadline
 // included; and any other error of its run. It is no finding on the
 // candidate, so it never repairs the build: the caller records it as one
@@ -495,16 +494,9 @@ type listing struct {
 }
 
 // listVerdict is the one rule over a guard run's listings (#226 entries
-// 168 and 170): a failed listing is the candidate's (its refusal, the
-// first's text) only when it is of the candidate's version, its failure is
-// evidence against the candidate's code (errRefused: go list's own exit
-// 1-124, a bound its run broke, an input refused), and the base's listing
-// on the same platform, in the same run, succeeded, and its error is not
-// also ErrGuardRun. Any other failed listing is the host's (ErrGuardRun),
-// which wins: the base's failing, a candidate's on a platform whose base
-// listing failed or never ran, an error joined to ErrGuardRun (a refusal
-// with its run's teardown failing), and every error that is not
-// errRefused.
+// 168, 170 and 176): a failed listing is the candidate's (its refusal, the
+// first's text) only when candidateListing holds for it; any other failed
+// listing is the host's (ErrGuardRun).
 func listVerdict(ls []listing) (refusal string, host error) {
 	ok := map[[2]string]bool{}
 	for _, l := range ls {
@@ -515,9 +507,7 @@ func listVerdict(ls []listing) (refusal string, host error) {
 	for _, l := range ls {
 		switch {
 		case l.err == nil:
-		case errors.Is(l.err, ErrGuardRun): // the host's, a refusal joined to it included (a teardown failing: Astra chunk 5b H1)
-			host = cmp.Or(host, guardRun("go list failed ("+errText(l.err)+")"))
-		case !l.base && errors.Is(l.err, errRefused) && ok[l.platform]:
+		case candidateListing(l, ok[l.platform]):
 			refusal = cmp.Or(refusal, "unverifiable: go list failed ("+errText(l.err)+")")
 		case host == nil:
 			host = guardRun("go list failed (" + errText(l.err) + ")")

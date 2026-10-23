@@ -216,7 +216,7 @@ func TestProcService(t *testing.T) {
 	if !ok || !hostErr(blocks, err, "go list failed (copy-out failed)") {
 		t.Errorf("a listing's failure under a clean result: %v %v %q", ok, err, whats(blocks))
 	}
-	// A listing the candidate's code failed (errRefused) after the base's on
+	// A listing the candidate's code failed (candidateListing) after the base's on
 	// its platform succeeded, then a clean result: blocked, never clean. The
 	// base's failing too, or none on that platform: the host's (#226 entry
 	// 170).
@@ -242,10 +242,11 @@ func TestProcService(t *testing.T) {
 			if calls++; c.base != nil && calls == 1 && !c.baseErr || calls == 2 && c.candOK {
 				return map[string]Listed{}, nil
 			}
+			failed := &listFailure{kind: refusalStatus, err: errors.New("go list exited 1"), status: 1, complete: true}
 			if c.joined {
-				return nil, errors.Join(refused(errors.New("go list exited 1")), guardRun("the run's teardown: an I/O error"))
+				return nil, errors.Join(failed, guardRun("the run's teardown: an I/O error"))
 			}
-			return nil, refused(errors.New("go list exited 1"))
+			return nil, failed
 		}
 		blocks, _, err, ok = fakeChild(req, read, onCandidate, func(next func(childMsg) procMsg) {
 			if c.base != nil {
@@ -261,7 +262,7 @@ func TestProcService(t *testing.T) {
 		switch {
 		case !ok:
 			t.Errorf("%s: not ok", name)
-		case c.refusal && (err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "unverifiable: go list failed (the listing failed on the candidate: go list exited 1)")):
+		case c.refusal && (err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "the listing failed on the candidate: go list exited 1)")):
 			t.Errorf("%s: the candidate's: %v %q", name, err, whats(blocks))
 		case c.childErr && (err == nil || len(blocks) != 0 || !strings.Contains(err.Error(), "over the guard's deadline")):
 			t.Errorf("%s: the child's own error: %v %q", name, err, whats(blocks))

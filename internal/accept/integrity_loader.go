@@ -3,35 +3,34 @@
 // The guard's loader: go list in the prepared image, its output checked,
 // for the type checks' imports.
 //
-// P14e-attr (#226 entries 148, 168 and 170): the guard's own failures are
-// the host's, its run's error (ErrGuardRun), never a refusal, so they never
-// repair the build: the child not dispatched, not started or ended without
-// its result; a panic in the guard or its service; the type check's or the
-// whole run's deadline; and every listing failure but one. A listing's
-// failure is the candidate's only when it is of the candidate's version,
-// on evidence against its code (errRefused: go list's own exit 1-124 as
-// the list script records it, $r/golist; a measured bound its run broke;
-// an input refused, listable), and the base's listing on the same
-// platform succeeded in the same guard run (listVerdict). A signal, the
-// script's own failures, an unmeasured tree, a cleanup, a step inside
-// go list killed by a signal as its list records it ("signal: killed",
-// killedStep: Opus #412 r2 L2), the base's own failure, and a candidate's
-// listing on a platform the base never listed are the host's. Its acting
-// half is closed. What remains:
+// P14e-attr (#226 entries 148, 168, 170 and 176): the guard's own failures
+// are the host's, its run's error (ErrGuardRun), never a refusal, so they
+// never repair the build: the child not dispatched, not started or ended
+// without its result; a panic in the guard or its service; the type
+// check's or the whole run's deadline; and every listing failure but one,
+// candidateListing's (Decision A, an allowlist): of the candidate's
+// version; the base listed cleanly on the same platform in the same guard
+// run; exactly one listFailure, nothing joined to it; and that failure
+// clean: an input refused (listable, its module paths valid), a bound
+// alone (cleanBound), or go list's own recorded status 1-124 ($r/golist)
+// with its list read completely within its bound and no kill line in it
+// (killedStep). Its acting half is closed. What remains:
 //   - a host fault read as the candidate's, each a refusal that repairs the
 //     build, up to the rounds rail: a host fault that strikes only the
 //     candidate's listing, after the base's succeeded on the platform, and
-//     exits go list 1-124 (a full results mount mid-write; a module cache
-//     entry only the candidate's go.mod needs, missing from the image; a
-//     step inside go list killed by a signal and reported as its exit 1,
-//     its list naming no signal); and an export-data read failing inside
-//     the type checks;
+//     exits go list 1-124 with a whole list naming no kill (a full results
+//     mount mid-write; a module cache entry only the candidate's go.mod
+//     needs, missing from the image; a step inside go list killed by a
+//     signal and reported as its exit 1, its list naming no signal); and an
+//     export-data read failing inside the type checks;
 //   - the reverse, a candidate's defect read as the host's (Opus #412 r2
 //     L1), each leaving the accept held after its retries ("runner:
-//     failed"), never repaired, never accepted: the candidate's listing
+//     failed"), never repaired, never accepted: a listing past its bounds;
+//     a bound broken with anything joined to it; the candidate's listing
 //     spending the run's shared copy budget (maxRunCopy) so that a later
 //     base listing is refused; a candidate's failure on a platform the
-//     base never listed.
+//     base never listed; a kill line a candidate's diagnostics could still
+//     print exactly.
 package accept
 
 import (
@@ -129,10 +128,10 @@ type box interface {
 func boxLister(h box, img sandbox.Image, lim sandbox.Limits) Lister {
 	return func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 		got, err := boxList(ctx, h, img, lim, dir, pl, gomod, gosum, paths)
-		if err != nil {
+		if _, ok := err.(*listFailure); err != nil && !ok { // a listFailure is passed on as it is: candidateListing reads it whole
 			return nil, fmt.Errorf("go list in the prepared image: %w", err)
 		}
-		return got, nil
+		return got, err
 	}
 }
 
@@ -149,23 +148,20 @@ var (
 // go.sum are trusted. Every listing's copy is charged to the run's ledger,
 // kept or not; past maxRunCopy, a listing fails.
 //
-// What its failure is (Lead decision, #226 entry 147): the candidate's
-// (errRefused, a block) only on positive evidence: its input refused
-// (listable), go list's own exit status observed and nonzero
-// (sandbox.WorkloadExit), or a bound its run broke (sandbox.ErrLeft,
-// sandbox.ErrBound, the run's copy bound, the list's bounds). Everything
-// else is ErrGuardRun, at its source or by default: the attempt's
-// directories and files, the copy's and the ledger's I/O, a teardown, a
-// client killed or failing itself, no status, a cleanup error joined, and
-// any error not classified.
+// What its failure is: a listFailure, what it observed of a failure that
+// may be the candidate's (its input refused, listable; a bound its run or
+// its copy broke; go list's own recorded status, nonzero), for
+// candidateListing alone to decide (Decision A, #226 entry 176), or
+// ErrGuardRun, at its source or by default: everything else, and anything
+// joined to a listFailure (a teardown).
 func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, dir string, pl [2]string, gomod, gosum []byte, paths []string) (_ map[string]Listed, err error) {
 	defer func() {
-		if err != nil && !errors.Is(err, ErrGuardRun) && !errors.Is(err, errRefused) {
+		if _, ok := err.(*listFailure); err != nil && !ok && !errors.Is(err, ErrGuardRun) {
 			err = fmt.Errorf("%w: %w", ErrGuardRun, err)
 		}
 	}()
 	if err := listable(gomod, paths); err != nil {
-		return nil, refused(err)
+		return nil, &listFailure{kind: refusalInput, err: err}
 	}
 	x, ledger := filepath.Join(dir, "x"), filepath.Join(dir, "copied") // the run's export data, by name; what its listings copied out
 	if err := os.MkdirAll(x, 0o700); err != nil {
@@ -184,7 +180,7 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err != nil {
 		return nil, err
 	} else if charged >= maxRunCopy() {
-		return nil, refused(errors.New("over the guard run's export data bound"))
+		return nil, &listFailure{kind: refusalBound, err: fmt.Errorf("%w: over the guard run's export data bound", sandbox.ErrBound)}
 	}
 	held := map[string]bool{}
 	for _, e := range have {
@@ -213,10 +209,9 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 		return nil, err
 	}
 	argv := slices.Concat([]string{"env", "-i"}, goImage, GoEnv, []string{"GOOS=" + pl[0], "GOARCH=" + pl[1], "sh", "-c", listScript, "sh", sandbox.ResultsDir}, paths)
-	if _, err := h.Start(ctx, sandbox.Run{Image: img, Mode: sandbox.Gate, Attempt: a, Limits: lim, Argv: argv}); err != nil {
-		if workloadFailed(err) {
-			return nil, refused(err)
-		}
+	if _, err := h.Start(ctx, sandbox.Run{Image: img, Mode: sandbox.Gate, Attempt: a, Limits: lim, Argv: argv}); errors.Is(err, sandbox.ErrLeft) {
+		return nil, &listFailure{kind: refusalBound, err: err} // whatever is joined to it: candidateListing's (cleanBound)
+	} else if err != nil {
 		return nil, fmt.Errorf("%w: go list did not run to its own end in the sandbox: %w", ErrGuardRun, err)
 	}
 	out, err := os.MkdirTemp(dir, "list-")
@@ -235,56 +230,121 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 		return nil, err
 	}
 	if errors.Is(cerr, sandbox.ErrBound) {
-		return nil, refused(cerr)
+		return nil, &listFailure{kind: refusalBound, err: cerr} // whatever is joined to it: candidateListing's (cleanBound)
 	} else if cerr != nil {
 		return nil, cerr
 	}
-	if err := listKilled(filepath.Join(out, "list"), imageGOROOT, img.OS+"_"+img.Arch); err != nil { // a step killed by a signal: the host's, whatever go list's status (Opus #412 r2 L2)
+	status, err := goListStatus(filepath.Join(out, "golist")) // go list's own status, as copied out (Opus #412 B3)
+	if err != nil {
 		return nil, err
 	}
-	if err := goListStatus(filepath.Join(out, "golist")); err != nil { // go list's own status, as copied out, before the listing is read (Opus #412 B3)
-		return nil, err
+	list, lerr := fsread.Regular(filepath.Join(out, "list"), maxList)
+	killed := listKilled(list, imageGOROOT, img.OS+"_"+img.Arch)
+	if status != 0 {
+		return nil, &listFailure{kind: refusalStatus, err: fmt.Errorf("go list exited %d", status), status: status, complete: lerr == nil, killed: killed}
+	} else if lerr != nil {
+		return nil, fmt.Errorf("a list over its bound or unread: %w", lerr) // never the candidate's (Astra #418 H3)
+	} else if killed {
+		return nil, errors.New("a step inside go list killed by a signal") // whatever go list's status (Opus #412 r2 L2)
 	}
 	if err := checkOut(out, x, held); err != nil {
 		return nil, err
 	}
-	return readListing(out, x)
+	return readListing(out, x, list)
 }
 
-// errRefused marks a listing's failure the candidate caused, on positive
-// evidence (boxList): a block, never ErrGuardRun.
-var errRefused = errors.New("the listing failed on the candidate")
-
-// refused is err, the candidate's (errRefused).
-func refused(err error) error { return fmt.Errorf("%w: %w", errRefused, err) }
-
-// workloadFailed reports whether err, a sandbox run's, is evidence against
-// the candidate: a bound its run broke (sandbox.ErrLeft), measured
-// (never with ErrUnmeasured: Opus #412 B1), and never with its container's
-// removal failing (sandbox.ErrCleanup), which is the controller's whatever
-// the run did. The run's own exit status (sandbox.WorkloadExit) never is:
-// go list's own status is the script's $r/golist (goListStatus); the
-// script's other failures, and a signal, are the host's (Opus #412 B2, B3).
-func workloadFailed(err error) bool {
-	return errors.Is(err, sandbox.ErrLeft) && !errors.Is(err, sandbox.ErrUnmeasured) && !errors.Is(err, sandbox.ErrCleanup)
+// listFailure is what boxList observed of a listing's failure that may be
+// the candidate's, whole. Only candidateListing decides whether it is.
+type listFailure struct {
+	kind     refusalKind
+	err      error // the failure as observed, every error joined to it
+	status   int   // go list's recorded status (refusalStatus)
+	complete bool  // the list read whole within maxList (refusalStatus)
+	killed   bool  // a kill line anywhere in the list (refusalStatus)
 }
 
-// goListStatus is the listing's verdict from go list's own status, the
-// file at p the script wrote (fsread.Regular, within statusBound): nil for
-// 0; go list's own exit by goListExit's rule; the host's (ErrGuardRun) for
-// a missing, oversized or incomplete file: only a whole status line counts
+type refusalKind int
+
+const (
+	refusalInput  refusalKind = iota + 1 // the input, refused before go runs (listable)
+	refusalBound                         // a bound its run (sandbox.ErrLeft) or its copy (sandbox.ErrBound) broke
+	refusalStatus                        // go list's own recorded status, nonzero
+)
+
+func (f *listFailure) Error() string {
+	return "go list in the prepared image: the listing failed on the candidate: " + f.err.Error()
+}
+
+func (f *listFailure) Unwrap() error { return f.err }
+
+// candidateListing is Decision A's one allowlist predicate (the lead's
+// decision, #226 entry 176; Astra #418): l's failure is the candidate's
+// only when every condition holds, and anything else is the host's
+// (ErrGuardRun):
+//   - it is of the candidate's version;
+//   - the base listed cleanly on the same platform in the same guard run
+//     (baseOK, #226 entry 170);
+//   - its error is exactly one listFailure, nothing joined to it;
+//   - that failure is clean: an input refused; a bound alone (cleanBound);
+//     or go list's own recorded status 1-124, the list read completely
+//     within its bound, no kill line anywhere in it.
+func candidateListing(l listing, baseOK bool) bool {
+	f, ok := l.err.(*listFailure)
+	if !ok || l.base || !baseOK {
+		return false
+	}
+	switch f.kind {
+	case refusalInput:
+		return true
+	case refusalBound:
+		return cleanBound(f.err)
+	case refusalStatus:
+		return f.status >= 1 && f.status <= 124 && f.complete && !f.killed
+	}
+	return false
+}
+
+// cleanBound reports whether err is a bound alone (sandbox.ErrLeft or
+// sandbox.ErrBound): every cause in it, through every wrap and join, the
+// sandbox's own bound and spec marks, or, a run's (ErrLeft), a permission
+// the candidate's workspace denied (sandbox's candidates). A signal, a
+// close or other I/O error, an unmeasured tree, a cleanup or the guard's
+// own failure joined to it is not (Astra #418 H1).
+func cleanBound(err error) bool {
+	left := errors.Is(err, sandbox.ErrLeft)
+	if !left && !errors.Is(err, sandbox.ErrBound) {
+		return false
+	}
+	var clean func(error) bool
+	clean = func(e error) bool {
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			return !slices.ContainsFunc(u.Unwrap(), func(e error) bool { return !clean(e) })
+		case interface{ Unwrap() error }:
+			if w := u.Unwrap(); w != nil {
+				return clean(w)
+			}
+		}
+		return e == sandbox.ErrLeft || e == sandbox.ErrBound || e == sandbox.ErrSpec || left && errors.Is(e, fs.ErrPermission)
+	}
+	return clean(err)
+}
+
+// goListStatus is go list's own status, the file at p the script wrote
+// (fsread.Regular, within statusBound); the host's (ErrGuardRun) for a
+// missing, oversized or incomplete file: only a whole status line counts
 // (Opus #412 B2, B3; Astra chunk 5b M4).
-func goListStatus(p string) error {
+func goListStatus(p string) (int, error) {
 	b, err := fsread.Regular(p, statusBound)
 	if err != nil {
-		return fmt.Errorf("%w: go list's status: %w", ErrGuardRun, err)
+		return 0, fmt.Errorf("%w: go list's status: %w", ErrGuardRun, err)
 	}
 	m := statusLine.FindSubmatch(b)
 	if m == nil {
-		return fmt.Errorf("%w: go list's status %.16q is no status line", ErrGuardRun, b)
+		return 0, fmt.Errorf("%w: go list's status %.16q is no status line", ErrGuardRun, b)
 	}
 	code, _ := strconv.Atoi(string(m[1]))
-	return goListExit(code, fmt.Errorf("go list exited %d", code))
+	return code, nil
 }
 
 // statusBound and statusLine: a status file is one decimal status of at
@@ -300,8 +360,7 @@ var statusLine = regexp.MustCompile(`\A(0|[1-9][0-9]{0,2})\n\z`)
 // signal: killed", host the toolchain's GOOS_GOARCH. The host's, never the
 // candidate's (Opus #412 r2 L2); never a substring a candidate's
 // diagnostics could carry (Astra chunk 5b M3: a module path or replacement
-// naming it). One predicate, the sandbox's listing (listKilled) and
-// LocalLister's.
+// naming it).
 func killedStep(why, goroot, host string) bool {
 	dir := path.Join(goroot, "pkg", "tool", host) + "/"
 	for line := range strings.Lines(why) {
@@ -316,73 +375,40 @@ func killedStep(why, goroot, host string) bool {
 // toolNames are the toolchain's tools go list -export runs.
 var toolNames = []string{"compile", "asm", "cgo", "link", "pack"}
 
-// listKilled reports, as ErrGuardRun, a listed package whose error column
-// is killedStep's diagnostic, in the copied-out list at p (fsread.Regular,
-// within maxList; past it, or absent, it is readListing's: the list's size
-// is classified there, explicitly). goroot and host are the image's.
-func listKilled(p, goroot, host string) error {
-	b, err := fsread.Regular(p, maxList)
-	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fsread.ErrOver) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	for line := range strings.Lines(string(b)) {
+// listKilled reports whether list, a copied-out list, holds a package
+// whose error column is killedStep's diagnostic. goroot and host are the
+// image's.
+func listKilled(list []byte, goroot, host string) bool {
+	for line := range strings.Lines(string(list)) {
 		cols := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
 		if len(cols) != 3 || cols[2] == "" {
 			continue
 		}
 		if why, err := strconv.Unquote(cols[2]); err == nil && killedStep(why, goroot, host) {
-			return fmt.Errorf("%w: %s", ErrGuardRun, why)
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
-// goListExit is go list's own exit code's verdict (one rule: the sandbox's
-// listing, goListStatus, and LocalLister's): nil for 0; the candidate's
-// evidence (errRefused) for 1-124, its own error; the host's (ErrGuardRun)
-// otherwise, a signal (128 and above) included (Opus #412 B2). Whether the
-// evidence is a refusal is listVerdict's: the base's listing must have
-// succeeded on the platform (#226 entry 170).
-func goListExit(code int, err error) error {
-	switch {
-	case code == 0:
-		return nil
-	case code >= 1 && code <= 124:
-		return refused(err)
-	}
-	return fmt.Errorf("%w: %w", ErrGuardRun, err)
-}
-
-// readListing reads a listing's version and list, each bounded before it
-// is read, the list's records counted and cut, never split, as they are
-// parsed (Astra #287 r2 #3, #7).
-func readListing(out, x string) (map[string]Listed, error) {
-	for name, bound := range map[string]int64{"version": maxVersion, "list": maxList} {
-		if st, err := os.Stat(filepath.Join(out, name)); err != nil || st.Size() > bound {
-			if err != nil {
-				return nil, err
-			}
-			return nil, refused(fmt.Errorf("a %s over its bound", name))
-		}
-	}
-	v, err := os.ReadFile(filepath.Join(out, "version"))
+// readListing reads a listing's version, bounded as it is read, and its
+// list, already read within maxList (boxList), the list's records counted
+// and cut, never split, as they are parsed (Astra #287 r2 #3, #7). A
+// listing past a bound is the host's: an oversized listing is never the
+// candidate's refusal (#226 entry 176).
+func readListing(out, x string, list []byte) (map[string]Listed, error) {
+	v, err := fsread.Regular(filepath.Join(out, "version"), maxVersion)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("a version over its bound or unread: %w", err)
 	} else if v := strings.TrimSpace(string(v)); v != runtime.Version() {
 		return nil, fmt.Errorf("the toolchain is %.40q, not the guard's %s", v, runtime.Version())
-	}
-	list, err := os.ReadFile(filepath.Join(out, "list"))
-	if err != nil {
-		return nil, err
 	}
 	got, n := map[string]Listed{}, 0
 	for line := range strings.Lines(string(list)) {
 		ip, rest, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
 		exp, col, ok2 := strings.Cut(rest, "\t")
 		if n++; n > maxListEntries {
-			return nil, refused(errors.New("a list over its bound"))
+			return nil, errors.New("a list over its bound")
 		} else if !ok || !ok2 || strings.Contains(col, "\t") {
 			return nil, errors.New("an unreadable list")
 		}
