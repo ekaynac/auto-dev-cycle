@@ -26,6 +26,64 @@ func RepairVerdict(outcome types.Outcome, reason types.ReasonCode) bool {
 	return outcome == types.OutcomeFound || Unreviewable(types.Result{Kind: types.ResultKindReview, Outcome: outcome, Reason: reason})
 }
 
+// LastBuildRound is the last build round of nodes, a task's: the highest
+// round of its build nodes, superseded ones included (a repair's build is
+// the next round; P22a-6d), 0 with none: OfLastRound's.
+func LastBuildRound(nodes []NodeView) int64 {
+	last := int64(0)
+	for _, n := range nodes {
+		if n.Node.Kind == types.NodeKindBuild {
+			last = max(last, n.Node.Round)
+		}
+	}
+	return last
+}
+
+// CandidateRound is the round of the candidate n checks, n a node of
+// nodes (a task's): a build's or a plan's own round; an accept's or a
+// review's, the round of the build whose patch it takes; a gate's, its
+// accept's. A repair's accept, gate and review are new nodes, so recorded
+// in round 1 (the node.recorded fold: a node with no predecessor is round
+// 1; Checked); a stage's round is its candidate's (Opus #408 L1). 0 when
+// its producer is not among nodes.
+func CandidateRound(nodes []NodeView, n types.Node) int64 {
+	if n.Kind != types.NodeKindAccept && n.Kind != types.NodeKindGate && n.Kind != types.NodeKindReview {
+		return n.Round
+	}
+	for _, in := range n.Inputs {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		if !ok || src.ResultKind != types.ResultKindPatch && !(n.Kind == types.NodeKindGate && src.ResultKind == types.ResultKindTree) {
+			continue
+		}
+		for _, p := range nodes {
+			if p.Node.ID == src.Producer {
+				return CandidateRound(nodes, p.Node)
+			}
+		}
+	}
+	return 0
+}
+
+// OfLastRound reports whether review, a review node of nodes (a task's),
+// takes the candidate of the task's last build round (CandidateRound):
+// Repairable's (reconcile.Observe) and CandidateGo's one rule.
+func OfLastRound(nodes []NodeView, review types.Node) bool {
+	last := LastBuildRound(nodes)
+	return last > 0 && review.Kind == types.NodeKindReview && CandidateRound(nodes, review) == last
+}
+
+// CandidateGo reports whether nodes, a task's, decide its candidate: a
+// review of its last build round's candidate (OfLastRound) completed go
+// (empty). It is the one rule for the board's done_candidate column and
+// for the loop's task.done as a candidate (reconcile.Observe; 22a-7): a
+// later round's build, or a NO-GO in the last round, is never a candidate.
+func CandidateGo(nodes []NodeView) bool {
+	return slices.ContainsFunc(nodes, func(n NodeView) bool {
+		return n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
+			*n.Outcome == types.OutcomeEmpty && OfLastRound(nodes, n.Node)
+	})
+}
+
 // Repair is the events recording round n+1 of build, a repair (13
 // "Successor rounds": "round n is a new build node whose inputs include
 // round n−1's review findings and candidate tree"). It is build's

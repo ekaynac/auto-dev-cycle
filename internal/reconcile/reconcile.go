@@ -12,7 +12,15 @@
 //   - Decide is pure. Admit the next task while none is admitted, when the
 //     snapshot allows admission (the admission capability is active).
 //     Abandon the admitted task once its approval is no longer in force
-//     (#226 entry 100: it can run nothing more). Only when the snapshot
+//     (#226 entry 100: it can run nothing more). End it Done, as a
+//     candidate, once its candidate is decided (graph.CandidateGo: a review
+//     of its last build round completed go, the board's done_candidate
+//     rule) and it may end (authority.Endable, DoneTask's own rule: no
+//     node claimed or held, every lease ended, every attempt sealed): it
+//     frees admission (22a-7). While a unit of it still runs (a seal that
+//     did not land), End it at runtime (Ending: the Acceptor's End, a
+//     capped backoff, no hold, since a completed node carries none;
+//     Opus #408 H1). Only when the snapshot
 //     allows evaluation (the launch capability is active: until then a
 //     claimed node would wait for an attempt nothing can start): Evaluate
 //     the admitted task's open nodes; Plan each of its claimed plan nodes,
@@ -39,7 +47,8 @@
 //     check), and its logic rechecks the authority in its own transaction:
 //     AdmitTask the task's Ready state, approval and the admitted slot;
 //     AbandonTask the revoked approval and that nothing runs the task's
-//     nodes; Evaluate that the task is still the admitted one with its
+//     nodes; DoneTask Endable (its refusal never stale: logged);
+//     Evaluate that the task is still the admitted one with its
 //     approval in force (authority.Tasks, Opus #309 L5: a refusal the loop
 //     reads, never a fold error), then graph.Evaluate, whose claims adcd's
 //     fold checks again (I22, I1). A changed subject is refused
@@ -87,6 +96,7 @@ import (
 const (
 	AdmitAction     = "reconcile.admit"
 	AbandonAction   = "reconcile.abandon"
+	DoneAction      = "reconcile.done"
 	EvaluateAction  = "reconcile.evaluate"
 	MatchAction     = "reconcile.match"
 	ClearRailAction = "reconcile.clear_rail"
@@ -103,7 +113,7 @@ const (
 )
 
 // Actions are the loop's system actions.
-var Actions = []string{AdmitAction, AbandonAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction, RunAction, ReviewAction}
+var Actions = []string{AdmitAction, AbandonAction, DoneAction, EvaluateAction, MatchAction, ClearRailAction, LaunchAction, UnblockAction, PlanAction, RunAction, ReviewAction}
 
 // Placed are the node kinds Match places on an executor: a build (P22a-5c-1).
 // A review is the review capability's (22a-6); a plan, accept and gate run
@@ -143,7 +153,13 @@ type Snapshot struct {
 	// completed since, and nothing but an evaluation ends its wait.
 	Admitted Versioned
 	Revoked  bool
-	Open     []Versioned
+	// Candidate: the admitted task's candidate is decided
+	// (graph.CandidateGo) and it may end (authority.Endable). Ending: it is
+	// decided or revoked, but a unit of it still runs (authority.EndingOf's
+	// ErrEnding).
+	Candidate bool
+	Ending    *Ending
+	Open      []Versioned
 	// Unplaced are its claimed nodes of a Placed kind that nothing is
 	// placed on (dispatch.Unplaced), DayHeld its nodes held on the day's
 	// USD rail.
@@ -237,6 +253,22 @@ type Admit struct{ Task Versioned }
 // Abandon ends Task, read at its version, abandoned: its approval is not in
 // force.
 type Abandon struct{ Task Versioned }
+
+// Done ends Task, read at its version, as a candidate: its candidate is
+// decided and nothing of it is claimed or held (22a-7).
+type Done struct{ Task Versioned }
+
+// Ending ends, at runtime, what Node of Task, a decided candidate, still
+// runs: the attempt its seal did not land on, its lease (Acceptor's End;
+// Opus #408 H1). A command of the runner's, outside the pass's.
+type Ending struct {
+	Task types.TaskID
+	Node types.NodeID
+}
+
+func (Ending) action() string                     { return RunAction }
+func (e Ending) subject() string                  { return string(e.Node) }
+func (Ending) expected() []eventstore.Expectation { return nil }
 
 // Evaluate evaluates Task's Goals, each read at its version.
 type Evaluate struct {
@@ -346,6 +378,7 @@ type ClearRail struct{ Held Held }
 
 func (a Admit) subject() string     { return a.Task.ID }
 func (a Abandon) subject() string   { return a.Task.ID }
+func (d Done) subject() string      { return d.Task.ID }
 func (e Evaluate) subject() string  { return string(e.Task) }
 func (m Match) subject() string     { return m.Node.ID }
 func (c ClearRail) subject() string { return c.Held.Node.ID }
@@ -374,6 +407,7 @@ func (c ClearRail) expected() []eventstore.Expectation {
 
 func (Admit) action() string    { return AdmitAction }
 func (Abandon) action() string  { return AbandonAction }
+func (Done) action() string     { return DoneAction }
 func (Evaluate) action() string { return EvaluateAction }
 
 func (a Admit) expected() []eventstore.Expectation {
@@ -382,6 +416,10 @@ func (a Admit) expected() []eventstore.Expectation {
 
 func (a Abandon) expected() []eventstore.Expectation {
 	return []eventstore.Expectation{{Subject: a.Task.ID, Version: a.Task.Version}}
+}
+
+func (d Done) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: d.Task.ID, Version: d.Task.Version}}
 }
 
 func (e Evaluate) expected() []eventstore.Expectation {
@@ -419,11 +457,9 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	}
 	nodes, err := graph.TaskNodes(tx, admitted) // the task's index, never the whole graph (Astra #316 M3)
 	reviews := g.Evaluates && g.Reviews
-	var gates []Versioned         // the task's completed gates
-	var reviewNodes []types.Node  // the task's review nodes, in any state: which gates they take (graph.TakesGate)
-	var verdicts []graph.NodeView // the completed reviews whose verdict asks for a repair
-	lastBuild := int64(0)         // the task's last build round
-	round := map[types.NodeID]int64{}
+	var gates []Versioned               // the task's completed gates
+	var reviewNodes []types.Node        // the task's review nodes, in any state: which gates they take (graph.TakesGate)
+	var verdicts []graph.NodeView       // the completed reviews whose verdict asks for a repair
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
 	var heldReqs []Held
@@ -434,9 +470,6 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		v := Versioned{ID: string(n.Node.ID)}
 		if n.Node.Kind == types.NodeKindReview {
 			reviewNodes = append(reviewNodes, n.Node)
-		}
-		if n.Node.Kind == types.NodeKindBuild {
-			round[n.Node.ID], lastBuild = n.Node.Round, max(lastBuild, n.Node.Round)
 		}
 		if reviews && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
 			graph.RepairVerdict(*n.Outcome, *n.Reason) { // no_go, or unreviewable: Repair's rule
@@ -528,13 +561,13 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			s.ReviewHeld = append(s.ReviewHeld, h)
 		}
 	}
-	for _, v := range verdicts { // a review of the last round's candidate, repaired once: its repair is the next round
-		for _, in := range v.Node.Inputs {
-			if src, ok := in.Source.Variant.(*types.ResultSource); ok && err == nil && src.ResultKind == types.ResultKindPatch && round[src.Producer] == lastBuild {
-				rv := Versioned{ID: string(v.Node.ID)}
-				rv.Version, err = tx.SubjectVersion(rv.ID)
-				s.Repairable = append(s.Repairable, rv)
-			}
+	// A review of the last round's candidate (graph.OfLastRound, CandidateGo's
+	// rule too), repaired once: its repair is the next round.
+	for _, v := range verdicts {
+		if err == nil && graph.OfLastRound(nodes, v.Node) {
+			rv := Versioned{ID: string(v.Node.ID)}
+			rv.Version, err = tx.SubjectVersion(rv.ID)
+			s.Repairable = append(s.Repairable, rv)
 		}
 	}
 	for _, gate := range gates { // keyed by gate (Opus 22a-6a′ L2): a later round's gate is reviewable too
@@ -542,6 +575,22 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			gate.Version, err = tx.SubjectVersion(gate.ID)
 			s.Reviewable = gate
 			break
+		}
+	}
+	if err == nil {
+		// authority.EndingOf, DoneTask's and AbandonTask's own rule (Opus
+		// #408 H1): a decided candidate may end (Candidate), or a unit of a
+		// decided or revoked task still runs, which the runner ends (Ending;
+		// re-check M2).
+		var ending authority.ErrEnding
+		switch as, ok, eerr := authority.EndingOf(tx, admitted); {
+		case eerr != nil && !errors.Is(eerr, authority.ErrNotEndable) && !errors.As(eerr, &ending):
+			err = eerr // a read fault, whatever ok says (Mythos #408 L5)
+		case !ok:
+		case eerr == nil:
+			s.Candidate = as == types.TaskDoneAsCandidate
+		case errors.As(eerr, &ending):
+			s.Ending = &Ending{Task: admitted, Node: ending.Node}
 		}
 	}
 	return s, err
@@ -563,8 +612,12 @@ func Decide(s Snapshot) []Action {
 	switch {
 	case s.Admitted.ID == "" && s.Admits && s.Next.ID != "":
 		return []Action{Admit{Task: s.Next}}
+	case s.Admitted.ID != "" && s.Ending != nil: // a unit still runs: its end comes first, Abandon's or Done's after (Opus #408 re-check M2)
+		return []Action{*s.Ending}
 	case s.Admitted.ID != "" && s.Revoked:
 		return []Action{Abandon{Task: s.Admitted}}
+	case s.Admitted.ID != "" && s.Candidate:
+		return []Action{Done{Task: s.Admitted}}
 	case s.Admitted.ID != "" && s.Evaluates:
 		var out []Action
 		if len(s.Open) > 0 {
@@ -668,6 +721,9 @@ type Acceptor interface {
 	// it is due, forgetting any other it waited on, and returns false when
 	// it starts nothing (none due, or each going).
 	Reseal(nodes []types.NodeID) bool
+	// End ends what node, of a decided candidate's task, still runs, when
+	// its retry is due, and returns false when it starts nothing.
+	End(task types.TaskID, node types.NodeID) bool
 }
 
 // Runner is what Run does, outside any command.
@@ -723,6 +779,12 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 		}
 		return nil
 	}
+	if e, ok := a.(Ending); ok {
+		if x.Acceptor == nil || !x.Acceptor.End(e.Task, e.Node) {
+			return errNothing
+		}
+		return nil
+	}
 	if rs, ok := a.(Reseal); ok {
 		nodes := make([]types.NodeID, 0, len(rs.Nodes))
 		for _, n := range rs.Nodes {
@@ -747,6 +809,10 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 	case Abandon:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return authority.AbandonTask(tx, types.TaskID(a.Task.ID))
+		}
+	case Done:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return authority.DoneTask(tx, types.TaskID(a.Task.ID))
 		}
 	case Evaluate:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) { return x.evaluate(tx, a) }

@@ -171,6 +171,10 @@ func (h Host) args(r Run, name string) ([]string, error) {
 		return nil, err
 	}
 	l := r.Limits
+	ro := "" // the workspace mount's mode: read-only for a reviewer (Mythos #407 L2)
+	if r.ReadOnlyWorkspace {
+		ro = ",ro=true"
+	}
 	if !imgID.MatchString(r.Image.ID) || len(r.Argv) == 0 || l.Memory <= 0 || l.CPUs == "" || l.PIDs <= 0 || l.Timeout <= 0 || l.Disk <= 0 {
 		return nil, fmt.Errorf("%w: no resolved image, command or limits", ErrSpec)
 	}
@@ -185,7 +189,7 @@ func (h Host) args(r Run, name string) ([]string, error) {
 		"--timeout=" + strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds()))+int64(conmonGrace/time.Second), 10),
 		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
 		"--env=HOME=" + homeDir, "--workdir=" + WorkspaceDir,
-		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir + map[bool]string{true: ",ro=true"}[r.ReadOnlyWorkspace], "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}
+		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir + ro, "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}
 	if r.Mode == Build {
 		args = append(args, "--mount=type=bind,src="+m[2]+",dst="+GatewaySocket)
 	}

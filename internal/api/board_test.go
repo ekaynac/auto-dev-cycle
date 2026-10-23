@@ -18,6 +18,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
 // The acceptance a task's card never shows.
@@ -258,12 +259,19 @@ func taskIn(t *testing.T, state string, approval *authority.TaskApproval) author
 func TestBoardColumns(t *testing.T) {
 	now := since.Add(90 * time.Second)
 	approval := func(status string) *authority.TaskApproval { return &authority.TaskApproval{Status: status} }
-	build, gate, review := node(t, types.NodeKindBuild, types.NodeStateStateClaimed), node(t, types.NodeKindGate, types.NodeStateStateClaimed),
-		node(t, types.NodeKindReview, types.NodeStateStateClaimed)
+	// A review takes its build's candidate (the patch), as graph records it;
+	// a repair's build is the next round, its review recorded in round 1
+	// (P22a-6d): graph.CandidateGo takes the last build round's review.
+	takes := func(b graph.NodeView) types.InputSpec {
+		return types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: b.Node.ID, ResultKind: types.ResultKindPatch}}}
+	}
+	build, gate := node(t, types.NodeKindBuild, types.NodeStateStateClaimed), node(t, types.NodeKindGate, types.NodeStateStateClaimed)
+	review := node(t, types.NodeKindReview, types.NodeStateStateClaimed, takes(build))
 	done := []graph.NodeView{completed(build, types.OutcomeEmpty), completed(gate, types.OutcomeEmpty), completed(review, types.OutcomeEmpty)}
 	superseded := completed(review, types.OutcomeEmpty)
 	superseded.State.State = types.NodeStateStateSuperseded
-	repaired := append(slices.Clone(done), completed(round(build, 2), types.OutcomeEmpty), round(node(t, types.NodeKindGate, types.NodeStateStateRunnable), 2))
+	build2 := round(node(t, types.NodeKindBuild, types.NodeStateStateClaimed), 2)
+	repaired := append(slices.Clone(done), completed(build2, types.OutcomeEmpty), round(node(t, types.NodeKindGate, types.NodeStateStateRunnable), 2))
 	for name, c := range map[string]struct {
 		state    string
 		approval *authority.TaskApproval
@@ -283,9 +291,9 @@ func TestBoardColumns(t *testing.T) {
 		"review go, merge inactive":          {authority.TaskAdmitted, nil, done, types.BoardPlacedCardColumnDoneCandidate},
 		"review no_go":                       {authority.TaskAdmitted, nil, []graph.NodeView{completed(review, types.OutcomeFailed)}, types.BoardPlacedCardColumnReady},
 		"a superseded go review":             {authority.TaskAdmitted, nil, []graph.NodeView{superseded}, types.BoardPlacedCardColumnReady},
-		"a repair build after a go":          {authority.TaskAdmitted, nil, append(slices.Clone(done), round(build, 2)), types.BoardPlacedCardColumnRunning},
+		"a repair build after a go":          {authority.TaskAdmitted, nil, append(slices.Clone(done), build2), types.BoardPlacedCardColumnRunning},
 		"a repair completed, its gate ahead": {authority.TaskAdmitted, nil, repaired, types.BoardPlacedCardColumnReady},
-		"the repair's own review go":         {authority.TaskAdmitted, nil, append(slices.Clone(repaired), completed(round(review, 2), types.OutcomeEmpty)), types.BoardPlacedCardColumnDoneCandidate},
+		"the repair's own review go":         {authority.TaskAdmitted, nil, append(slices.Clone(repaired), completed(node(t, types.NodeKindReview, types.NodeStateStateClaimed, takes(build2)), types.OutcomeEmpty)), types.BoardPlacedCardColumnDoneCandidate},
 		"a structural waiting(input)":        {authority.TaskAdmitted, nil, []graph.NodeView{waitingOn(gate, "candidate", &types.ResultSource{Type: "result", Producer: build.Node.ID})}, types.BoardPlacedCardColumnReady},
 		"a review_requirement claimed":       {authority.TaskAdmitted, nil, []graph.NodeView{node(t, types.NodeKindReviewRequirement, types.NodeStateStateClaimed)}, types.BoardPlacedCardColumnReady},
 		"a cancelled task":                   {authority.TaskCancelledState, approval(authority.ApprovalInForce), nil, types.BoardPlacedCardColumnDone},
@@ -368,6 +376,105 @@ func TestBoardUnderivable(t *testing.T) {
 		u, ok := api.BoardCard(tr, c.nodes, since, true).Variant.(*types.BoardUnplacedCard)
 		if !ok || u.Reason != c.reason || u.ID != tr.ID || u.Project == nil || *u.Project != prjA {
 			t.Errorf("%s: %+v, want unplaced %s", name, u, c.reason)
+		}
+	}
+}
+
+// #226 entry 166: ending_blocked's cause is one of the controller's
+// phrases, authority.EndingCauses, exactly the schema's enum, never an
+// error's own text; each ErrEnding gives one of them.
+func TestEndingCausesAreTheSchemas(t *testing.T) {
+	raw, err := os.ReadFile("../../schemas/api/board.json")
+	var doc struct {
+		Defs map[string]struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &doc)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Defs["BoardEndingBlocked"].Properties["cause"].Enum; !slices.Equal(got, authority.EndingCauses) {
+		t.Errorf("the schema's causes %q, authority's %q", got, authority.EndingCauses)
+	}
+	for _, e := range []authority.ErrEnding{{Lease: true, What: "lease lea_x is active"}, {What: "attempt att_x is finishing at /var/lib/adc"}} {
+		if !slices.Contains(authority.EndingCauses, e.Cause()) {
+			t.Errorf("%+v's cause %q", e, e.Cause())
+		}
+	}
+}
+
+// Opus #408 L1: a node card's round is its candidate's: a repair's
+// accept, gate and review, recorded in round 1, show their build's round
+// 2; round 1's nodes show 1.
+func TestBoardStageRounds(t *testing.T) {
+	takes := func(kind types.ResultKind, p graph.NodeView) types.InputSpec {
+		return types.InputSpec{Name: types.Name(kind), Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: p.Node.ID, ResultKind: kind}}}
+	}
+	b1 := completed(node(t, types.NodeKindBuild, types.NodeStateStateClaimed), types.OutcomeFound)
+	r1 := completed(node(t, types.NodeKindReview, types.NodeStateStateClaimed, takes(types.ResultKindPatch, b1)), types.OutcomeFound)
+	b2 := round(node(t, types.NodeKindBuild, types.NodeStateStateClaimed), 2)
+	a2 := node(t, types.NodeKindAccept, types.NodeStateStateWaiting, takes(types.ResultKindPatch, b2))
+	g2 := node(t, types.NodeKindGate, types.NodeStateStateWaiting, takes(types.ResultKindTree, a2))
+	r2 := node(t, types.NodeKindReview, types.NodeStateStateWaiting, takes(types.ResultKindPatch, b2))
+	nodes := []graph.NodeView{b1, r1, b2, a2, g2, r2}
+	card, ok := api.BoardCard(taskIn(t, authority.TaskAdmitted, nil), nodes, since, true).Variant.(*types.BoardPlacedCard)
+	if !ok || len(card.Nodes) != len(nodes) {
+		t.Fatalf("%+v", card)
+	}
+	for i, want := range []int64{1, 1, 2, 2, 2, 2} {
+		if card.Nodes[i].Round != want {
+			t.Errorf("the %s card's round %d, want %d", card.Nodes[i].Kind, card.Nodes[i].Round, want)
+		}
+	}
+}
+
+// Mythos chunk 5a L4: a task whose ending cannot be read (a lease record
+// its open unit names that does not read as one) is listed unplaced
+// damaged_record, alone: the other cards stand, on the board and in the
+// task read.
+func TestAnUnreadableEndingIsOneTasksDamage(t *testing.T) {
+	f := open(t)
+	f.project(f.op.ID, prjA)
+	good, hurt := f.task(prjA, true), f.task(prjA, true)
+	f.admit(hurt.ID)
+	build := f.recordNode(hurt.ID, prjA, types.NodeKindBuild)
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		raw, _, err := tx.Get(authority.TaskProjection, hurt.ID)
+		var r map[string]any
+		if err == nil {
+			err = json.Unmarshal(raw, &r)
+		}
+		if err != nil {
+			return nil, err
+		}
+		r["approval"].(map[string]any)["status"] = authority.ApprovalRevoked // it would end abandoned
+		b, _ := json.Marshal(r)
+		lea := newID(f.t, "lea")
+		err = errors.Join(tx.Put(authority.TaskProjection, hurt.ID, b), tx.Put(lease.OpenProjection, string(graph.UnitOf(build))+"/"+lea, json.RawMessage(`true`)),
+			tx.Put(lease.LeaseProjection, lea, json.RawMessage(`{"revision":1,"record":{"id":5}}`)))
+		return []eventstore.Event{{ID: newID(f.t, "evt"), Kind: "fixture.appended/v1", Subject: prjA, Payload: []byte(`{}`)}}, err
+	})
+	_, readsA := f.another([]string{prjA}, "board")
+	srv := f.registeredServer(nil)
+	for _, resource := range []string{"board", "tasks"} {
+		got := items(t, srv, resource, readsA)
+		card := func(id types.TaskID) map[string]any {
+			if resource == "board" {
+				return got[string(id)]
+			}
+			c, _ := got[string(id)]["card"].(map[string]any)
+			return c
+		}
+		if c := card(hurt.ID); c["type"] != "unplaced" || c["reason"] != "damaged_record" {
+			t.Errorf("%s: the unreadable ending's card %v", resource, c)
+		}
+		if c := card(good.ID); c["type"] != "placed" || c["column"] != "ready" {
+			t.Errorf("%s: another task's card %v", resource, c)
 		}
 	}
 }

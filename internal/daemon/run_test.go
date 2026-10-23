@@ -418,7 +418,7 @@ func TestTheRunHandsTheContainerItsAttempt(t *testing.T) {
 	}
 	if r.Box == nil || r.Workspace != r.Box.Workspace() || r.Attempt != a || r.Exchange != filepath.Join(rw.exch, "exchange-"+string(a)) ||
 		r.Socket != filepath.Join(rw.r.sockets, string(a)+".sock") || r.Image != image || r.Toolchain != toolchain || !slices.Equal(r.Lockfiles, lockfiles) ||
-		len(lockfiles) == 0 || r.Deadline != sessionDeadline || r.NoBase || r.ReadOnly { // a build: its base hashed, its workspace writable (Mythos chunk 4a)
+		len(lockfiles) == 0 || r.Deadline != sessionDeadline || r.Review { // a build: its base hashed, its workspace writable (Mythos chunk 4a)
 		t.Errorf("the adapter's run: %+v (the attempt %s, the image %s %s, the lockfiles %q)", r, a, toolchain, image, lockfiles)
 	}
 }
@@ -1112,6 +1112,18 @@ func TestARenderedContextRefusalIsContent(t *testing.T) {
 	for _, cause := range []error{errors.New("a store's error"), fmt.Errorf("%w: blob x", intent.ErrBlobDamaged)} {
 		if contentFault(cause) {
 			t.Errorf("%v: the content's", cause)
+		}
+	}
+}
+
+// Mythos chunk 5a M1: the runner's one retry wait doubles from retryBase
+// and stops doubling at the maxTries-th: the launch's hold and End's
+// unbounded retries both read it.
+func TestRetryAfterIsCapped(t *testing.T) {
+	for n, want := range map[int]time.Duration{1: retryBase, 2: 2 * retryBase, maxTries: retryBase << (maxTries - 1),
+		maxTries + 7: retryBase << (maxTries - 1)} {
+		if got := retryAfter(n); got != want {
+			t.Errorf("retryAfter(%d) = %s, want %s", n, got, want)
 		}
 	}
 }

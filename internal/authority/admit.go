@@ -134,8 +134,9 @@ func AdmitTask(tx *eventstore.Tx, task types.TaskID, allowed []types.NodeKind) (
 }
 
 // DoneTask is the admitted task's task.done, as a candidate: it frees
-// admission (P22a-6 records it when the task's review go is selected).
-// None of the task's current nodes may be claimed or held.
+// admission (the loop records it once its candidate is decided, 22a-7).
+// It is refused unless its candidate is decided (graph.CandidateGo,
+// checked here too, whoever calls it: Mythos chunk 5a L1) and Endable.
 func DoneTask(tx *eventstore.Tx, task types.TaskID) ([]eventstore.Event, error) {
 	return done(tx, task, types.TaskDoneAsCandidate, nil)
 }
@@ -150,11 +151,21 @@ func AbandonTask(tx *eventstore.Tx, task types.TaskID) ([]eventstore.Event, erro
 
 func done(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs, reason *types.TaskDoneReasonValue) ([]eventstore.Event, error) {
 	t, ok, err := loadJSON[TaskRecord](tx, TaskProjection, string(task))
-	if err == nil && ok {
-		err = endable(tx, t, as)
+	switch {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, fmt.Errorf("authority: %w: task %s is not recorded", eventstore.ErrStaleExpectedState, task)
 	}
-	if err != nil || !ok {
-		return nil, errors.Join(fmt.Errorf("authority: %w: task %s is not %s", eventstore.ErrStaleExpectedState, task, as), err)
+	if err := endable(tx, t, as); err != nil { // never stale: a refusal that persists is logged (Opus #408 H1)
+		return nil, fmt.Errorf("authority: task %s is not %s: %w", task, as, err)
+	}
+	if as == types.TaskDoneAsCandidate {
+		if go_, err := decided(tx, t.ID); err != nil { // a read fault, never a refusal (Mythos #408 L5)
+			return nil, err
+		} else if !go_ {
+			return nil, errors.Join(fmt.Errorf("authority: task %s is not %s: %w: no review of its last build round completed go", task, as, ErrNotEndable))
+		}
 	}
 	return event(TaskDoneEvent, t.ID, &t.Project, types.TaskDone{Task: t.ID, Project: t.Project, As: as, Reason: reason,
 		At: types.Time(tx.Now().Format(time.RFC3339Nano))})
@@ -169,24 +180,116 @@ func done(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs, reason *typ
 // index, never the whole graph (M3).
 func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 	if t.State != TaskAdmitted {
-		return fmt.Errorf("task %s is %s, not admitted", t.ID, t.State)
+		return fmt.Errorf("%w: task %s is %s, not admitted", ErrNotEndable, t.ID, t.State)
 	}
 	if as == types.TaskDoneAsAbandoned && t.Approval != nil && t.Approval.Status == ApprovalInForce {
-		return fmt.Errorf("task %s's approval is in force: it is not abandoned", t.ID)
+		return fmt.Errorf("%w: task %s's approval is in force: it is not abandoned", ErrNotEndable, t.ID)
 	}
 	nodes, err := graph.TaskNodes(tx, t.ID)
 	if err != nil {
 		return err
 	}
-	for _, n := range nodes {
+	for _, n := range nodes { // every node claimed or held first, then the open units (Opus #408 re-check L1)
 		if s := n.State.State; as == types.TaskDoneAsCandidate && (s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld) {
-			return fmt.Errorf("task %s's node %s is %s", t.ID, n.Node.ID, s)
+			return fmt.Errorf("%w: task %s's node %s is %s", ErrNotEndable, t.ID, n.Node.ID, s)
 		}
-		if what, running, err := lease.Unended(tx, graph.UnitOf(n.Node.ID)); err != nil || running {
-			return errors.Join(err, fmt.Errorf("task %s's node %s still runs: %s", t.ID, n.Node.ID, what))
+	}
+	for _, n := range nodes {
+		unit := graph.UnitOf(n.Node.ID)
+		what, entry, running, err := lease.Unended(tx, unit)
+		if err != nil {
+			return err
+		}
+		if running {
+			return ErrEnding{Unit: unit, Node: n.Node.ID, Entry: entry, Lease: strings.HasPrefix(entry, "lea_"), What: what}
 		}
 	}
 	return nil
+}
+
+// EndingOf is how task, admitted, would end now, and Endable's refusal of
+// it: abandoned once its approval is not in force (Abandon's case), else
+// as a candidate when decided (decided; Done's); ok false when it would
+// end neither way. The loop (reconcile.Observe: Candidate, and Ending
+// either way: Opus #408 re-check M2), the runner's End and the card
+// (ending_blocked) all read it.
+func EndingOf(tx *eventstore.Tx, task types.TaskID) (as types.TaskDoneAs, ok bool, err error) {
+	t, found, err := loadJSON[TaskRecord](tx, TaskProjection, string(task))
+	switch {
+	case err != nil:
+		return "", false, err
+	case !found || t.State != TaskAdmitted:
+		return "", false, nil
+	case t.Approval == nil || t.Approval.Status != ApprovalInForce:
+		as = types.TaskDoneAsAbandoned
+	default:
+		go_, err := decided(tx, task)
+		if err != nil || !go_ {
+			return "", false, err
+		}
+		as = types.TaskDoneAsCandidate
+	}
+	return as, true, endable(tx, t, as)
+}
+
+// decided reports whether task's candidate is decided: graph.CandidateGo
+// over its nodes, the board's done_candidate rule (DoneTask's and
+// EndingOf's; Mythos chunk 5a L1, L2).
+func decided(tx *eventstore.Tx, task types.TaskID) (bool, error) {
+	nodes, err := graph.TaskNodes(tx, task)
+	return err == nil && graph.CandidateGo(nodes), err
+}
+
+// Endable is endable for task, read in tx: nil when task's end as as may be
+// recorded. Its refusal is ErrNotEndable; while a unit of the task still
+// runs, an ErrEnding. The one rule for "the task may end", DoneTask's and
+// AbandonTask's and the loop's (reconcile.Observe; Opus #408 H1).
+func Endable(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs) error {
+	t, ok, err := loadJSON[TaskRecord](tx, TaskProjection, string(task))
+	if err != nil || !ok {
+		return errors.Join(err, fmt.Errorf("%w: task %s is not recorded", ErrNotEndable, task))
+	}
+	return endable(tx, t, as)
+}
+
+// ErrNotEndable is Endable's refusal: never stale, so a refusal that
+// persists is the loop's to log (Opus #408 H1).
+var ErrNotEndable = errors.New("authority: the task cannot end yet")
+
+// The causes an ErrEnding gives a reader (the board's ending_blocked): the
+// controller's phrases, never the error's own text, which may name local
+// paths or stores (#226 entry 166).
+const (
+	EndingSeal  = "the attempt's seal did not land"
+	EndingLease = "the lease did not end"
+)
+
+// EndingCauses are every cause an ErrEnding gives.
+var EndingCauses = []string{EndingSeal, EndingLease}
+
+// ErrEnding is Endable's refusal while Node's Unit still runs: a lease not
+// ended (Lease), or an attempt not sealed. What is the store's own text,
+// for the log only.
+type ErrEnding struct {
+	Unit  types.UnitID
+	Node  types.NodeID
+	Entry string // the open index's entry: the lease's or the attempt's id
+	Lease bool
+	What  string
+}
+
+func (e ErrEnding) Error() string {
+	return fmt.Sprintf("%s: node %s still runs: %s", ErrNotEndable, e.Node, e.What)
+}
+
+func (e ErrEnding) Unwrap() error { return ErrNotEndable }
+
+// Cause is e's phrase, one of EndingCauses.
+func (e ErrEnding) Cause() string {
+	if e.Lease {
+		return EndingLease
+	}
+	return EndingSeal
 }
 
 // systemEvent loads ev's task, under ev's id and project, and refuses ev

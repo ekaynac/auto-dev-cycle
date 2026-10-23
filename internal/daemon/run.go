@@ -139,6 +139,7 @@ type runner struct {
 	// seal; resealTries: the failed seals of it in a row (Reseal).
 	waiting     map[types.NodeID]time.Time
 	resealTries map[types.NodeID]int
+	ending      map[types.NodeID]endRetry // End's retries, by node
 	runs        sync.WaitGroup
 }
 
@@ -174,7 +175,7 @@ func (r *runner) start(node types.NodeID, run func() error) bool {
 			r.mu.Unlock()
 		}()
 		err := run()
-		if errors.Is(err, errNotSealed) { // the input's seal not yet recorded: nothing to log, no nudge
+		if errors.Is(err, errNotSealed) || errors.Is(err, errEndRetried) { // nothing to log (End logs its own), no nudge
 			return
 		}
 		if err != nil && r.log != nil {
@@ -288,7 +289,7 @@ func (r *runner) attempt(node types.NodeID, l types.LeaseID) (err error) {
 		lockfiles[i] = string(f)
 	}
 	sess, err := r.adapters.Start(ctx, AdapterRun{Attempt: aid, Box: ws.run, Workspace: ws.Path(), Exchange: filepath.Join(r.host.Root, adapterhost.ExchangeName(aid)),
-		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles, NoBase: review, ReadOnly: review})
+		Socket: socket, Deadline: sessionDeadline, Image: image, Toolchain: toolchain, Lockfiles: lockfiles, Review: review})
 	if err != nil {
 		return errors.Join(err, r.endLease(ctx, l, node, err))
 	}
@@ -784,6 +785,14 @@ var retryBase = time.Minute
 
 const maxTries = 5
 
+// retryAfter is the n-th retry's wait (n ≥ 1): retryBase doubled n-1
+// times, capped at the maxTries-th's. The one rule for both of the
+// runner's retries: the launch's bounded hold (which ends "failed" at
+// maxTries) and End's, which never stops (Mythos chunk 5a M1).
+func retryAfter(n int) time.Duration {
+	return retryBase << (min(max(n, 1), maxTries) - 1)
+}
+
 // errConfig marks a failure before the launch that only a configuration
 // change fixes: the project's profile, its repository's URL or base.
 var errConfig = errors.New("daemon: the runner's configuration")
@@ -887,7 +896,7 @@ func (r *runner) retrySignal(tx *eventstore.Tx, node types.NodeID) (int, string)
 	if n >= maxTries {
 		return n, runnerFailed
 	}
-	until := tx.Now().Add(retryBase << (n - 1)).UTC().Format(time.RFC3339Nano)
+	until := tx.Now().Add(retryAfter(n)).UTC().Format(time.RFC3339Nano)
 	return n, reconcile.RunnerSignal(fmt.Sprintf("retry %d until %s", n, until))
 }
 
@@ -1133,6 +1142,10 @@ func (r *runner) stopped(ctx context.Context, attempt types.AttemptID) (bool, er
 	return a.StopReason != nil, err
 }
 
+// changeLease is lease.ChangeLease, endActive's end of an active lease; a
+// test makes it fail.
+var changeLease = lease.ChangeLease
+
 // sealWith is lease.SealWith; a test leaves an attempt unsealed.
 var sealWith = lease.SealWith
 
@@ -1249,7 +1262,7 @@ func (r *runner) endActive(ctx context.Context, l types.LeaseID, end lease.Lease
 			case err != nil || !ok || cur.State != from:
 				return nil, err
 			case from == types.LeaseStateActive:
-				return lease.ChangeLease(tx, l, rev, end, nil)
+				return changeLease(tx, l, rev, end, nil)
 			}
 			st, err := capacity.Settlement(tx, l)
 			if err != nil {

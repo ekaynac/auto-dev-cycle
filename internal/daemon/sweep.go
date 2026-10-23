@@ -17,8 +17,9 @@ package daemon
 //  3. recovery.RefuseOrphans refuses the output each cut attempt left in
 //     its exchange root (stale_attempt), and clears the exchange
 //     directory;
-//  4. each attempt left finishing (its result admitted, the run cut before
-//     it was ended), or sealed or completed with its lease not yet ended,
+//  4. each attempt left open (finishing: its result admitted, the run cut
+//     before it was ended; lost or stopping: its seal failed, Mythos #408
+//     H1′), or sealed or completed with its lease not yet ended,
 //     is ended as the run would have: its own recorded result kept, its diff sealed (the
 //     patch its result holds); with none, could_not_run/ambiguous_state is
 //     recorded with no attempt and no diff. Its lease then completes or is
@@ -44,6 +45,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -121,8 +123,9 @@ func (r *runner) removeClones() error {
 	return errors.Join(errs...)
 }
 
-// left is an attempt the restart left to end: finishing, or sealed or
-// completed with its lease not yet ended (active or settling).
+// left is an attempt the restart (or End) left to end: open (running with
+// no run, stopping, finishing or lost), or sealed or completed with its
+// lease not yet ended (active or settling).
 type left struct {
 	attempt types.Attempt
 	node    types.NodeID
@@ -135,33 +138,10 @@ func (r *runner) endLeft(ctx context.Context) error {
 	err := r.store.View(ctx, func(tx *eventstore.Tx) error {
 		keys, err := tx.Keys(lease.AttemptProjection, "")
 		for _, k := range keys {
-			a, _, ok, aerr := lease.AttemptAt(tx, types.AttemptID(k))
-			if aerr != nil || !ok {
-				err = errors.Join(err, aerr)
-				continue
+			lf, ok, lerr := leftAt(tx, types.AttemptID(k))
+			if err = errors.Join(err, lerr); ok {
+				todo = append(todo, lf)
 			}
-			if a.Status != types.AttemptStatusFinishing && a.Status != types.AttemptStatusSealed && a.Status != types.AttemptStatusCompleted {
-				continue
-			}
-			l, _, ok, lerr := lease.LeaseOf(tx, a.Lease)
-			ending := ok && (l.State == types.LeaseStateActive || l.State == types.LeaseStateSettling)
-			if lerr != nil || !ok || a.Status != types.AttemptStatusFinishing && !ending {
-				err = errors.Join(err, lerr)
-				continue
-			}
-			n, ok, nerr := graph.AttemptNode(tx, a.ID)
-			if nerr != nil || !ok {
-				err = errors.Join(err, nerr, fmt.Errorf("attempt %s ran for no node", a.ID))
-				continue
-			}
-			lf := left{attempt: a, node: n.Node.ID}
-			if res, byAttempt, rerr := graph.AttemptResult(tx, a.ID); rerr != nil {
-				err = errors.Join(err, rerr)
-				continue
-			} else if byAttempt {
-				lf.result = &res
-			}
-			todo = append(todo, lf)
 		}
 		return err
 	})
@@ -172,9 +152,167 @@ func (r *runner) endLeft(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// endOne ends lf as the run would have: sealed (a finishing attempt; its
-// result's patch the diff), its result kept or could_not_run recorded with
-// no attempt, then its lease ended (endAttempt). Two losses against the
+// leftAt is attempt as one left to end (left's): open (not sealed),
+// whatever its lease's state (a lost or stopping one whose seal failed may
+// have its lease settled already: Mythos #408 H1′; a running one only
+// where no run of it goes on, as the callers ensure), or sealed or completed with its
+// lease active or settling; false otherwise (superseded, or ended).
+func leftAt(tx *eventstore.Tx, attempt types.AttemptID) (left, bool, error) {
+	a, _, ok, err := lease.AttemptAt(tx, attempt)
+	if err != nil || !ok || a.Status == types.AttemptStatusSuperseded {
+		return left{}, false, err
+	}
+	if lease.SealedStatus(a.Status) { // sealed or completed: left while its lease has not ended
+		l, _, ok, err := lease.LeaseOf(tx, a.Lease)
+		if err != nil || !ok || l.State != types.LeaseStateActive && l.State != types.LeaseStateSettling {
+			return left{}, false, err
+		}
+	}
+	n, ok, err := graph.AttemptNode(tx, a.ID)
+	if err != nil || !ok {
+		return left{}, false, errors.Join(err, fmt.Errorf("attempt %s ran for no node", a.ID))
+	}
+	lf := left{attempt: a, node: n.Node.ID}
+	res, byAttempt, err := graph.AttemptResult(tx, a.ID)
+	if err != nil {
+		return left{}, false, err
+	}
+	if byAttempt {
+		lf.result = &res
+	}
+	return lf, true, nil
+}
+
+// errNothingEnded is End's try after which what it was to end still runs.
+var errNothingEnded = errors.New("daemon: what still runs was not ended")
+
+// errEndRetried is End's failed try, logged by end itself (once per cause)
+// and retried with backoff: start logs nothing more.
+var errEndRetried = errors.New("daemon: the ending is retried")
+
+// endRetry is a decided candidate's node End ends at runtime: when its next
+// try is due, its failed tries in a row, and the last cause it logged.
+type endRetry struct {
+	next  time.Time
+	tries int
+	cause string
+}
+
+// End ends what node of task, a decided candidate's, still runs (Opus #408
+// H1; #226 entry 166), as the start sweep would (endOne), when its retry is
+// due: retryBase, doubling, capped at retryBase·2^(maxTries-1), with no
+// limit on the tries (a fault that clears needs no restart), kept in memory
+// as Reseal keeps its clocks. A cause is logged only when it changes. No
+// hold: node is completed, which carries none (records/node-state.json);
+// the board and task show read the same refusal (authority.Endable) as the
+// card's ending_blocked. True when it started a try.
+func (r *runner) End(task types.TaskID, node types.NodeID) bool {
+	r.mu.Lock()
+	due := !time.Now().Before(r.ending[node].next)
+	r.mu.Unlock()
+	return due && r.start(node, func() error { return r.end(task, node) })
+}
+
+// endingNow is task's end refused because a unit of it still runs
+// (authority.EndingOf's ErrEnding), if it is.
+func (r *runner) endingNow(task types.TaskID) (authority.ErrEnding, bool, error) {
+	var e authority.ErrEnding
+	var still bool
+	err := r.store.View(r.ctx, func(tx *eventstore.Tx) error {
+		_, ok, eerr := authority.EndingOf(tx, task)
+		if still = ok && errors.As(eerr, &e); still || eerr == nil || errors.Is(eerr, authority.ErrNotEndable) {
+			return nil
+		}
+		return eerr
+	})
+	return e, still, err
+}
+
+// endEntry ends e's open entry with the rules that exist: an attempt left
+// (leftAt: any open one, End's start having found no run of its node) as
+// the start sweep ends it (endOne); a lease, by its attempt
+// likewise (an attempt sealed or completed with its lease still active or
+// settling: endOne's completed branch is endActive; Mythos chunk 5a H1),
+// or, with no attempt, as a lease never launched is ended (endLease: a
+// granted one refused and released, a releasing one released). What none
+// covers is left: the caller's re-read makes it a failed try.
+func (r *runner) endEntry(e authority.ErrEnding) error {
+	attempt := types.AttemptID(e.Entry)
+	if e.Lease {
+		var l types.Lease
+		var ok bool
+		if err := r.store.View(r.ctx, func(tx *eventstore.Tx) (err error) {
+			l, _, ok, err = lease.LeaseOf(tx, types.LeaseID(e.Entry))
+			return err
+		}); err != nil || !ok {
+			return err
+		}
+		if l.Attempt == nil {
+			return r.endLease(r.ctx, l.ID, e.Node, nil)
+		}
+		attempt = *l.Attempt
+	}
+	var lf left
+	var ok bool
+	if err := r.store.View(r.ctx, func(tx *eventstore.Tx) (err error) {
+		lf, ok, err = leftAt(tx, attempt)
+		return err
+	}); err != nil || !ok {
+		return err
+	}
+	return r.endOne(r.ctx, lf)
+}
+
+// end is one try of End: what task's end is refused on (EndingOf's
+// ErrEnding), its open index's entry, ended by endEntry. Then EndingOf is read again (Opus #408
+// re-check M1): a try after which the same entry still runs, one whose
+// end failed or one endEntry does not cover (none that adcd writes: the
+// PR's table, Mythos #408 H1′), is an error: counted, backed off and logged once, never a
+// pass's nudge. A try after which another entry runs is progress.
+func (r *runner) end(task types.TaskID, node types.NodeID) error {
+	before, still, err := r.endingNow(task)
+	if err == nil && still {
+		err = r.endEntry(before)
+	}
+	if err == nil && still {
+		after, again, rerr := r.endingNow(task)
+		switch {
+		case rerr != nil:
+			err = rerr
+		case again && after.Entry == before.Entry:
+			err = fmt.Errorf("%w: %v", errNothingEnded, after)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		delete(r.ending, node)
+		return nil
+	}
+	if r.ending == nil {
+		r.ending = map[types.NodeID]endRetry{}
+	}
+	e := r.ending[node]
+	e.tries++
+	e.next = time.Now().Add(retryAfter(e.tries))                // capped: End never stops
+	if msg := ids.Redact(err.Error(), "<id>"); msg != e.cause { // a cause, not the ids each try mints
+		e.cause = msg
+		r.logf("adcd: what node %s still runs could not be ended (retried with backoff): %v", node, err)
+	}
+	r.ending[node] = e
+	return errEndRetried
+}
+
+// endOne ends lf as the run would have (record's steps): a running one
+// lost (agent_disconnect); an open one sealed (a finishing attempt's
+// result's patch the diff; a lost or stopping one, Mythos #408 H1′, none),
+// its result kept or, for an attempt not cut, could_not_run recorded with
+// no attempt; then its lease ended (endAttempt: a lease already settled is
+// left as it is). A cut attempt (lost or stopped, recovery.Next's cut)
+// records no result, as recovery's Seal step at a restart: record's commit
+// with no attempt recorded its could_not_run (its claim stays, so a second
+// would be recorded over it), or, if that failed too, the claim is matched
+// again. Two losses against the
 // run's own seal, stated (Opus 22a-5c-2c L1): the output files .gitignore
 // kept out of the diff are not carried (no result records them), so accept
 // reports no ignored-file warnings for such an attempt; and a result with
@@ -186,7 +324,15 @@ func (r *runner) endOne(ctx context.Context, lf left) error {
 	}
 	var errs []error
 	recorded := lf.result
-	if lf.attempt.Status == types.AttemptStatusFinishing {
+	cut := lf.attempt.LostReason != nil || lf.attempt.StopReason != nil // recovery.Next's cut, sealed or not
+	switch lf.attempt.Status {
+	case types.AttemptStatusRunning: // its run ended with its loss unrecorded: record's first step
+		cut = true
+		errs = append(errs, r.command(ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.LoseRunning(tx, lf.attempt.ID, types.AttemptLostReasonValueAgentDisconnect)
+		}))
+		fallthrough
+	case types.AttemptStatusFinishing, types.AttemptStatusLost, types.AttemptStatusStopping:
 		var diff *types.Digest
 		if recorded != nil && recorded.Kind == types.ResultKindPatch && len(recorded.Value) > 0 {
 			d := recorded.Value[0].ContentDigest
@@ -194,9 +340,9 @@ func (r *runner) endOne(ctx context.Context, lf left) error {
 		}
 		errs = append(errs, r.command(ctx, r.sealStep(lf.attempt.ID, diff, nil)))
 	}
-	if recorded == nil {
+	if recorded == nil && !cut { // a cut attempt records nothing, as recovery's Seal: record's own commit did, or its claim is matched again
 		errs = append(errs, r.command(ctx, r.commitStep(lf.node, nil, func(key types.ComputationKey) (types.Result, error) {
-			return resultOf(key, types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonAmbiguousState, "the controller restarted before it recorded the attempt's result")
+			return resultOf(key, types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonAmbiguousState, "the controller did not record the attempt's result before its run ended")
 		}, &recorded)))
 	}
 	return errors.Join(append(errs, r.endAttempt(ctx, lf.attempt.Lease, lf.attempt.ID, recorded))...)

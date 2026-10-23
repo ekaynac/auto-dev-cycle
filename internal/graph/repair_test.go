@@ -120,3 +120,99 @@ func TestRepair(t *testing.T) {
 		}
 	}
 }
+
+// 22a-7 (Main): the one last-round rule. LastBuildRound is the highest
+// round of the task's build nodes; OfLastRound takes a review by its
+// candidate's build's round, never its own (a repair's review is recorded
+// in round 1); CandidateGo is a completed go review of the last round's
+// candidate: an earlier round's go (a second review of round 1), a no_go
+// in the last round, or a review not completed is no candidate.
+func TestTheLastRoundsCandidate(t *testing.T) {
+	empty, found := types.OutcomeEmpty, types.OutcomeFound
+	view := func(id string, kind types.NodeKind, round int64, st types.NodeStateState, o *types.Outcome, patchOf string) NodeView {
+		n := types.Node{ID: types.NodeID(id), Kind: kind, Round: round, Inputs: []types.InputSpec{}}
+		if patchOf != "" {
+			n.Inputs = append(n.Inputs, types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result",
+				Producer: types.NodeID(patchOf), ResultKind: types.ResultKindPatch}}})
+		}
+		return NodeView{Node: n, State: types.NodeState{State: st}, Outcome: o}
+	}
+	done := types.NodeStateStateCompleted
+	b1, b2 := view("b1", types.NodeKindBuild, 1, done, &found, ""), view("b2", types.NodeKindBuild, 2, done, &found, "")
+	for name, c := range map[string]struct {
+		nodes []NodeView
+		last  int64
+		go_   bool
+	}{
+		"no build":                              {nil, 0, false},
+		"round 1 go":                            {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &empty, "b1")}, 1, true},
+		"round 1 no_go":                         {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &found, "b1")}, 1, false},
+		"round 1 go, its review claimed":        {[]NodeView{b1, view("r1", types.NodeKindReview, 1, types.NodeStateStateClaimed, nil, "b1")}, 1, false},
+		"round 2's review (in round 1) go":      {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &found, "b1"), b2, view("r2", types.NodeKindReview, 1, done, &empty, "b2")}, 2, true},
+		"round 1 go, round 2 built, unreviewed": {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &empty, "b1"), b2}, 2, false},
+		"round 2's review no_go":                {[]NodeView{b1, view("r1", types.NodeKindReview, 1, done, &found, "b1"), b2, view("r2", types.NodeKindReview, 1, done, &found, "b2")}, 2, false},
+	} {
+		if got := LastBuildRound(c.nodes); got != c.last {
+			t.Errorf("%s: LastBuildRound %d, want %d", name, got, c.last)
+		}
+		if got := CandidateGo(c.nodes); got != c.go_ {
+			t.Errorf("%s: CandidateGo %v, want %v", name, got, c.go_)
+		}
+	}
+}
+
+// Opus #408 M1 (E1), L1: a review that is not completed is no candidate
+// whatever its outcome (superseded after a go, or renewed and claimed);
+// a stage's round is its candidate's.
+func TestACandidateIsACompletedReview(t *testing.T) {
+	empty := types.OutcomeEmpty
+	patch := func(b string) types.InputSpec {
+		return types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(b), ResultKind: types.ResultKindPatch}}}
+	}
+	tree := func(a string) types.InputSpec {
+		return types.InputSpec{Name: "tree", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(a), ResultKind: types.ResultKindTree}}}
+	}
+	v := func(id string, kind types.NodeKind, round int64, st types.NodeStateState, o *types.Outcome, in ...types.InputSpec) NodeView {
+		return NodeView{Node: types.Node{ID: types.NodeID(id), Kind: kind, Round: round, Inputs: append([]types.InputSpec{}, in...)}, State: types.NodeState{State: st}, Outcome: o}
+	}
+	b1, b2 := v("b1", types.NodeKindBuild, 1, types.NodeStateStateCompleted, &empty), v("b2", types.NodeKindBuild, 2, types.NodeStateStateCompleted, &empty)
+	for name, st := range map[string]types.NodeStateState{"superseded": types.NodeStateStateSuperseded, "claimed": types.NodeStateStateClaimed} {
+		if CandidateGo([]NodeView{b1, v("r1", types.NodeKindReview, 1, st, &empty, patch("b1"))}) {
+			t.Errorf("a %s review with a go outcome is a candidate", name)
+		}
+	}
+	nodes := []NodeView{b1, b2, v("a2", types.NodeKindAccept, 1, types.NodeStateStateCompleted, &empty, patch("b2")),
+		v("g2", types.NodeKindGate, 1, types.NodeStateStateRunnable, nil, tree("a2")), v("r2", types.NodeKindReview, 1, types.NodeStateStateWaiting, nil, patch("b2"))}
+	for _, n := range nodes {
+		if want := map[types.NodeID]int64{"b1": 1, "b2": 2, "a2": 2, "g2": 2, "r2": 2}[n.Node.ID]; CandidateRound(nodes, n.Node) != want {
+			t.Errorf("%s's candidate round %d, want %d", n.Node.ID, CandidateRound(nodes, n.Node), want)
+		}
+	}
+}
+
+// #410 (K2), Opus: a refused round (its accept refused, so the build is
+// repaired) leaves its gate and review waiting, never claimed: they are no
+// candidate, and the next round's GO is the task's candidate.
+func TestARefusedRoundsWaitingChecksAreNoCandidate(t *testing.T) {
+	empty, found := types.OutcomeEmpty, types.OutcomeFound
+	patch := func(b string) types.InputSpec {
+		return types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(b), ResultKind: types.ResultKindPatch}}}
+	}
+	tree := func(a string) types.InputSpec {
+		return types.InputSpec{Name: "tree", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(a), ResultKind: types.ResultKindTree}}}
+	}
+	v := func(id string, kind types.NodeKind, round int64, st types.NodeStateState, o *types.Outcome, in ...types.InputSpec) NodeView {
+		return NodeView{Node: types.Node{ID: types.NodeID(id), Kind: kind, Round: round, Inputs: append([]types.InputSpec{}, in...)}, State: types.NodeState{State: st}, Outcome: o}
+	}
+	done, waiting := types.NodeStateStateCompleted, types.NodeStateStateWaiting
+	refused := []NodeView{v("b1", types.NodeKindBuild, 1, done, &found), v("a1", types.NodeKindAccept, 1, done, &found, patch("b1")),
+		v("g1", types.NodeKindGate, 1, waiting, nil, tree("a1")), v("r1", types.NodeKindReview, 1, waiting, nil, patch("b1"))}
+	if CandidateGo(refused) {
+		t.Error("a refused round's waiting checks are a candidate")
+	}
+	next := append(refused, v("b2", types.NodeKindBuild, 2, done, &found), v("a2", types.NodeKindAccept, 1, done, &empty, patch("b2")),
+		v("g2", types.NodeKindGate, 1, done, &empty, tree("a2")), v("r2", types.NodeKindReview, 1, done, &empty, patch("b2")))
+	if !CandidateGo(next) || OfLastRound(next, next[3].Node) || !OfLastRound(next, next[7].Node) {
+		t.Error("the round after a refused one: its GO is not the candidate")
+	}
+}
