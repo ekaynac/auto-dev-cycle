@@ -270,14 +270,11 @@ func receiptSignal(m Missing) string {
 func parseReceiptSignal(signal string) (types.Name, bool) {
 	rest, ok := strings.CutPrefix(signal, "receipt:")
 	name, reason, _ := strings.Cut(rest, ":")
-	reg, err := registry()
+	code, err := vocab.ParseReason(reason) // a registered reason
 	if !ok || err != nil || name == "" || strings.ContainsAny(name, ": \t\n") {
 		return "", false
 	}
-	if _, registered := reg.Reasons[reason]; !registered {
-		return "", false
-	}
-	m := Missing{Name: types.Name(name), Refusal: &receipt.Refusal{Reason: types.ReasonCodeOf(reason)}}
+	m := Missing{Name: types.Name(name), Refusal: &receipt.Refusal{Reason: code}}
 	return m.Name, receiptSignal(m) == signal
 }
 
