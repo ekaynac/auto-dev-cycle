@@ -27,7 +27,7 @@ import (
 )
 
 // stubBuilder is registry-stub.json's builder: $4 per million tokens at its
-// higher rate, a 500-token turn, 2 turns.
+// higher rate, a 64,000-token turn, 2 turns.
 const stubBuilder = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa")
 
 // placing is a seeder over adcd's projector with the fixture groups, its
@@ -142,19 +142,20 @@ func leaseOn(w *seeder, node types.NodeID) (types.Lease, bool) {
 // P22a-5c-1 (I7, I10, I16, #226 entries 103 and 120), through the loop and
 // adcd's placer: once the plan's result is in, the build is claimed and
 // matched on the stub builder, the reservation its prior and the rails give
-// (a full attempt_cap, 1,000 tokens, under a wide day rail), with the lease's
-// footprint the prior. Under a day rail that leaves less than a turn, the
-// match is refused and the node held budget_rail (rail:per_day_usd); the
-// loop does not clear the hold while the day leaves no turn, and clears it,
-// then places the build, once a profile change (here, the rails) leaves
-// one: 750 tokens with 3,000 micros left.
+// (a full attempt_cap, 128,000 tokens, under a wide day rail), with the
+// lease's footprint the prior. Under a day rail that leaves less than a turn
+// (64,000 tokens, 256,000 micros at $4 per million), the match is refused
+// and the node held budget_rail (rail:per_day_usd); the loop does not clear
+// the hold while the day leaves no turn, and clears it, then places the
+// build, once a profile change (here, the rails) leaves one: 96,000 tokens
+// with 384,000 micros left.
 func TestTheLoopPlacesTheBuild(t *testing.T) {
 	for name, c := range map[string]struct {
 		perDay int64
 		tokens int64
 	}{
-		"a wide day rail":    {1 << 50, 1000},
-		"less than one turn": {1999, 750},
+		"a wide day rail":    {1 << 50, 128_000},
+		"less than one turn": {255_999, 96_000},
 	} {
 		t.Run(name, func(t *testing.T) {
 			perDay := c.perDay
@@ -177,11 +178,11 @@ func TestTheLoopPlacesTheBuild(t *testing.T) {
 				if st := nodesOf(w, task)[types.NodeKindBuild].State; st.State != types.NodeStateStateHeld {
 					t.Fatalf("the hold was cleared while the day leaves no turn: %+v", st)
 				}
-				perDay = 3000
+				perDay = 384_000
 				passes(t, l)
 			}
 			ls, live := leaseOn(w, build)
-			if !live || ls.Executor != stubBuilder || ls.Reservations[0].Amount != c.tokens || ls.Footprint.ContextTokens != 500 || ls.Footprint.ExpectedTurns != 2 {
+			if !live || ls.Executor != stubBuilder || ls.Reservations[0].Amount != c.tokens || ls.Footprint.ContextTokens != 64_000 || ls.Footprint.ExpectedTurns != 2 {
 				t.Fatalf("the build's lease: %v %+v", live, ls)
 			}
 		})
