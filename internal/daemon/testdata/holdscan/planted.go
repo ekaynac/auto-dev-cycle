@@ -5,6 +5,7 @@
 package holdscan
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -38,4 +39,15 @@ func FromMethod(tx *eventstore.Tx, n types.NodeID, x *strings.Builder) ([]events
 // Concatenated raises a hold whose signal is its parameter concatenated.
 func Concatenated(tx *eventstore.Tx, n types.NodeID, signal string) ([]eventstore.Event, error) {
 	return graph.Raise(tx, n, types.NodeHold{Hold: "source_invalid_config", SignalInstance: signal + "", Owner: types.OwnerOperator}, nil)
+}
+
+// DeepMethod raises a hold whose signal is a method of a field of its
+// parameter's field.
+func DeepMethod(tx *eventstore.Tx, n types.NodeID, x struct{ a struct{ b *strings.Builder } }) ([]eventstore.Event, error) {
+	return graph.Raise(tx, n, types.NodeHold{Hold: "source_invalid_config", SignalInstance: x.a.b.String(), Owner: types.OwnerOperator}, nil)
+}
+
+// Sprinted raises a hold whose signal is its parameter passed through fmt.
+func Sprinted(tx *eventstore.Tx, n types.NodeID, signal string) ([]eventstore.Event, error) {
+	return graph.Raise(tx, n, types.NodeHold{Hold: "source_invalid_config", SignalInstance: fmt.Sprint(signal), Owner: types.OwnerOperator}, nil)
 }

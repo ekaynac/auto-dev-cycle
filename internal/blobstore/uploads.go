@@ -58,11 +58,11 @@ var (
 
 // uploadPath is where actor's live upload of digest is.
 func (s *Store) uploadPath(actor, digest string) (string, error) {
-	m := digestRe.FindStringSubmatch(digest)
-	if m == nil || !actorRe.MatchString(actor) {
+	hx, ok := hexOf(digest)
+	if !ok || !actorRe.MatchString(actor) {
 		return "", fmt.Errorf("blobstore: malformed upload %q of %q", digest, actor)
 	}
-	return filepath.Join(s.root, "uploads", actor, m[1]), nil
+	return filepath.Join(s.root, "uploads", actor, hx), nil
 }
 
 func tombOf(p string) string { return filepath.Join(filepath.Dir(p), tombstone+filepath.Base(p)) }
