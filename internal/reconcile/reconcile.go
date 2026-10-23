@@ -355,8 +355,10 @@ func (r Repair) expected() []eventstore.Expectation {
 
 // HoldReview holds a review node review_inactive, the operator's, on
 // ReviewSignal: launch is active and review is not (#226 entry 173), so the
-// review is recorded but never claimed or placed; a start that derives
-// review active clears it (ReviewUnblock: Reviews.Unheld).
+// review is recorded but never claimed or placed; a lease granted on its
+// unit before (review active at an earlier start) is released in the same
+// command. A start that derives review active clears it (ReviewUnblock:
+// Reviews.Unheld).
 type HoldReview struct{ Node Versioned }
 
 func (HoldReview) action() string    { return ReviewAction }
@@ -893,12 +895,28 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 		}
 	case HoldReview:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			// A review granted while review was active, then started again with
+			// it inactive, never runs: its lease is refused and released in the
+			// same command, as a sandboxless run's is (Opus #414 re-check L1).
+			var evs []eventstore.Event
+			l, live, err := granted(tx, graph.UnitOf(types.NodeID(a.Node.ID)))
+			if err == nil && live {
+				_, rev, _, lerr := lease.LeaseOf(tx, l)
+				if lerr != nil {
+					return nil, lerr
+				}
+				evs, err = lease.RefuseStart(tx, l, rev, vocab.ReasonPreconditionFailed.String())
+			}
+			if err != nil {
+				return nil, err
+			}
 			id, err := ids.New("hld")
 			if err != nil {
 				return nil, err
 			}
-			return graph.Raise(tx, types.NodeID(a.Node.ID), types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldReviewInactive, SignalInstance: ReviewSignal,
+			held, err := graph.Raise(tx, types.NodeID(a.Node.ID), types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldReviewInactive, SignalInstance: ReviewSignal,
 				Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
+			return append(evs, held...), err
 		}
 	case RecordReview:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {

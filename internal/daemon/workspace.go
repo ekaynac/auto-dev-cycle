@@ -26,7 +26,8 @@ package daemon
 //   - Close removes the run directory and the clone, whatever happened. A
 //     crash between the two leaves both behind: 22a-5c sweeps them at
 //     restart, before launch is active.
-//   - Inert until launch is active: 22a-5c's attempt run is its caller.
+//   - 22a-5c's attempt run is its caller, while launch is active (this
+//     build, P22a).
 
 import (
 	"context"

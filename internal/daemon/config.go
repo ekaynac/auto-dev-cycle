@@ -268,8 +268,8 @@ var reviewCapability = func() capability.Capability {
 // (the loop's gates, the actions it wires, the effect and node kinds it
 // registers, the deferred matrix, review's row): this build's
 // (capability.Built). A row needing a capability active before its last
-// bits are set plants a test build that keeps them (capability.Set.Keeping,
-// launchActive), never a gate of its own.
+// bits are set plants a test build that keeps them (capability.Set.Keeping),
+// never a gate of its own.
 var capabilities = capability.Built
 
 // reviewsAtStart is the review capability's activation, derived at adcd's

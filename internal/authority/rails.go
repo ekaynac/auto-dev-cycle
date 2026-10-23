@@ -13,7 +13,8 @@ package authority
 //     only of a recorded task, by a live operator, at its event's time and
 //     above any earlier raise of that rail (raises never lower a rail).
 //   - per_day_usd is the project's, raised by a profile change only.
-//   - Inert until P22a: the handler is built and deferred, as task.create.
+//   - adcd wires the handler while launch, its capability, is active (this
+//     build, P22a).
 
 import (
 	"encoding/json"

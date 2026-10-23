@@ -36,8 +36,8 @@ package daemon
 // does not change. The gate's own could_not_run (results it cannot read)
 // is held in its result's command, a bounded retry. A shutdown during a
 // gate run records nothing and holds nothing (the daemon's context ended):
-// the next start runs the gate again (stated, Opus 22a-5c-2b-3 L2). Inert
-// until launch is active: the loop decides no Gate until then.
+// the next start runs the gate again (stated, Opus 22a-5c-2b-3 L2). The
+// loop decides a Gate only while launch is active (this build, P22a).
 
 import (
 	"bytes"

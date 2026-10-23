@@ -66,20 +66,18 @@ func TestGatedByCapability(t *testing.T) {
 	})
 }
 
-// adcd registers the effect kinds of the active capabilities alone: none in
-// this build (remote_process never, I15 effect); model_call once launch is
-// active; an active kind with no definition refuses the start.
+// adcd registers the effect kinds of the active capabilities alone:
+// launch's model_call in this build (remote_process never, I15 effect);
+// none with launch pending; an active kind with no definition refuses the
+// start.
 func TestEffectKinds(t *testing.T) {
-	if ks, err := effectKinds(); err != nil || len(ks) != 0 {
-		t.Fatalf("this build: %v %v", ks, err)
+	if ks, err := effectKinds(); err != nil || len(ks) != 1 || ks[modelcall.Kind].RequestSchema != modelcall.Schema {
+		t.Fatalf("this build (launch active): %v %v", ks, err)
 	}
 	launch := slices.IndexFunc(capability.Table, func(c capability.Capability) bool { return c.Name == "launch" })
-	withTable(t, func(tb []capability.Capability) {
-		tb[launch].Rows, tb[launch].Pending = nil, nil
-	}, func() {
-		ks, err := effectKinds()
-		if _, ok := ks[modelcall.Kind]; err != nil || len(ks) != 1 || !ok {
-			t.Errorf("launch active: %v %v", ks, err)
+	launchPending(t, func() {
+		if ks, err := effectKinds(); err != nil || len(ks) != 0 {
+			t.Errorf("launch pending: %v %v", ks, err)
 		}
 	})
 	withTable(t, func(tb []capability.Capability) {

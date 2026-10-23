@@ -277,14 +277,13 @@ func TestLiveContainerRunsTheBuild(t *testing.T) {
 }
 
 // A5 (the activation plan §3 A): the live build through adcd's own wiring,
-// under a test build of the table where launch is active (launchActive):
+// launch active (this build's table):
 // adcd's egress (newEgress), its runner on the live sandbox host with the
 // container adapter (runnerOn, as runnerOf makes it) and its own loop
 // (reconciler, the gates derived from the table; none set by hand). The
 // build is placed, launched in its container, its adapter's turns reach
 // the stub provider through the gateway, and its diff is recorded.
 func TestLiveContainerRunsTheBuildThroughAdcd(t *testing.T) {
-	launchActive(t)
 	rw, box, log, reg := liveWorld(t, func(b liveBox) string { return b.want }, nil)
 	d := &Daemon{store: rw.w.s, blobs: rw.w.blobs, system: rw.r.system, clock: time.Now}
 	eg, err := newEgress(d, reg, false)

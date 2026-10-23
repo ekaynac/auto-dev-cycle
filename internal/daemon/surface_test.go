@@ -50,8 +50,8 @@ func recordedAs(t *testing.T, kind types.NodeKind) func(*eventstore.Tx) ([]event
 
 // P22a-2 (I15 admission, Opus #298 M2, L3): adcd's graph fold refuses a
 // node.recorded of a kind outside M1(a)'s (evidence, merge before merge is
-// active), whoever records it; and IntendEffect refuses merge and
-// model_call, which no active capability registers.
+// active), whoever records it; and IntendEffect refuses merge, which no
+// active capability registers (model_call is launch's, active: P22a).
 func TestDeferredSurfacesInAdcd(t *testing.T) {
 	d := restart(t, stateDir(t))
 	defer d.Close()
@@ -65,7 +65,7 @@ func TestDeferredSurfacesInAdcd(t *testing.T) {
 	if err := asSystem(t, d, recordedAs(t, types.NodeKindBuild)); err == nil || strings.Contains(err.Error(), "deferred surface") || !strings.Contains(err.Error(), "not admitted") {
 		t.Errorf("a build node: %v", err)
 	}
-	for _, kind := range []string{"merge", modelcall.Kind} {
+	for _, kind := range []string{"merge"} {
 		err := asSystem(t, d, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return nil, tx.IntendEffect(newID(t, "eff"), kind, "target", json.RawMessage(`{}`))
 		})

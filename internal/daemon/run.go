@@ -41,8 +41,8 @@ package daemon
 // unplaced, its reservation freed, and the loop matches the build again. A
 // launch whose own command failed is read back: an attempt it started is
 // completed as one that never ran. The run is bounded by the session's
-// deadline and the stores' own bounds. Inert until launch is active: the
-// loop decides no Run until then. The builder's manifest.intent is recorded
+// deadline and the stores' own bounds. The loop decides a Run only while
+// launch is active (this build, P22a). The builder's manifest.intent is recorded
 // in the launch command (builderIntent; P22a-5c-2b-1, W17). A placed
 // review runs the same way (22a-6c): its reviewer's intent and prompt
 // (reviewerIntent), an empty read-only workspace (emptyWorkspace), no

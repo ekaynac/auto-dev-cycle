@@ -111,7 +111,7 @@ var kept = map[Row]bool{
 	{"I2", Admission}: true, {"I2", Fold}: true, {"I2", Consumption}: true, {"I2", Effect}: true,
 	{"I3", Admission}: true, {"I3", Fold}: true, {"I3", Consumption}: true, {"I3", Effect}: true,
 	{"I4", Admission}: true, {"I4", Fold}: true, {"I4", Consumption}: true, {"I4", Effect}: true,
-	{"I5", Fold}: true, {"I5", Consumption}: true, {"I5", Effect}: true, // P22a-6d; Admission is launch's activation's (Opus 22a-6d L1)
+	{"I5", Admission}: true, {"I5", Fold}: true, {"I5", Consumption}: true, {"I5", Effect}: true, // P22a-6d; Admission: launch's activation (Opus 22a-6d L1), daemon TestLaunchThroughAdcdsOwnLoop
 
 	{"I6", Admission}: true, {"I6", Fold}: true, {"I6", Consumption}: true, {"I6", Effect}: true, // K1: the model_call half; merge's half (P20's) is gated by merge-local's and merge-github's Pending (Opus #409 L1)
 	{"I7", Admission}: true, {"I7", Fold}: true, {"I7", Consumption}: true, {"I7", Effect}: true, // P22a-6d
@@ -120,14 +120,14 @@ var kept = map[Row]bool{
 	{"I10", Admission}: true, {"I10", Fold}: true, {"I10", Consumption}: true, {"I10", Effect}: true, // K2a (launch's kept bits)
 	{"I11", Admission}: true, {"I11", Fold}: true, {"I11", Consumption}: true, {"I11", Effect}: true,
 	{"I12", Admission}: true, {"I12", Fold}: true, {"I12", Consumption}: true, {"I12", Effect}: true, // K2a: Admission for the Go profile
-	{"I13", Fold}: true, {"I13", Consumption}: true, {"I13", Effect}: true, // Admission is launch's activation's (Opus 22a-6d L1)
+	{"I13", Admission}: true, {"I13", Fold}: true, {"I13", Consumption}: true, {"I13", Effect}: true, // Admission: launch's activation (Opus 22a-6d L1); daemon TestAMeasurementIsTheGatesOwn, TestTheReviewsGateRequirement
 	{"I14", Fold}: true, {"I14", Consumption}: true,
 	{"I15", Admission}: true, {"I15", Fold}: true, {"I15", Consumption}: true, {"I15", Effect}: true,
 	{"I16", Admission}: true, {"I16", Fold}: true, {"I16", Consumption}: true, {"I16", Effect}: true, // K1
 	{"I17", Admission}: true, {"I17", Fold}: true, {"I17", Consumption}: true, {"I17", Effect}: true, // K2a
 	{"I18", Admission}: true, {"I18", Fold}: true, {"I18", Consumption}: true, {"I18", Effect}: true, // P22a-6d
-	{"I21", Consumption}: true,
-	{"I22", Admission}:   true, {"I22", Fold}: true, {"I22", Consumption}: true, {"I22", Effect}: true,
+	{"I21", Admission}: true, {"I21", Fold}: true, {"I21", Consumption}: true, {"I21", Effect}: true, // launch's activation: daemon TestLaunchReadinessThroughAdcd (A3, A7)
+	{"I22", Admission}: true, {"I22", Fold}: true, {"I22", Consumption}: true, {"I22", Effect}: true,
 }
 
 // Kept reports whether r is enforced.

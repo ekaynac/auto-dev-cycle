@@ -37,16 +37,13 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// launchActive plants a test build of the activation table that keeps
-// launch's missing rows (capability.Set.Keeping): every reader adcd has
-// derives launch active from it, as it will from the real bits; no Gates
-// is set by hand.
-func launchActive(t *testing.T) {
+// launchPending runs f with launch pending (a test edit of the table, as
+// before its activation): every reader adcd has derives it inactive.
+func launchPending(t *testing.T, f func()) {
 	t.Helper()
-	launch, _ := capability.Of("launch")
-	more := capability.Built().Keeping(launch.Missing()...)
-	capabilities = func() capability.Set { return more }
-	t.Cleanup(func() { capabilities = capability.Built })
+	withTable(t, func(tb []capability.Capability) {
+		tb[slices.IndexFunc(tb, func(c capability.Capability) bool { return c.Name == "launch" })].Pending = []string{"a test"}
+	}, f)
 }
 
 // upstream is a loopback provider the test opens. At each request it
@@ -175,8 +172,8 @@ func chatOn(socket string, gv *types.AdapterPrepareParamsGatewayValue) sent {
 	return sent{status: resp.StatusCode, refusal: resp.Header.Get(gateway.RefusalHeader)}
 }
 
-// activated is a run world wired as adcd wires itself, under a test build
-// of the table where launch is active (launchActive): adcd's egress
+// activated is a run world wired as adcd wires itself, launch active (this
+// build's table, no Gates set by hand): adcd's egress
 // (newEgress: its gateway, Recorder and Reconciler, the credential from the
 // controller's environment) to a loopback upstream; adcd's runner
 // (runnerOn), its adapter the in-process requesting builder and its
@@ -200,7 +197,6 @@ type activated struct {
 // before runs in the builder's run, before its request.
 func activatedWorld(t *testing.T, images dispatch.Images, sandboxed bool, before func()) *activated {
 	t.Helper()
-	launchActive(t)
 	t.Setenv("ADC_CREDENTIAL_STUB", "a-stub-credential") // the controller's environment (gateway.EnvSecrets)
 	files := map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}
 	rw := newRunWorldWith(t, true, builder(nil, false, nil), goModule(t, goEvents("TestA=pass")))
@@ -272,17 +268,22 @@ func (a *activated) node(kind types.NodeKind) graph.NodeView {
 	return nodesOf(a.rw.w, a.rw.task)[kind]
 }
 
-// The activation's gates come from the table alone: under the build's
-// table, launch inactive, adcd's loop evaluates nothing; under a test build
-// keeping launch's rows, the same function derives Evaluates.
+// The activation's gates come from the table alone: with launch pending
+// (as before its activation), adcd's loop evaluates nothing, registers no
+// model_call and wires no task.raise_rail; under this build's table, launch
+// active, the same functions derive all three.
 func TestTheGatesAreTheTables(t *testing.T) {
-	if l := reconciler(&Daemon{}, registry.Registry{}, nil, nil, nil, 0, false, io.Discard); l.Gates.Evaluates {
-		launch, _ := capability.Of("launch")
-		if !launch.Active() {
-			t.Error("the build's table evaluates with launch inactive")
+	launchPending(t, func() {
+		if l := reconciler(&Daemon{}, registry.Registry{}, nil, nil, nil, 0, false, io.Discard); l.Gates.Evaluates || !l.Gates.Admits {
+			t.Errorf("launch pending: gates %+v", l.Gates)
 		}
-	}
-	launchActive(t)
+		if ks, _ := effectKinds(); len(ks) != 0 {
+			t.Errorf("launch pending: effect kinds %v", ks)
+		}
+		if _, ok := handlers()["task.raise_rail"]; ok {
+			t.Error("launch pending: task.raise_rail wired")
+		}
+	})
 	if l := reconciler(&Daemon{}, registry.Registry{}, nil, nil, nil, 0, false, io.Discard); !l.Gates.Evaluates || !l.Gates.Admits {
 		t.Errorf("launch active: gates %+v", l.Gates)
 	}
@@ -292,15 +293,15 @@ func TestTheGatesAreTheTables(t *testing.T) {
 	if _, ok := handlers()["task.raise_rail"]; !ok {
 		t.Error("launch active: task.raise_rail not wired")
 	}
-	// The deferred matrix derives from the same table (Opus #414 L2): under
-	// the test build, task.raise_rail is wired, never also deferred.
+	// The deferred matrix derives from the same table (Opus #414 L2):
+	// task.raise_rail is wired, never also deferred.
 	reg, err := vocab.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	rows, err := Matrix(reg)
 	if err != nil {
-		t.Fatalf("the matrix under a test build keeping launch's rows: %v", err)
+		t.Fatalf("the matrix under launch active: %v", err)
 	}
 	if i := slices.IndexFunc(rows, func(r Row) bool { return r.Action == "task.raise_rail" }); i < 0 || rows[i].Class == Deferred {
 		t.Errorf("task.raise_rail under launch active: %+v", rows[max(i, 0)])
@@ -490,7 +491,6 @@ func activatedOn(t *testing.T, a *activated) *activated {
 // adcd says at its start that launch is active with no sandbox root; it
 // starts.
 func TestAStartWithNoSandboxSaysBuildsHold(t *testing.T) {
-	launchActive(t)
 	var log logBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -501,13 +501,14 @@ func TestAStartWithNoSandboxSaysBuildsHold(t *testing.T) {
 	if !strings.Contains(log.String(), "adcd: launch is active with no --sandbox-root: builds hold no_sandbox\n") {
 		t.Errorf("the start log: %q", log.String())
 	}
-	capabilities = capability.Built
-	log = logBuffer{}
-	ctx, cancel = context.WithCancel(context.Background())
-	go func() { done <- Run(ctx, Config{StateDir: stateDir(t)}, &log, func(*Daemon) { cancel() }) }()
-	if err := <-done; err != nil || strings.Contains(log.String(), "no_sandbox") {
-		t.Errorf("launch inactive: %v %q", err, log.String())
-	}
+	launchPending(t, func() {
+		log = logBuffer{}
+		ctx, cancel = context.WithCancel(context.Background())
+		go func() { done <- Run(ctx, Config{StateDir: stateDir(t)}, &log, func(*Daemon) { cancel() }) }()
+		if err := <-done; err != nil || strings.Contains(log.String(), "no_sandbox") {
+			t.Errorf("launch pending: %v %q", err, log.String())
+		}
+	})
 }
 
 // activatedWithout is a's world started again with no sandbox root: no
@@ -573,18 +574,13 @@ func TestNoSandboxHoldsPlacedWork(t *testing.T) {
 	})
 }
 
-// reviewActive plants a test build of the table keeping launch's and
-// review's missing rows, and a passing qualification (only
-// qualify.Route.Review makes a qualifying record): a start then derives
+// reviewActive plants a passing qualification (only qualify.Route.Review
+// makes a qualifying record): review's rows kept, a start then derives
 // review active (reviewsAtStart).
 func reviewActive(t *testing.T) {
 	t.Helper()
-	launch, _ := capability.Of("launch")
-	review, _ := capability.Of("review")
-	more := capability.Built().Keeping(append(launch.Missing(), review.Missing()...)...)
-	capabilities = func() capability.Set { return more }
 	qualifiedReviewers = func(string, string, []types.RegistryExecutor) error { return nil }
-	t.Cleanup(func() { capabilities, qualifiedReviewers = capability.Built, qualify.Reviewers })
+	t.Cleanup(func() { qualifiedReviewers = qualify.Reviewers })
 }
 
 // activatedReviewing is a's world started again with a sandbox root and
@@ -663,6 +659,47 @@ func TestAnInactiveReviewIsHeld(t *testing.T) {
 		p, err := v.Node.ParamsAsReviewNodeParams()
 		if v.Node.ID == r.Node.ID || err != nil || len(p.Roster) != 1 || p.Roster[0].Family != "another-reviewer" {
 			t.Fatalf("the review under the changed registry: %s %s %+v %v\n%s", v.Node.ID, v.State.State, p.Roster, err, started.log.String())
+		}
+	})
+	// Opus #414 re-check L1: a review placed and granted while review was
+	// active, then started again with review inactive (its qualification
+	// gone): held review_inactive, its lease released in the same command,
+	// never run.
+	t.Run("granted, then review inactive", func(t *testing.T) {
+		a, r := held(t)
+		started := activatedReviewing(t, a, a.reg)
+		started.passes(t, 12, func() bool {
+			l, live := leaseOn(started.rw.w, r.Node.ID)
+			return live && l.State == types.LeaseStateGranted
+		})
+		l, live := leaseOn(started.rw.w, r.Node.ID)
+		if !live || l.State != types.LeaseStateGranted {
+			t.Fatalf("the review's lease under review active: %v %+v\n%s", live, l, started.log.String())
+		}
+		qualifiedReviewers = qualify.Reviewers // the qualification gone
+		again := activatedOn(t, started)
+		if reviewsOf(again.reg, again.log) {
+			t.Fatal("review is still derived active")
+		}
+		again.passes(t, 6, func() bool {
+			return slices.ContainsFunc(again.node(types.NodeKindReview).State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewInactive })
+		})
+		v := again.node(types.NodeKindReview)
+		var ended types.Lease
+		var still bool
+		again.rw.w.view(func(tx *eventstore.Tx) (err error) {
+			_, still, err = lease.LiveOn(tx, graph.UnitOf(r.Node.ID))
+			if err == nil {
+				ended, _, _, err = lease.LeaseOf(tx, l.ID)
+			}
+			return err
+		})
+		if v.Node.ID != r.Node.ID || len(v.State.Holds) != 1 || v.State.Holds[0].Hold != vocab.HoldReviewInactive || still ||
+			ended.State != types.LeaseStateReleased && ended.State != types.LeaseStateReleasing {
+			t.Fatalf("the granted review with review inactive: %s %+v, lease live %v, %s\n%s", v.State.State, v.State.Holds, still, ended.State, again.log.String())
+		}
+		if ended.Attempt != nil {
+			t.Errorf("the released review lease started attempt %s", *ended.Attempt)
 		}
 	})
 }

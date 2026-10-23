@@ -32,8 +32,8 @@ const attemptBound = time.Hour
 
 // placer is adcd's reconcile.Placer (P22a-5c-1): it places the admitted
 // task's builds on the registry's builders under the task's rails, and
-// clears a day-rail hold the day reopened. Inert while launch is inactive:
-// the loop decides no Match or ClearRail until then.
+// clears a day-rail hold the day reopened. The loop decides a Match or a
+// ClearRail only while launch is active (this build, P22a).
 type placer struct {
 	d dispatch.Dispatcher
 	// ready is the runner's check that its hold on node (signal) may clear

@@ -28,7 +28,8 @@ package daemon
 //   - Egress capture (§8 item 4) is configured only for an exit run
 //     (Config.CaptureEgress): each body sent is kept in the capture store
 //     and recorded (api.RecordCapture), and purged at its expiry.
-//   - Inert until launch is active: 22a-5c's attempt run is its caller.
+//   - 22a-5c's attempt run is its caller, while launch is active (this
+//     build, P22a).
 
 import (
 	"context"
