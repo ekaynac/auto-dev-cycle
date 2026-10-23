@@ -272,21 +272,63 @@ func outside(p *packages.Package, body *ast.BlockStmt, e ast.Expr) bool {
 }
 
 // paramDerived reports whether signal e is derived from a parameter
-// directly, its value the caller's (Opus #425 L1, Mythos L2): a method
-// called on one (ni.SignalInstance()), or a concatenation with one as an
-// operand (signal + ""). A parameter passed to a formatter, or converted
-// (string(p)), is the formatter's and is not.
+// directly, its value the caller's (Opus #425 L1, Mythos L2, r2 L1): a
+// method called on one, however deep its selector chain (ni.SignalInstance(),
+// x.ni.SignalInstance()); a function outside this module called on one
+// (fmt.Sprint(signal)); or a concatenation with one as an operand
+// (signal + ""). A parameter passed to this module's formatters
+// (imageSignal(card.Image)), or converted (string(p)), is the formatter's
+// and is not.
 func paramDerived(p *packages.Package, body *ast.BlockStmt, e ast.Expr) bool {
 	switch x := e.(type) {
 	case *ast.ParenExpr:
 		return paramDerived(p, body, x.X)
 	case *ast.CallExpr:
-		sel, ok := x.Fun.(*ast.SelectorExpr)
-		return ok && outside(p, body, sel.X) && p.TypesInfo.Selections[sel] != nil
+		if sel, ok := x.Fun.(*ast.SelectorExpr); ok && p.TypesInfo.Selections[sel] != nil {
+			return outside(p, body, rootOf(sel.X))
+		}
+		if tv, ok := p.TypesInfo.Types[x.Fun]; ok && tv.IsType() || inModule(p, x.Fun) {
+			return false // a conversion, or this module's formatter
+		}
+		return slices.ContainsFunc(x.Args, func(a ast.Expr) bool { return outside(p, body, rootOf(a)) || paramDerived(p, body, a) })
 	case *ast.BinaryExpr:
 		return x.Op == token.ADD && (outside(p, body, x.X) || outside(p, body, x.Y) || paramDerived(p, body, x.X) || paramDerived(p, body, x.Y))
 	}
 	return false
+}
+
+// rootOf is the identifier a selector, index or dereference chain starts
+// from (x of x.ni.f, x[i], *x), or e itself.
+func rootOf(e ast.Expr) ast.Expr {
+	for {
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.SelectorExpr:
+			e = x.X
+		case *ast.IndexExpr:
+			e = x.X
+		case *ast.StarExpr:
+			e = x.X
+		default:
+			return e
+		}
+	}
+}
+
+// inModule reports whether fun names a function of this module.
+func inModule(p *packages.Package, fun ast.Expr) bool {
+	var id *ast.Ident
+	switch f := fun.(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	default:
+		return false
+	}
+	obj := p.TypesInfo.Uses[id]
+	return obj != nil && obj.Pkg() != nil && strings.HasPrefix(obj.Pkg().Path(), mod[:len(mod)-len("internal/")])
 }
 
 // exprText is e as its source prints it, composite literals whole
@@ -412,9 +454,10 @@ func values(p *packages.Package, body *ast.BlockStmt, e ast.Expr) ([]string, boo
 
 // #402: the scan fails on a raise whose signal it cannot attribute, never
 // passes it by its name's text: a planted package's bare parameter signal,
-// its signal set after the literal, a method of a parameter and a
-// parameter concatenated (derived from a parameter, not stated; Opus #425
-// L1) are reported; an attributed one, a parameter converted into a
+// its signal set after the literal, a method of a parameter (directly or
+// behind a second selector), a parameter passed to a function outside the
+// module and a parameter concatenated (derived from a parameter, not
+// stated; Opus #425 L1, Mythos r2 L1) are reported; an attributed one, a parameter converted into a
 // formatted signal, is a row.
 func TestTheHoldScanFailsOnWhatItCannotAttribute(t *testing.T) {
 	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo, Dir: "."},
@@ -425,7 +468,8 @@ func TestTheHoldScanFailsOnWhatItCannotAttribute(t *testing.T) {
 	_, built, _, unattributed := scanHolds(pkgs)
 	slices.Sort(unattributed)
 	want := []string{"holdscan.AfterLiteral: h.SignalInstance set after its literal", "holdscan.Concatenated: source_invalid_config on signal + \"\", derived from a parameter",
-		"holdscan.FromMethod: source_invalid_config on x.String(), derived from a parameter", "holdscan.FromParam: source_invalid_config on signal"}
+		"holdscan.DeepMethod: source_invalid_config on x.a.b.String(), derived from a parameter", "holdscan.FromMethod: source_invalid_config on x.String(), derived from a parameter",
+		"holdscan.FromParam: source_invalid_config on signal", "holdscan.Sprinted: source_invalid_config on fmt.Sprint(signal), derived from a parameter"}
 	if !slices.Equal(unattributed, want) || len(unattributedFailures(unattributed)) != len(want) {
 		t.Errorf("unattributed %q, want %q, each failing", unattributed, want)
 	}

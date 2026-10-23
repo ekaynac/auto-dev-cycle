@@ -26,8 +26,11 @@ func DefPattern(path, def string) *regexp.Regexp {
 	if err == nil {
 		err = json.Unmarshal(raw, &doc)
 	}
-	if err != nil || doc.Defs[def].Pattern == "" {
-		panic(fmt.Sprintf("contract: %s's $defs.%s has no pattern: %v", path, def, err))
+	if err != nil {
+		panic(fmt.Sprintf("contract: %s's $defs.%s: %v", path, def, err))
+	}
+	if doc.Defs[def].Pattern == "" {
+		panic(fmt.Sprintf("contract: %s's $defs.%s has no pattern", path, def))
 	}
 	return regexp.MustCompile(doc.Defs[def].Pattern)
 }

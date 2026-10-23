@@ -21,10 +21,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
 
 // Store is a blob store rooted at <state_dir>/blobs.
@@ -57,7 +58,14 @@ var syncDir = func(dir string) error {
 	return d.Sync()
 }
 
-var digestRe = regexp.MustCompile(`^sha256:([0-9a-f]{64})$`)
+// hexOf is digest's hex, when digest is a content digest (contract.IsDigest,
+// the schema's Digest: the one rule; Mythos #425 r2 L2).
+func hexOf(digest string) (string, bool) {
+	if !contract.IsDigest(digest) {
+		return "", false
+	}
+	return strings.TrimPrefix(digest, "sha256:"), true
+}
 
 // Open returns the blob store under stateDir. The caller holds the state
 // directory lock; leftover temp files from a crash are removed here.
@@ -134,7 +142,7 @@ func (st *Staged) Digest() string { return st.digest }
 // Stage copies r's bytes into tmp/, fsyncs them and checks them against
 // declared (when non-empty), publishing nothing.
 func (s *Store) Stage(r io.Reader, declared string) (*Staged, error) {
-	if declared != "" && !digestRe.MatchString(declared) {
+	if declared != "" && !contract.IsDigest(declared) {
 		return nil, fmt.Errorf("blobstore: malformed digest %q", declared)
 	}
 	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "put-*")
@@ -229,11 +237,11 @@ func (s *Store) syncChain(dir string) error {
 
 // Open returns the blob's bytes. It refuses anything but a regular file.
 func (s *Store) Open(digest string) (io.ReadCloser, error) {
-	m := digestRe.FindStringSubmatch(digest)
-	if m == nil {
+	hx, ok := hexOf(digest)
+	if !ok {
 		return nil, fmt.Errorf("blobstore: malformed digest %q", digest)
 	}
-	p := s.path(m[1])
+	p := s.path(hx)
 	if present, err := regular(p); err != nil {
 		return nil, err
 	} else if !present {
@@ -247,22 +255,22 @@ func (s *Store) Open(digest string) (io.ReadCloser, error) {
 // event references a blob, publish it with Put, which verifies and fsyncs
 // even when the blob is already there. I/O errors are errors, never "absent".
 func (s *Store) Has(digest string) (bool, error) {
-	m := digestRe.FindStringSubmatch(digest)
-	if m == nil {
+	hx, ok := hexOf(digest)
+	if !ok {
 		return false, fmt.Errorf("blobstore: malformed digest %q", digest)
 	}
-	return regular(s.path(m[1]))
+	return regular(s.path(hx))
 }
 
 // Remove deletes the blob stored under the digest, durably; one already
 // gone is no error. Only a store none of whose blobs another record shares
 // removes any: the egress captures' (P22a-5a), apart from the controller's.
 func (s *Store) Remove(digest string) error {
-	m := digestRe.FindStringSubmatch(digest)
-	if m == nil {
+	hx, ok := hexOf(digest)
+	if !ok {
 		return fmt.Errorf("blobstore: malformed digest %q", digest)
 	}
-	p := s.path(m[1])
+	p := s.path(hx)
 	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}

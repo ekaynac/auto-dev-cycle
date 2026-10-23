@@ -5,10 +5,12 @@ package gate
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/results"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -534,12 +537,67 @@ func TestGateIssue170(t *testing.T) {
 	if err := in.check(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
 		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, the profile pins %s; %d results)", err, b.Image, pin, len(b.Results))
 	}
+	baselineLabel(t, pin)
 	var v Verdict
 	if v.Results, err = results.ParseGoTestJSON(strings.NewReader(string(run)), nil, &b.Report); err != nil {
 		t.Fatal(err)
 	}
 	if v.judge(in, "github.com/ekaynac/auto-dev-cycle", true); !is(v, vocab.Empty, vocab.ReasonCompletedClean) {
 		t.Errorf("#170's base against its baseline: %v", v)
+	}
+}
+
+// baselineLabel (Opus #427 L3): #170's baseline.json records the pinned
+// image's label, and it is the base's: its base commit is the report's,
+// its lockfile hashes are that commit's go.mod and go.sum (base-go.mod and
+// base-go.sum, copied from it: the test sandbox holds no git objects), and
+// its adapter is keyed by linux/arm64 alone, the one platform pinned; its
+// image and image id are the profile's pin and the platform image recorded
+// apart.
+func baselineLabel(t *testing.T, pin string) {
+	t.Helper()
+	const dir = "../../fixtures/m1/issues/170/"
+	var report struct{ Base string }
+	var doc struct {
+		Base        string
+		Environment struct {
+			Image      string
+			ImageID    string `json:"image_id"`
+			ImageLabel struct {
+				Prepared struct {
+					Toolchain string
+					Lockfiles map[string]string
+					Adapter   map[string]string
+				} `json:"dev.adc.prepared"`
+			} `json:"image_label"`
+		}
+	}
+	for file, into := range map[string]any{"baseline-report.json": &report, "baseline.json": &doc} {
+		raw, err := os.ReadFile(dir + file)
+		if err == nil {
+			err = json.Unmarshal(raw, into)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	env, l := doc.Environment, doc.Environment.ImageLabel.Prepared
+	if doc.Base == "" || doc.Base != report.Base || env.Image != pin || env.ImageID != pinnedARM64 || l.Toolchain != "go" {
+		t.Errorf("baseline.json: base %s, image %s (%s), toolchain %q; the report's base is %s, the pin %s (%s)", doc.Base, env.Image, env.ImageID, l.Toolchain, report.Base, pin, pinnedARM64)
+	}
+	if len(l.Adapter) != 1 || !contract.IsDigest(l.Adapter["linux/arm64"]) {
+		t.Errorf("baseline.json's adapter keys: %v, want exactly linux/arm64", l.Adapter)
+	}
+	want := map[string]string{}
+	for _, f := range []string{"go.mod", "go.sum"} {
+		raw, err := os.ReadFile(dir + "base-" + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[f] = fmt.Sprintf("sha256:%x", sha256.Sum256(raw))
+	}
+	if !maps.Equal(l.Lockfiles, want) {
+		t.Errorf("baseline.json's lockfiles %v, the base's %v", l.Lockfiles, want)
 	}
 }
 
