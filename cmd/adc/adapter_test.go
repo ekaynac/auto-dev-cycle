@@ -429,7 +429,7 @@ func (f buildFixture) buildOf(t *testing.T, project string, env ...string) ([]st
 	cmd := exec.CommandContext(ctx, "bash", filepath.Join(f.checkout, "scripts/prepare-go-image.sh"), "build", project, "localhost/adc-test")
 	cmd.Env = append(slices.Clone(f.env), env...)
 	if b, err := os.ReadFile(filepath.Join(f.state, "timeout")); err == nil {
-		cmd.Env = append(slices.Clone(f.env), "PREPARE_GO_IMAGE_TIMEOUT="+strings.TrimSpace(string(b)))
+		cmd.Env = append(cmd.Env, "PREPARE_GO_IMAGE_TIMEOUT="+strings.TrimSpace(string(b))) // the env built, BASE_REF among it (Opus #416 L4)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

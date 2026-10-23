@@ -21,20 +21,41 @@
 # the current clean HEAD's dist, checked against HEAD as without it. The
 # label's lockfile hashes are then the base's, which the sandbox checks
 # against the task's base (dependency_recipe.lockfiles), so a task created
-# on an older base (#170's 0d3e81d) keeps its base and its go.mod, and its
-# hidden tests need no re-check. A ref that is no commit here is refused
-# before any podman call; a dirty checkout is refused as always. Without
-# BASE_REF nothing changes.
+# on an older base (#170's 0d3e81d) keeps its base and its go.mod. A ref
+# that is no commit here is refused before any podman call; a dirty
+# checkout is refused as always. Without BASE_REF nothing changes.
+#
+# Such an image serves only tasks whose base has those lockfiles (Opus #416
+# L1): a profile pins exactly one image (M1), and the sandbox refuses one
+# whose label is not the task base's lockfiles, so once a BASE_REF image is
+# pinned, every task of the project created on a base with other lockfiles
+# (current main's, for 0d3e81d's) is refused at its instrument check until
+# the next re-pin.
 #
 # After a new image is pinned (fixtures/m1/profiles/auto-dev-cycle.json,
 # toolchain.images.go), #170's VISIBLE baseline is re-recorded in it as
 # #294 did (#226 entry 92): gate.Measure in the new pinned image, the
 # profile's gate command over base 0d3e81d's tree, with no acceptance
-# overlay, into fixtures/m1/issues/170/baseline-report.json and
-# baseline-stream.json, and baseline.json's image fields (README
-# "Re-recording"; TestGateIssue170 binds them to the pin). The hidden tests
-# are never run there: they stay in the lead's store, and their expected
-# results (baseline.json) hold while the base and its lockfiles do.
+# overlay (README "Re-recording"; TestGateIssue170 binds them to the pin).
+# Update every one of (Opus #416 L2):
+#   - internal/gate/gomini_test.go's pinnedARM64: the new pin's linux/arm64
+#     image id (podman image inspect);
+#   - fixtures/m1/issues/170/baseline-report.json: the measured baseline,
+#     and its image, image_id and note;
+#   - fixtures/m1/issues/170/baseline-stream.json: the measured run's
+#     stream;
+#   - fixtures/m1/issues/170/baseline.json: environment.image, image_id
+#     and image_label (the base's lockfile hashes and the adapter digests);
+#   - fixtures/m1/issues/170/README.md: the table line naming the pin and
+#     the image id.
+# The hidden tests are never run there: they stay in the lead's store, and
+# their expected results (baseline.json) hold only while all of these do
+# (Opus #416 L3), each checked at the re-pin:
+#   - the Containerfile's FROM digest, every ENV and the RUN, unchanged
+#     since the image the counts were recorded under (built at ef740f5);
+#   - the task's base (0d3e81d) and its lockfiles;
+#   - the gate's run environment (adcd's sandbox flags) in what the tests
+#     observe.
 #
 # The adapter is make dist's lib/adc closure of each platform
 # (sandbox.AdapterClosure: node/bin/node, adapters/http-chat,

@@ -32,3 +32,17 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan Â
 ## Re-recording
 
 Re-record with `gate.Measure` in the pinned image whenever the commit the task is created on differs from `base`, or the pinned image changes: the package's tests depend on other packages, not only on `internal/cli`, and the gate refuses a baseline of another command, platform image or base tree.
+
+**An image built for this base serves only this base** (Opus #416 L1). `scripts/prepare-go-image.sh` builds it with `BASE_REF=0d3e81d`, so its label holds this base's lockfiles. A profile pins exactly one image (M1), and the sandbox refuses an image whose label is not the task base's lockfiles. So while it is pinned, every task of this project created on a base with other lockfiles (current `main`'s) is refused at its instrument check, until the next re-pin.
+
+**What a re-pin updates** (Opus #416 L2):
+- `internal/gate/gomini_test.go`'s `pinnedARM64`: the new linux/arm64 image id;
+- `baseline-report.json`: the measured baseline, with its `image`, `image_id` and `note`;
+- `baseline-stream.json`: the measured run's stream;
+- `baseline.json`: `environment.image`, `image_id` and `image_label` (this base's lockfile hashes and the adapter digests);
+- this README's table line naming the pin and the image id.
+
+**The hidden tests' expected results** (Opus #416 L3) hold while all of these are unchanged, and the re-pin checks each:
+- the Containerfile's `FROM` digest, every `ENV` and the `RUN`, since the image the counts were recorded under (built at `ef740f5`);
+- the base (`0d3e81d`) and its lockfiles;
+- the gate's run environment (adcd's sandbox flags), in what the tests observe.
