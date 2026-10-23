@@ -217,7 +217,7 @@ func TestTheSettlementDriver(t *testing.T) {
 	})
 	t.Run("adcd's loop runs it", func(t *testing.T) {
 		e := &egress{}
-		if l := reconciler(&Daemon{}, registry.Registry{}, nil, e, nil, 0, io.Discard); l.Exec.Settler != reconcile.Settler(e) {
+		if l := reconciler(&Daemon{}, registry.Registry{}, nil, e, nil, 0, false, io.Discard); l.Exec.Settler != reconcile.Settler(e) {
 			t.Errorf("adcd's loop settles through %v, want its egress", l.Exec.Settler)
 		}
 	})

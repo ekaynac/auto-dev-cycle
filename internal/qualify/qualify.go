@@ -112,6 +112,11 @@ const (
 	maxRecords     = 1024    // records in a records directory
 	maxEntries     = 4096    // entries of a records directory: each record's file and reports directory, and more
 	maxRecordBytes = 1 << 20 // bytes of a record
+	// Load's (Opus #413 L3): suite.json, and what the suite's and the
+	// adapter's digests read, files and bytes in all.
+	maxSuiteBytes  = 1 << 20
+	maxDigestFiles = 1 << 12
+	maxDigestBytes = 64 << 20
 )
 
 // AdapterEntry is the http-chat adapter's entry point, from the repository
@@ -169,9 +174,9 @@ func Load(root string) (Suite, error) {
 		return Suite{}, err
 	}
 	dir := filepath.Join(root, Dir)
-	raw, err := os.ReadFile(filepath.Join(dir, "suite.json"))
+	raw, err := readRegular(filepath.Join(dir, "suite.json"), maxSuiteBytes)
 	if err != nil {
-		return Suite{}, err
+		return Suite{}, fmt.Errorf("qualify: suite.json: %w", err)
 	}
 	var s Suite
 	d := json.NewDecoder(bytes.NewReader(raw))
@@ -208,7 +213,7 @@ func Load(root string) (Suite, error) {
 // records and README.
 func suiteDigest(dir string) (types.Digest, error) {
 	return digestOf(dir, []string{"."}, func(rel string, isDir bool) bool {
-		return isDir && rel == "records" || !isDir && rel == "README.md"
+		return isDir && rel == recordsName || !isDir && rel == "README.md"
 	})
 }
 
@@ -231,15 +236,20 @@ func digestOf(base string, rels []string, skip func(rel string, isDir bool) bool
 	for _, x := range extra {
 		fmt.Fprintf(h, "%d\x00%s", len(x), x)
 	}
+	b := &budget{files: maxDigestFiles, bytes: maxDigestBytes}
 	for _, r := range rels {
-		if err := walkInto(h, base, r, skip); err != nil {
+		if err := walkInto(h, base, r, skip, b); err != nil {
 			return "", err
 		}
 	}
 	return types.Digest("sha256:" + hex.EncodeToString(h.Sum(nil))), nil
 }
 
-func walkInto(h hash.Hash, base, rel string, skip func(string, bool) bool) error {
+// budget is what a digest may still read: files, and bytes in all (Opus
+// #413 L3).
+type budget struct{ files, bytes int64 }
+
+func walkInto(h hash.Hash, base, rel string, skip func(string, bool) bool, left *budget) error {
 	return filepath.WalkDir(filepath.Join(base, rel), func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -253,10 +263,17 @@ func walkInto(h hash.Hash, base, rel string, skip func(string, bool) bool) error
 		case !e.Type().IsRegular():
 			return fmt.Errorf("qualify: %s is not a regular file", r)
 		}
-		b, err := os.ReadFile(p)
+		if left.files--; left.files < 0 {
+			return fmt.Errorf("qualify: the digest reads more than %d files", maxDigestFiles)
+		}
+		b, err := readRegular(p, left.bytes)
+		if err != nil {
+			return fmt.Errorf("qualify: %s: %w (the digest reads at most %d bytes in all)", r, err, int64(maxDigestBytes))
+		}
+		left.bytes -= int64(len(b))
 		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(r), len(b))
 		h.Write(b)
-		return err
+		return nil
 	})
 }
 
@@ -464,19 +481,36 @@ var ErrUnqualified = errors.New("qualify: the reviewer route is not qualified")
 // time; otherwise ErrUnqualified, with the reason. A record that is not
 // one, or a records directory past its bounds, fails the whole check.
 func Check(dir string, route types.QualifiedRoute, s Suite) error {
+	recs, err := readRecords(dir)
+	if err != nil {
+		return err
+	}
+	return recs.check(route, s)
+}
+
+// record is one record read from a records directory: its path, its
+// content and its start.
+type record struct {
+	path string
+	rec  types.ReviewQualification
+	at   time.Time
+}
+
+// records are a records directory's records, read once (readRecords) and
+// judged for each route (Opus #413 L3).
+type records []record
+
+// readRecords reads every record under dir, within its bounds; a record
+// that is not one, or a directory past its bounds, is ErrUnqualified.
+func readRecords(dir string) (records, error) {
 	names, err := recordNames(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("%w: no record of the route", ErrUnqualified)
+		return nil, nil // no record of any route
 	case err != nil:
-		return fmt.Errorf("%w: %v", ErrUnqualified, err)
+		return nil, fmt.Errorf("%w: %v", ErrUnqualified, err)
 	}
-	type run struct {
-		path string
-		rec  types.ReviewQualification
-		at   time.Time
-	}
-	var runs []run
+	var out records
 	for _, n := range names {
 		p := filepath.Join(dir, n)
 		raw, err := readRegular(p, maxRecordBytes)
@@ -489,10 +523,22 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 			at, err = time.Parse(time.RFC3339Nano, string(rec.RanAt))
 		}
 		if err != nil {
-			return fmt.Errorf("%w: %s is not a record: %v", ErrUnqualified, n, err)
+			return nil, fmt.Errorf("%w: %s is not a record: %v", ErrUnqualified, n, err)
 		}
-		if rec.Route == route {
-			runs = append(runs, run{p, rec, at})
+		out = append(out, record{p, rec, at})
+	}
+	return out, nil
+}
+
+// recordsOf is readRecords; a test counts its reads.
+var recordsOf = readRecords
+
+// check is Check's judgement of route over rs.
+func (rs records) check(route types.QualifiedRoute, s Suite) error {
+	var runs []record
+	for _, r := range rs {
+		if r.rec.Route == route {
+			runs = append(runs, r)
 		}
 	}
 	if len(runs) == 0 {
@@ -501,7 +547,7 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	// The latest first. The latest two are judged, and every run at either
 	// one's time, so that no tie is decided by a name (Opus #306 M3, r2
 	// L1; #226 entry 110); no two of them may share a seed.
-	slices.SortStableFunc(runs, func(a, b run) int { return b.at.Compare(a.at) })
+	slices.SortStableFunc(runs, func(a, b record) int { return b.at.Compare(a.at) })
 	seeds := map[string]string{}
 	for i, r := range runs {
 		if i > 1 && !r.at.Equal(runs[1].at) {
@@ -517,6 +563,42 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	}
 	if len(runs) < 2 {
 		return fmt.Errorf("%w: one run of the route: qualification takes its latest two runs, of different seeds, passing", ErrUnqualified)
+	}
+	return nil
+}
+
+// RecordsDir is where the records of the suite under root lie: committed
+// with it (P31b) and shipped with it in a release's lib/adc (Opus #413 L4).
+func RecordsDir(root string) string { return filepath.Join(root, Dir, recordsName) }
+
+// recordsName is RecordsDir's name in the suite's directory, which the
+// suite's digest skips.
+const recordsName = "records"
+
+// Reviewers is nil when every reviewer executor of a registry is qualified
+// (Check, on its route: RouteOf) by the records under records, for the
+// suite and adapter under root (Load); otherwise ErrUnqualified, naming
+// the first reviewer that is not and why. A registry with no reviewer
+// qualifies none. adcd's start derives the review capability from it
+// (capability.ReviewQualified; P22a-6): every reviewer, since a roster may
+// take any of them (the lead). The records are read once, and every route
+// judged against them (Opus #413 L3).
+func Reviewers(root, recordsDir string, reviewers []types.RegistryExecutor) error {
+	if len(reviewers) == 0 {
+		return fmt.Errorf("%w: no reviewer is registered (--registry)", ErrUnqualified)
+	}
+	s, err := Load(root)
+	if err != nil {
+		return fmt.Errorf("%w: the qualification suite cannot be read: %v", ErrUnqualified, err)
+	}
+	recs, err := recordsOf(recordsDir)
+	for _, e := range reviewers {
+		if err == nil {
+			err = recs.check(RouteOf(e), s)
+		}
+		if err != nil {
+			return fmt.Errorf("reviewer %s: %w", e.ID, err)
+		}
 	}
 	return nil
 }

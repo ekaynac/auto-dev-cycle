@@ -77,6 +77,7 @@ func lib(t *testing.T, root, dir string) {
 		"gen/ts/package.json": "{}", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}",
 		"fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json": "{}", "fixtures/m1/stub-provider/server.mjs": "",
 		"scripts/installed-cycle.sh": "", "scripts/lib/secrets.sh": "", "scripts/lib/base-remote.sh": "",
+		"fixtures/m1/review-qualification/suite.json": "{}", "adapters/package.json": "{}", "adapters/pnpm-workspace.yaml": "", "adapters/pnpm-lock.yaml": "",
 	} {
 		write(t, filepath.Join(l, name), content, 0o755)
 	}
@@ -238,6 +239,14 @@ func TestInstallCheck(t *testing.T) {
 			rm(t, filepath.Join(root, arch, "lib/adc/fixtures"))
 			sums(t, filepath.Join(root, arch, "lib/adc"))
 		}, "py-mini-feature-1/task.json is not installed"},
+		"no qualification suite": {func(t *testing.T, root string) { // adcd's start reads it (qualify.Reviewers)
+			rm(t, filepath.Join(root, arch, "lib/adc/fixtures/m1/review-qualification/suite.json"))
+			sums(t, filepath.Join(root, arch, "lib/adc"))
+		}, "review-qualification/suite.json is not installed"},
+		"no adapters lockfile": {func(t *testing.T, root string) { // qualify.AdapterDigest covers it
+			rm(t, filepath.Join(root, arch, "lib/adc/adapters/pnpm-lock.yaml"))
+			sums(t, filepath.Join(root, arch, "lib/adc"))
+		}, "adapters/pnpm-lock.yaml is not installed"},
 		"no cycle harness": {func(t *testing.T, root string) {
 			rm(t, filepath.Join(root, arch, "lib/adc/scripts/installed-cycle.sh"))
 			sums(t, filepath.Join(root, arch, "lib/adc"))

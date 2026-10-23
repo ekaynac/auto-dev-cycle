@@ -4,6 +4,7 @@ package capability
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"regexp"
 	"slices"
@@ -135,8 +136,36 @@ func TestTable(t *testing.T) {
 	// record).
 	review, _ := Of("review")
 	if review.Active() || !slices.Equal(review.Missing(), []Row{{"I5", Admission}, {"I13", Admission}}) ||
-		!slices.Equal(review.Pending, []string{"P31's qualification on record"}) {
-		t.Errorf("review: missing %v, pending %v", review.Missing(), review.Pending)
+		len(review.Pending) != 0 || !slices.Equal(review.Proven, []string{ReviewQualified}) {
+		t.Errorf("review: missing %v, pending %v, proven %v", review.Missing(), review.Pending, review.Proven)
+	}
+	// The qualification is derived at adcd's start (ActiveWith): unchecked
+	// or failing, it stays open with its reason; passed, it clears, and
+	// review stays inactive on its rows alone.
+	if active, open := review.ActiveWith(nil); active || !slices.Equal(open, []string{ReviewQualified + ": not checked"}) {
+		t.Errorf("review unchecked: %v %v", active, open)
+	}
+	if active, open := review.ActiveWith(map[string]error{ReviewQualified: errors.New("no record of the route")}); active ||
+		!slices.Equal(open, []string{ReviewQualified + ": no record of the route"}) {
+		t.Errorf("review unqualified: %v %v", active, open)
+	}
+	if active, open := review.ActiveWith(map[string]error{ReviewQualified: nil}); active || len(open) != 0 {
+		t.Errorf("review qualified: %v %v", active, open)
+	}
+	proven := Capability{Rows: of("I2", Admission), Proven: []string{"a proof"}}
+	if active, _ := proven.ActiveWith(map[string]error{"a proof": nil}); proven.Active() || !active {
+		t.Errorf("a proven capability: static %v, derived %v", proven.Active(), active)
+	}
+	if active, _ := (Capability{Rows: of("I2", Admission), Pending: []string{"open"}, Proven: []string{"a proof"}}).ActiveWith(map[string]error{"a proof": nil}); active {
+		t.Error("a capability proven but still pending is active")
+	}
+	// The table's static readers (Gating, EffectKinds, NodeKinds) never
+	// decide a capability with Proven prerequisites: it wires none of them
+	// from the table (the start's derived value alone decides it).
+	for _, c := range Table {
+		if len(c.Proven) > 0 && len(c.Actions)+len(c.EffectKinds)+len(c.NodeKinds) > 0 {
+			t.Errorf("%s has Proven prerequisites and wires from the static table: %v %v %v", c.Name, c.Actions, c.EffectKinds, c.NodeKinds)
+		}
 	}
 	// K1 (launch's kept bits, #226 entry 164): launch misses I10's and
 	// I12's admission and consumption and I17's (K2), and I5's admission

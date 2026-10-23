@@ -27,6 +27,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -52,6 +53,7 @@ type Daemon struct {
 	clock     func() time.Time // the store clock (eventstore.Config.Now), for what is made outside a command
 	note      string           // the bootstrap's startup note, fixed text
 	az        authority.Authorizer
+	gates     reconcile.Gates // the reconcile loop's, derived at Run's start (review's: reviewsAtStart)
 	once      sync.Once
 	closeErr  error
 }
@@ -261,7 +263,8 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	settling, stopSettle := context.WithTimeout(ctx, settleBound) // after recovery and the sweep, which end the attempts a crash cut (Opus #409 M1); bounded, the rest the passes' (Opus #411 L1)
 	eg.settleEnded(settling)
 	stopSettle()
-	loop := reconciler(d, reg, images, eg, run, cfg.reconcileEvery, logw) // its passes settle too
+	loop := reconciler(d, reg, images, eg, run, cfg.reconcileEvery, reviewsOf(reg, logw), logw) // its passes settle too
+	d.gates = loop.Gates
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {

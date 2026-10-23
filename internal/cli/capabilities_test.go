@@ -42,7 +42,8 @@ func TestDevCapabilities(t *testing.T) {
 	if launch.Active || !slices.Equal(launch.EffectKinds, []string{"model_call"}) || !unkept {
 		t.Errorf("launch: %+v", launch)
 	}
-	if review.Active || len(review.Pending) != 1 || by["merge-local"].Active || by["merge-github"].Active {
+	if review.Active || len(review.Pending) != 1 || !strings.HasPrefix(review.Pending[0], "P31's qualification on record (checked by adcd at start") ||
+		by["merge-local"].Active || by["merge-github"].Active {
 		t.Errorf("review %+v, merge %v %v", review, by["merge-local"].Active, by["merge-github"].Active)
 	}
 	out.Reset()

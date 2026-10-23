@@ -75,23 +75,21 @@ const reconcileEvery = 5 * time.Second
 // reconcileEvery): it admits only while the admission capability is active
 // (Opus #312 L4), and evaluates the admitted task's nodes only once launch
 // is active, under adcd's Env (env), and records and places its review only
-// once review is active too (P22a-6a). eg, adcd's egress, is the
-// credentials the placer checks and the settlement driver each pass runs
-// (Opus #409 M1); nil: neither.
-func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, eg *egress, run *runner, every time.Duration, logw io.Writer) *reconcile.Loop {
+// once review is active too (P22a-6a): reviews, derived at the start
+// (reviewsAtStart), never the table's static value. eg, adcd's egress, is
+// the credentials the placer checks and the settlement driver each pass
+// runs (Opus #409 M1); nil: neither.
+func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, eg *egress, run *runner, every time.Duration, reviews bool, logw io.Writer) *reconcile.Loop {
 	admission, _ := capability.Of("admission")
 	launch, _ := capability.Of("launch")
 	if every == 0 {
 		every = reconcileEvery
 	}
-	if len(reg.Executors(types.RegistryExecutorRoleReviewer)) == 0 { // Mythos #337 L2, while review is inactive: stated at start
-		fmt.Fprintln(logw, "adcd: reviews hold until a registry with a reviewer is given (--registry)")
-	}
 	var creds dispatch.Credentials
 	if eg != nil {
 		creds = eg.gw
 	}
-	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active(), Reviews: reviewActive()},
+	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active(), Reviews: reviews},
 		every, logw)
 	if eg != nil {
 		l.Exec.Settler = eg

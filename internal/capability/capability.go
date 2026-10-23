@@ -38,7 +38,18 @@ type Capability struct {
 	// Pending are its prerequisites outside the inventory, each one open:
 	// a capability with any is not active.
 	Pending []string
+	// Proven are its prerequisites a deployment proves at adcd's start,
+	// not this build's table: open in the table (Active), cleared at the
+	// start only by their check (ActiveWith). A capability with any wires
+	// no action, effect kind or node kind from the table, whose readers
+	// are static (TestTable): only the start's derived value decides it.
+	Proven []string
 }
+
+// ReviewQualified is review's Proven prerequisite: P31's qualification of
+// every registered reviewer route on record (qualify.Reviewers), checked
+// by adcd at its start against its release's records.
+const ReviewQualified = "P31's qualification on record"
 
 // all is every check of each invariant.
 func all(invariants ...string) []Row {
@@ -78,8 +89,8 @@ var Table = []Capability{
 		EffectKinds: []string{"model_call"},
 		Rows:        slices.Concat(of("I5", Admission), all("I6"), of("I7", Consumption), all("I8", "I9", "I10", "I11", "I12", "I16", "I17", "I21", "I22", "I15"))},
 	{Name: "review", Checkpoint: "a", ActivatedBy: "P22a",
-		Rows:    all("I5", "I7", "I13", "I18", "I15"),
-		Pending: []string{"P31's qualification on record"}},
+		Rows:   all("I5", "I7", "I13", "I18", "I15"),
+		Proven: []string{ReviewQualified}},
 	{Name: "merge-local", Checkpoint: "b", ActivatedBy: "P22b",
 		EffectKinds: []string{"merge"}, NodeKinds: []string{"merge"},
 		Rows:    slices.Concat(of("I1", Effect), all("I6"), of("I14", Admission, Fold, Consumption), of("I20", Consumption, Effect), all("I15")),
@@ -132,8 +143,29 @@ func (c Capability) Missing() []Row {
 }
 
 // Active: every one of c's rows is enforced and none of its prerequisites
-// is pending.
-func (c Capability) Active() bool { return len(c.Missing()) == 0 && len(c.Pending) == 0 }
+// is pending or to be proven. The build's table: a capability with Proven
+// prerequisites is never active here, and no runtime decision reads it
+// (ActiveWith).
+func (c Capability) Active() bool {
+	return len(c.Missing()) == 0 && len(c.Pending) == 0 && len(c.Proven) == 0
+}
+
+// ActiveWith is c's activation at adcd's start, derived: checks holds each
+// Proven prerequisite's check, nil once it passed. open are the
+// prerequisites still open: Pending, then each Proven one unchecked or
+// failing, with its check's reason.
+func (c Capability) ActiveWith(checks map[string]error) (active bool, open []string) {
+	open = append(open, c.Pending...)
+	for _, p := range c.Proven {
+		switch err, checked := checks[p]; {
+		case !checked:
+			open = append(open, p+": not checked")
+		case err != nil:
+			open = append(open, p+": "+err.Error())
+		}
+	}
+	return len(c.Missing()) == 0 && len(open) == 0, open
+}
 
 // Of is the capability named name.
 func Of(name string) (Capability, bool) {
