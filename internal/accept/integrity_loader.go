@@ -35,7 +35,6 @@
 package accept
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -53,8 +52,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/fsread"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
@@ -71,6 +70,10 @@ var GoEnv = []string{"GOFLAGS=-mod=readonly -buildvcs=false", "GOTOOLCHAIN=local
 // goImage is the prepared image's layout (fixtures/m1/images/go/Containerfile);
 // no home: go reads no configuration (GOENV=off) and writes no cache there.
 var goImage = []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "GOPATH=/go", "GOCACHE=/opt/adc/gocache"}
+
+// imageGOROOT is the prepared image's GOROOT (goImage's PATH): its tools'
+// diagnostics name it (killedStep).
+const imageGOROOT = "/usr/local/go"
 
 // listScript lists "$@" into $1/list, a package a line (its path, export
 // data file and quoted error), copies into $1/x the export data whose file
@@ -236,7 +239,7 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	} else if cerr != nil {
 		return nil, cerr
 	}
-	if err := listKilled(filepath.Join(out, "list")); err != nil { // a step killed by a signal: the host's, whatever go list's status (Opus #412 r2 L2)
+	if err := listKilled(filepath.Join(out, "list"), imageGOROOT, img.OS+"_"+img.Arch); err != nil { // a step killed by a signal: the host's, whatever go list's status (Opus #412 r2 L2)
 		return nil, err
 	}
 	if err := goListStatus(filepath.Join(out, "golist")); err != nil { // go list's own status, as copied out, before the listing is read (Opus #412 B3)
@@ -267,56 +270,71 @@ func workloadFailed(err error) bool {
 }
 
 // goListStatus is the listing's verdict from go list's own status, the
-// file at p the script wrote (a few bytes, read bounded): nil for 0; the
-// candidate's (errRefused, goListOwn) for go list's own exit 1-124; the
-// host's (ErrGuardRun) for a signal (128 and above), a missing or
-// malformed file, anything else (Opus #412 B2, B3).
+// file at p the script wrote (fsread.Regular, within statusBound): nil for
+// 0; go list's own exit by goListExit's rule; the host's (ErrGuardRun) for
+// a missing, oversized or incomplete file: only a whole status line counts
+// (Opus #412 B2, B3; Astra chunk 5b M4).
 func goListStatus(p string) error {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	b, err := fsread.Regular(p, statusBound)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: go list's status: %w", ErrGuardRun, err)
 	}
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		_ = f.Close()
-		return errors.Join(err, fmt.Errorf("go list's status is no regular file"))
+	m := statusLine.FindSubmatch(b)
+	if m == nil {
+		return fmt.Errorf("%w: go list's status %.16q is no status line", ErrGuardRun, b)
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 16))
-	if err != nil {
-		return err
-	}
-	code, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		return fmt.Errorf("go list's status %.16q: %w", b, err)
-	}
+	code, _ := strconv.Atoi(string(m[1]))
 	return goListExit(code, fmt.Errorf("go list exited %d", code))
 }
 
-// killedStep reports whether list, a listing's output, records a step
-// inside go list killed by a signal (the compiler OOM-killed under the
-// container's memory limit): the host's, never the candidate's (Opus #412
-// r2 L2). One rule, the sandbox's listing (listKilled) and LocalLister's.
-func killedStep(list []byte) bool { return bytes.Contains(list, []byte("signal: killed")) }
+// statusBound and statusLine: a status file is one decimal status of at
+// most three digits and its newline, nothing else.
+const statusBound = 4
 
-// listKilled is killedStep over the copied-out list at p (read within
-// maxList, no symlink followed): ErrGuardRun when it records a killed
-// step; an absent list is readListing's to refuse.
-func listKilled(p string) error {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if errors.Is(err, fs.ErrNotExist) {
+var statusLine = regexp.MustCompile(`\A(0|[1-9][0-9]{0,2})\n\z`)
+
+// killedStep reports whether why, one listed package's error (unquoted),
+// is the pinned toolchain's own termination diagnostic for one of its
+// tools killed by a signal (the compiler OOM-killed under the container's
+// memory limit): a line that is exactly "<goroot>/pkg/tool/<host>/<tool>:
+// signal: killed", host the toolchain's GOOS_GOARCH. The host's, never the
+// candidate's (Opus #412 r2 L2); never a substring a candidate's
+// diagnostics could carry (Astra chunk 5b M3: a module path or replacement
+// naming it). One predicate, the sandbox's listing (listKilled) and
+// LocalLister's.
+func killedStep(why, goroot, host string) bool {
+	dir := path.Join(goroot, "pkg", "tool", host) + "/"
+	for line := range strings.Lines(why) {
+		tool, ok := strings.CutPrefix(strings.TrimSuffix(line, "\n"), dir)
+		if name, killed := strings.CutSuffix(tool, ": signal: killed"); ok && killed && slices.Contains(toolNames, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// toolNames are the toolchain's tools go list -export runs.
+var toolNames = []string{"compile", "asm", "cgo", "link", "pack"}
+
+// listKilled reports, as ErrGuardRun, a listed package whose error column
+// is killedStep's diagnostic, in the copied-out list at p (fsread.Regular,
+// within maxList; past it, or absent, it is readListing's: the list's size
+// is classified there, explicitly). goroot and host are the image's.
+func listKilled(p, goroot, host string) error {
+	b, err := fsread.Regular(p, maxList)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fsread.ErrOver) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return errors.Join(err, errors.New("the list is no regular file"))
-	}
-	b, err := io.ReadAll(io.LimitReader(f, maxList+1))
-	if err != nil {
-		return err
-	} else if killedStep(b) {
-		return fmt.Errorf("%w: a step inside go list was killed by a signal", ErrGuardRun)
+	for line := range strings.Lines(string(b)) {
+		cols := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
+		if len(cols) != 3 || cols[2] == "" {
+			continue
+		}
+		if why, err := strconv.Unquote(cols[2]); err == nil && killedStep(why, goroot, host) {
+			return fmt.Errorf("%w: %s", ErrGuardRun, why)
+		}
 	}
 	return nil
 }

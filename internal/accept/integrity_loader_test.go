@@ -969,9 +969,11 @@ func TestTheListingVerdict(t *testing.T) {
 		plain(t, src, "add", "--all")
 	})
 	box := newLocalBox(t)
-	list := boxLister(box, sandbox.Image{}, sandbox.Limits{})
+	list := boxLister(box, sandbox.Image{OS: "linux", Arch: "amd64"}, sandbox.Limits{})
 	change := map[string]string{"pkg/calc.go": strings.Replace(baseFiles["pkg/calc.go"], "package pkg\n", "package pkg\n\nimport \"fmt\"\n", 1) +
 		"\nfunc Sum(xs ...int) int { return len(fmt.Sprint(xs)) }\n", "go.mod": guardBase["go.mod"] + "// the candidate's\n"}
+	killedLine := "example.com/k\t\t" + strconv.Quote("# example.com/k\n"+imageGOROOT+"/pkg/tool/linux_amd64/compile: signal: killed") + "\n"
+	forgedLine := "example.com/missing\t\t" + strconv.Quote(`missing go.sum entry for module providing package example.com/missing (replaced by example.com/signal: killed v1.0.0)`) + "\n"
 	candidate := func(mod []byte) bool { return strings.Contains(string(mod), "// the candidate's") }
 	exit := func(code int) error { return &sandbox.WorkloadExit{Code: code, Err: exitErr(t, code)} }
 	for name, c := range map[string]struct {
@@ -980,19 +982,22 @@ func TestTheListingVerdict(t *testing.T) {
 		all     bool   // the base's listing fails too
 		base    bool   // the base's listing alone fails
 		killed  bool   // the candidate's list records a step killed by a signal
+		forged  bool   // the candidate's list records a diagnostic naming "signal: killed" (Astra chunk 5b M3)
 		refusal bool
 	}{
-		"an unmeasured tree (B1)":                  {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
-		"killed by a signal (B2)":                  {fail: exit(137)},
-		"the script's own failure (B3)":            {fail: exit(3)},
-		"go list's status a signal's (B2)":         {status: "137"},
-		"go list's own status 1":                   {status: "1", refusal: true},
-		"a measured bound broken":                  {fail: sandbox.ErrLeft, refusal: true},
-		"go list's own status 1, the base's too":   {status: "1", all: true},
-		"a measured bound, the base's too":         {fail: sandbox.ErrLeft, all: true},
-		"go list's own status 1, the base's alone": {status: "1", base: true},
-		"a step killed, status 1 (L2)":             {status: "1", killed: true},
-		"a step killed, status 0 (L2)":             {killed: true},
+		"an unmeasured tree (B1)":                             {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
+		"killed by a signal (B2)":                             {fail: exit(137)},
+		"the script's own failure (B3)":                       {fail: exit(3)},
+		"go list's status a signal's (B2)":                    {status: "137"},
+		"go list's own status 1":                              {status: "1", refusal: true},
+		"a measured bound broken":                             {fail: sandbox.ErrLeft, refusal: true},
+		"go list's own status 1, the base's too":              {status: "1", all: true},
+		"a measured bound, the base's too":                    {fail: sandbox.ErrLeft, all: true},
+		"go list's own status 1, the base's alone":            {status: "1", base: true},
+		"a step killed, status 1 (L2)":                        {status: "1", killed: true},
+		"a step killed, status 0 (L2)":                        {killed: true},
+		"a refusal joined to the run's failure (Astra 5b H1)": {fail: errors.Join(sandbox.ErrLeft, guardRun("the run's teardown: an I/O error"))},
+		"a diagnostic naming signal: killed (Astra 5b M3)":    {status: "1", forged: true, refusal: true},
 	} {
 		failing := func(mod []byte) bool { return c.all || c.base != candidate(mod) }
 		box.fail = func(mod []byte) error {
@@ -1008,9 +1013,9 @@ func TestTheListingVerdict(t *testing.T) {
 			return ""
 		}
 		box.edit = func(mod []byte, results string) {
-			if c.killed && candidate(mod) {
+			if (c.killed || c.forged) && candidate(mod) {
 				f, _ := os.OpenFile(filepath.Join(results, "list"), os.O_APPEND|os.O_WRONLY, 0)
-				_, _ = f.WriteString("example.com/k\t\t\"compile: signal: killed\"\n")
+				_, _ = f.WriteString(map[bool]string{true: killedLine, false: forgedLine}[c.killed])
 				_ = f.Close()
 			}
 		}
@@ -1035,9 +1040,10 @@ func TestTheListingVerdict(t *testing.T) {
 		act     string
 		refusal bool
 	}{
-		"exit 1 on the candidate's":             {"exit 1", true},
-		"killed on the candidate's":             {"kill -KILL $$", false},
-		"a step killed on the candidate's (L2)": {`printf 'example.com/k\t\t"compile: signal: killed"\n'; exit 1`, false},
+		"exit 1 on the candidate's":               {"exit 1", true},
+		"killed on the candidate's":               {"kill -KILL $$", false},
+		"a step killed on the candidate's (L2)":   {`printf '{"ImportPath":"example.com/k","Error":{"Err":"` + root + `/pkg/tool/` + runtime.GOOS + `_` + runtime.GOARCH + `/compile: signal: killed"}}\n'; exit 1`, false},
+		"a diagnostic naming signal: killed (M3)": {`printf '{"ImportPath":"example.com/m","Error":{"Err":"(replaced by example.com/signal: killed v1.0.0)"}}\n'; exit 1`, true},
 	} {
 		write(t, root, map[string]string{"bin/go": "#!/bin/sh\nif grep -q \"the candidate's\" go.mod 2>/dev/null; then " + c.act + "; fi\nexec " + box.gobin + " \"$@\"\n"})
 		if err := os.Chmod(filepath.Join(root, "bin/go"), 0o700); err != nil {
@@ -1051,5 +1057,66 @@ func TestTheListingVerdict(t *testing.T) {
 		case !c.refusal && (!errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0):
 			t.Errorf("LocalLister, %s: the host's: %v %q", name, err, whats(v.Blocks))
 		}
+	}
+}
+
+// Astra chunk 5b M3: killedStep is the pinned toolchain's own termination
+// diagnostic alone: a line that is exactly <goroot>/pkg/tool/<host>/<tool>:
+// signal: killed, the tool one go list -export runs. Text a candidate's
+// diagnostics can carry (a module path or a replacement naming "signal:
+// killed"), another GOROOT or host, a tool it does not run, or the line with
+// anything before or after it on its line, is not.
+func TestKilledStep(t *testing.T) {
+	const root, host = "/usr/local/go", "linux_amd64"
+	for why, want := range map[string]bool{
+		"/usr/local/go/pkg/tool/linux_amd64/compile: signal: killed":                  true,
+		"# example.com/k\n/usr/local/go/pkg/tool/linux_amd64/compile: signal: killed": true,
+		"/usr/local/go/pkg/tool/linux_amd64/link: signal: killed\n":                   true,
+		"compile: signal: killed":                                                       false,
+		"(replaced by example.com/signal: killed v1.0.0)":                               false,
+		"example.com/signal: killed":                                                    false,
+		"/usr/local/go/pkg/tool/linux_amd64/compile: signal: killed (and more)":         false,
+		"x /usr/local/go/pkg/tool/linux_amd64/compile: signal: killed":                  false,
+		"/elsewhere/go/pkg/tool/linux_amd64/compile: signal: killed":                    false,
+		"/usr/local/go/pkg/tool/linux_arm64/compile: signal: killed":                    false,
+		"/usr/local/go/pkg/tool/linux_amd64/vet: signal: killed":                        false,
+		"/usr/local/go/pkg/tool/linux_amd64/../../../../../tmp/compile: signal: killed": false,
+		"/usr/local/go/pkg/tool/linux_amd64/compile: exit status 2":                     false,
+	} {
+		if killedStep(why, root, host) != want {
+			t.Errorf("%q: %v, want %v", why, !want, want)
+		}
+	}
+}
+
+// Astra chunk 5b M4: go list's status file counts only whole: one status
+// line, read by fsread.Regular; padding, garbage or anything past it is the
+// host's.
+func TestGoListStatus(t *testing.T) {
+	dir := t.TempDir()
+	for body, want := range map[string]string{
+		"0\n":   "",
+		"1\n":   "refused",
+		"124\n": "refused",
+		"137\n": "host",
+		"0":     "host",
+		"0 \n":  "host",
+		"0\n\n": "host",
+		"00\n":  "host",
+		"0" + strings.Repeat(" ", 15) + "garbage": "host",
+		"": "host",
+	} {
+		p := filepath.Join(dir, "golist")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := goListStatus(p)
+		got := map[bool]string{true: "refused", false: map[bool]string{true: "host", false: ""}[errors.Is(err, ErrGuardRun)]}[errors.Is(err, errRefused) && !errors.Is(err, ErrGuardRun)]
+		if got != want {
+			t.Errorf("%q: %v, want %s", body, err, want)
+		}
+	}
+	if err := goListStatus(filepath.Join(dir, "none")); !errors.Is(err, ErrGuardRun) {
+		t.Errorf("a missing status: %v", err)
 	}
 }
