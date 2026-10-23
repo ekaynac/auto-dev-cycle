@@ -394,18 +394,15 @@ func TestIntegrityRealTypes(t *testing.T) {
 		fmt.Fprintf(&chain, "\ntype S%d struct{ A, B, C, D, E, F, G, H S%d }\n", i, i+1)
 	}
 	chain.WriteString("\ntype S8 int\n")
-	// Timed, because wall time is the property: the guard returns at its
-	// deadline, not when the abandoned check ends. The bound (#226 entry 89)
-	// is that deadline's, not a multiple of a baseline: past chainTime, the
-	// rest of the run takes under chainSlack under any CI load (about 50 ms
-	// alone, under 2 s beside another test binary).
-	const chainTime, chainSlack = 2 * time.Second, 15 * time.Second
+	// Not timed (#226 entry 89): the guard returns at its deadline, not when
+	// the abandoned check ends, so the check (about 6 s alone) still runs
+	// when the guard has returned (typeChecksLive), whatever the host's load.
 	oldTime := maxListTime
-	maxListTime = chainTime
-	begin := time.Now()
+	maxListTime = 2 * time.Second
+	live := typeChecksLive.Load()
 	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
-	if took := time.Since(begin); !finds(cv.Blocks, "over the guard's deadline") || took-chainTime > chainSlack {
-		t.Errorf("a struct chain: %v %q", took, whats(cv.Blocks))
+	if after := typeChecksLive.Load(); !finds(cv.Blocks, "over the guard's deadline") || after <= live {
+		t.Errorf("a struct chain: %d checks running after the guard returned, %d before; %q", after, live, whats(cv.Blocks))
 	}
 	maxListTime = oldTime
 

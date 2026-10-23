@@ -116,7 +116,8 @@ func pyRel(p, e string) (string, bool) {
 // pySteps counts the Python guard's steps, any run's: each root a module
 // name is tried under (pyModNames), each byte of each dotted-name prefix the
 // closures split, each directory entry pyTestWalk reads, each token
-// pyBindings scans and each token the tokenizer yields. Tests bound a run's
+// pyBindings scans, each token the tokenizer yields and each name across
+// follows or queues. Tests bound a run's
 // steps per unit of its input, at two sizes, instead of its time (#226
 // entry 89).
 var pySteps atomic.Int64

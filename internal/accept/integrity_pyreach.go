@@ -588,8 +588,8 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 // (Astra #272 M1); a module name in two roots is unread (#272 H1).
 func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(string) bool) (y, unread string, err error) {
 	seen, queue := map[string]bool{d: true}, []string{d}
-	push := func(x string) { // every attempt charged; nothing allocated past the bound (Astra #272 r2 M1)
-		if pb.r.work++; !seen[x] && pb.r.work <= maxWork {
+	push := func(x string) { // every attempt charged, and counted; nothing allocated past the bound (Astra #272 r2 M1)
+		if pb.r.work++; pySteps.Add(1) > 0 && !seen[x] && pb.r.work <= maxWork {
 			seen[x], queue = true, append(queue, x)
 		}
 	}
@@ -599,8 +599,8 @@ func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(s
 		}
 		return err != nil || unread != ""
 	}
-	follow := func(x string) string { // x resolved: c's attribute it reaches, or queued
-		if pb.r.work++; err != nil || unread != "" || over() {
+	follow := func(x string) string { // x resolved: c's attribute it reaches, or queued; counted
+		if pb.r.work++; pySteps.Add(1) > 0 && (err != nil || unread != "" || over()) {
 			return ""
 		} else if x, unread, err = pb.resolve(x); err == nil && unread == "" {
 			if y := hit(x, true); y != "" {
