@@ -5,6 +5,7 @@ package qualify
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1199,6 +1200,7 @@ func TestReviewers(t *testing.T) {
 	}{
 		"no reviewer":                  {root, dir, nil, "no reviewer is registered"},
 		"no record":                    {root, t.TempDir(), []types.RegistryExecutor{reviewerOf(route)}, "reviewer " + string(route.Executor) + ": qualify: the reviewer route is not qualified: no record of the route"},
+		"no records directory":         {root, filepath.Join(t.TempDir(), "none"), []types.RegistryExecutor{reviewerOf(route)}, "no record of the route"},
 		"one of two qualified":         {root, dir, []types.RegistryExecutor{reviewerOf(route), reviewerOf(otherExecutor)}, "reviewer " + string(otherExecutor.Executor) + ": "},
 		"a record of another executor": {root, dir, []types.RegistryExecutor{reviewerOf(otherExecutor)}, "no record of the route"},
 		"a record of another endpoint": {root, dir, []types.RegistryExecutor{reviewerOf(otherEndpoint)}, "no record of the route"},
@@ -1251,5 +1253,67 @@ func TestTheReleasesCopyIsTheSuite(t *testing.T) {
 	got, err := Load(lib)
 	if err != nil || got.Digest != s.Digest || got.Adapter != s.Adapter {
 		t.Fatalf("the release's copy: %v; suite %s, adapter %s; the repository's %s, %s", err, got.Digest, got.Adapter, s.Digest, s.Adapter)
+	}
+	// Records committed where the suite holds them (P31b), as the release
+	// ships them, are read from RecordsDir, and the suite's digest skips
+	// them (Opus #413 L4).
+	shipped := filepath.Join(lib, Dir, "records")
+	if err := os.Mkdir(shipped, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for i, name := range []string{"earlier", "later"} {
+		x := begin(t, got, shipped, name, route, at.Add(time.Duration(i)*time.Hour))
+		if _, err := got.Record(x, outcomes(t, got, x, all(got, ""))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if again, err := Load(lib); err != nil || again.Digest != s.Digest {
+		t.Errorf("the suite's digest with its records: %v %s", err, again.Digest)
+	}
+	if err := Reviewers(lib, RecordsDir(lib), []types.RegistryExecutor{reviewerOf(route)}); err != nil {
+		t.Errorf("the shipped records: %v", err)
+	}
+}
+
+// Opus #413 L3: Reviewers reads the records once, whatever the number of
+// reviewers; Load reads suite.json and its digests within bounds.
+func TestTheQualificationReadsAreBounded(t *testing.T) {
+	reads := 0
+	recordsOf = func(dir string) (records, error) { reads++; return readRecords(dir) }
+	t.Cleanup(func() { recordsOf = readRecords })
+	other := route
+	other.Executor = "exe_01m4tm99haemqt8es2qfbwj8pa"
+	if err := Reviewers(root, t.TempDir(), []types.RegistryExecutor{reviewerOf(other), reviewerOf(route)}); err == nil || reads != 1 {
+		t.Errorf("two reviewers: %v, the records read %d times", err, reads)
+	}
+	big := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(big, Dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(big, Dir, "suite.json"), bytes.Repeat([]byte(" "), maxSuiteBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(big); err == nil || !strings.Contains(err.Error(), "suite.json") || !strings.Contains(err.Error(), "over") {
+		t.Errorf("a suite.json over its bound: %v", err)
+	}
+	many := t.TempDir()
+	for i := range maxDigestFiles + 1 {
+		if err := os.WriteFile(filepath.Join(many, fmt.Sprintf("f%05d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := digestOf(many, []string{"."}, func(string, bool) bool { return false }); err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Errorf("a digest over its files: %v", err)
+	}
+	two := t.TempDir()
+	for _, n := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(two, n), bytes.Repeat([]byte("x"), 10), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := walkInto(sha256.New(), two, ".", func(string, bool) bool { return false }, &budget{files: 10, bytes: 15}); err == nil ||
+		!strings.Contains(err.Error(), "at most") { // each file under the bound, both over it
+		t.Errorf("a digest over its bytes: %v", err)
 	}
 }

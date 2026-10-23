@@ -89,7 +89,8 @@ const (
 	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE [--registry FILE]] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]] [--capture-egress]"
 	// sandboxRefusal is the one text for a refused sandbox (P9b).
 	sandboxRefusal = "the sandbox: --podman and --sandbox-root must be absolute, clean paths; the root short " +
-		"(Podman's runroot, <root>/r, is at most 50 characters) and apart from the state directory and the sockets; " +
+		"(Podman's runroot, <root>/r, is at most 50 characters) and apart from the controller's paths: the state directory, the sockets " +
+		"and the installed release's lib/adc (the reviewer qualification's suite and records); " +
 		"<root>/runs a directory on its own filesystem, apart from theirs and the home's; and the home not /home/adc. " +
 		"Run limits also need cgroup delegation: under a systemd service, Delegate=yes"
 )
@@ -233,7 +234,7 @@ func (c Config) Validate() error {
 // lib/adc (releaseLib), and the records under it; a test plants others.
 var qualificationAt = func() (root, records string, err error) {
 	lib, err := releaseLib()
-	return lib, filepath.Join(lib, qualify.Dir, "records"), err
+	return lib, qualify.RecordsDir(lib), err
 }
 
 // qualifiedReviewers is qualify.Reviewers; a test passes it, since only
@@ -261,7 +262,10 @@ var reviewCapability = func() capability.Capability {
 // registers is qualified by the release's records (qualify.Reviewers;
 // fail closed); otherwise review stays inactive and one start line says
 // why (open: what keeps it inactive besides its rows). It never refuses
-// the start. No runtime decision reads the table's
+// the start. The value holds until the next start (Opus #413 L2): records
+// removed or made stale while adcd runs change nothing until it restarts,
+// as the registry and the release's adapter digest (releaseAdapter) are
+// read once per start; a reinstall implies a restart. No runtime decision reads the table's
 // static Active for review: Gates.Reviews is this value
 // (TestReviewIsDerivedAtStart).
 func reviewsAtStart(reg registry.Registry, logw io.Writer) (active bool, open []string) {

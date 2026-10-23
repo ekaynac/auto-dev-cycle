@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -28,7 +29,7 @@ func qualifiedAt(t *testing.T) string {
 	t.Cleanup(func() {
 		qualificationAt = func() (string, string, error) {
 			lib, err := releaseLib()
-			return lib, filepath.Join(lib, qualify.Dir, "records"), err
+			return lib, qualify.RecordsDir(lib), err
 		}
 	})
 	return records
@@ -141,5 +142,49 @@ func TestNoRunSeesTheReleasesLib(t *testing.T) {
 	}
 	if paths := (Config{StateDir: "/srv/adc/state"}).controllerPaths(); !slices.Contains(paths, filepath.Clean(lib)) {
 		t.Errorf("the controller's paths %v lack the release's lib %s", paths, lib)
+	}
+}
+
+// Opus #413 L1: the release's lib/adc is a controller path, so a sandbox
+// root inside it is refused at start, and the refusal says so.
+func TestASandboxRootInTheReleasesLibIsRefused(t *testing.T) {
+	rel, err := os.MkdirTemp("", "rel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(rel) })
+	lib := filepath.Join(rel, "lib", "adc")
+	var shm, tmp syscall.Stat_t
+	if syscall.Stat("/dev/shm", &shm) != nil || syscall.Stat(rel, &tmp) != nil || shm.Dev == tmp.Dev {
+		t.Skip("no second filesystem (/dev/shm) for runs/")
+	}
+	own, err := os.MkdirTemp("/dev/shm", "runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(own) })
+	for _, root := range []string{filepath.Join(lib, "s"), filepath.Join(rel, "s")} { // runs/ on a filesystem of its own: only lib/adc tells them apart
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(own, filepath.Join(root, "runs")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executable = func() (string, error) { return filepath.Join(rel, "bin", "adcd"), nil }
+	t.Cleanup(func() { executable = os.Executable })
+	if err := os.MkdirAll(filepath.Join(rel, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rel, "bin", "adcd"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := stateDir(t)
+	if _, err := LoadConfig([]string{"--state-dir", state, "--sandbox-root", filepath.Join(rel, "s")}); err != nil {
+		t.Fatalf("a sandbox root beside the release: %v", err)
+	}
+	_, err = LoadConfig([]string{"--state-dir", state, "--sandbox-root", filepath.Join(lib, "s")})
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "the installed release's lib/adc") || strings.Contains(err.Error(), rel) {
+		t.Errorf("a sandbox root inside the release's lib/adc: %v", err)
 	}
 }
