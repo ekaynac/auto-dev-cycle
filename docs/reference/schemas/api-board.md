@@ -25,6 +25,7 @@ A document is one of: [BoardPlacedCard](#boardplacedcard) or [BoardUnplacedCard]
 | `cancelled` | yes | boolean | The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done. |
 | `abandoned` | yes | boolean | The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done. |
 | `ending_blocked` | yes | null or [BoardEndingBlocked](#boardendingblocked) | Ending blocked: the admitted task would end (a decided candidate, or abandoned once its approval is not in force), but a unit of it still runs, so its task.done waits (authority.EndingOf's refusal, the loop's own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise. |
+| `stalled` | yes | null or [BoardStalled](#boardstalled) | Stalled: the admitted task, not ending, with no node claimed or held and no action of the controller's reconcile loop moving it at its last pass (reconcile.StallOf, #226 entry 184), with the controller's phrase for why. A visible state, not a hold; null otherwise (and before the loop's first pass). |
 | `approval` | yes | one of `none`, `in_force`, `revoked` | Its spec's approval: none, in force, or revoked. |
 | `created_at` | yes | [Time](common-defs.md#time) |  |
 | `nodes` | yes | array of [BoardNodeCard](#boardnodecard) | The task's nodes in node id order, superseded ones included as history. |
@@ -41,6 +42,18 @@ What still runs of a decided candidate's task: its unit, and the controller's ph
 |---|---|---|---|
 | `unit` | yes | [UnitID](common-defs.md#unitid) |  |
 | `cause` | yes | one of `the attempt's seal did not land`, `the lease did not end` |  |
+
+No other fields are allowed.
+
+### BoardStalled
+
+Why the admitted task does not move: the controller's phrase (reconcile.StallCauses), never an error's text.
+
+#### Fields of BoardStalled
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `cause` | yes | one of `no reviewer registered`, `a decided step has no executor`, `a decided step was refused`, `no action decided` |  |
 
 No other fields are allowed.
 

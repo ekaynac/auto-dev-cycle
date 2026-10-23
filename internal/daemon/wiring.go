@@ -97,6 +97,7 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, eg *eg
 	if run != nil {
 		run.done = l.Nudge
 	}
+	l.Stalls = d.stalls // the board's stalled (#226 entry 184)
 	return l
 }
 

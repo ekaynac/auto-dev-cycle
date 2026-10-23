@@ -80,7 +80,7 @@ var tasks = Resource{
 			if ending, err := endingOf(tx, t); err != nil { // one task's unreadable record (Mythos chunk 5a L4)
 				read.Card = unplaced(id, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
 			} else {
-				read.Card = boardCard(t, byTask[id], at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project), ending)
+				read.Card = boardCard(t, byTask[id], at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project), ending, stalledOf(at, t))
 			}
 			if at.Scope.ReadsRecord(attemptDomain, &t.Project) {
 				f, ok, err := firstAttempt(tx, byTask[id])

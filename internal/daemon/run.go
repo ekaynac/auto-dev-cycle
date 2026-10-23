@@ -115,7 +115,14 @@ var sessionDeadline = runBounds.Start + runBounds.Handshake + runBounds.Result +
 // model's thinking counts in it, so it leaves room for thinking over many
 // turns (#226 entry 175; Opus #417 M2): at 8000 a reasoning builder would
 // end most attempts cut short (executor_incomplete). The lease's
-// reservation, which the gateway enforces, bounds the attempt.
+// reservation is NOT enforced per request (Astra #423 M1): the gateway
+// records each request's floor before it sends and refuses one once the
+// call's effect has left pending (modelcall.sends), but never compares
+// the call's accumulated usage, or the next request's floor, with the
+// reservation. An attempt may pass its reservation, and the USD rail with
+// it, by its own requests, bounded by the attempt and recorded
+// conservatively. The per-request allowance is P17c, before any priced
+// builder runs.
 const builderOutputTokens = 128000
 
 // callFloors are each role's request floor: what one request can count at

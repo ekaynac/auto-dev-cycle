@@ -105,6 +105,8 @@ type BoardPlacedCard struct {
 	Abandoned bool `json:"abandoned"`
 	// Ending blocked: the admitted task would end (a decided candidate, or abandoned once its approval is not in force), but a unit of it still runs, so its task.done waits (authority.EndingOf's refusal, the loop's own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise.
 	EndingBlocked *BoardEndingBlocked `json:"ending_blocked"`
+	// Stalled: the admitted task, not ending, with no node claimed or held and no action of the controller's reconcile loop moving it at its last pass (reconcile.StallOf, #226 entry 184), with the controller's phrase for why. A visible state, not a hold; null otherwise (and before the loop's first pass).
+	Stalled *BoardStalled `json:"stalled"`
 	// Its spec's approval: none, in force, or revoked.
 	Approval  BoardPlacedCardApproval `json:"approval"`
 	CreatedAt Time                    `json:"created_at"`
@@ -123,6 +125,20 @@ const (
 type BoardEndingBlocked struct {
 	Unit  UnitID                  `json:"unit"`
 	Cause BoardEndingBlockedCause `json:"cause"`
+}
+
+type BoardStalledCause string
+
+const (
+	BoardStalledCauseNoReviewerRegistered      BoardStalledCause = "no reviewer registered"
+	BoardStalledCauseADecidedStepHasNoExecutor BoardStalledCause = "a decided step has no executor"
+	BoardStalledCauseADecidedStepWasRefused    BoardStalledCause = "a decided step was refused"
+	BoardStalledCauseNoActionDecided           BoardStalledCause = "no action decided"
+)
+
+// BoardStalled: Why the admitted task does not move: the controller's phrase (reconcile.StallCauses), never an error's text.
+type BoardStalled struct {
+	Cause BoardStalledCause `json:"cause"`
 }
 
 // BoardUnplacedCardReason: task_unrecorded: nodes of no task record; nodes_before_admission: nodes of a task not admitted; unknown_state: a task state or approval status the board does not know; deferred_node_kind: a node kind outside M1(a)'s template; node_in_another_project: a node outside its task's project; undeclared_wait: a wait on an input the node does not declare; damaged_record: a record that cannot be read as one (a task record, a selected result, a hold's since).

@@ -24,7 +24,10 @@ package api
 //     While it would end (a decided candidate, or abandoned) but a unit of
 //     it still runs, its card says so (ending_blocked: authority.EndingOf's
 //     refusal, the loop's own rule, with the controller's phrase; a visible
-//     state, not a hold, as a completed node carries none).
+//     state, not a hold, as a completed node carries none). While it is
+//     admitted and nothing moves it (no node claimed or held, no action of
+//     the loop applying), its card says why (stalled: reconcile.StallOf,
+//     with the controller's phrase; #226 entry 184).
 //   - A node card's round is its candidate's (graph.CandidateRound): a
 //     repair's accept, gate and review, recorded in round 1, show their
 //     build's round (Opus #408 L1).
@@ -115,7 +118,7 @@ var board = Resource{
 				if ending, err := endingOf(tx, t); err != nil { // one task's unreadable record, never the board's (Mythos chunk 5a L4)
 					out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonDamagedRecord))
 				} else {
-					out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project), ending))
+					out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project), ending, stalledOf(at, t)))
 				}
 			}
 		}
@@ -135,7 +138,7 @@ var board = Resource{
 		_, _, project, err := boardTask(tx, id)
 		return project, err
 	},
-	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "abandoned", "approval", "created_at", "nodes", "ending_blocked", "reason"},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "abandoned", "approval", "created_at", "nodes", "ending_blocked", "stalled", "reason"},
 }
 
 // boardTask is task id's record (recorded: it exists and reads as one)
@@ -172,12 +175,12 @@ func unplaced(id types.TaskID, project *types.ProjectID, reason types.BoardUnpla
 
 // boardCard is t's card over its nodes (node id order), its hold badges
 // aged at now, with their owner_ref only when ownerRefs, and ending, its
-// ending_blocked (endingOf); or t unplaced when its records do not
-// determine its column.
-func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool, ending *types.BoardEndingBlocked) types.BoardCard {
+// ending_blocked (endingOf), and stalled, its stall (stalledOf); or t
+// unplaced when its records do not determine its column.
+func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool, ending *types.BoardEndingBlocked, stalled *types.BoardStalled) types.BoardCard {
 	project := t.Project
 	c := &types.BoardPlacedCard{Type: "placed", ID: t.ID, Project: t.Project, Title: t.Spec.Title, Admitted: t.State == authority.TaskAdmitted,
-		Approval: types.BoardPlacedCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardNodeCard{}, EndingBlocked: ending}
+		Approval: types.BoardPlacedCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardNodeCard{}, EndingBlocked: ending, Stalled: stalled}
 	if a := t.Approval; a != nil {
 		if a.Status != authority.ApprovalInForce && a.Status != authority.ApprovalRevoked {
 			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
@@ -239,6 +242,22 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 		}
 	}
 	return types.BoardCard{Variant: c}
+}
+
+// stalledOf is t's stalled: its cause, when t is the admitted task the
+// controller's loop found stalled at its last pass (at.Stalled; the one
+// rule is reconcile.StallOf): admitted, nothing of it claimed or held,
+// and no action of the loop moving it (#226 entry 184). A visible state,
+// not a hold; nil otherwise.
+func stalledOf(at ReadAt, t authority.TaskRecord) *types.BoardStalled {
+	if at.Stalled == nil || t.State != authority.TaskAdmitted {
+		return nil
+	}
+	cause, ok := at.Stalled(t.ID)
+	if !ok {
+		return nil
+	}
+	return &types.BoardStalled{Cause: types.BoardStalledCause(cause)}
 }
 
 // endingOf is t's ending_blocked: its end, as the loop would record it

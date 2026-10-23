@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,9 +22,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
-	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capability"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/cli"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
@@ -116,43 +118,28 @@ func (s *socketStarter) socket(a types.AttemptID) string {
 	return s.sockets[a]
 }
 
-// requestingBuilder is builder(writes(files)) whose run first sends one
-// chat request over its attempt's gateway socket, with its gateway token,
-// after before (when set), and reports what it got on out.
-func requestingBuilder(files map[string]string, s *socketStarter, before func(), out chan<- sent) *inproc.Peer {
-	return inproc.New(func(in io.Reader, w io.Writer) {
-		r, wr := wire.NewReader(in), wire.NewWriter(w)
-		var prep types.AdapterPrepareParams
-		for {
-			line, err := r.Next()
-			var req wire.Request
-			if err != nil || json.Unmarshal(line, &req) != nil {
-				return
-			}
-			res := json.RawMessage(builderClean)
-			switch req.Method {
-			case "describe":
-				res = json.RawMessage(builderDescribe)
-			case "prepare":
-				if json.Unmarshal(req.Params, &prep) != nil {
-					return
-				}
-			case "run":
-				writes(files)(prep.Workspace.Path)
-				if before != nil {
-					before()
-				}
-				out <- chatOn(s.socket(prep.Attempt), prep.Gateway)
-				if res, err = json.Marshal(types.AdapterRunResult{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}); err != nil {
-					return
-				}
-			}
-			b, err := wire.Encode(map[string]any{"jsonrpc": wire.Version, "id": req.ID, "result": res})
-			if err != nil || wr.Write(b) != nil {
-				return
-			}
+// requesting is a builder's run (builderWith's onRun): it sends one chat
+// request over its attempt's gateway socket, with its gateway token, after
+// before (when set), reports what it got on out, and reports *final (read
+// at the run; nil: none) as its final usage.
+func requesting(s *socketStarter, before func(), out chan<- sent, final **types.AdapterRunResultUsageFinalValue) func(types.AdapterPrepareParams) *types.AdapterRunResultUsageFinalValue {
+	return func(prep types.AdapterPrepareParams) *types.AdapterRunResultUsageFinalValue {
+		if before != nil {
+			before()
 		}
-	})
+		out <- chatOn(s.socket(prep.Attempt), prep.Gateway)
+		return *final
+	}
+}
+
+// coveringFinal is a final usage that covers the gateway's count of
+// chatOn's one request to the upstream (newUpstream: 3 prompt tokens and 1
+// completion token; the gateway counts its body at 16 bytes a token and
+// the request's 64 max_tokens as its floor): the call settles on it (Astra
+// #423 M2).
+func coveringFinal() *types.AdapterRunResultUsageFinalValue {
+	return &types.AdapterRunResultUsageFinalValue{Tokens: types.UsageMeasurementTokens{In: 100, Out: 64}, Turns: 1, Milliseconds: 1,
+		Cost: types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true}}
 }
 
 // chatOn posts one chat completion over socket with gv's token.
@@ -195,6 +182,9 @@ type activated struct {
 	// peer, when set, is the adapter a start with a sandbox root runs
 	// (activatedOn); else the requesting builder.
 	peer *inproc.Peer
+	// final is the requesting builder's final usage (coveringFinal; nil:
+	// none reported).
+	final *types.AdapterRunResultUsageFinalValue
 }
 
 // activatedWorld is an activated world whose images resolve with images;
@@ -208,7 +198,7 @@ func activatedWorld(t *testing.T, images dispatch.Images, sandboxed bool, before
 	if _, err := rw.w.s.MarkPendingUncertain(context.Background(), string(rw.x.System.Actor())); err != nil { // adcd's start rule
 		t.Fatal(err)
 	}
-	a := &activated{rw: rw, log: &logBuffer{}, sent: make(chan sent, 4), up: newUpstream(t, rw.w.s)}
+	a := &activated{rw: rw, log: &logBuffer{}, sent: make(chan sent, 4), up: newUpstream(t, rw.w.s), final: coveringFinal()}
 	const config = "../../fixtures/m1/config/"
 	raw, err := os.ReadFile(config + "groups.json")
 	if err == nil {
@@ -224,7 +214,7 @@ func activatedWorld(t *testing.T, images dispatch.Images, sandboxed bool, before
 	if a.reg, err = registry.New(doc, a.gs); err != nil {
 		t.Fatal(err)
 	}
-	a.d = &Daemon{store: rw.w.s, blobs: rw.w.blobs, system: rw.x.System, clock: time.Now}
+	a.d = &Daemon{store: rw.w.s, blobs: rw.w.blobs, system: rw.x.System, clock: time.Now, stalls: &reconcile.Stalls{}}
 	if a.eg, err = newEgress(a.d, a.reg, false); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +229,7 @@ func activatedWorld(t *testing.T, images dispatch.Images, sandboxed bool, before
 		acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister { return nil }
 		t.Cleanup(func() { acceptLister = defaultLister })
 		starter := &socketStarter{sockets: map[types.AttemptID]string{}}
-		starter.peer = requestingBuilder(files, starter, before, a.sent)
+		starter.peer = builderWith(writes(files), false, nil, requesting(starter, before, a.sent, &a.final))
 		box := sandbox.Host{Podman: "/usr/bin/podman", Root: root, Home: "/home/adc-gate-test", Runner: &inPlace{}}
 		if run, err = runnerOn(context.Background(), a.d, rw.w.dir, box, images, a.reg, a.eg, starter, a.log); err != nil {
 			t.Fatal(err)
@@ -351,8 +341,14 @@ func TestLaunchThroughAdcdsOwnLoop(t *testing.T) {
 	if len(seen) != 1 || seen[0].State != eventstore.EffectPending {
 		t.Fatalf("the call's effect at the upstream's receipt: %+v", seen)
 	}
-	if e, err := a.rw.w.s.LoadEffect(context.Background(), seen[0].ID); err != nil || e.State == eventstore.EffectPending {
-		t.Errorf("the call after the attempt's end: %+v %v", e, err)
+	// Astra #423 M2: the builder's final covers the gateway's count, so the
+	// call settles at the attempt's end: its effect completed, its standing
+	// settled at the final, which its lease keeps as a charge (a settled
+	// call, no liability).
+	if c := a.callOf(t, seen[0].ID); c.effect.State != eventstore.EffectCompleted || !c.standing.Settled || c.standing.Usage == nil ||
+		c.standing.Usage.In != 100 || c.standing.Usage.Out != 64 || !slices.Contains(c.settlement.Calls, c.call) ||
+		slices.Contains(c.settlement.Liabilities, c.call) || c.liable != 0 {
+		t.Errorf("the call after the attempt's end: %+v", c)
 	}
 	dir := a.rw.w.dir
 	a.rw.w.done()
@@ -481,7 +477,7 @@ func activatedOn(t *testing.T, a *activated) *activated {
 	acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister { return nil }
 	t.Cleanup(func() { acceptLister = defaultLister })
 	starter := &socketStarter{sockets: map[types.AttemptID]string{}}
-	starter.peer = requestingBuilder(map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}, starter, nil, a.sent)
+	starter.peer = builderWith(writes(map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}), false, nil, requesting(starter, nil, a.sent, &a.final))
 	if a.peer != nil {
 		starter.peer = a.peer
 	}
@@ -827,4 +823,220 @@ func attemptOn(rw *runWorld, node types.NodeID) bool {
 		return err
 	})
 	return ok
+}
+
+// call is a model call's state after its attempt: its effect, its
+// standing (ledger.StandingOf over its measurements), its lease's
+// settlement and its group's liability.
+type call struct {
+	call       types.CallID
+	effect     eventstore.Effect
+	standing   ledger.Standing
+	settlement types.LeaseSettlementValue
+	liable     int64
+}
+
+// callOf is the call of model_call effect, read from a's store.
+func (a *activated) callOf(t *testing.T, effect string) call {
+	t.Helper()
+	c := call{call: modelcall.CallOf(effect)}
+	a.rw.w.view(func(tx *eventstore.Tx) error {
+		e, err := tx.LoadEffect(effect)
+		if err != nil {
+			return err
+		}
+		c.effect = e
+		ms, err := ledger.Measurements(tx, c.call)
+		if err != nil {
+			return err
+		}
+		c.standing = ledger.StandingOf(ms, c.call)
+		m, ok, err := modelcall.Of(tx, c.call)
+		if err != nil || !ok {
+			return errors.Join(err, fmt.Errorf("no binding of %s", c.call))
+		}
+		if c.settlement, err = capacity.Settlement(tx, m.Lease); err != nil {
+			return err
+		}
+		for _, g := range m.Groups {
+			n, err := capacity.Liable(tx, g)
+			if err != nil {
+				return err
+			}
+			c.liable += n
+		}
+		return nil
+	})
+	return c
+}
+
+// Astra #423 M2: a builder that reports no final usage (the adapter cannot
+// know it) leaves its call uncertain at the attempt's end: never settled
+// on the gateway's count alone, its liability kept on its group and named
+// by its lease's settlement.
+func TestAMissingFinalKeepsTheLiability(t *testing.T) {
+	a := activatedWorld(t, gateImages{}, true, nil)
+	a.final = nil
+	a.passes(t, 24, func() bool { return a.node(types.NodeKindBuild).State.State == types.NodeStateStateCompleted })
+	seen := a.up.requests()
+	if len(seen) != 1 {
+		t.Fatalf("the upstream saw %d requests\n%s", len(seen), a.log.String())
+	}
+	a.rw.r.Wait()
+	if c := a.callOf(t, seen[0].ID); c.effect.State != eventstore.EffectUncertain || c.standing.Settled ||
+		!slices.Contains(c.settlement.Liabilities, c.call) || c.liable <= 0 {
+		t.Errorf("the call with no final: %+v", c)
+	}
+}
+
+// stalled is the task's card's stall, as adcd's reads show it (the loop's
+// Stalls, api.ReadAt.Stalled).
+func (a *activated) stalled(t *testing.T) *types.BoardStalled {
+	t.Helper()
+	if c, ok := taskReadWith(t, a.rw.w, a.rw.w.op, a.rw.task, a.d.stalls.Of).Card.Variant.(*types.BoardPlacedCard); ok {
+		return c.Stalled
+	}
+	return nil
+}
+
+// Astra #423 H1 (#226 entry 184), its input: the gate completed, adcd
+// stopped before the review was recorded, then started again with no
+// registry (a configuration adcd accepts). Nothing is recorded or held,
+// so the task is stalled: its card says "no reviewer registered", logged
+// once however many passes. A start with the registry records the review
+// (held review_inactive, review being inactive) and the stall ends.
+func TestNoRegistryAfterTheGateIsStalled(t *testing.T) {
+	a := activatedWorld(t, gateImages{}, true, nil)
+	a.passes(t, 24, func() bool { return a.node(types.NodeKindGate).State.State == types.NodeStateStateCompleted })
+	if r := a.node(types.NodeKindReview); r.Node.ID != "" {
+		t.Fatalf("a review was recorded before the restart: %s", r.Node.ID)
+	}
+	reg := a.reg
+	a.reg = registry.Registry{}
+	a = activatedOn(t, a)
+	a.passes(t, 6, nil)
+	if r := a.node(types.NodeKindReview); r.Node.ID != "" {
+		t.Fatalf("a review with no registry: %s", r.Node.ID)
+	}
+	if s := a.stalled(t); s == nil || string(s.Cause) != reconcile.StallNoReviewer {
+		t.Fatalf("the card with no registry: %+v\n%s", s, a.log.String())
+	}
+	if n := strings.Count(a.log.String(), "is stalled: "+reconcile.StallNoReviewer); n != 1 {
+		t.Errorf("the stall logged %d times in 6 passes\n%s", n, a.log.String())
+	}
+	a.reg = reg
+	a = activatedOn(t, a)
+	a.passes(t, 6, func() bool { return a.node(types.NodeKindReview).Node.ID != "" })
+	r := a.node(types.NodeKindReview)
+	a.passes(t, 2, nil)
+	if r.Node.ID == "" || a.stalled(t) != nil {
+		t.Fatalf("after a start with the registry: review %q, stalled %+v\n%s", r.Node.ID, a.stalled(t), a.log.String())
+	}
+}
+
+// Astra #423 H2 (#226 entry 184), its input: review active, a no_go review
+// completed, then adcd started again before its repair was recorded, its
+// qualification lost. The repair is the controller's alone, so it is
+// recorded under launch whatever review's state: round 2's build, accept,
+// gate and review, its build run; the round's review is held
+// review_inactive (never a stop with no hold), and the task is not
+// stalled. A start with the qualification clears the hold.
+func TestALostQualificationStillRepairs(t *testing.T) {
+	files := map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}
+	a := activatedWorld(t, gateImages{}, true, nil)
+	a.passes(t, 24, func() bool { return a.node(types.NodeKindGate).State.State == types.NodeStateStateCompleted })
+	a.peer = reviewer(noGoDecision, false, nil, writes(files))
+	started := activatedReviewing(t, a, a.reg)
+	rw := started.rw
+	started.passes(t, 24, func() bool { return roundOf(t, rw, 1).review.State.State == types.NodeStateStateCompleted })
+	if one, two := roundOf(t, rw, 1), roundOf(t, rw, 2); one.review.Outcome == nil || *one.review.Outcome != types.OutcomeFound || two.build.Node.ID != "" {
+		t.Fatalf("round 1's review %v, round 2's build %q: not the boundary\n%s", one.review.Outcome, two.build.Node.ID, started.log.String())
+	}
+	qualifiedReviewers = func(string, string, []types.RegistryExecutor) error { return errors.New("the qualification is gone") }
+	lost := activatedOn(t, started) // review inactive: reviewsOf derives it so
+	if reviewsOf(lost.reg, lost.log) {
+		t.Fatal("review is still derived active")
+	}
+	held := func() bool {
+		return slices.ContainsFunc(roundOf(t, rw, 2).review.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewInactive })
+	}
+	lost.passes(t, 40, func() bool { return held() && attemptOn(rw, roundOf(t, rw, 2).build.Node.ID) })
+	two := roundOf(t, rw, 2)
+	if two.build.Node.ID == "" || two.accept.Node.ID == "" || two.gate.Node.ID == "" || !held() || !attemptOn(rw, two.build.Node.ID) {
+		t.Fatalf("round 2 with review inactive: %+v\n%s", two, lost.log.String())
+	}
+	if s := lost.stalled(t); s != nil {
+		t.Errorf("the repairing task is stalled: %+v", s)
+	}
+	again := activatedReviewing(t, lost, lost.reg)
+	again.passes(t, 12, func() bool { return !held() })
+	if held() {
+		t.Fatalf("round 2's review after a start with the qualification: %+v\n%s", roundOf(t, rw, 2).review.State, again.log.String())
+	}
+}
+
+// #226 entry 184, the class: for every planted state a scenario passes
+// through, after each of adcd's passes the admitted task either moved (an
+// action applied), has a node claimed or held, or its card says it is
+// stalled. Never a stop with nothing shown.
+func TestNoAdmittedTaskStopsUnseen(t *testing.T) {
+	files := map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}
+	gated := func(a *activated) bool {
+		return a.node(types.NodeKindGate).State.State == types.NodeStateStateCompleted
+	}
+	for name, plant := range map[string]func(*testing.T) *activated{
+		"review inactive": func(t *testing.T) *activated { return activatedWorld(t, gateImages{}, true, nil) },
+		"no sandbox":      func(t *testing.T) *activated { return activatedWorld(t, gateImages{}, false, nil) },
+		"an image that does not resolve": func(t *testing.T) *activated {
+			return activatedWorld(t, fakeImages{false}, true, nil)
+		},
+		"no registry after the gate": func(t *testing.T) *activated {
+			a := activatedWorld(t, gateImages{}, true, nil)
+			a.passes(t, 24, func() bool { return gated(a) })
+			a.reg = registry.Registry{}
+			return activatedOn(t, a)
+		},
+		"a go review": func(t *testing.T) *activated {
+			a := activatedWorld(t, gateImages{}, true, nil)
+			a.passes(t, 24, func() bool { return gated(a) })
+			a.peer = reviewer(goDecision, false, nil, writes(files))
+			return activatedReviewing(t, a, a.reg)
+		},
+		"a no_go review, its qualification then lost": func(t *testing.T) *activated {
+			a := activatedWorld(t, gateImages{}, true, nil)
+			a.passes(t, 24, func() bool { return gated(a) })
+			a.peer = reviewer(noGoDecision, false, nil, writes(files))
+			r := activatedReviewing(t, a, a.reg)
+			r.passes(t, 24, func() bool { return roundOf(t, r.rw, 1).review.State.State == types.NodeStateStateCompleted })
+			qualifiedReviewers = func(string, string, []types.RegistryExecutor) error { return errors.New("gone") }
+			return activatedOn(t, r)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := plant(t)
+			for pass := range 16 {
+				ran, err := a.rw.l.Pass(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if a.rw.r != nil {
+					a.rw.r.Wait()
+				}
+				if st, _ := taskState(t, a.rw.w, a.rw.task); st != authority.TaskAdmitted {
+					return // ended: nothing to show
+				}
+				busy := false
+				a.rw.w.view(func(tx *eventstore.Tx) error {
+					nodes, err := graph.TaskNodes(tx, a.rw.task)
+					for _, n := range nodes {
+						busy = busy || n.State.State == types.NodeStateStateClaimed || n.State.State == types.NodeStateStateHeld
+					}
+					return err
+				})
+				if ran == 0 && !busy && a.stalled(t) == nil {
+					t.Fatalf("pass %d: the admitted task stopped with nothing shown\n%s", pass, a.log.String())
+				}
+			}
+		})
+	}
 }

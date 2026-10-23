@@ -19,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 )
 
 // The acceptance a task's card never shows.
@@ -408,6 +409,29 @@ func TestEndingCausesAreTheSchemas(t *testing.T) {
 	}
 }
 
+// #226 entry 184: the stalled card's causes are the controller's phrases,
+// reconcile.StallCauses, exactly the schema's enum; a card shows its task's
+// stall only while the task is admitted.
+func TestStallCausesAreTheSchemas(t *testing.T) {
+	raw, err := os.ReadFile("../../schemas/api/board.json")
+	var doc struct {
+		Defs map[string]struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &doc)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Defs["BoardStalled"].Properties["cause"].Enum; !slices.Equal(got, reconcile.StallCauses) {
+		t.Errorf("the schema's causes %q, reconcile's %q", got, reconcile.StallCauses)
+	}
+}
+
 // Opus #408 L1: a node card's round is its candidate's: a repair's
 // accept, gate and review, recorded in round 1, show their build's round
 // 2; round 1's nodes show 1.
@@ -475,6 +499,32 @@ func TestAnUnreadableEndingIsOneTasksDamage(t *testing.T) {
 		}
 		if c := card(good.ID); c["type"] != "placed" || c["column"] != "ready" {
 			t.Errorf("%s: another task's card %v", resource, c)
+		}
+	}
+}
+
+// #226 entry 184: a card shows the loop's stall only for its admitted task:
+// never for a task done since (the loop's next pass forgets it), nor with
+// no stall reader.
+func TestAStallIsTheAdmittedTasks(t *testing.T) {
+	stalled := func(id types.TaskID) (string, bool) {
+		return reconcile.StallNoReviewer, id == "tsk_01m3250vkwffc979nzjw0g2sf9"
+	}
+	task := authority.TaskRecord{ID: "tsk_01m3250vkwffc979nzjw0g2sf9", State: authority.TaskAdmitted}
+	at := api.ReadAt{Stalled: stalled}
+	if s := api.StalledOf(at, task); s == nil || string(s.Cause) != reconcile.StallNoReviewer {
+		t.Errorf("the admitted task: %+v", s)
+	}
+	done := task
+	done.State = authority.TaskDoneState
+	other := task
+	other.ID = "tsk_01m3250vkwffc979nzjw0g2sfa"
+	for name, c := range map[string]struct {
+		at   api.ReadAt
+		task authority.TaskRecord
+	}{"a done task": {at, done}, "another task": {at, other}, "no reader": {api.ReadAt{}, task}} {
+		if s := api.StalledOf(c.at, c.task); s != nil {
+			t.Errorf("%s: %+v", name, s)
 		}
 	}
 }

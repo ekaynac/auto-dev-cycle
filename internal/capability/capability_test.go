@@ -290,7 +290,7 @@ func TestKeepingIsTestOnly(t *testing.T) {
 	for _, p := range pkgs {
 		for id, obj := range p.TypesInfo.Uses {
 			f, ok := obj.(*types.Func)
-			if !ok || f.Name() != "Keeping" || f.Pkg() == nil || f.Pkg().Path() != self+"capability" || p.PkgPath == self+"capability" {
+			if !ok || f.Name() != "Keeping" || f.Pkg() == nil || f.Pkg().Path() != self+"capability" { // its own package too (Astra #423 L1): a method declaration is no use
 				continue
 			}
 			t.Errorf("%s builds a capability table of its own (Keeping)", p.Fset.Position(id.Pos()))

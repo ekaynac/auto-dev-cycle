@@ -53,7 +53,8 @@ type Daemon struct {
 	clock     func() time.Time // the store clock (eventstore.Config.Now), for what is made outside a command
 	note      string           // the bootstrap's startup note, fixed text
 	az        authority.Authorizer
-	gates     reconcile.Gates // the reconcile loop's, derived at Run's start (review's: reviewsAtStart)
+	gates     reconcile.Gates   // the reconcile loop's, derived at Run's start (review's: reviewsAtStart)
+	stalls    *reconcile.Stalls // the admitted task's stall the loop found (#226 entry 184), for the board's card
 	once      sync.Once
 	closeErr  error
 }
@@ -190,7 +191,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if recovered.note != "" {
 		note = strings.TrimSpace(note + "\n" + recovered.note)
 	}
-	return &Daemon{lock: lock, store: store, blobs: blobs, captures: captures, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
+	return &Daemon{lock: lock, store: store, blobs: blobs, captures: captures, head: head, system: system, boot: boot, clock: clock, note: note, az: az, stalls: &reconcile.Stalls{}}, nil
 }
 
 // Head is the event log's head verified at start.
@@ -268,7 +269,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	}
 	loop := reconciler(d, reg, images, eg, run, cfg.reconcileEvery, reviewsOf(reg, logw), logw) // its passes settle too
 	d.gates = loop.Gates
-	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
+	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, stalled: d.stalls.Of, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {
 		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {

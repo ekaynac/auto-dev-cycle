@@ -67,13 +67,13 @@ and is never edited apart from it.
 | I13 Gate verdict and receipts | enforced | P15, P22a (admission: launch's activation) | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
 | I15 Deferred surfaces | enforced | P22a | `intake`: admission (the guard); every other capability: all |
-| I16 Rails | enforced | P22a (K1; P17a, P17b), live with `launch` active (P22a) | `launch`: all |
+| I16 Rails | enforced | P22a (K1; P17a, P17b), live with `launch` active (P22a); P17c, the per-request allowance, before any priced builder (the reservation bounds placement, not an attempt's requests: Astra #423 M1) | `launch`: all |
 | I17 Containment | enforced | P22a (K2a; P9, P11, P14a, P15, P22a-5d), live with `launch` active (P22a) | `launch`: all |
 | I18 Acceptance confidentiality | enforced | P15, P16 (the builder's I18, moved from P14), P22a (P22a-6d) | `intake`: admission; `review`: all |
 | I19 Liveness (D63) | unenforced | P29 | `repeat`: all |
 | I20 Merge approval, fresh review, required configuration | partial | P19, P28, P22b | `merge-local`: consumption, effect; `merge-github`: all |
 | I21 Launch readiness (D51) | enforced | P22a (P8b, P11, P17a; launch's activation) | `launch`: all |
-| I22 One admitted task, held included (D51) | enforced | P22a (P22a-3) | `admission`, `launch`, `repeat`: all |
+| I22 One admitted task, held included (D51) | enforced | P22a (P22a-3); the admitted task that nothing moves (no node claimed or held, no action of the loop applying) is shown `stalled` on its card, with its cause (`reconcile.StallOf`, #226 entry 184) | `admission`, `launch`, `repeat`: all |
 
 **The mutation scripts** the rows cite ("each fails with its check removed": `muts-k1.py`, `muts-k2.py`, `muts-k2a.py`) live in `lead/replay/` on the controller host, not in the repository; committing them is a K2b item (#226 entry 181).
 

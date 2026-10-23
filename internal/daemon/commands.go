@@ -47,6 +47,10 @@ type commands struct {
 	blobs   *blobstore.Store // the uploads' store, which BlobsPath serves beside the commands (api.Blobs)
 	clock   func() time.Time // the store clock, which uploads are timed by (nil: time.Now)
 	probe   *sandbox.Host    // the sandbox SandboxProbePath runs in (nil: none configured)
+	// stalled is the admitted task's stall the reconcile loop found
+	// (reconcile.Stalls.Of), which the reads' cards show beside the
+	// commands (nil: none).
+	stalled func(types.TaskID) (string, bool)
 	// authenticated, when set, runs after a request is authenticated and
 	// before its command is submitted: a test revokes the caller there.
 	authenticated func(identity.Principal)

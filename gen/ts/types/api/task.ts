@@ -55,6 +55,10 @@ export interface BoardPlacedCard {
    */
   ending_blocked: null | BoardEndingBlocked;
   /**
+   * Stalled: the admitted task, not ending, with no node claimed or held and no action of the controller's reconcile loop moving it at its last pass (reconcile.StallOf, #226 entry 184), with the controller's phrase for why. A visible state, not a hold; null otherwise (and before the loop's first pass).
+   */
+  stalled: null | BoardStalled;
+  /**
    * Its spec's approval: none, in force, or revoked.
    */
   approval: "none" | "in_force" | "revoked";
@@ -76,6 +80,13 @@ export interface BoardEndingBlocked {
    */
   unit: string;
   cause: "the attempt's seal did not land" | "the lease did not end";
+}
+/**
+ * Why the admitted task does not move: the controller's phrase (reconcile.StallCauses), never an error's text.
+ */
+export interface BoardStalled {
+  cause:
+    "no reviewer registered" | "a decided step has no executor" | "a decided step was refused" | "no action decided";
 }
 export interface BoardNodeCard {
   /**
