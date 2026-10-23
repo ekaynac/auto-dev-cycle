@@ -216,17 +216,43 @@ func TestProcService(t *testing.T) {
 	if !ok || !hostErr(blocks, err, "go list failed (copy-out failed)") {
 		t.Errorf("a listing's failure under a clean result: %v %v %q", ok, err, whats(blocks))
 	}
-	// A listing the candidate's code failed (boxList's positive evidence,
-	// errRefused), then a clean result: blocked, never clean.
-	onCandidate := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
-		return nil, refused(errors.New("go list exited 1"))
-	}
-	blocks, _, err, ok = fakeChild(req, read, onCandidate, func(next func(childMsg) procMsg) {
-		next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}})
-		next(clean)
-	})
-	if !ok || err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "unverifiable: go list failed (the listing failed on the candidate: go list exited 1)") {
-		t.Errorf("the candidate's listing failure under a clean result: %v %v %q", ok, err, whats(blocks))
+	// A listing the candidate's code failed (errRefused) after the base's on
+	// its platform succeeded, then a clean result: blocked, never clean. The
+	// base's failing too, or none on that platform: the host's (#226 entry
+	// 170).
+	amd, arm := [2]string{"linux", "amd64"}, [2]string{"linux", "arm64"}
+	for name, c := range map[string]struct {
+		base    *[2]string // the base's listing's platform, nil none
+		baseErr bool
+		refusal bool
+	}{
+		"the base's listed on its platform": {base: &amd, refusal: true},
+		"the base's failed too":             {base: &amd, baseErr: true},
+		"the base's on another platform":    {base: &arm},
+		"no base listing":                   {},
+	} {
+		calls := 0
+		onCandidate := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+			if calls++; c.base != nil && calls == 1 && !c.baseErr {
+				return map[string]Listed{}, nil
+			}
+			return nil, refused(errors.New("go list exited 1"))
+		}
+		blocks, _, err, ok = fakeChild(req, read, onCandidate, func(next func(childMsg) procMsg) {
+			if c.base != nil {
+				next(childMsg{op: 'l', platform: *c.base, base: true})
+			}
+			next(childMsg{op: 'l', platform: amd})
+			next(clean)
+		})
+		switch {
+		case !ok:
+			t.Errorf("%s: not ok", name)
+		case c.refusal && (err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "unverifiable: go list failed (the listing failed on the candidate: go list exited 1)")):
+			t.Errorf("%s: the candidate's: %v %q", name, err, whats(blocks))
+		case !c.refusal && !hostErr(blocks, err, "go list failed"):
+			t.Errorf("%s: the host's: %v %q", name, err, whats(blocks))
+		}
 	}
 }
 
