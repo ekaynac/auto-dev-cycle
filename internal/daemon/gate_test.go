@@ -18,6 +18,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -282,5 +283,60 @@ func TestAnUnreadableStreamIsHeld(t *testing.T) {
 	if len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonRunnerFault ||
 		!strings.HasPrefix(held, reconcile.RunnerSignal("retry 1 until ")) {
 		t.Errorf("the gate of an unreadable stream: %s, held on %q, results %+v", v.State.State, held, got)
+	}
+}
+
+// forgedAccept is an acceptor whose accept records an accepted tree that
+// is not the build's patch at its base (tree), the gate run by its runner.
+type forgedAccept struct {
+	*runner
+	t    *testing.T
+	tree string
+}
+
+func (f forgedAccept) Accept(node types.NodeID) bool {
+	d, err := f.blobs.Put(strings.NewReader(`{"schema":"forged"}`), "")
+	if err == nil {
+		err = f.command(f.ctx, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			cur, err := graph.ViewOf(tx, node)
+			if err != nil || cur.State.Key == nil {
+				return nil, errors.Join(err, errors.New("no claim"))
+			}
+			res, err := accept.Result(*cur.State.Key, accept.Verdict{Tree: f.tree, TreeDigest: types.Digest("sha256:" + strings.Repeat("a", 64))}, cur.Project, types.Digest(d))
+			if err != nil {
+				return nil, err
+			}
+			return nil, graph.Commit(tx, node, res, f.env)
+		})
+	}
+	if err != nil {
+		f.t.Errorf("the forged accept: %v", err)
+	}
+	return true
+}
+
+// K2 (I12 admission): the gate rebuilds accept's tree from the build's
+// patch at its base and gates only that tree; an accepted result naming
+// another tree is the content's, held "runner: failed" at once, with no
+// gate result and no gate run.
+func TestAGateRefusesATreeThatDoesNotRebuild(t *testing.T) {
+	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"README.md": "hello\n"}, nil)
+	acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister { return nil }
+	t.Cleanup(func() { acceptLister = defaultLister })
+	rw.x.Acceptor = forgedAccept{rw.r, t, "4b825dc642cb6eb9a060e54bf8d69288fbee4904"} // the empty tree
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	var v graph.NodeView
+	for range 12 {
+		if _, err := rw.l.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		rw.r.Wait()
+		if v = nodesOf(rw.w, rw.task)[types.NodeKindGate]; v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) > 0 {
+			break
+		}
+	}
+	if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed ||
+		len(resultsOn(t, rw.w, v.Node.ID)) != 0 {
+		t.Fatalf("a gate over a tree that does not rebuild: %s, holds %+v, results %+v", v.State.State, v.State.Holds, resultsOn(t, rw.w, v.Node.ID))
 	}
 }

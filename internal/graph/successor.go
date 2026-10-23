@@ -102,8 +102,10 @@ func newerAnswer(p, in types.InputSpec) bool {
 	return ok && ok2 && p.Name == in.Name && a.OwedInput == b.OwedInput && b.Revision > a.Revision
 }
 
-// builderSafeOf renders rr, a review's result, for a builder: its
-// builder-safe refs (BuilderSafe) only; none for a verdict with no view.
+// builderSafeOf renders rr, a review's or an accept's result (a repair's
+// findings), for a builder: its builder-safe refs (BuilderSafe) only; none
+// for a verdict with no view, nor for an accept's refusal (its detail is
+// the controller's text, #226 entry 164).
 func builderSafeOf(tx *eventstore.Tx, rr types.ResultRecorded, out *Rendered) error {
 	producer, err := loadNode(tx, rr.Node)
 	if err != nil {
@@ -222,7 +224,7 @@ func renderContext(tx *eventstore.Tx, node types.NodeID, env Env) (Rendered, err
 			if err != nil || !ok {
 				return out, errors.Join(err, fmt.Errorf("graph: %s's input %s names no recorded result", node, in.Name))
 			}
-			if rec.Recorded.Node.Kind == types.NodeKindBuild && r.Result.Kind == types.ResultKindReview {
+			if rec.Recorded.Node.Kind == types.NodeKindBuild && (r.Result.Kind == types.ResultKindReview || r.Result.Kind == types.ResultKindTree) {
 				// A repair's findings: only its builder-safe view, never the
 				// decision or the report, which derive from the gate's
 				// acceptance-overlaid tree (P22a-6d; 13 "Successor rounds").

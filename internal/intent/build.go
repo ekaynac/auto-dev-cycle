@@ -48,8 +48,8 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 	var whole []types.Ref // the context as graph.Context renders it
 	for i, rr := range results {
 		v := rr.Result.Value
-		if rr.Result.Kind == types.ResultKindReview { // a build's context renders a review's builder-safe refs alone (graph.Context)
-			v = slices.DeleteFunc(slices.Clone(v), func(r types.Ref) bool { return !graph.BuilderSafe(types.NodeKindReview, rr, r) })
+		if producer, ok := verdictOf[rr.Result.Kind]; ok { // a build's context renders a verdict's builder-safe refs alone (graph.Context)
+			v = slices.DeleteFunc(slices.Clone(v), func(r types.Ref) bool { return !graph.BuilderSafe(producer, rr, r) })
 		}
 		whole = append(whole, v...)
 		round := roundOf(names[i]) // its section's round (Opus 22a-6d L2)
@@ -69,6 +69,8 @@ func Build(tx *eventstore.Tx, blobs receipt.Blobs, node types.NodeID, rendered g
 			prompt.Write(p)
 			out.Included, out.Bytes[v[0].IdentityDigest] = append(out.Included, v[0]), int64(len(p))
 			listed[v[0].IdentityDigest] = string(names[i])
+		case i > 0 && k == types.ResultKindTree && graph.AcceptRefused(rr.Result) && len(v) == 0: // #226 entry 164
+			fmt.Fprintf(&prompt, "\n## The accept of your round %s candidate (%s)\n\nIt refused it: %s\n", round, names[i], rr.Result.Detail)
 		case i > 0 && k == types.ResultKindReview:
 			fmt.Fprintf(&prompt, "\n## The review of your round %s candidate (%s)\n\n", round, names[i])
 			switch {
@@ -138,6 +140,10 @@ func briefPrompt(ref types.Ref, b []byte) ([]byte, error) {
 	}
 	return brief.Prompt(pb), nil
 }
+
+// verdictOf is the producer kind of a repair's findings, by result kind: a
+// review's verdict, or an accept's refusal (#226 entry 164).
+var verdictOf = map[types.ResultKind]types.NodeKind{types.ResultKindReview: types.NodeKindReview, types.ResultKindTree: types.NodeKindAccept}
 
 // roundOf is the round an input named findings-<n> or candidate-<n> is of
 // (graph.Repair's names), its name when it is neither.

@@ -120,3 +120,49 @@ func TestRepair(t *testing.T) {
 		}
 	}
 }
+
+// #226 entry 164 (decision 2): a build's accept that refused the candidate
+// (failed) repairs it as a no_go review does, its refusal findings-n; an
+// accept that accepted it repairs nothing. Only the repair's build takes a
+// refusal: any other consumer of an accept's tree (the gate) waits on it.
+func TestARefusedAcceptRepairs(t *testing.T) {
+	g := openStore(t)
+	accepted := func(build types.NodeID, o types.Outcome) types.NodeID {
+		a := g.nodeOn(types.NodeKindAccept, build)
+		a.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindPatch
+		a.Node.Inputs[0].Name = "patch"
+		n := g.record(a)
+		env := g.env(noRequirement)
+		g.must(evaluate(env, n))
+		r := unrecorded(g.t, *g.state(n).Key)
+		r.Kind, r.Outcome, r.Reason, r.Detail = types.ResultKindTree, o, vocab.ReasonCompletedClean, ""
+		if o == types.OutcomeFailed {
+			r.Reason, r.Detail = vocab.ReasonProtectedPath, "accept refused the candidate: pyproject.toml"
+		}
+		g.must(commit(n, r, env))
+		return n
+	}
+	build, _ := g.completedWith(types.NodeKindBuild, types.ResultKindPatch, []types.Ref{})
+	refused := accepted(build, types.OutcomeFailed)
+	next, err := g.repair(build, refused)
+	if in := next.Node.Inputs; err != nil || next.Node.Round != 2 || len(in) != 3 || in[1].Name != "findings-1" ||
+		in[1].Source.Variant.(*types.ResultSource).ResultKind != types.ResultKindTree || in[1].Source.Variant.(*types.ResultSource).Producer != refused {
+		t.Fatalf("the repair of a refused candidate: %+v %v", next, err)
+	}
+	g.must(evaluate(g.env(noRequirement), next.Node.ID))
+	if st := g.state(next.Node.ID).State; st != types.NodeStateStateClaimed {
+		t.Errorf("the repair round on a refusal: %s", st)
+	}
+	gn := g.nodeOn(types.NodeKindGate, refused)
+	gn.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindTree
+	gn.Node.Inputs[0].Name = "tree"
+	gate := g.record(gn)
+	g.must(evaluate(g.env(noRequirement), gate))
+	if st := g.state(gate); st.State == types.NodeStateStateClaimed || len(st.Holds) != 0 {
+		t.Errorf("a gate over a refused tree: %s, holds %+v", st.State, st.Holds)
+	}
+	other, _ := g.completedWith(types.NodeKindBuild, types.ResultKindPatch, []types.Ref{})
+	if _, err := g.repair(other, accepted(other, types.OutcomeEmpty)); err == nil || !strings.Contains(err.Error(), "accepted the candidate") {
+		t.Errorf("an accepted candidate repaired: %v", err)
+	}
+}
