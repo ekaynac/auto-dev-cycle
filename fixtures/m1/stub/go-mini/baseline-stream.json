@@ -1,24 +1,24 @@
-{"Time":"2026-10-22T17:57:38.447397975Z","Action":"start","Package":"example.com/gomini/inventory"}
-{"Time":"2026-10-22T17:57:38.450781644Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates"}
-{"Time":"2026-10-22T17:57:38.450901885Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates","Output":"=== RUN   TestAddNormalisesSKUAndAccumulates\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.450964062Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates","Output":"--- PASS: TestAddNormalisesSKUAndAccumulates (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.45097979Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates","Elapsed":0}
-{"Time":"2026-10-22T17:57:38.45100243Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput"}
-{"Time":"2026-10-22T17:57:38.45101419Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput","Output":"=== RUN   TestAddRejectsBadInput\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451030926Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput","Output":"--- PASS: TestAddRejectsBadInput (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451037358Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput","Elapsed":0}
-{"Time":"2026-10-22T17:57:38.451042398Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestRemove"}
-{"Time":"2026-10-22T17:57:38.45104539Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestRemove","Output":"=== RUN   TestRemove\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451053166Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestRemove","Output":"--- PASS: TestRemove (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451057742Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestRemove","Elapsed":0}
-{"Time":"2026-10-22T17:57:38.451059918Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestLowStock"}
-{"Time":"2026-10-22T17:57:38.45106419Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestLowStock","Output":"=== RUN   TestLowStock\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451071182Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestLowStock","Output":"--- PASS: TestLowStock (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451074622Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestLowStock","Elapsed":0}
-{"Time":"2026-10-22T17:57:38.451086926Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive"}
-{"Time":"2026-10-22T17:57:38.451090062Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive","Output":"=== RUN   TestFormatCentsPositive\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451095182Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive","Output":"--- PASS: TestFormatCentsPositive (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451100511Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive","Elapsed":0}
-{"Time":"2026-10-22T17:57:38.451105103Z","Action":"output","Package":"example.com/gomini/inventory","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-10-22T17:57:38.451423041Z","Action":"output","Package":"example.com/gomini/inventory","Output":"ok  \texample.com/gomini/inventory\t0.003s\n"}
-{"Time":"2026-10-22T17:57:38.451457441Z","Action":"pass","Package":"example.com/gomini/inventory","Elapsed":0.004}
+{"Time":"2026-10-23T20:44:49.955976449Z","Action":"start","Package":"example.com/gomini/inventory"}
+{"Time":"2026-10-23T20:44:49.961215011Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates"}
+{"Time":"2026-10-23T20:44:49.961261812Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates","Output":"=== RUN   TestAddNormalisesSKUAndAccumulates\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961294708Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates","Output":"--- PASS: TestAddNormalisesSKUAndAccumulates (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961302788Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestAddNormalisesSKUAndAccumulates","Elapsed":0}
+{"Time":"2026-10-23T20:44:49.96131378Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput"}
+{"Time":"2026-10-23T20:44:49.961318772Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput","Output":"=== RUN   TestAddRejectsBadInput\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961323044Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput","Output":"--- PASS: TestAddRejectsBadInput (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961324692Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestAddRejectsBadInput","Elapsed":0}
+{"Time":"2026-10-23T20:44:49.961327476Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestRemove"}
+{"Time":"2026-10-23T20:44:49.961329076Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestRemove","Output":"=== RUN   TestRemove\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.96133186Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestRemove","Output":"--- PASS: TestRemove (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961334084Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestRemove","Elapsed":0}
+{"Time":"2026-10-23T20:44:49.961335764Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestLowStock"}
+{"Time":"2026-10-23T20:44:49.961337588Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestLowStock","Output":"=== RUN   TestLowStock\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961339732Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestLowStock","Output":"--- PASS: TestLowStock (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961341428Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestLowStock","Elapsed":0}
+{"Time":"2026-10-23T20:44:49.961343172Z","Action":"run","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive"}
+{"Time":"2026-10-23T20:44:49.961344772Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive","Output":"=== RUN   TestFormatCentsPositive\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961348116Z","Action":"output","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive","Output":"--- PASS: TestFormatCentsPositive (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.9613501Z","Action":"pass","Package":"example.com/gomini/inventory","Test":"TestFormatCentsPositive","Elapsed":0}
+{"Time":"2026-10-23T20:44:49.961351572Z","Action":"output","Package":"example.com/gomini/inventory","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:44:49.961951846Z","Action":"output","Package":"example.com/gomini/inventory","Output":"ok  \texample.com/gomini/inventory\t0.005s\n"}
+{"Time":"2026-10-23T20:44:49.961958486Z","Action":"pass","Package":"example.com/gomini/inventory","Elapsed":0.006}

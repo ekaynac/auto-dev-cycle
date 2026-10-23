@@ -1,295 +1,295 @@
-{"Time":"2026-10-20T09:09:16.104889388Z","Action":"start","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli"}
-{"Time":"2026-10-20T09:09:16.118776797Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach"}
-{"Time":"2026-10-20T09:09:16.118841661Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach","Output":"=== RUN   TestScopeFileAndAttach\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.227073328Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach","Output":"--- PASS: TestScopeFileAndAttach (0.11s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.227117696Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach","Elapsed":0.11}
-{"Time":"2026-10-20T09:09:16.227134928Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap"}
-{"Time":"2026-10-20T09:09:16.227138128Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap","Output":"=== RUN   TestAdminBootstrap\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.562162753Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap","Output":"--- PASS: TestAdminBootstrap (0.34s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.562199682Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap","Elapsed":0.34}
-{"Time":"2026-10-20T09:09:16.56220677Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails"}
-{"Time":"2026-10-20T09:09:16.56220957Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails","Output":"=== RUN   TestAdminBootstrapTokenWriteFails\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.732168131Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails","Output":"--- PASS: TestAdminBootstrapTokenWriteFails (0.17s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.732223828Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails","Elapsed":0.17}
-{"Time":"2026-10-20T09:09:16.732233636Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse"}
-{"Time":"2026-10-20T09:09:16.732241412Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse","Output":"=== RUN   TestAdminBootstrapMalformedResponse\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.779991873Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse","Output":"--- PASS: TestAdminBootstrapMalformedResponse (0.05s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.780030497Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse","Elapsed":0.05}
-{"Time":"2026-10-20T09:09:16.780041025Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile"}
-{"Time":"2026-10-20T09:09:16.780044161Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile","Output":"=== RUN   TestAdminBootstrapSecretFile\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823300527Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO"}
-{"Time":"2026-10-20T09:09:16.823326351Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO","Output":"=== RUN   TestAdminBootstrapSecretFile/a_FIFO\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823336911Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO","Output":"--- PASS: TestAdminBootstrapSecretFile/a_FIFO (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823356335Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.823365679Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink"}
-{"Time":"2026-10-20T09:09:16.823368223Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink","Output":"=== RUN   TestAdminBootstrapSecretFile/a_symlink\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823371295Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink","Output":"--- PASS: TestAdminBootstrapSecretFile/a_symlink (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823376895Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.823379679Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory"}
-{"Time":"2026-10-20T09:09:16.823381695Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory","Output":"=== RUN   TestAdminBootstrapSecretFile/a_directory\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823384784Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory","Output":"--- PASS: TestAdminBootstrapSecretFile/a_directory (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.82338744Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.823391024Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile","Output":"--- PASS: TestAdminBootstrapSecretFile (0.04s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823393776Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile","Elapsed":0.04}
-{"Time":"2026-10-20T09:09:16.823397136Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand"}
-{"Time":"2026-10-20T09:09:16.823400432Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand","Output":"=== RUN   TestEveryActionHasOneCommand\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823726946Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand","Output":"--- PASS: TestEveryActionHasOneCommand (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.823754562Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.823761058Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions"}
-{"Time":"2026-10-20T09:09:16.823763666Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions","Output":"=== RUN   TestCommandsReachTheirActions\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.824725929Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions","Output":"--- PASS: TestCommandsReachTheirActions (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.824754553Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.824759865Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope"}
-{"Time":"2026-10-20T09:09:16.824767449Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope","Output":"=== RUN   TestEnvelope\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.824774233Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope","Output":"--- PASS: TestEnvelope (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.824776953Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.824779673Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage"}
-{"Time":"2026-10-20T09:09:16.824781913Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage","Output":"=== RUN   TestUsage\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.824785097Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage","Output":"--- PASS: TestUsage (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.824787625Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.824789849Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes"}
-{"Time":"2026-10-20T09:09:16.824791993Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes","Output":"=== RUN   TestExitCodes\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.826140003Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes","Output":"--- PASS: TestExitCodes (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.826151763Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.826155155Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput"}
-{"Time":"2026-10-20T09:09:16.826157779Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput","Output":"=== RUN   TestOutput\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.826965688Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput","Output":"--- PASS: TestOutput (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.827016329Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.827022761Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal"}
-{"Time":"2026-10-20T09:09:16.827026841Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal","Output":"=== RUN   TestHumanProposal\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.827033001Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal","Output":"--- PASS: TestHumanProposal (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.827034969Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.827039817Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut"}
-{"Time":"2026-10-20T09:09:16.827042169Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut","Output":"=== RUN   TestIssuedCredentialToTokenOut\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.827826542Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut","Output":"--- PASS: TestIssuedCredentialToTokenOut (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.827854063Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.827865759Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage"}
-{"Time":"2026-10-20T09:09:16.827867295Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage","Output":"=== RUN   TestTokenOutUsage\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.828278626Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage","Output":"--- PASS: TestTokenOutUsage (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.828326434Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.828335602Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered"}
-{"Time":"2026-10-20T09:09:16.828338098Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered","Output":"=== RUN   TestTokenNotDelivered\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.83007067Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered","Output":"--- PASS: TestTokenNotDelivered (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830092782Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.830096158Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted"}
-{"Time":"2026-10-20T09:09:16.830097486Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted","Output":"=== RUN   TestInvalidResponseNotQuoted\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.83009971Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted","Output":"--- PASS: TestInvalidResponseNotQuoted (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830101214Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.83010387Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest"}
-{"Time":"2026-10-20T09:09:16.83010555Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest","Output":"=== RUN   TestBadRequest\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830109438Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest","Output":"--- PASS: TestBadRequest (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830110926Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.830296928Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated"}
-{"Time":"2026-10-20T09:09:16.830319248Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated","Output":"=== RUN   TestUnauthenticated\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830327968Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated","Output":"--- PASS: TestUnauthenticated (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830329984Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.830332992Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse"}
-{"Time":"2026-10-20T09:09:16.830334448Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse","Output":"=== RUN   TestTokenOutUnencodableResponse\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830574946Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse","Output":"--- PASS: TestTokenOutUnencodableResponse (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830597842Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.830600882Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun"}
-{"Time":"2026-10-20T09:09:16.830604722Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Output":"=== RUN   TestTokenOutSystemErrorCouldNotRun\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830606514Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Output":"    cli_test.go:417: root writes a 0500 directory\n"}
-{"Time":"2026-10-20T09:09:16.830610626Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Output":"--- SKIP: TestTokenOutSystemErrorCouldNotRun (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.830613106Z","Action":"skip","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.830616658Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields"}
-{"Time":"2026-10-20T09:09:16.830619346Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields","Output":"=== RUN   TestHostileCommandFields\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.883005999Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields","Output":"--- PASS: TestHostileCommandFields (0.05s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.883100848Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields","Elapsed":0.05}
-{"Time":"2026-10-20T09:09:16.883119056Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields"}
-{"Time":"2026-10-20T09:09:16.883122416Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields","Output":"=== RUN   TestHostileCommandLocalFields\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884051303Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields","Output":"--- PASS: TestHostileCommandLocalFields (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884075207Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884078599Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages"}
-{"Time":"2026-10-20T09:09:16.884080487Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages","Output":"=== RUN   TestHostileCommandMessages\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884473626Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages","Output":"--- PASS: TestHostileCommandMessages (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884499194Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884503242Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated"}
-{"Time":"2026-10-20T09:09:16.884510938Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated","Output":"=== RUN   TestDoctorSeparated\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884535786Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated","Output":"--- PASS: TestDoctorSeparated (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884537578Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884539018Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings"}
-{"Time":"2026-10-20T09:09:16.884540074Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings","Output":"=== RUN   TestDoctorWarnings\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884541994Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid"}
-{"Time":"2026-10-20T09:09:16.884547386Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid","Output":"=== RUN   TestDoctorWarnings/daemon_uid\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884859692Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid","Output":"--- PASS: TestDoctorWarnings/daemon_uid (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884883804Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884888621Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory"}
-{"Time":"2026-10-20T09:09:16.884890221Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory","Output":"=== RUN   TestDoctorWarnings/state_directory\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884892685Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory","Output":"--- PASS: TestDoctorWarnings/state_directory (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884894205Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884895469Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token"}
-{"Time":"2026-10-20T09:09:16.884897277Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token","Output":"=== RUN   TestDoctorWarnings/operator_token\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884898877Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token","Output":"--- PASS: TestDoctorWarnings/operator_token (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884900285Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884902045Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings","Output":"--- PASS: TestDoctorWarnings (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884903613Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.884905277Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe"}
-{"Time":"2026-10-20T09:09:16.884906477Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe","Output":"=== RUN   TestDoctorProbe\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.884912589Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds"}
-{"Time":"2026-10-20T09:09:16.884913741Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds","Output":"=== RUN   TestDoctorProbe/wrong_kinds\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885067854Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds","Output":"--- PASS: TestDoctorProbe/wrong_kinds (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885089806Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885094078Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing"}
-{"Time":"2026-10-20T09:09:16.885095726Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing","Output":"=== RUN   TestDoctorProbe/missing\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885097934Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing","Output":"--- PASS: TestDoctorProbe/missing (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885099438Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.88510107Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token"}
-{"Time":"2026-10-20T09:09:16.885102542Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token","Output":"=== RUN   TestDoctorProbe/fifo_token\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.88544664Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token","Output":"--- PASS: TestDoctorProbe/fifo_token (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885470337Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885475233Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks"}
-{"Time":"2026-10-20T09:09:16.885476817Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks","Output":"=== RUN   TestDoctorProbe/symlinks\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885479361Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks","Output":"--- PASS: TestDoctorProbe/symlinks (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885480817Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885482401Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe","Output":"--- PASS: TestDoctorProbe (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885483953Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885485601Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator"}
-{"Time":"2026-10-20T09:09:16.885487057Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator","Output":"=== RUN   TestDoctorOperator\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885490241Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator","Output":"--- PASS: TestDoctorOperator (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885491553Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885497601Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen"}
-{"Time":"2026-10-20T09:09:16.885499041Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen","Output":"=== RUN   TestDoctorUnseen\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885524273Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen","Output":"--- PASS: TestDoctorUnseen (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885525745Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885527105Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer"}
-{"Time":"2026-10-20T09:09:16.885528145Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer","Output":"=== RUN   TestDoctorTransportPeer\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885530097Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer","Output":"--- PASS: TestDoctorTransportPeer (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885531233Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885532593Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures"}
-{"Time":"2026-10-20T09:09:16.885533777Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures","Output":"=== RUN   TestDoctorFailures\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885717346Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures","Output":"--- PASS: TestDoctorFailures (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.885741987Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.885745843Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow"}
-{"Time":"2026-10-20T09:09:16.885747395Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow","Output":"=== RUN   TestEventsFollow\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.887043196Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow","Output":"--- PASS: TestEventsFollow (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.887062972Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.887066332Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded"}
-{"Time":"2026-10-20T09:09:16.887067724Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded","Output":"=== RUN   TestEventsResumeBounded\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.887694096Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded","Output":"--- PASS: TestEventsResumeBounded (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.887714176Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.887717888Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed"}
-{"Time":"2026-10-20T09:09:16.887719712Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed","Output":"=== RUN   TestEventsMalformed\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.889175738Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed","Output":"--- PASS: TestEventsMalformed (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.889201099Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.889205099Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage"}
-{"Time":"2026-10-20T09:09:16.889206651Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage","Output":"=== RUN   TestEventsUsage\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.889209435Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage","Output":"--- PASS: TestEventsUsage (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.889210811Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.889212443Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields"}
-{"Time":"2026-10-20T09:09:16.889213739Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields","Output":"=== RUN   TestHostileEventFields\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.892335104Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields","Output":"--- PASS: TestHostileEventFields (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.892443313Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields","Elapsed":0}
-{"Time":"2026-10-20T09:09:16.892456401Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges"}
-{"Time":"2026-10-20T09:09:16.892461585Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges","Output":"=== RUN   TestEventsEdges\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.904702631Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges","Output":"--- PASS: TestEventsEdges (0.01s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:16.904749815Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges","Elapsed":0.01}
-{"Time":"2026-10-20T09:09:16.904756231Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures"}
-{"Time":"2026-10-20T09:09:16.904758215Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures","Output":"=== RUN   TestDevFixtures\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787397792Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures","Output":"--- PASS: TestDevFixtures (2.88s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787423553Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures","Elapsed":2.88}
-{"Time":"2026-10-20T09:09:19.787428545Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands"}
-{"Time":"2026-10-20T09:09:19.787430273Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands","Output":"=== RUN   TestReadCommands\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787434545Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands","Output":"--- PASS: TestReadCommands (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787436081Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.787438321Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes"}
-{"Time":"2026-10-20T09:09:19.787442609Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes","Output":"=== RUN   TestReadExitCodes\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787474081Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes","Output":"--- PASS: TestReadExitCodes (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787475713Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.787477873Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe"}
-{"Time":"2026-10-20T09:09:19.787479265Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe","Output":"=== RUN   TestSafe\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787491297Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe","Output":"--- PASS: TestSafe (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787493697Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.787495953Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields"}
-{"Time":"2026-10-20T09:09:19.787497201Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields","Output":"=== RUN   TestHostileReadFields\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787575682Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields","Output":"--- PASS: TestHostileReadFields (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.78758229Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.787583666Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls"}
-{"Time":"2026-10-20T09:09:19.787584674Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls","Output":"=== RUN   TestJSONControls\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787609314Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls","Output":"--- PASS: TestJSONControls (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787611458Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.787613538Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv"}
-{"Time":"2026-10-20T09:09:19.787614674Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv","Output":"=== RUN   TestClientFromEnv\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787698114Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv","Output":"--- PASS: TestClientFromEnv (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.787699794Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.787700946Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket"}
-{"Time":"2026-10-20T09:09:19.787701938Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket","Output":"=== RUN   TestCommandOverTheSocket\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.788523528Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket","Output":"--- PASS: TestCommandOverTheSocket (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.788528392Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.788540472Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS"}
-{"Time":"2026-10-20T09:09:19.788541672Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS","Output":"=== RUN   TestClientFromEnvHTTPS\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.788658937Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS","Output":"--- PASS: TestClientFromEnvHTTPS (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.788660777Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.788667065Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS"}
-{"Time":"2026-10-20T09:09:19.788668121Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS","Output":"=== RUN   TestBootstrapNotOverHTTPS\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.860270861Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS","Output":"--- PASS: TestBootstrapNotOverHTTPS (0.07s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.860301533Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS","Elapsed":0.07}
-{"Time":"2026-10-20T09:09:19.860310397Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog"}
-{"Time":"2026-10-20T09:09:19.860314013Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog","Output":"=== RUN   TestVerifyLog\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.872500562Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog","Output":"--- PASS: TestVerifyLog (0.01s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.872527234Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog","Elapsed":0.01}
-{"Time":"2026-10-20T09:09:19.872533762Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs"}
-{"Time":"2026-10-20T09:09:19.872536738Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs","Output":"=== RUN   TestVerifyLogNeverRepairs\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.872540562Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger"}
-{"Time":"2026-10-20T09:09:19.87254357Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger","Output":"=== RUN   TestVerifyLogNeverRepairs/a_dropped_trigger\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.875755929Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger","Output":"--- PASS: TestVerifyLogNeverRepairs/a_dropped_trigger (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.875789225Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.875794185Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index"}
-{"Time":"2026-10-20T09:09:19.875797097Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index","Output":"=== RUN   TestVerifyLogNeverRepairs/a_dropped_automatic_index\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.879537187Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index","Output":"--- PASS: TestVerifyLogNeverRepairs/a_dropped_automatic_index (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.879563107Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.879569139Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages"}
-{"Time":"2026-10-20T09:09:19.879571875Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages","Output":"=== RUN   TestVerifyLogNeverRepairs/an_index_on_another_index's_pages\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.882981915Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages","Output":"--- PASS: TestVerifyLogNeverRepairs/an_index_on_another_index's_pages (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.882989243Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.882994635Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row"}
-{"Time":"2026-10-20T09:09:19.882997275Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row","Output":"=== RUN   TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.887267769Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row","Output":"--- PASS: TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.887362954Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.887378746Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file"}
-{"Time":"2026-10-20T09:09:19.887386026Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file","Output":"=== RUN   TestVerifyLogNeverRepairs/an_empty_file\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.889819307Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file","Output":"--- PASS: TestVerifyLogNeverRepairs/an_empty_file (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.889855499Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.889861883Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database"}
-{"Time":"2026-10-20T09:09:19.889865643Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database","Output":"=== RUN   TestVerifyLogNeverRepairs/not_a_database\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.892484189Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database","Output":"--- PASS: TestVerifyLogNeverRepairs/not_a_database (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.892490989Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.892505901Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database"}
-{"Time":"2026-10-20T09:09:19.892512797Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database","Output":"=== RUN   TestVerifyLogNeverRepairs/an_unrelated_database\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.895313249Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database","Output":"--- PASS: TestVerifyLogNeverRepairs/an_unrelated_database (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.895344225Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.895349153Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger"}
-{"Time":"2026-10-20T09:09:19.895351873Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger","Output":"=== RUN   TestVerifyLogNeverRepairs/a_rewritten_trigger\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.898224837Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger","Output":"--- PASS: TestVerifyLogNeverRepairs/a_rewritten_trigger (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.898237621Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.898240821Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger"}
-{"Time":"2026-10-20T09:09:19.898243605Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger","Output":"=== RUN   TestVerifyLogNeverRepairs/an_extra_trigger\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.902061328Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger","Output":"--- PASS: TestVerifyLogNeverRepairs/an_extra_trigger (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.90209784Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.902103328Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table"}
-{"Time":"2026-10-20T09:09:19.902107168Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table","Output":"=== RUN   TestVerifyLogNeverRepairs/no_meta_table\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.905481416Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table","Output":"--- PASS: TestVerifyLogNeverRepairs/no_meta_table (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.90551372Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.905521064Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs","Output":"--- PASS: TestVerifyLogNeverRepairs (0.03s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.90552556Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs","Elapsed":0.03}
-{"Time":"2026-10-20T09:09:19.905535832Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore"}
-{"Time":"2026-10-20T09:09:19.905545016Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore","Output":"=== RUN   TestVerifyLogRefusesAnOversizedStore\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.907396165Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore","Output":"--- PASS: TestVerifyLogRefusesAnOversizedStore (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.907425653Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.907440214Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState"}
-{"Time":"2026-10-20T09:09:19.907444454Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Output":"=== RUN   TestVerifyLogReadOnlyState\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.907448982Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Output":"    verifylog_test.go:315: root writes anywhere\n"}
-{"Time":"2026-10-20T09:09:19.907454278Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Output":"--- SKIP: TestVerifyLogReadOnlyState (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.907457398Z","Action":"skip","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.907463014Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun"}
-{"Time":"2026-10-20T09:09:19.907465942Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Output":"=== RUN   TestVerifyLogCouldNotRun\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.911605123Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Output":"    verifylog_test.go:369: root reads any file\n"}
-{"Time":"2026-10-20T09:09:19.911678499Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Output":"--- SKIP: TestVerifyLogCouldNotRun (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.911694547Z","Action":"skip","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.911700787Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage"}
-{"Time":"2026-10-20T09:09:19.911703491Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage","Output":"=== RUN   TestVerifyLogUsage\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.913746513Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage","Output":"--- PASS: TestVerifyLogUsage (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.913753506Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage","Elapsed":0}
-{"Time":"2026-10-20T09:09:19.91375853Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-10-20T09:09:19.96882781Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Output":"ok  \tgithub.com/ekaynac/auto-dev-cycle/internal/cli\t3.864s\n"}
-{"Time":"2026-10-20T09:09:19.96888549Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Elapsed":3.864}
+{"Time":"2026-10-23T20:48:32.9419251Z","Action":"start","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli"}
+{"Time":"2026-10-23T20:48:32.958951497Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach"}
+{"Time":"2026-10-23T20:48:32.959027353Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach","Output":"=== RUN   TestScopeFileAndAttach\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:33.117808573Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach","Output":"--- PASS: TestScopeFileAndAttach (0.16s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:33.117854061Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestScopeFileAndAttach","Elapsed":0.16}
+{"Time":"2026-10-23T20:48:33.117876157Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap"}
+{"Time":"2026-10-23T20:48:33.117889693Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap","Output":"=== RUN   TestAdminBootstrap\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:33.761817037Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap","Output":"--- PASS: TestAdminBootstrap (0.64s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:33.761890589Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrap","Elapsed":0.64}
+{"Time":"2026-10-23T20:48:33.761917549Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails"}
+{"Time":"2026-10-23T20:48:33.761924077Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails","Output":"=== RUN   TestAdminBootstrapTokenWriteFails\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.142255412Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails","Output":"--- PASS: TestAdminBootstrapTokenWriteFails (0.38s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.142341189Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapTokenWriteFails","Elapsed":0.38}
+{"Time":"2026-10-23T20:48:34.142360933Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse"}
+{"Time":"2026-10-23T20:48:34.142375445Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse","Output":"=== RUN   TestAdminBootstrapMalformedResponse\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.297154666Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse","Output":"--- PASS: TestAdminBootstrapMalformedResponse (0.16s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.297190507Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapMalformedResponse","Elapsed":0.16}
+{"Time":"2026-10-23T20:48:34.297201227Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile"}
+{"Time":"2026-10-23T20:48:34.297204187Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile","Output":"=== RUN   TestAdminBootstrapSecretFile\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.451529807Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory"}
+{"Time":"2026-10-23T20:48:34.451640015Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory","Output":"=== RUN   TestAdminBootstrapSecretFile/a_directory\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.452083585Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory","Output":"--- PASS: TestAdminBootstrapSecretFile/a_directory (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.452153089Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_directory","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.452168385Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO"}
+{"Time":"2026-10-23T20:48:34.452174817Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO","Output":"=== RUN   TestAdminBootstrapSecretFile/a_FIFO\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.452184945Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO","Output":"--- PASS: TestAdminBootstrapSecretFile/a_FIFO (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.452197633Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_FIFO","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.452203169Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink"}
+{"Time":"2026-10-23T20:48:34.452211009Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink","Output":"=== RUN   TestAdminBootstrapSecretFile/a_symlink\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.452383234Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink","Output":"--- PASS: TestAdminBootstrapSecretFile/a_symlink (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.452390818Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile/a_symlink","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.452521378Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile","Output":"--- PASS: TestAdminBootstrapSecretFile (0.16s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.45253253Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestAdminBootstrapSecretFile","Elapsed":0.16}
+{"Time":"2026-10-23T20:48:34.452554179Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand"}
+{"Time":"2026-10-23T20:48:34.452558899Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand","Output":"=== RUN   TestEveryActionHasOneCommand\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.453783719Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand","Output":"--- PASS: TestEveryActionHasOneCommand (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.453797863Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEveryActionHasOneCommand","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.453807511Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions"}
+{"Time":"2026-10-23T20:48:34.453810359Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions","Output":"=== RUN   TestCommandsReachTheirActions\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.457988726Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions","Output":"--- PASS: TestCommandsReachTheirActions (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.458027286Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandsReachTheirActions","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.458036582Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope"}
+{"Time":"2026-10-23T20:48:34.458057494Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope","Output":"=== RUN   TestEnvelope\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.458068358Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope","Output":"--- PASS: TestEnvelope (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.458074902Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEnvelope","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.45807887Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage"}
+{"Time":"2026-10-23T20:48:34.458080998Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage","Output":"=== RUN   TestUsage\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.458087014Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage","Output":"--- PASS: TestUsage (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.458089654Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUsage","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.458091878Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes"}
+{"Time":"2026-10-23T20:48:34.458094502Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes","Output":"=== RUN   TestExitCodes\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.461576291Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes","Output":"--- PASS: TestExitCodes (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.461603651Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestExitCodes","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.461615011Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput"}
+{"Time":"2026-10-23T20:48:34.461619059Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput","Output":"=== RUN   TestOutput\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.462942839Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput","Output":"--- PASS: TestOutput (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.46299892Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestOutput","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.463007048Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal"}
+{"Time":"2026-10-23T20:48:34.463009992Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal","Output":"=== RUN   TestHumanProposal\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.463015144Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal","Output":"--- PASS: TestHumanProposal (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.463018616Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHumanProposal","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.463021448Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut"}
+{"Time":"2026-10-23T20:48:34.463023544Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut","Output":"=== RUN   TestIssuedCredentialToTokenOut\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.463964539Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut","Output":"--- PASS: TestIssuedCredentialToTokenOut (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.464009019Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestIssuedCredentialToTokenOut","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.464481197Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage"}
+{"Time":"2026-10-23T20:48:34.464486157Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage","Output":"=== RUN   TestTokenOutUsage\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.464500557Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage","Output":"--- PASS: TestTokenOutUsage (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.464504653Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUsage","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.464508285Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered"}
+{"Time":"2026-10-23T20:48:34.464510429Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered","Output":"=== RUN   TestTokenNotDelivered\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.467801721Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered","Output":"--- PASS: TestTokenNotDelivered (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.468232154Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenNotDelivered","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.468253898Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted"}
+{"Time":"2026-10-23T20:48:34.468257722Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted","Output":"=== RUN   TestInvalidResponseNotQuoted\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.468851868Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted","Output":"--- PASS: TestInvalidResponseNotQuoted (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.4688579Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestInvalidResponseNotQuoted","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.468867004Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest"}
+{"Time":"2026-10-23T20:48:34.468872268Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest","Output":"=== RUN   TestBadRequest\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.469015533Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest","Output":"--- PASS: TestBadRequest (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.469019741Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBadRequest","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.469023341Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated"}
+{"Time":"2026-10-23T20:48:34.469028173Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated","Output":"=== RUN   TestUnauthenticated\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.469117357Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated","Output":"--- PASS: TestUnauthenticated (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.469120845Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestUnauthenticated","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.469124269Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse"}
+{"Time":"2026-10-23T20:48:34.469134973Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse","Output":"=== RUN   TestTokenOutUnencodableResponse\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.469526863Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse","Output":"--- PASS: TestTokenOutUnencodableResponse (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.470067521Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutUnencodableResponse","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.470075617Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun"}
+{"Time":"2026-10-23T20:48:34.470079313Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Output":"=== RUN   TestTokenOutSystemErrorCouldNotRun\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.470135569Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Output":"    cli_test.go:417: root writes a 0500 directory\n"}
+{"Time":"2026-10-23T20:48:34.470201457Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Output":"--- SKIP: TestTokenOutSystemErrorCouldNotRun (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.470208657Z","Action":"skip","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestTokenOutSystemErrorCouldNotRun","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.470213009Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields"}
+{"Time":"2026-10-23T20:48:34.470217921Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields","Output":"=== RUN   TestHostileCommandFields\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.612442363Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields","Output":"--- PASS: TestHostileCommandFields (0.14s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.612485499Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandFields","Elapsed":0.14}
+{"Time":"2026-10-23T20:48:34.612493755Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields"}
+{"Time":"2026-10-23T20:48:34.612500699Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields","Output":"=== RUN   TestHostileCommandLocalFields\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.61337803Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields","Output":"--- PASS: TestHostileCommandLocalFields (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.613388798Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandLocalFields","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.61339395Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages"}
+{"Time":"2026-10-23T20:48:34.613397502Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages","Output":"=== RUN   TestHostileCommandMessages\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.614468418Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages","Output":"--- PASS: TestHostileCommandMessages (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.614475682Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileCommandMessages","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.61450109Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated"}
+{"Time":"2026-10-23T20:48:34.614572946Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated","Output":"=== RUN   TestDoctorSeparated\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.614889875Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated","Output":"--- PASS: TestDoctorSeparated (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.614896307Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorSeparated","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.614900819Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings"}
+{"Time":"2026-10-23T20:48:34.614903795Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings","Output":"=== RUN   TestDoctorWarnings\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.614926931Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid"}
+{"Time":"2026-10-23T20:48:34.614930403Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid","Output":"=== RUN   TestDoctorWarnings/daemon_uid\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615084868Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid","Output":"--- PASS: TestDoctorWarnings/daemon_uid (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615089924Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/daemon_uid","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.615093764Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory"}
+{"Time":"2026-10-23T20:48:34.615099188Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory","Output":"=== RUN   TestDoctorWarnings/state_directory\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615265748Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory","Output":"--- PASS: TestDoctorWarnings/state_directory (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615269476Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/state_directory","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.615273557Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token"}
+{"Time":"2026-10-23T20:48:34.615277301Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token","Output":"=== RUN   TestDoctorWarnings/operator_token\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615621558Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token","Output":"--- PASS: TestDoctorWarnings/operator_token (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.61562711Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings/operator_token","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.615631302Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings","Output":"--- PASS: TestDoctorWarnings (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615636454Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorWarnings","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.615643302Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe"}
+{"Time":"2026-10-23T20:48:34.615646422Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe","Output":"=== RUN   TestDoctorProbe\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615657046Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing"}
+{"Time":"2026-10-23T20:48:34.615661142Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing","Output":"=== RUN   TestDoctorProbe/missing\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615897255Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing","Output":"--- PASS: TestDoctorProbe/missing (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.615901383Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/missing","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.615904615Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token"}
+{"Time":"2026-10-23T20:48:34.615909863Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token","Output":"=== RUN   TestDoctorProbe/fifo_token\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616083927Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token","Output":"--- PASS: TestDoctorProbe/fifo_token (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616087399Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/fifo_token","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616089975Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks"}
+{"Time":"2026-10-23T20:48:34.616092215Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks","Output":"=== RUN   TestDoctorProbe/symlinks\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616306504Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks","Output":"--- PASS: TestDoctorProbe/symlinks (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616328712Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/symlinks","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616335544Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds"}
+{"Time":"2026-10-23T20:48:34.61633884Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds","Output":"=== RUN   TestDoctorProbe/wrong_kinds\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616424505Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds","Output":"--- PASS: TestDoctorProbe/wrong_kinds (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616435417Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe/wrong_kinds","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616525817Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe","Output":"--- PASS: TestDoctorProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616529753Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorProbe","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616532713Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator"}
+{"Time":"2026-10-23T20:48:34.616535017Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator","Output":"=== RUN   TestDoctorOperator\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616604185Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator","Output":"--- PASS: TestDoctorOperator (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616607737Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorOperator","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616618201Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen"}
+{"Time":"2026-10-23T20:48:34.616620921Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen","Output":"=== RUN   TestDoctorUnseen\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616719674Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen","Output":"--- PASS: TestDoctorUnseen (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616724826Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorUnseen","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616731754Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer"}
+{"Time":"2026-10-23T20:48:34.616734106Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer","Output":"=== RUN   TestDoctorTransportPeer\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616738538Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer","Output":"--- PASS: TestDoctorTransportPeer (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616741386Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorTransportPeer","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616743626Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures"}
+{"Time":"2026-10-23T20:48:34.616745754Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures","Output":"=== RUN   TestDoctorFailures\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616840442Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures","Output":"--- PASS: TestDoctorFailures (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.616843562Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDoctorFailures","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.616846138Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow"}
+{"Time":"2026-10-23T20:48:34.616848314Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow","Output":"=== RUN   TestEventsFollow\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.618722049Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow","Output":"--- PASS: TestEventsFollow (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.618728481Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsFollow","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.618732193Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded"}
+{"Time":"2026-10-23T20:48:34.618734401Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded","Output":"=== RUN   TestEventsResumeBounded\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.619463395Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded","Output":"--- PASS: TestEventsResumeBounded (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.619467171Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsResumeBounded","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.619469699Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed"}
+{"Time":"2026-10-23T20:48:34.619472147Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed","Output":"=== RUN   TestEventsMalformed\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.620725192Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed","Output":"--- PASS: TestEventsMalformed (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.620737784Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsMalformed","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.62074212Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage"}
+{"Time":"2026-10-23T20:48:34.62074444Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage","Output":"=== RUN   TestEventsUsage\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.620753Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage","Output":"--- PASS: TestEventsUsage (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.620757352Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsUsage","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.620760536Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields"}
+{"Time":"2026-10-23T20:48:34.620762744Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields","Output":"=== RUN   TestHostileEventFields\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.623612738Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields","Output":"--- PASS: TestHostileEventFields (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.62363517Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileEventFields","Elapsed":0}
+{"Time":"2026-10-23T20:48:34.623642866Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges"}
+{"Time":"2026-10-23T20:48:34.623645762Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges","Output":"=== RUN   TestEventsEdges\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.634269352Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges","Output":"--- PASS: TestEventsEdges (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:34.634314408Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestEventsEdges","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:34.63432412Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures"}
+{"Time":"2026-10-23T20:48:34.634328456Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures","Output":"=== RUN   TestDevFixtures\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385837Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures","Output":"--- PASS: TestDevFixtures (3.75s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385874392Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestDevFixtures","Elapsed":3.75}
+{"Time":"2026-10-23T20:48:38.385882584Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands"}
+{"Time":"2026-10-23T20:48:38.38588964Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands","Output":"=== RUN   TestReadCommands\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385902776Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands","Output":"--- PASS: TestReadCommands (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385905848Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadCommands","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.385908472Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes"}
+{"Time":"2026-10-23T20:48:38.385918344Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes","Output":"=== RUN   TestReadExitCodes\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385922792Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes","Output":"--- PASS: TestReadExitCodes (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385925432Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestReadExitCodes","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.3859282Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe"}
+{"Time":"2026-10-23T20:48:38.385930376Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe","Output":"=== RUN   TestSafe\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385934184Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe","Output":"--- PASS: TestSafe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.385936616Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestSafe","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.385939192Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields"}
+{"Time":"2026-10-23T20:48:38.385941288Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields","Output":"=== RUN   TestHostileReadFields\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.3860342Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields","Output":"--- PASS: TestHostileReadFields (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.386038536Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestHostileReadFields","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.38604236Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls"}
+{"Time":"2026-10-23T20:48:38.386045881Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls","Output":"=== RUN   TestJSONControls\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.386062537Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls","Output":"--- PASS: TestJSONControls (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.386065833Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestJSONControls","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.386068265Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv"}
+{"Time":"2026-10-23T20:48:38.386070169Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv","Output":"=== RUN   TestClientFromEnv\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.386140521Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv","Output":"--- PASS: TestClientFromEnv (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.386143993Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnv","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.386146505Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket"}
+{"Time":"2026-10-23T20:48:38.386148985Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket","Output":"=== RUN   TestCommandOverTheSocket\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.386902716Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket","Output":"--- PASS: TestCommandOverTheSocket (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.38691342Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestCommandOverTheSocket","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.38692454Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS"}
+{"Time":"2026-10-23T20:48:38.386927404Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS","Output":"=== RUN   TestClientFromEnvHTTPS\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.387019852Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS","Output":"--- PASS: TestClientFromEnvHTTPS (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.387024028Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestClientFromEnvHTTPS","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.38702942Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS"}
+{"Time":"2026-10-23T20:48:38.387031868Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS","Output":"=== RUN   TestBootstrapNotOverHTTPS\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.564384306Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS","Output":"--- PASS: TestBootstrapNotOverHTTPS (0.18s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.564508611Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestBootstrapNotOverHTTPS","Elapsed":0.18}
+{"Time":"2026-10-23T20:48:38.564530067Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog"}
+{"Time":"2026-10-23T20:48:38.564536531Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog","Output":"=== RUN   TestVerifyLog\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.57629822Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog","Output":"--- PASS: TestVerifyLog (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.576338861Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLog","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.576346317Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs"}
+{"Time":"2026-10-23T20:48:38.576348973Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs","Output":"=== RUN   TestVerifyLogNeverRepairs\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.576360237Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table"}
+{"Time":"2026-10-23T20:48:38.576364157Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table","Output":"=== RUN   TestVerifyLogNeverRepairs/no_meta_table\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.582414738Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table","Output":"--- PASS: TestVerifyLogNeverRepairs/no_meta_table (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.582445314Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/no_meta_table","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.582453682Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database"}
+{"Time":"2026-10-23T20:48:38.58245749Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database","Output":"=== RUN   TestVerifyLogNeverRepairs/an_unrelated_database\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.589983021Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database","Output":"--- PASS: TestVerifyLogNeverRepairs/an_unrelated_database (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.590090301Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_unrelated_database","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.590103854Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger"}
+{"Time":"2026-10-23T20:48:38.590107742Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger","Output":"=== RUN   TestVerifyLogNeverRepairs/a_rewritten_trigger\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.599331694Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger","Output":"--- PASS: TestVerifyLogNeverRepairs/a_rewritten_trigger (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.59939579Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_rewritten_trigger","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.599407935Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row"}
+{"Time":"2026-10-23T20:48:38.599411311Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row","Output":"=== RUN   TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.60837283Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row","Output":"--- PASS: TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.608421119Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.608430127Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file"}
+{"Time":"2026-10-23T20:48:38.608433151Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file","Output":"=== RUN   TestVerifyLogNeverRepairs/an_empty_file\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.614071651Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file","Output":"--- PASS: TestVerifyLogNeverRepairs/an_empty_file (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.614105891Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_empty_file","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.614116931Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database"}
+{"Time":"2026-10-23T20:48:38.614119955Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database","Output":"=== RUN   TestVerifyLogNeverRepairs/not_a_database\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.620228057Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database","Output":"--- PASS: TestVerifyLogNeverRepairs/not_a_database (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.620323497Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/not_a_database","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.620348697Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger"}
+{"Time":"2026-10-23T20:48:38.620375257Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger","Output":"=== RUN   TestVerifyLogNeverRepairs/a_dropped_trigger\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.628655142Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger","Output":"--- PASS: TestVerifyLogNeverRepairs/a_dropped_trigger (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.628789527Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_trigger","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.628817719Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger"}
+{"Time":"2026-10-23T20:48:38.628823831Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger","Output":"=== RUN   TestVerifyLogNeverRepairs/an_extra_trigger\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.637925079Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger","Output":"--- PASS: TestVerifyLogNeverRepairs/an_extra_trigger (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.638008424Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_extra_trigger","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.63802308Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index"}
+{"Time":"2026-10-23T20:48:38.638029048Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index","Output":"=== RUN   TestVerifyLogNeverRepairs/a_dropped_automatic_index\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.646100836Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index","Output":"--- PASS: TestVerifyLogNeverRepairs/a_dropped_automatic_index (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.646135573Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/a_dropped_automatic_index","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.646142661Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages"}
+{"Time":"2026-10-23T20:48:38.646145349Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages","Output":"=== RUN   TestVerifyLogNeverRepairs/an_index_on_another_index's_pages\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.651595592Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages","Output":"--- PASS: TestVerifyLogNeverRepairs/an_index_on_another_index's_pages (0.01s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.651658632Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs/an_index_on_another_index's_pages","Elapsed":0.01}
+{"Time":"2026-10-23T20:48:38.651671256Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs","Output":"--- PASS: TestVerifyLogNeverRepairs (0.08s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.651675448Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogNeverRepairs","Elapsed":0.08}
+{"Time":"2026-10-23T20:48:38.651679528Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore"}
+{"Time":"2026-10-23T20:48:38.651709992Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore","Output":"=== RUN   TestVerifyLogRefusesAnOversizedStore\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.654602979Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore","Output":"--- PASS: TestVerifyLogRefusesAnOversizedStore (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.654661971Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogRefusesAnOversizedStore","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.654673843Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState"}
+{"Time":"2026-10-23T20:48:38.654677923Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Output":"=== RUN   TestVerifyLogReadOnlyState\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.654681795Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Output":"    verifylog_test.go:315: root writes anywhere\n"}
+{"Time":"2026-10-23T20:48:38.654712707Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Output":"--- SKIP: TestVerifyLogReadOnlyState (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.654716387Z","Action":"skip","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogReadOnlyState","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.654720323Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun"}
+{"Time":"2026-10-23T20:48:38.654723347Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Output":"=== RUN   TestVerifyLogCouldNotRun\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.658755457Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Output":"    verifylog_test.go:369: root reads any file\n"}
+{"Time":"2026-10-23T20:48:38.658854002Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Output":"--- SKIP: TestVerifyLogCouldNotRun (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.658860674Z","Action":"skip","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogCouldNotRun","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.658866738Z","Action":"run","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage"}
+{"Time":"2026-10-23T20:48:38.65886965Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage","Output":"=== RUN   TestVerifyLogUsage\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.661403083Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage","Output":"--- PASS: TestVerifyLogUsage (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.661509851Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Test":"TestVerifyLogUsage","Elapsed":0}
+{"Time":"2026-10-23T20:48:38.661522459Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-23T20:48:38.688013033Z","Action":"output","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Output":"ok  \tgithub.com/ekaynac/auto-dev-cycle/internal/cli\t5.746s\n"}
+{"Time":"2026-10-23T20:48:38.688056842Z","Action":"pass","Package":"github.com/ekaynac/auto-dev-cycle/internal/cli","Elapsed":5.746}

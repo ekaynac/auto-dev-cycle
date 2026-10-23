@@ -55,14 +55,14 @@ func TestGoMiniProfile(t *testing.T) {
 	}
 }
 
-// goMiniImage is go-mini's own prepared image (#226 entry 97): built from
-// main 84fe598 by scripts/prepare-go-image.sh build go-mini, tag
-// go1.27.1-2026-10-22, and goMiniLabel its dev.adc.prepared label as
-// pushed (podman image inspect): the recipe's lockfile part and each
-// platform's adapter digest, the release of 84fe598's.
+// goMiniImage is go-mini's own prepared image (#226 entries 97 and 185):
+// built from main f163833 by scripts/prepare-go-image.sh build go-mini,
+// for linux/arm64 only, and goMiniLabel its dev.adc.prepared label as
+// pushed (podman image inspect): the recipe's lockfile part and the arm64
+// adapter digest, the release of f163833's.
 const (
-	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:0050a01ec7bd87bb6e7e6bd991be22d323687862a40487d522820dc08e066319"
-	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"},"adapter":{"linux/amd64":"sha256:6774ae79914477829bc749b305e2bf210071b23b1602a44fb3d728807c91156a","linux/arm64":"sha256:60e800f3946147f78b02b747d0ac8edf0c07f9ffe0f5cc3bc6264b4477856146"}}`
+	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:f5b0ddd7d54c12317df029a4d296976950208b382c84e06285174efc30cddb95"
+	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"},"adapter":{"linux/arm64":"sha256:427c3994e51eb5996bbc08f4c46452bf7c976655a5b758c652fc480c5afcda83"}}`
 )
 
 // go-mini's prepared image (#226 entry 97): the recipe's label for go-mini
@@ -97,12 +97,17 @@ func TestGoMiniPreparedManifest(t *testing.T) {
 	}
 	var pushed sandbox.Image
 	// The recipe's manifest is the label's lockfile part; the pushed label
-	// adds each platform's adapter digest (P22a-5d).
+	// adds each built platform's adapter digest (P22a-5d). The pin is built
+	// for linux/arm64 alone (#226 entry 185): its label names that one
+	// platform's adapter, and no amd64 entry. An amd64 controller fails
+	// closed: the pinned list has no amd64 image to resolve, and an image's
+	// adapter is checked only against its own platform's entry
+	// (sandbox.Image.CheckAdapter), which an amd64 image would lack.
 	err = json.Unmarshal([]byte(goMiniLabel), &pushed.Manifest)
 	lockPart := pushed.Manifest
 	lockPart.Adapter = nil
-	if err != nil || !reflect.DeepEqual(lockPart, goMini.Manifest) || len(pushed.Manifest.Adapter) != 2 ||
-		pushed.Manifest.Adapter["linux/amd64"] == "" || pushed.Manifest.Adapter["linux/arm64"] == "" {
+	if _, amd64 := pushed.Manifest.Adapter["linux/amd64"]; err != nil || !reflect.DeepEqual(lockPart, goMini.Manifest) || len(pushed.Manifest.Adapter) != 1 ||
+		pushed.Manifest.Adapter["linux/arm64"] == "" || amd64 {
 		t.Errorf("the pinned image's label %+v, the recipe's %+v: %v", pushed.Manifest, goMini.Manifest, err)
 	}
 	if err := pushed.CheckManifest("go", repo, lockfiles); err != nil {

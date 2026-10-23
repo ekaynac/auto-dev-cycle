@@ -6,7 +6,7 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 |---|---|
 | `task.json` | The `task.create` scope: project, title, an exact requirement, and the acceptance attachment by path and digest. |
 | `baseline.json` | The `go test -count=1 -json ./internal/cli/...` record at the base, as counts, with the image it was measured in, and the acceptance tests' expected results. |
-| `baseline-report.json` | The gate's measured baseline (`gate.Baseline`, P15): measured by `gate.Measure` in the pinned image (`ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97`, image `d1a298571f62`, linux/arm64), bound to its command, that platform image and the base tree, with the three tests that skip as root. |
+| `baseline-report.json` | The gate's measured baseline (`gate.Baseline`, P15): measured by `gate.Measure` in the pinned image (`ghcr.io/ekaynac/adc-prepared-go@sha256:7ab5adabc1296d67745fe8d236f48aaa19b06b9ce5e8e57bafd6b564d87d1116`, image `a9ba0c53952b`, linux/arm64), bound to its command, that platform image and the base tree, with the three tests that skip as root. |
 | `baseline-stream.json` | The measured run's `go test -json` stream, which the gate's row judges against the baseline. |
 
 ## Selection evidence (ยง2.2)
@@ -30,6 +30,8 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 - **Name collisions.** Its identifiers use a prefix that `task.json` reserves, so the builder's own code cannot collide with them.
 
 ## Re-recording
+
+**The pin is linux/arm64 only** (#226 entry 185). The pinned image's list holds one platform, so a controller on linux/amd64 fails closed at image resolution (the image is not present, `wrong_owner`) until an amd64 instance is built and pinned. Re-recorded in it (#226 entry 185): the same 72 results (69 pass, 3 skip as root), the same 295 stream events; the hidden tests not run (the Containerfile's `FROM`, `ENV` and `RUN` unchanged since `ef740f5`).
 
 Re-record with `gate.Measure` in the pinned image whenever the commit the task is created on differs from `base`, or the pinned image changes: the package's tests depend on other packages, not only on `internal/cli`, and the gate refuses a baseline of another command, platform image or base tree.
 
