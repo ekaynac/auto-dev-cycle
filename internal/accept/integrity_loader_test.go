@@ -517,7 +517,8 @@ type localBox struct {
 	ws      *[]string // the workspace's entries at each start
 	mutate  func(results string)
 	status  func(gomod []byte) string // go list's status the run records instead ("": its own)
-	fail    func(gomod []byte) error  // the run's error instead (nil: its own)
+	edit    func(gomod []byte, results string)
+	fail    func(gomod []byte) error // the run's error instead (nil: its own)
 	started atomic.Int32
 	copied  []int // export data files each run copied out
 }
@@ -580,6 +581,9 @@ func (b *localBox) Start(ctx context.Context, r sandbox.Run) ([]byte, error) {
 		if st := b.status(mod); st != "" {
 			_ = os.WriteFile(filepath.Join(r.Attempt.Results(), "golist"), []byte(st+"\n"), 0o600)
 		}
+	}
+	if err == nil && b.edit != nil {
+		b.edit(mod, r.Attempt.Results())
 	}
 	if b.fail != nil {
 		if ferr := b.fail(mod); ferr != nil {
@@ -975,6 +979,7 @@ func TestTheListingVerdict(t *testing.T) {
 		status  string // go list's status the candidate's run records
 		all     bool   // the base's listing fails too
 		base    bool   // the base's listing alone fails
+		killed  bool   // the candidate's list records a step killed by a signal
 		refusal bool
 	}{
 		"an unmeasured tree (B1)":                  {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
@@ -986,6 +991,8 @@ func TestTheListingVerdict(t *testing.T) {
 		"go list's own status 1, the base's too":   {status: "1", all: true},
 		"a measured bound, the base's too":         {fail: sandbox.ErrLeft, all: true},
 		"go list's own status 1, the base's alone": {status: "1", base: true},
+		"a step killed, status 1 (L2)":             {status: "1", killed: true},
+		"a step killed, status 0 (L2)":             {killed: true},
 	} {
 		failing := func(mod []byte) bool { return c.all || c.base != candidate(mod) }
 		box.fail = func(mod []byte) error {
@@ -1000,6 +1007,13 @@ func TestTheListingVerdict(t *testing.T) {
 			}
 			return ""
 		}
+		box.edit = func(mod []byte, results string) {
+			if c.killed && candidate(mod) {
+				f, _ := os.OpenFile(filepath.Join(results, "list"), os.O_APPEND|os.O_WRONLY, 0)
+				_, _ = f.WriteString("example.com/k\t\t\"compile: signal: killed\"\n")
+				_ = f.Close()
+			}
+		}
 		v, err := f.loadedErr(t, list, change)
 		switch {
 		case c.refusal && (err != nil || !finds(v.Blocks, "go list in the prepared image")):
@@ -1008,7 +1022,7 @@ func TestTheListingVerdict(t *testing.T) {
 			t.Errorf("%s: the host's, ErrGuardRun: %v %q", name, err, whats(v.Blocks))
 		}
 	}
-	box.fail, box.status = nil, nil
+	box.fail, box.status, box.edit = nil, nil, nil
 	if v := f.loaded(t, list, change); !v.Accepted() {
 		t.Errorf("no fault: %q", whats(v.Blocks))
 	}
@@ -1021,8 +1035,9 @@ func TestTheListingVerdict(t *testing.T) {
 		act     string
 		refusal bool
 	}{
-		"exit 1 on the candidate's": {"exit 1", true},
-		"killed on the candidate's": {"kill -KILL $$", false},
+		"exit 1 on the candidate's":             {"exit 1", true},
+		"killed on the candidate's":             {"kill -KILL $$", false},
+		"a step killed on the candidate's (L2)": {`printf 'example.com/k\t\t"compile: signal: killed"\n'; exit 1`, false},
 	} {
 		write(t, root, map[string]string{"bin/go": "#!/bin/sh\nif grep -q \"the candidate's\" go.mod 2>/dev/null; then " + c.act + "; fi\nexec " + box.gobin + " \"$@\"\n"})
 		if err := os.Chmod(filepath.Join(root, "bin/go"), 0o700); err != nil {

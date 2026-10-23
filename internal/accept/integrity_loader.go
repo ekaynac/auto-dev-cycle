@@ -13,17 +13,29 @@
 // the list script records it, $r/golist; a measured bound its run broke;
 // an input refused, listable), and the base's listing on the same
 // platform succeeded in the same guard run (listVerdict). A signal, the
-// script's own failures, an unmeasured tree, a cleanup, the base's own
-// failure, and a candidate's listing on a platform the base never listed
-// are the host's. Its acting half is closed. What remains (each a refusal
-// that repairs the build, up to the rounds rail): a host fault that strikes
-// only the candidate's listing, after the base's succeeded on the platform,
-// and exits go list 1-124 (a full results mount mid-write, a module cache
-// entry only the candidate's go.mod needs missing from the image), and an
-// export-data read failing inside the type checks.
+// script's own failures, an unmeasured tree, a cleanup, a step inside
+// go list killed by a signal as its list records it ("signal: killed",
+// killedStep: Opus #412 r2 L2), the base's own failure, and a candidate's
+// listing on a platform the base never listed are the host's. Its acting
+// half is closed. What remains:
+//   - a host fault read as the candidate's, each a refusal that repairs the
+//     build, up to the rounds rail: a host fault that strikes only the
+//     candidate's listing, after the base's succeeded on the platform, and
+//     exits go list 1-124 (a full results mount mid-write; a module cache
+//     entry only the candidate's go.mod needs, missing from the image; a
+//     step inside go list killed by a signal and reported as its exit 1,
+//     its list naming no signal); and an export-data read failing inside
+//     the type checks;
+//   - the reverse, a candidate's defect read as the host's (Opus #412 r2
+//     L1), each leaving the accept held after its retries ("runner:
+//     failed"), never repaired, never accepted: the candidate's listing
+//     spending the run's shared copy budget (maxRunCopy) so that a later
+//     base listing is refused; a candidate's failure on a platform the
+//     base never listed.
 package accept
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -224,6 +236,9 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	} else if cerr != nil {
 		return nil, cerr
 	}
+	if err := listKilled(filepath.Join(out, "list")); err != nil { // a step killed by a signal: the host's, whatever go list's status (Opus #412 r2 L2)
+		return nil, err
+	}
 	if err := goListStatus(filepath.Join(out, "golist")); err != nil { // go list's own status, as copied out, before the listing is read (Opus #412 B3)
 		return nil, err
 	}
@@ -275,6 +290,35 @@ func goListStatus(p string) error {
 		return fmt.Errorf("go list's status %.16q: %w", b, err)
 	}
 	return goListExit(code, fmt.Errorf("go list exited %d", code))
+}
+
+// killedStep reports whether list, a listing's output, records a step
+// inside go list killed by a signal (the compiler OOM-killed under the
+// container's memory limit): the host's, never the candidate's (Opus #412
+// r2 L2). One rule, the sandbox's listing (listKilled) and LocalLister's.
+func killedStep(list []byte) bool { return bytes.Contains(list, []byte("signal: killed")) }
+
+// listKilled is killedStep over the copied-out list at p (read within
+// maxList, no symlink followed): ErrGuardRun when it records a killed
+// step; an absent list is readListing's to refuse.
+func listKilled(p string) error {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return errors.Join(err, errors.New("the list is no regular file"))
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxList+1))
+	if err != nil {
+		return err
+	} else if killedStep(b) {
+		return fmt.Errorf("%w: a step inside go list was killed by a signal", ErrGuardRun)
+	}
+	return nil
 }
 
 // goListExit is go list's own exit code's verdict (one rule: the sandbox's
