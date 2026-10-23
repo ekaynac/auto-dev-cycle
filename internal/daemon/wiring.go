@@ -89,7 +89,7 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, eg *eg
 	if eg != nil {
 		creds = eg.gw
 	}
-	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active(), Reviews: reviews},
+	l := reconcile.NewLoop(executorOf(d, reg, images, creds, run, logw), reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active(), Reviews: reviews, Runs: run != nil},
 		every, logw)
 	if eg != nil {
 		l.Exec.Settler = eg
@@ -101,9 +101,10 @@ func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, eg *eg
 }
 
 // executorOf is the reconcile loop's executor: adcd's placer, planner,
-// and run, its Runner and its Acceptor (nil: no attempt, accept or gate
-// runs; Run, Accept and Gate change nothing).
-func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds dispatch.Credentials, run *runner) reconcile.Executor {
+// and run, its Runner and its Acceptor; with no runner (no sandbox root),
+// sandboxless, which holds no_sandbox what a runner would run (Opus #414
+// H1), logging to logw.
+func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds dispatch.Credentials, run *runner, logw io.Writer) reconcile.Executor {
 	pl := placerOf(reg, images, creds)
 	if run != nil {
 		pl.ready = run.cleared
@@ -114,6 +115,9 @@ func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 		Planner: planner{blobs: d.blobs, env: env(d, reg)}}
 	if run != nil {
 		x.Runner, x.Acceptor = run, run
+	} else {
+		none := newSandboxless(d, logw)
+		x.Runner, x.Acceptor = none, none
 	}
 	x.Reviews = reviews{reg: reg, env: x.Env}
 	return x
@@ -281,7 +285,8 @@ func logics(az authority.Authorizer) map[string]logic {
 	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor,
 		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic,
 		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken}
-	for action, l := range map[string]logic{authority.ProjectCreateAction: authority.CreateProject, authority.TaskCancelAction: authority.CancelTask, authority.InputAnswerAction: authority.InputAnswer} {
+	for action, l := range map[string]logic{authority.ProjectCreateAction: authority.CreateProject, authority.TaskCancelAction: authority.CancelTask, authority.InputAnswerAction: authority.InputAnswer,
+		authority.TaskRaiseRailAction: authority.TaskRaiseRailHandler{}.Logic} { // launch's (Opus #414 L2: wired with no logic, it was refused before anything was submitted)
 		if az.Handlers[action] != nil {
 			out[action] = l
 		}

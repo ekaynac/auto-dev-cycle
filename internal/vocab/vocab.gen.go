@@ -172,6 +172,7 @@ const (
 	HoldNoSandbox              = "no_sandbox"
 	HoldPreconditionFailed     = "precondition_failed"
 	HoldQuotaReset             = "quota_reset"
+	HoldReviewInactive         = "review_inactive"
 	HoldReviewerUnavailable    = "reviewer_unavailable"
 	HoldSourceInvalidConfig    = "source_invalid_config"
 	HoldWrongOwner             = "wrong_owner"

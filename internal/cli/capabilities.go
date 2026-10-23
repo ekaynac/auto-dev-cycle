@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/capability"
@@ -53,15 +54,18 @@ func devCapabilities(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: usage: %s [--json]\n", name, name)
 		return entry.ExitUsage
 	}
+	built := capability.Built() // the one reader of the bits (Opus #414 L3)
 	views := make([]capabilityView, 0, len(capability.Table))
-	for _, c := range capability.Table {
+	for _, row := range capability.Table {
+		c, _ := built.Of(row.Name)
+		missing := c.Missing()
 		v := capabilityView{Name: c.Name, Checkpoint: c.Checkpoint, ActivatedBy: c.ActivatedBy, Active: c.Active(),
 			Actions: append([]string{}, c.Actions...), EffectKinds: append([]string{}, c.EffectKinds...), Rows: []capabilityRow{}, Pending: append([]string{}, c.Pending...)}
 		for _, p := range c.Proven { // a deployment's to prove: this build cannot know its registry or records
 			v.Pending = append(v.Pending, p+" (checked by adcd at start against the release's records; its start log says why it is not met)")
 		}
 		for _, r := range c.Rows {
-			v.Rows = append(v.Rows, capabilityRow{r.Invariant, r.Check, capability.Kept(r)})
+			v.Rows = append(v.Rows, capabilityRow{r.Invariant, r.Check, !slices.Contains(missing, r)})
 		}
 		views = append(views, v)
 	}

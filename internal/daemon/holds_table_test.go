@@ -35,8 +35,8 @@ import (
 const mod = "github.com/ekaynac/auto-dev-cycle/internal/"
 
 // raiseSites are the functions that raise a node hold.
-var raiseSites = []string{"daemon.placer.Place", "daemon.runner.holdOn", "dispatch.Dispatcher.Launch", "graph.Exhaust", "graph.HoldNotIndependent", "graph.Probe", "graph.Raise",
-	"graph.Retry", "graph.evaluation.await", "graph.evaluation.holdReceipt", "graph.evaluation.roundRail", "graph.mergeRail", "graph.retry"}
+var raiseSites = []string{"daemon.placer.Place", "daemon.raiseNoSandbox", "daemon.runner.holdOn", "dispatch.Dispatcher.Launch", "graph.Exhaust", "graph.HoldNotIndependent", "graph.Probe", "graph.Raise",
+	"graph.Retry", "graph.evaluation.await", "graph.evaluation.holdReceipt", "graph.evaluation.roundRail", "graph.mergeRail", "graph.retry", "reconcile.Executor.Run"}
 
 // holdRow is a hold built for a raise site: where, its kind and its
 // signal's expression; a sample signal; and its clearing path (clearer, a
@@ -68,14 +68,16 @@ var holdRows = []holdRow{
 	{"dispatch.Dispatcher.miss", "wrong_owner", "imageSignal(card.Image)", "image i", "daemon.placer.Unblocked", "the project's pinned image resolves (placer.imageReady)"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `PlacementSignal("destination " + string(e.Destination.ID))`, "placement: destination d", "daemon.placer.Unblocked", "Configured: the credential is held"},
 	{"dispatch.Dispatcher.attemptRail", "budget_rail", "graph.RailAttempts", "rail:attempts_per_round", "authority.TaskRaiseRailHandler.Logic", "task.raise_rail of attempts_per_round"},
-	// No sandbox root (#226 entry 171): no runner, every placed node held before its match.
-	{"daemon.placer.Place", "no_sandbox", "runnerSandbox", "runner: sandbox", "daemon.placer.Unblocked", "a start with --sandbox-root: its runner clears it (runner.cleared)"},
+	// No sandbox root (#226 entry 171; Opus #414 H1): no runner, every node held before its match, and what a runner would run (a granted lease's, an accept, a gate).
+	{"daemon.raiseNoSandbox", "no_sandbox", "runnerSandbox", "runner: sandbox", "daemon.placer.Unblocked", "a start with --sandbox-root: its runner clears it (runner.cleared)"},
 	// The runner's holds (runner.holdOn): Unblocked asks runner.cleared.
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerDirs", "runner: dirs", "daemon.placer.Unblocked", "the runner's directories are directories (dirsReady)"},
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerImage", "runner: image", "daemon.placer.Unblocked", "the pinned image resolves (placer.imageReady)"},
 	{"daemon.runner.holdOn", "source_invalid_config", "r.retrySignal(tx, node)", "runner: retry 1 until t", "daemon.placer.Unblocked", "\"retry n until t\": t has come; past maxTries, runnerFailed"},
 	{"daemon.runner.holdOn", "source_invalid_config", `reconcile.RunnerSignal("profile " + string(d))`, "runner: profile d", "daemon.placer.Unblocked", "the project's profile changed"},
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerFailed", "runner: failed", "", "terminal, stated (holdOn): nothing clears it; revoking the task's approval abandons it"},
+	// Launch active, review not (#226 entry 173): the recorded review held, never a stop with no hold.
+	{"reconcile.Executor.Run", "review_inactive", "ReviewSignal", "capability: review", "daemon.reviews.Unheld", "a start that derives review active (ReviewUnblock offers it only then)"},
 	// The evaluator's and Operate's (graph; Opus #400 M1).
 	{"graph.evaluation.await", "awaiting_input", "awaitSignal(ask)", "oi@1", "graph.evaluation.clear", "the answer in force arrives (input.answer)"},
 	// A review's independence refused, at its claim (the evaluator) or its commit (adcd's run; P22a-6c): one helper (Opus 22a-6c M1).

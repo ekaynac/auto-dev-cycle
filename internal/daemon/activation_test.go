@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
+	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -289,6 +292,19 @@ func TestTheGatesAreTheTables(t *testing.T) {
 	if _, ok := handlers()["task.raise_rail"]; !ok {
 		t.Error("launch active: task.raise_rail not wired")
 	}
+	// The deferred matrix derives from the same table (Opus #414 L2): under
+	// the test build, task.raise_rail is wired, never also deferred.
+	reg, err := vocab.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := Matrix(reg)
+	if err != nil {
+		t.Fatalf("the matrix under a test build keeping launch's rows: %v", err)
+	}
+	if i := slices.IndexFunc(rows, func(r Row) bool { return r.Action == "task.raise_rail" }); i < 0 || rows[i].Class == Deferred {
+		t.Errorf("task.raise_rail under launch active: %+v", rows[max(i, 0)])
+	}
 }
 
 // A2 and A7 (the activation plan §3 A): launch through adcd's own loop.
@@ -419,6 +435,13 @@ func TestNoSandboxHoldsTheBuild(t *testing.T) {
 	if _, live := leaseOn(a.rw.w, b.Node.ID); live {
 		t.Fatal("a lease with no sandbox")
 	}
+	a.rw.w.view(func(tx *eventstore.Tx) error { // Opus #414 L4: no Unblock offered while no runner could clear it
+		s, err := reconcile.Observe(tx, a.rw.l.Gates)
+		if err != nil || len(s.PlacingHeld) != 0 {
+			t.Errorf("with no runner, offered to Unblock: %+v %v", s.PlacingHeld, err)
+		}
+		return nil
+	})
 	c, ok := taskReadAs(t, a.rw.w, a.rw.w.op, a.rw.task).Card.Variant.(*types.BoardPlacedCard)
 	shown := false
 	for _, n := range c.Nodes {
@@ -484,5 +507,191 @@ func TestAStartWithNoSandboxSaysBuildsHold(t *testing.T) {
 	go func() { done <- Run(ctx, Config{StateDir: stateDir(t)}, &log, func(*Daemon) { cancel() }) }()
 	if err := <-done; err != nil || strings.Contains(log.String(), "no_sandbox") {
 		t.Errorf("launch inactive: %v %q", err, log.String())
+	}
+}
+
+// activatedWithout is a's world started again with no sandbox root: no
+// runner, adcd's loop with sandboxless (executorOf).
+func activatedWithout(a *activated) *activated {
+	a.rw.r = nil
+	a.rw.l = reconciler(a.d, a.reg, gateImages{}, a.eg, nil, time.Hour, false, a.log)
+	return a
+}
+
+// Opus #414 H1: work placed before a restart with no sandbox root is held
+// no_sandbox, never left with no hold: a granted lease is released and its
+// build held; a claimed accept held. A start with a sandbox root clears the
+// holds and the work runs on.
+func TestNoSandboxHoldsPlacedWork(t *testing.T) {
+	t.Run("a granted lease", func(t *testing.T) {
+		a := activatedWorld(t, gateImages{}, true, nil)
+		var granted types.Lease
+		a.passes(t, 12, func() bool {
+			b := a.node(types.NodeKindBuild).Node.ID
+			l, live := leaseOn(a.rw.w, b)
+			granted = l
+			return b != "" && live && l.State == types.LeaseStateGranted
+		})
+		if granted.State != types.LeaseStateGranted {
+			t.Fatalf("no granted lease: %+v", granted)
+		}
+		activatedWithout(a).passes(t, 1, nil) // one pass: released and held in one command
+		b := a.node(types.NodeKindBuild)
+		if len(b.State.Holds) != 1 || b.State.Holds[0].Hold != vocab.HoldNoSandbox {
+			t.Fatalf("the granted build after a start with no sandbox root: %s %+v\n%s", b.State.State, b.State.Holds, a.log.String())
+		}
+		var l types.Lease
+		a.rw.w.view(func(tx *eventstore.Tx) (err error) { l, _, _, err = lease.LeaseOf(tx, granted.ID); return err })
+		if l.State != types.LeaseStateReleased {
+			t.Fatalf("its lease: %s", l.State)
+		}
+		started := activatedOn(t, a)
+		started.passes(t, 12, func() bool { return len(started.sent) > 0 })
+		if b := started.node(types.NodeKindBuild); len(b.State.Holds) != 0 || len(started.sent) == 0 {
+			t.Fatalf("the build after a start with a sandbox root: %s %+v\n%s", b.State.State, b.State.Holds, started.log.String())
+		}
+	})
+	t.Run("a claimed accept", func(t *testing.T) {
+		a := activatedWorld(t, gateImages{}, true, nil)
+		a.passes(t, 16, func() bool {
+			acc := a.node(types.NodeKindAccept)
+			return acc.Node.ID != "" && acc.State.State == types.NodeStateStateClaimed
+		})
+		if acc := a.node(types.NodeKindAccept); acc.State.State != types.NodeStateStateClaimed {
+			t.Fatalf("no claimed accept: %s", acc.State.State)
+		}
+		activatedWithout(a).passes(t, 4, nil)
+		acc := a.node(types.NodeKindAccept)
+		if len(acc.State.Holds) != 1 || acc.State.Holds[0].Hold != vocab.HoldNoSandbox {
+			t.Fatalf("the claimed accept after a start with no sandbox root: %s %+v\n%s", acc.State.State, acc.State.Holds, a.log.String())
+		}
+		started := activatedOn(t, a)
+		started.passes(t, 16, func() bool { return started.node(types.NodeKindGate).State.State == types.NodeStateStateCompleted })
+		if g := started.node(types.NodeKindGate); g.State.State != types.NodeStateStateCompleted {
+			t.Fatalf("the gate after a start with a sandbox root: %s %+v\n%s", g.State.State, g.State.Holds, started.log.String())
+		}
+	})
+}
+
+// reviewActive plants a test build of the table keeping launch's and
+// review's missing rows, and a passing qualification (only
+// qualify.Route.Review makes a qualifying record): a start then derives
+// review active (reviewsAtStart).
+func reviewActive(t *testing.T) {
+	t.Helper()
+	launch, _ := capability.Of("launch")
+	review, _ := capability.Of("review")
+	more := capability.Built().Keeping(append(launch.Missing(), review.Missing()...)...)
+	capabilities = func() capability.Set { return more }
+	qualifiedReviewers = func(string, string, []types.RegistryExecutor) error { return nil }
+	t.Cleanup(func() { capabilities, qualifiedReviewers = capability.Built, qualify.Reviewers })
+}
+
+// activatedReviewing is a's world started again with a sandbox root and
+// reg, under a table where review is derived active (reviewActive).
+func activatedReviewing(t *testing.T, a *activated, reg registry.Registry) *activated {
+	t.Helper()
+	reviewActive(t)
+	a.reg = reg
+	a = activatedOn(t, a)
+	reviews := reviewsOf(reg, a.log)
+	if !reviews {
+		t.Fatalf("review is not derived active\n%s", a.log.String())
+	}
+	a.rw.l = reconciler(a.d, reg, gateImages{}, a.eg, a.rw.r, time.Hour, reviews, a.log)
+	return a
+}
+
+// #226 entry 173 (Opus #414 H2): with launch active and review inactive,
+// the completed gate's review nodes are recorded (RecordReview) and the
+// review held review_inactive, the operator's, visible on the task's card:
+// never a stop with no hold. A start that derives review active clears it
+// and the review goes on: claimed under its roster; under a registry whose
+// reviewer's family changed, held reviewer_unavailable at its claim and
+// superseded onto the registry's roster (reviews.Unheld).
+func TestAnInactiveReviewIsHeld(t *testing.T) {
+	held := func(t *testing.T) (*activated, graph.NodeView) {
+		a := activatedWorld(t, gateImages{}, true, nil)
+		a.passes(t, 24, func() bool {
+			r := a.node(types.NodeKindReview)
+			return slices.ContainsFunc(r.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewInactive })
+		})
+		r := a.node(types.NodeKindReview)
+		if r.Node.ID == "" || len(r.State.Holds) != 1 || r.State.Holds[0].Hold != vocab.HoldReviewInactive || r.State.Holds[0].Owner != types.OwnerOperator ||
+			r.State.Holds[0].SignalInstance != reconcile.ReviewSignal {
+			t.Fatalf("the review with review inactive: %+v %+v\n%s", r.Node.ID, r.State, a.log.String())
+		}
+		c, ok := taskReadAs(t, a.rw.w, a.rw.w.op, a.rw.task).Card.Variant.(*types.BoardPlacedCard)
+		shown := false
+		for _, n := range c.Nodes {
+			for _, h := range n.Holds {
+				shown = shown || n.ID == r.Node.ID && h.Hold == vocab.HoldReviewInactive
+			}
+		}
+		if !ok || !shown {
+			t.Fatalf("the card does not show the review's hold: %+v", c)
+		}
+		return a, r
+	}
+	t.Run("review derived active", func(t *testing.T) {
+		a, r := held(t)
+		started := activatedReviewing(t, a, a.reg)
+		started.passes(t, 12, func() bool {
+			v := started.node(types.NodeKindReview)
+			return len(v.State.Holds) == 0 && v.State.State != types.NodeStateStateWaiting && v.State.State != types.NodeStateStateRunnable
+		})
+		started.rw.w.view(func(tx *eventstore.Tx) error { // review active: no review is held review_inactive again
+			s, err := reconcile.Observe(tx, started.rw.l.Gates)
+			if err != nil || len(s.Inactive) != 0 {
+				t.Errorf("review active, reviews to hold inactive: %+v %v", s.Inactive, err)
+			}
+			return nil
+		})
+		if v := started.node(types.NodeKindReview); v.Node.ID != r.Node.ID || len(v.State.Holds) != 0 ||
+			v.State.State == types.NodeStateStateWaiting || v.State.State == types.NodeStateStateRunnable {
+			t.Fatalf("the review once review is active: %s %+v\n%s", v.State.State, v.State.Holds, started.log.String())
+		}
+	})
+	t.Run("the reviewer's family changed", func(t *testing.T) {
+		a, r := held(t)
+		other := stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "another-reviewer"})
+		started := activatedReviewing(t, a, other)
+		started.passes(t, 12, func() bool {
+			return started.node(types.NodeKindReview).Node.ID != r.Node.ID
+		})
+		v := started.node(types.NodeKindReview)
+		p, err := v.Node.ParamsAsReviewNodeParams()
+		if v.Node.ID == r.Node.ID || err != nil || len(p.Roster) != 1 || p.Roster[0].Family != "another-reviewer" {
+			t.Fatalf("the review under the changed registry: %s %s %+v %v\n%s", v.Node.ID, v.State.State, p.Roster, err, started.log.String())
+		}
+	})
+}
+
+// #226 entry 173: no stop with no hold when no reviewer can review.
+// registry.New refuses a registry with no reviewer (it needs a builder and
+// a reviewer), so the case is adcd with no registry: the placer holds the
+// build at its configuration hold (placement: registry) before any lease
+// or spend. A start with a registry clears it and the build is placed.
+func TestNoReviewerHoldsTheBuild(t *testing.T) {
+	if _, err := registry.New(types.ExecutorRegistry{}, nil); err == nil {
+		t.Fatal("a registry with no reviewer is accepted")
+	}
+	a := activatedWorld(t, gateImages{}, true, nil)
+	reg := a.reg
+	a.reg = registry.Registry{}
+	a = activatedOn(t, a)
+	a.passes(t, 12, func() bool { return len(a.node(types.NodeKindBuild).State.Holds) > 0 })
+	b := a.node(types.NodeKindBuild)
+	if len(b.State.Holds) != 1 || b.State.Holds[0].Hold != vocab.HoldSourceInvalidConfig || b.State.Holds[0].SignalInstance != dispatch.PlacementSignal("registry") {
+		t.Fatalf("the build with no registry: %s %+v\n%s", b.State.State, b.State.Holds, a.log.String())
+	}
+	if _, live := leaseOn(a.rw.w, b.Node.ID); live {
+		t.Fatal("a lease with no registry")
+	}
+	a.reg = reg
+	a = activatedOn(t, a)
+	a.passes(t, 12, func() bool { return len(a.sent) > 0 })
+	if b := a.node(types.NodeKindBuild); len(b.State.Holds) != 0 || len(a.sent) == 0 {
+		t.Fatalf("the build once a registry is given: %s %+v\n%s", b.State.State, b.State.Holds, a.log.String())
 	}
 }

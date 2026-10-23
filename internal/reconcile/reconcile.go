@@ -142,6 +142,10 @@ type Gates struct {
 	// committed and its review matched (review active; P22a-6a). It acts
 	// only with Evaluates.
 	Reviews bool
+	// Runs: a runner runs what the loop places (adcd started with a sandbox
+	// root). Without one no no_sandbox hold is offered to Unblock: none could
+	// clear (Opus #414 L4).
+	Runs bool
 }
 
 // Snapshot is what Decide reads.
@@ -186,6 +190,10 @@ type Snapshot struct {
 	// review takes (P22a-6a; Opus 22a-6a re-check H1).
 	Reviewable   Versioned
 	Requirements []Versioned
+	// Inactive are its review nodes, not completed nor held review_inactive,
+	// while launch is active and review is not: each is held (HoldReview;
+	// #226 entry 173).
+	Inactive []Versioned
 	// Repairable are its completed reviews whose verdict is no_go or
 	// unreviewable, of the task's last build round: each repaired once
 	// (Repair; P22a-6d).
@@ -230,6 +238,8 @@ func Offered(kind, signal string) bool {
 		return dispatch.IsPlacementSignal(signal) || IsRunnerSignal(signal)
 	case vocab.HoldWrongOwner:
 		return dispatch.IsImageSignal(signal)
+	case vocab.HoldReviewInactive: // a start that derives review active clears it (#226 entry 173)
+		return signal == ReviewSignal
 	case vocab.HoldNoSandbox: // a placed node with no runner (#226 entry 171): a start with a sandbox root clears it
 		return IsRunnerSignal(signal)
 	}
@@ -343,8 +353,24 @@ func (r Repair) expected() []eventstore.Expectation {
 	return []eventstore.Expectation{{Subject: r.Review.ID, Version: r.Review.Version}}
 }
 
-// ReviewUnblock re-derives a review's roster held reviewer_unavailable
-// (Reviews.Unheld).
+// HoldReview holds a review node review_inactive, the operator's, on
+// ReviewSignal: launch is active and review is not (#226 entry 173), so the
+// review is recorded but never claimed or placed; a start that derives
+// review active clears it (ReviewUnblock: Reviews.Unheld).
+type HoldReview struct{ Node Versioned }
+
+func (HoldReview) action() string    { return ReviewAction }
+func (r HoldReview) subject() string { return r.Node.ID }
+func (r HoldReview) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: r.Node.ID, Version: r.Node.Version}}
+}
+
+// ReviewSignal is a review_inactive hold's signal: the review capability,
+// active once a start derives it.
+const ReviewSignal = "capability: review"
+
+// ReviewUnblock re-derives a review's roster held reviewer_unavailable, or
+// clears its review_inactive hold once review is active (Reviews.Unheld).
 type ReviewUnblock struct{ Held Held }
 
 func (ReviewUnblock) action() string    { return ReviewAction }
@@ -472,6 +498,13 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		v := Versioned{ID: string(n.Node.ID)}
 		if n.Node.Kind == types.NodeKindReview {
 			reviewNodes = append(reviewNodes, n.Node)
+			if st := n.State.State; g.Evaluates && !g.Reviews && st != types.NodeStateStateCompleted && st != types.NodeStateStateSuperseded &&
+				!slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewInactive }) {
+				iv := Versioned{ID: string(n.Node.ID)}
+				if iv.Version, err = tx.SubjectVersion(iv.ID); err == nil {
+					s.Inactive = append(s.Inactive, iv)
+				}
+			}
 		}
 		if reviews && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
 			graph.RepairVerdict(*n.Outcome, *n.Reason) { // no_go, or unreviewable: Repair's rule
@@ -490,13 +523,15 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			v.Version, err = tx.SubjectVersion(v.ID)
 			claimedReqs = append(claimedReqs, v)
 		case st == types.NodeStateStateHeld && reviews && (n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement) &&
-			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewerUnavailable }):
+			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool {
+				return h.Hold == vocab.HoldReviewerUnavailable || h.Hold == vocab.HoldReviewInactive
+			}):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
 				break
 			}
 			for _, h := range n.State.Holds {
 				switch {
-				case h.Hold != vocab.HoldReviewerUnavailable || !Offered(h.Hold, h.SignalInstance):
+				case h.Hold != vocab.HoldReviewerUnavailable && h.Hold != vocab.HoldReviewInactive || !Offered(h.Hold, h.SignalInstance):
 				case n.Node.Kind == types.NodeKindReview:
 					s.ReviewHeld = append(s.ReviewHeld, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
 				default:
@@ -545,6 +580,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			for _, h := range n.State.Holds {
 				switch held := (Held{Node: v, Hold: h.ID, Signal: h.SignalInstance}); {
 				case !Offered(h.Hold, h.SignalInstance), h.Hold == vocab.HoldReviewerUnavailable: // not the loop's; a review's is collected above
+				case h.Hold == vocab.HoldNoSandbox && !g.Runs: // none could clear it (Opus #414 L4)
 				case h.Hold == vocab.HoldBudgetRail:
 					s.DayHeld = append(s.DayHeld, held)
 				default:
@@ -573,7 +609,9 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		}
 	}
 	for _, gate := range gates { // keyed by gate (Opus 22a-6a′ L2): a later round's gate is reviewable too
-		if err == nil && reviews && !slices.ContainsFunc(reviewNodes, func(r types.Node) bool { return graph.TakesGate(r, types.NodeID(gate.ID)) }) {
+		// Recorded with launch active, review active or not (#226 entry 173: an
+		// inactive review's node is held review_inactive, never a stop with no hold).
+		if err == nil && g.Evaluates && !slices.ContainsFunc(reviewNodes, func(r types.Node) bool { return graph.TakesGate(r, types.NodeID(gate.ID)) }) {
 			gate.Version, err = tx.SubjectVersion(gate.ID)
 			s.Reviewable = gate
 			break
@@ -648,6 +686,9 @@ func Decide(s Snapshot) []Action {
 		}
 		if s.Reviewable.ID != "" {
 			out = append(out, RecordReview{Gate: s.Reviewable})
+		}
+		for _, n := range s.Inactive {
+			out = append(out, HoldReview{Node: n})
 		}
 		for _, n := range s.Requirements {
 			out = append(out, Require{Node: n})
@@ -849,6 +890,15 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 				return nil, errNoPlacer
 			}
 			return x.Placer.Reopened(tx, types.NodeID(a.Held.Node.ID), a.Held.Hold)
+		}
+	case HoldReview:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			id, err := ids.New("hld")
+			if err != nil {
+				return nil, err
+			}
+			return graph.Raise(tx, types.NodeID(a.Node.ID), types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldReviewInactive, SignalInstance: ReviewSignal,
+				Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
 		}
 	case RecordReview:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
