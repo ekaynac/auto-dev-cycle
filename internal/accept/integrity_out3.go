@@ -103,6 +103,7 @@ func (im *outImporter) Import(p string) (*types.Package, error) {
 		im.pkgs[p] = nil
 		var first error
 		conf := types.Config{Importer: im, FakeImportC: true, IgnoreFuncBodies: true, Error: func(err error) { first = cmp.Or(first, err) }}
+		outTypeChecks.Add(1)
 		pkg, _ := conf.Check(p, im.v.fset, files, nil)
 		if first != nil { // failed for every check that imports it
 			im.errs[p] = first
@@ -153,6 +154,10 @@ func (im *outImporter) fail(p string, err error) error {
 // in a process of its own (P14e-2c), so both are one run's: concurrent runs
 // are the caller's to bound.
 var outWorkers, outDropped atomic.Int32
+
+// outTypeChecks counts the packages the layer type-checks, any run's: a
+// test bounds a run's checks by it, not by a clock (#226 entry 89).
+var outTypeChecks atomic.Int64
 
 const maxOutWorkers = 1
 
@@ -216,6 +221,7 @@ func outCheck(ctx context.Context, start, deadline time.Time, im types.Importer,
 			}
 		}()
 		conf := types.Config{Importer: im, FakeImportC: true, Error: func(err error) { res.errs = append(res.errs, err) }}
+		outTypeChecks.Add(1)
 		res.pkg, _ = conf.Check(path, fset, files, info)
 		res.ok = true
 	}()

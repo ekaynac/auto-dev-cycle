@@ -159,13 +159,28 @@ func TestDecisionAOut3(t *testing.T) {
 	waitWorkers(t)
 	// Opus #282 H1 (probe A): a package the base guard refused (a second
 	// package name; a later parse error) is never checked by the layer: the
-	// directory is incomplete, at once, and no worker is left.
-	unit := f.ordinary(t, unitGo)
+	// directory is incomplete, at once, and no worker is left. Counted, not
+	// timed (#226 entry 89): the layer type-checks the importing packages
+	// only, at most one check per package and platform, never the refused
+	// one, with one importing package and with two.
 	for _, bad := range []string{"bad1", "bad2"} {
-		begin := time.Now()
-		v := outGuarded(t, f, map[string]string{"use/u.go": "package use\n\nimport (\n\t\"flag\"\n\n\t\"example.com/m/" + bad + "\"\n)\n\nvar _ = " + bad + ".X\n\nfunc f() { flag.Parse() }\n"})
-		if took := time.Since(begin); !finds(v.Warnings, "use decision A's check by types could not finish") || stopped(v) || finds(v.Warnings, "check by types stopped") || outWorkers.Load() != 0 || !within(t, took, unit, 40) {
-			t.Errorf("H1 %s: warnings %q, %d workers, %v", bad, whats(v.Warnings), outWorkers.Load(), time.Since(begin))
+		checks := func(n int) int64 {
+			change := map[string]string{}
+			for i := range n {
+				change[fmt.Sprintf("use%d/u.go", i)] = fmt.Sprintf("package use%d\n\nimport (\n\t\"flag\"\n\n\t\"example.com/m/%s\"\n)\n\nvar _ = %s.X\n\nfunc f() { flag.Parse() }\n", i, bad, bad)
+			}
+			before := outTypeChecks.Load()
+			v := outGuarded(t, f, change)
+			for i := range n {
+				if !finds(v.Warnings, fmt.Sprintf("use%d decision A's check by types could not finish", i)) || stopped(v) || finds(v.Warnings, "check by types stopped") || outWorkers.Load() != 0 {
+					t.Errorf("H1 %s, %d packages: warnings %q, %d workers", bad, n, whats(v.Warnings), outWorkers.Load())
+				}
+			}
+			return outTypeChecks.Load() - before
+		}
+		one, two := checks(1), checks(2)
+		if t.Logf("H1 %s: %d checks for one package, %d for two", bad, one, two); one == 0 || one > int64(len(platforms)) || two > int64(2*len(platforms)) {
+			t.Errorf("H1 %s: %d type checks for one package, %d for two; want at most %d per package", bad, one, two, len(platforms))
 		}
 	}
 	_ = v
@@ -215,13 +230,22 @@ func TestOutTypedBounded(t *testing.T) {
 	typesStopped := func(v Verdict) bool { return finds(v.Warnings, "decision A's check by types stopped") }
 	// Opus #282 M1 (probe B): a live peer holds the slot: the types check
 	// stops within outSlotWait of the run's start, not at its deadline.
-	unit := f.ordinary(t, unitGo)
+	// Timed, because wall time is the property: the wait's end. The bound
+	// (#226 entry 89) is the deadline's side, not a multiple of a baseline:
+	// with the run's deadline at slotDeadline (90 s), the three runs past
+	// outSlotWait take under slotSlack (30 s) under any CI load (a run is
+	// about 0.1 s alone, about 1 s beside another test binary), and a
+	// wait that runs to the deadline takes 90 s or more.
+	const slotDeadline, slotSlack = 90 * time.Second, 30 * time.Second
+	oldTime := maxListTime
+	maxListTime = slotDeadline
 	outWorkers.Add(1)
 	begin := time.Now()
 	v := outGuarded(t, f, change)
 	took := time.Since(begin)
 	outWorkers.Add(-1)
-	if !v.Accepted() || !typesStopped(v) || finds(v.Warnings, "stopped at its work bound") || !within(t, took-outSlotWait, unit, 20) {
+	maxListTime = oldTime
+	if !v.Accepted() || !typesStopped(v) || finds(v.Warnings, "stopped at its work bound") || took-outSlotWait > slotSlack {
 		t.Errorf("a held slot: blocks %q, warnings %q, %v", whats(v.Blocks), whats(v.Warnings), took)
 	}
 	// A dropped worker still running: the types check stops at once.

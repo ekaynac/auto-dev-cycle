@@ -394,13 +394,17 @@ func TestIntegrityRealTypes(t *testing.T) {
 		fmt.Fprintf(&chain, "\ntype S%d struct{ A, B, C, D, E, F, G, H S%d }\n", i, i+1)
 	}
 	chain.WriteString("\ntype S8 int\n")
-	unit := f.ordinary(t, unitGo) // before the chain: no check abandoned, the guard's own deadline (Opus #317 M1)
-	const chainTime = 2 * time.Second
+	// Timed, because wall time is the property: the guard returns at its
+	// deadline, not when the abandoned check ends. The bound (#226 entry 89)
+	// is that deadline's, not a multiple of a baseline: past chainTime, the
+	// rest of the run takes under chainSlack under any CI load (about 50 ms
+	// alone, under 2 s beside another test binary).
+	const chainTime, chainSlack = 2 * time.Second, 15 * time.Second
 	oldTime := maxListTime
 	maxListTime = chainTime
 	begin := time.Now()
 	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
-	if took := time.Since(begin); !finds(cv.Blocks, "over the guard's deadline") || !within(t, took-chainTime, unit, 20) { // its deadline, then the rest of a run
+	if took := time.Since(begin); !finds(cv.Blocks, "over the guard's deadline") || took-chainTime > chainSlack {
 		t.Errorf("a struct chain: %v %q", took, whats(cv.Blocks))
 	}
 	maxListTime = oldTime
@@ -409,10 +413,9 @@ func TestIntegrityRealTypes(t *testing.T) {
 	// visits at depth n). Counted, not timed (#226 entry 89; the timed bound
 	// flaked beside another test binary on #423's CI): each alias's
 	// right-hand side is read once per scan and platform (2 per alias,
-	// measured), so reads grow linearly with the DAG. At most 4 per alias, at
+	// measured), so reads grow linearly with the DAG: at most 4 per alias, at
 	// depth 12 and 24; an exponential walk reads thousands at depth 12.
-	const maxAliasReads = 4
-	reads := func(depth int) int64 {
+	linear(t, "an alias DAG", &aliasReads, 4, 12, func(depth int) int64 {
 		var dag strings.Builder
 		dag.WriteString("package pkg\n")
 		for i := range depth {
@@ -420,16 +423,11 @@ func TestIntegrityRealTypes(t *testing.T) {
 			fmt.Fprintf(&dag, "\ntype A%d = func(%s) %s\n", i, strings.Repeat(a+", ", 7)+a, a)
 		}
 		fmt.Fprintf(&dag, "\ntype A%d = int\n", depth)
-		before := aliasReads.Load()
 		if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); len(v.Blocks) > 0 {
 			t.Errorf("an alias DAG of depth %d: %q", depth, whats(v.Blocks))
 		}
-		return aliasReads.Load() - before
-	}
-	r12, r24 := reads(12), reads(24)
-	if t.Logf("alias reads: %d at depth 12, %d at depth 24", r12, r24); r12 == 0 || r12 > 12*maxAliasReads || r24 > 24*maxAliasReads {
-		t.Errorf("an alias DAG: %d reads at depth 12, %d at depth 24; want at most %d per alias", r12, r24, maxAliasReads)
-	}
+		return int64(depth)
+	})
 
 	// The background flag on 52087d3 "parser differential (build tags)": a
 	// //go:build line makes +build lines ignored, as go reads them (go vet's
@@ -599,11 +597,17 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	failing := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		return nil, errors.New("no toolchain")
 	}
-	unit := f.ordinary(t, unitGo)
+	// Counted, not timed (#226 entry 89): each loader fails closed with at
+	// most one go call per version and platform of the change's one module
+	// (r2 L2). "A go over time" is timed too, as its property is wall time:
+	// each call cut at its 200 ms limit, not at the fake go's 30 s sleep; the
+	// bound is that limit's side, not a multiple of a baseline: the calls'
+	// limits plus under goSlack for the rest under any CI load.
+	const goSlack = 15 * time.Second
 	for name, c := range map[string]struct {
 		list Lister
 		why  string
-		wait time.Duration // each go call's fixed time limit, waited out
+		wait time.Duration // each go call's time limit, waited out: timed only then
 	}{
 		"no loader":      {nil, "(testing: no Go type loader)", 0},
 		"a loader fails": {failing, "(testing: no toolchain)", 0},
@@ -613,7 +617,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)", 200 * time.Millisecond},
 		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)", 0},
 	} {
-		var calls atomic.Int64 // the go calls the guard makes, each waiting out c.wait at most (Opus #317 M2): at most one per version and platform of its one module (r2 L2)
+		var calls atomic.Int64 // the go calls the guard makes (Opus #317 M2): at most one per version and platform of its one module (r2 L2)
 		list := c.list
 		if list != nil {
 			list = func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
@@ -623,7 +627,8 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		}
 		start := time.Now()
 		v, err := accept(context.Background(), list)
-		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || calls.Load() > int64(2*len(platforms)) || !within(t, took-time.Duration(calls.Load())*c.wait, unit, 20) {
+		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || calls.Load() > int64(2*len(platforms)) ||
+			c.wait > 0 && took > time.Duration(calls.Load())*c.wait+goSlack {
 			t.Errorf("%s (%v, %d go calls): %v %q", name, time.Since(start), calls.Load(), err, whats(v.Blocks))
 		}
 	}

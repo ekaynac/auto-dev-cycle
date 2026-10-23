@@ -41,7 +41,7 @@ func (r *run) pyTestWalk(p string) (bool, int) {
 		if b := path.Base(d); ok {
 			t = cached
 			break
-		} else if n++; b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested) {
+		} else if n++; pySteps.Add(int64(1+len(r.baseDirs[d])+len(r.candDirs[d]))) > 0 && (b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested)) {
 			t, r.pyTests[d] = true, true
 			break
 		}
@@ -425,6 +425,7 @@ func pyBindings(lines []pline, trusted, imported []string) (map[string]bool, map
 	for _, l := range lines {
 		for _, st := range pySplit(slices.Concat(l.toks, l.inner), ";") {
 			imp := len(st) > 1 && (st[0].text == "import" || st[0].text == "from")
+			pySteps.Add(int64(len(st)))
 			for i, k := range st {
 				if star = star || k.text == "*" && i > 0 && st[i-1].text == "import"; k.kind != 'n' || len(names[k.text]) == 0 {
 					continue

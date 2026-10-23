@@ -332,7 +332,7 @@ func (pb *pyBase) closure() error {
 				continue
 			}
 			for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-				if n := strings.Join(parts[:k], "."); names[n] {
+				if n := strings.Join(parts[:k], "."); pySteps.Add(int64(len(n))) > 0 && names[n] { // each prefix's bytes, counted
 					continue // each name once
 				} else if pb.opaque[n] {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
@@ -429,7 +429,7 @@ func (pb *pyBase) candClosure() (string, error) {
 					return p, nil // a name past the depth bound
 				}
 				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__") {
+					if n := strings.Join(parts[:k], "."); pySteps.Add(int64(len(n))) > 0 && (pb.opaque[n] || alts[n] > 1 || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__")) { // each prefix's bytes, counted
 						return p, nil // a base link or gitlink, a name two files answer to, a non-source form or a module under __pycache__, newly reached (Astra #281 r2 H5, r3 H3, r4 H3, H4)
 					} else if q := mods[n]; q != "" && !queued[q] {
 						queued[q], queue = true, append(queue, q)

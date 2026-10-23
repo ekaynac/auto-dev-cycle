@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
-	"math"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -107,31 +106,26 @@ func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) 
 	return v
 }
 
-// unitGo is an ordinary Go change: one new package with one function.
-var unitGo = map[string]string{"zzunit/u.go": "package zzunit\n\nfunc U() int { return 1 }\n"}
-
-// ordinary is the time of an ordinary run of f's guard on change, for a
-// row's bound relative to the same test run (#226 entry 89: under a loaded
-// host both slow alike; no row has a fixed wall-clock bound). Timed before
-// the row, the least of three, so a stall or a warm cache cannot lift the
-// bound (Opus #317 M3). f is a plain fixture, never a row's own whose base
-// does the work the row bounds (Opus #317 H2).
-func (f fixture) ordinary(t *testing.T, change map[string]string) time.Duration {
+// linear checks that a guard's work, counted by counter, is linear in its
+// input, instead of timing it (#226 entry 89: a timed bound flaked beside
+// another test binary). run runs the row's guard on its input at size n
+// (and its own checks) and returns the input's units; the counter's growth
+// across it must be positive, at most per units at size n and at 2n, and
+// at 2n at most three times n's: superlinear work fails, whatever the
+// host's load.
+func linear(t *testing.T, name string, counter *atomic.Int64, per int64, n int, run func(n int) int64) {
 	t.Helper()
-	unit := time.Duration(math.MaxInt64)
-	for range 3 {
-		start := time.Now()
-		f.guarded(t, change)
-		unit = min(unit, time.Since(start))
+	count := func(n int) (int64, int64) {
+		before := counter.Load()
+		units := run(n)
+		return counter.Load() - before, units
 	}
-	return unit
-}
-
-// within: took, a row's time, is within n ordinary runs of unit.
-func within(t *testing.T, took, unit time.Duration, n int) bool {
-	t.Helper()
-	t.Logf("%v: %.1f ordinary runs of %v (bound %d)", took, float64(took)/float64(unit), unit, n)
-	return took <= time.Duration(n)*unit
+	c1, u1 := count(n)
+	c2, u2 := count(2 * n)
+	t.Logf("%s: %d steps for %d units, %d for %d (bound %d per unit)", name, c1, u1, c2, u2, per)
+	if c1 <= 0 || c1 > per*u1 || c2 > per*u2 || c2 > 3*c1 {
+		t.Errorf("%s: %d steps for %d units, %d for %d; want at most %d per unit, and linear", name, c1, u1, c2, u2, per)
+	}
 }
 
 func whats(bs []Block) []string {
