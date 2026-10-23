@@ -270,7 +270,7 @@ func TestHoldsMatchNote02(t *testing.T) {
 		"source_invalid_config":    {"config_change", "operator", "PT1H", ""},
 		"awaiting_approval":        {"approval", "grant_holder", "PT1H", ""},
 		"awaiting_confirmation":    {"approval", "confirmation_policy", "PT1H", ""},
-		"awaiting_receipt":         {"receipt", "system", "PT30M", ""},
+		"awaiting_receipt":         {"receipt", "system", "PT30M", "operator"},
 		"reviewer_unavailable":     {"probe", "system", "PT1H", ""},
 		"wrong_owner":              {"human_act", "named_owner", "PT1H", ""},
 		"maintenance_boundary":     {"revision", "system", "PT45M", ""},
