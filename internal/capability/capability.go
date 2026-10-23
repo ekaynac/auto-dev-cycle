@@ -35,6 +35,7 @@ type Capability struct {
 	// (graph.M1Kinds), which adcd records.
 	Actions, EffectKinds, NodeKinds []string
 	Rows                            []Row
+	kept                            map[Row]bool // the bits of the Set it was read from (nil: the build's)
 	// Pending are its prerequisites outside the inventory, each one open:
 	// a capability with any is not active.
 	Pending []string
@@ -131,11 +132,39 @@ var kept = map[Row]bool{
 // Kept reports whether r is enforced.
 func Kept(r Row) bool { return kept[r] }
 
-// Missing are c's rows not yet enforced, in order.
+// Set is a build of the table: Table with its kept bits. Built is this
+// build's; every runtime reader reads a Set (adcd's, daemon.capabilities),
+// so a test build that keeps more bits (Keeping) reaches the same
+// derivation the real bits will.
+type Set struct{ kept map[Row]bool }
+
+// Built is this build's table.
+func Built() Set { return Set{kept} }
+
+// Keeping is s with rows kept too: a TEST build of the table only (adcd's
+// rows that need a capability active before its last bits are set). No
+// non-test code calls it (TestKeepingIsTestOnly).
+func (s Set) Keeping(rows ...Row) Set {
+	more := make(map[Row]bool, len(s.kept)+len(rows))
+	for r, k := range s.kept {
+		more[r] = k
+	}
+	for _, r := range rows {
+		more[r] = true
+	}
+	return Set{more}
+}
+
+// Missing are c's rows not yet enforced, in order, in the set c was read
+// from (the build's for a Table entry).
 func (c Capability) Missing() []Row {
+	k := c.kept
+	if k == nil {
+		k = kept
+	}
 	var out []Row
 	for _, r := range c.Rows {
-		if !kept[r] {
+		if !k[r] {
 			out = append(out, r)
 		}
 	}
@@ -167,38 +196,51 @@ func (c Capability) ActiveWith(checks map[string]error) (active bool, open []str
 	return len(c.Missing()) == 0 && len(open) == 0, open
 }
 
-// Of is the capability named name.
-func Of(name string) (Capability, bool) {
-	i := slices.IndexFunc(Table, func(c Capability) bool { return c.Name == name })
+// Of is the capability named name, in s.
+func (s Set) Of(name string) (Capability, bool) {
+	return s.find(func(c Capability) bool { return c.Name == name })
+}
+
+// Gating is the capability that wires action, if any does, in s.
+func (s Set) Gating(action string) (Capability, bool) {
+	return s.find(func(c Capability) bool { return slices.Contains(c.Actions, action) })
+}
+
+// find is the first capability of Table match takes, with s's bits.
+func (s Set) find(match func(Capability) bool) (Capability, bool) {
+	i := slices.IndexFunc(Table, match)
 	if i < 0 {
 		return Capability{}, false
 	}
-	return Table[i], true
+	c := Table[i]
+	c.kept = s.kept
+	return c, true
 }
 
-// Gating is the capability that wires action, if any does.
-func Gating(action string) (Capability, bool) {
-	i := slices.IndexFunc(Table, func(c Capability) bool { return slices.Contains(c.Actions, action) })
-	if i < 0 {
-		return Capability{}, false
-	}
-	return Table[i], true
+// EffectKinds are the effect kinds of s's active capabilities, sorted, each once.
+func (s Set) EffectKinds() []string {
+	return s.active(func(c Capability) []string { return c.EffectKinds })
 }
 
-// EffectKinds are the effect kinds of the active capabilities, sorted, each once.
-func EffectKinds() []string { return active(func(c Capability) []string { return c.EffectKinds }) }
+// NodeKinds are the node kinds s's active capabilities add, sorted, each once.
+func (s Set) NodeKinds() []string {
+	return s.active(func(c Capability) []string { return c.NodeKinds })
+}
 
-// NodeKinds are the node kinds the active capabilities add, sorted, each once.
-func NodeKinds() []string { return active(func(c Capability) []string { return c.NodeKinds }) }
-
-// active is of's union over the active capabilities, sorted, each once.
-func active(of func(Capability) []string) []string {
+// active is of's union over s's active capabilities, sorted, each once.
+func (s Set) active(of func(Capability) []string) []string {
 	var out []string
 	for _, c := range Table {
-		if c.Active() {
+		if c.kept = s.kept; c.Active() {
 			out = append(out, of(c)...)
 		}
 	}
 	slices.Sort(out)
 	return slices.Compact(out)
 }
+
+// Of, Gating, EffectKinds and NodeKinds are Built()'s.
+func Of(name string) (Capability, bool)       { return Built().Of(name) }
+func Gating(action string) (Capability, bool) { return Built().Gating(action) }
+func EffectKinds() []string                   { return Built().EffectKinds() }
+func NodeKinds() []string                     { return Built().NodeKinds() }

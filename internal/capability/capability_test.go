@@ -4,8 +4,11 @@ package capability
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -271,5 +274,44 @@ func TestRowsAreTheInventory(t *testing.T) {
 	}
 	if len(doc) != 0 {
 		t.Errorf("capabilities the inventory names and the table does not: %v", doc)
+	}
+}
+
+// Set.Keeping builds a TEST table only: no non-test Go file of the
+// repository calls it, so the bits adcd reads are this build's (Built)
+// and a capability is active only once its PR sets them.
+func TestKeepingIsTestOnly(t *testing.T) {
+	err := filepath.WalkDir("../..", func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.IsDir() && (d.Name() == "node_modules" || d.Name() == "dist" || strings.HasPrefix(d.Name(), ".")) && p != "../..":
+			return filepath.SkipDir
+		case d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go"):
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err == nil && bytes.Contains(b, []byte(".Keeping(")) && !strings.HasSuffix(filepath.ToSlash(p), "internal/capability/capability.go") {
+			t.Errorf("%s builds a capability table of its own (Keeping)", p)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A test build keeps what it is given, and the build's table is
+	// unchanged by it.
+	launch, _ := Of("launch")
+	more := Built().Keeping(launch.Missing()...)
+	if l, _ := more.Of("launch"); !l.Active() || slices.Contains(more.EffectKinds(), "model_call") != true {
+		t.Errorf("a test build keeping launch's rows: active %v, effect kinds %v", l.Active(), more.EffectKinds())
+	}
+	if len(launch.Missing()) > 0 {
+		if l, _ := Of("launch"); l.Active() || slices.Contains(EffectKinds(), "model_call") {
+			t.Error("a test build changed the build's table")
+		}
+	}
+	if c, _ := more.Gating("task.raise_rail"); !c.Active() {
+		t.Error("the test build's gating reads the build's bits")
 	}
 }
