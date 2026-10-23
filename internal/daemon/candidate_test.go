@@ -54,9 +54,12 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// acceptDigest is the acceptance attachment's digest readyTask records:
-// restricted, withheld from the builder and the reviewer.
-const acceptDigest = "sha256:abababababababababababababababababababababababababababababababab"
+// acceptBody is the acceptance attachment readyTask records at
+// accept_test.py, published in the world's blob store; acceptDigest is its
+// digest: restricted, withheld from the builder and the reviewer.
+const acceptBody = "def test_accept():\n    pass\n"
+
+var acceptDigest = blobDigest([]byte(acceptBody))
 
 // canary is the hidden acceptance test's name, which only the gate's
 // stream (a restricted artifact) carries.

@@ -241,6 +241,63 @@ func TestGateVerdict(t *testing.T) {
 	}
 }
 
+// hiddenTest is an acceptance test file of package c: two tests go test
+// runs (TestHidden, TestHiddenX), and four declarations it does not (a
+// lower-case suffix, a benchmark's parameter, a helper, a method).
+const hiddenTest = `package c
+
+import "testing"
+
+func TestHidden(t *testing.T) {}
+
+func TestHiddenX(t *testing.T) {}
+
+func Testlower(t *testing.T) {}
+
+func TestBench(b *testing.B) {}
+
+func helper(t *testing.T) {}
+
+type s struct{}
+
+func (s) TestMethod(t *testing.T) {}
+`
+
+// TestGateOverlaidTestsAreExpected (#226 entry 190): the run overlays the
+// acceptance files at their repository paths, replacing what the candidate
+// put there (here a link to a/a.go, which stays as it was), and expects the
+// top-level tests their Go test files declare, in their directory's
+// package: reported and passing, the gate is clean; failing, or never
+// reported, it is the candidate's (found/gate_test_failed). A Go test file
+// that does not parse is refused.
+func TestGateOverlaidTestsAreExpected(t *testing.T) {
+	if got, err := overlayTests(module, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte("package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) {}\n")}); err != nil ||
+		!slices.Equal(got, []results.Test{{Package: module + "/c", Name: "TestHidden"}, {Package: module + "/c", Name: "TestHiddenX"}, {Package: module, Name: "TestRoot"}}) {
+		t.Errorf("the overlay's tests: %v, %v", got, err)
+	}
+	files := map[string]string{"a/a.go": "package a\n", "b/b.go": "package b\n", "c/c_hidden_test.go": "symlink:../a/a.go", "clean.json": stream["clean.json"],
+		"passed.json": events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=pass"),
+		"failed.json": events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=fail")}
+	for name, c := range map[string]struct{ reported, want string }{
+		"reported, passing": {"passed.json", "empty/completed_clean"},
+		"one failing":       {"failed.json", "found/gate_test_failed"},
+		"never reported":    {"clean.json", "found/gate_test_failed"},
+	} {
+		// The stream is the reported one only when the hidden file is the
+		// overlay's, a regular file, and a/a.go is untouched.
+		f := newFixture(t, files, "sh", "-c", `if test -f c/c_hidden_test.go && ! test -L c/c_hidden_test.go && grep -q TestHiddenX c/c_hidden_test.go && test "$(cat a/a.go)" = "package a"; then cat `+c.reported+`; else cat clean.json; fi`)
+		f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
+		if v := gated(t, f.in); !strings.Contains(v.String(), c.want) {
+			t.Errorf("%s: %v, want %s", name, v, c.want)
+		}
+	}
+	f := newFixture(t, files, "cat", "clean.json")
+	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte("package c\nfunc {\n")}
+	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrSpec) {
+		t.Errorf("an acceptance test that does not parse: %v", err)
+	}
+}
+
 // TestGateCut (Astra #286 H1): a candidate run cut by its timeout or a
 // signal is could_not_run/runner_fault, whatever it wrote: here a complete
 // green stream, then the injected end. A cancelled caller gets no verdict.

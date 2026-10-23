@@ -42,7 +42,11 @@
 //   - The cwd contract (#275) is P15b's, with the junit_xml (pytest)
 //     adapter: a Go gate runs no Python probe (go test runs each test
 //     binary in its package directory, Opus #286 M3).
-//   - Acceptance tests are overlaid on the gate workspace only.
+//   - Acceptance tests are overlaid on the gate workspace only, each at its
+//     repository path, replacing what the candidate put there. The
+//     top-level tests their Go test files declare are expected
+//     (overlayTests): one the run does not report is the candidate's
+//     missing test, never no result (#226 entry 190).
 package gate
 
 import (
@@ -53,6 +57,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -63,6 +71,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/results"
@@ -184,6 +193,14 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if v.Tree != in.Tree {
 		return v, fmt.Errorf("%w: %s checks out tree %s, not a tree of its own", ErrSpec, in.Tree, v.Tree)
 	}
+	expected := in.Expected
+	if len(in.Overlay) > 0 {
+		hidden, err := overlayTests(module, in.Overlay)
+		if err != nil {
+			return v, err
+		}
+		expected = append(slices.Clone(expected), hidden...)
+	}
 	if err := writeFiles(a.Workspace(), in.Overlay); err != nil {
 		return v, err
 	}
@@ -221,7 +238,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if v.baseline != nil {
 		base = &v.baseline.Report
 	}
-	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
+	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), expected, base); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyNotStream)
 		return v, nil
 	}
@@ -489,7 +506,51 @@ func checkout(ctx context.Context, repo sandbox.Repo, tree, ws string) (id, modu
 	return id, "", nil
 }
 
-// writeFiles overlays files on ws: each a clean relative path, inside it.
+// overlayTests are the top-level tests (func TestXxx(*testing.T)) the Go
+// test files of overlay declare, each in its directory's package of
+// module, sorted. A Go test file that does not parse, or one with no
+// module to place it in, is refused (ErrSpec): a hidden test the gate
+// cannot expect is never overlaid unexpected.
+func overlayTests(module string, overlay map[string][]byte) ([]results.Test, error) {
+	var out []results.Test
+	for _, p := range slices.Sorted(maps.Keys(overlay)) {
+		if !strings.HasSuffix(p, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, overlay[p], parser.SkipObjectResolution)
+		if err != nil || module == "" {
+			return nil, fmt.Errorf("%w: the acceptance test %s does not parse, or the tree has no Go module", ErrSpec, p)
+		}
+		pkg := module
+		if d := path.Dir(p); d != "." {
+			pkg += "/" + d
+		}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && goTest(fn) {
+				out = append(out, results.Test{Package: pkg, Name: fn.Name.Name})
+			}
+		}
+	}
+	return out, nil
+}
+
+// goTest reports whether fn is a test go test runs: TestXxx, Xxx not
+// starting with a lower-case letter, taking one *testing.T.
+func goTest(fn *ast.FuncDecl) bool {
+	rest, ok := strings.CutPrefix(fn.Name.Name, "Test")
+	if !ok || rest != "" && unicode.IsLower([]rune(rest)[0]) || fn.Type.TypeParams != nil || len(fn.Type.Params.List) != 1 || len(fn.Type.Params.List[0].Names) > 1 {
+		return false
+	}
+	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "T"
+}
+
+// writeFiles overlays files on ws: each a clean relative path, inside it,
+// replacing what is there (a file or a link the candidate put there).
 func writeFiles(ws string, files map[string][]byte) error {
 	root, err := os.OpenRoot(ws)
 	if err != nil {
@@ -502,6 +563,9 @@ func writeFiles(ws string, files map[string][]byte) error {
 			return fmt.Errorf("%w: an acceptance file %q is not a clean path inside the workspace, or the files are too large", ErrSpec, p)
 		}
 		if err := root.MkdirAll(path.Dir(p), 0o700); err != nil {
+			return err
+		}
+		if err := root.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 		if err := root.WriteFile(p, b, 0o600); err != nil {

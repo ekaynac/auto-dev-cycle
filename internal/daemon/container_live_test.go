@@ -179,10 +179,16 @@ func goMiniRepo(t *testing.T, tmp string) string {
 // profile further.
 func liveWorld(t *testing.T, want func(liveBox) string, edit func(map[string]any)) (*runWorld, liveBox, string, registry.Registry) {
 	t.Helper()
+	return liveWorldOn(t, "go-mini-feature-1", want, edit)
+}
+
+// liveWorldOn is liveWorld whose stub provider plays scenario.
+func liveWorldOn(t *testing.T, scenario string, want func(liveBox) string, edit func(map[string]any)) (*runWorld, liveBox, string, registry.Registry) {
+	t.Helper()
 	tmp := t.TempDir()
 	src := goMiniRepo(t, tmp)
 	box := newLiveBox(t)
-	base, log := stubProvider(t, "go-mini-feature-1")
+	base, log := stubProvider(t, scenario)
 	t.Setenv("ADC_CREDENTIAL_STUB", "a-stub-credential")
 	rw := newRunWorldWith(t, true, nil, func(p map[string]any) {
 		p["repo"] = map[string]any{"url": src, "base_ref": "refs/heads/main"}
@@ -422,4 +428,116 @@ func TestLiveContainerRunsTheReview(t *testing.T) {
 		t.Errorf("the stub provider saw %d reviewer requests", n)
 	}
 	leftBehind(t, rw, box)
+}
+
+// goMiniGate is go-mini's profile gate, its environment's architecture this
+// host's; command, if any, replaces its command.
+func goMiniGate(t *testing.T, command []any) func(map[string]any) {
+	t.Helper()
+	var gomini struct{ Gate map[string]any }
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err == nil {
+		err = json.Unmarshal(raw, &gomini)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return func(p map[string]any) {
+		g := gomini.Gate
+		g["environments"].([]any)[0].(map[string]any)["facts"].(map[string]any)["runtime"].(map[string]any)["arch"] = runtime.GOARCH
+		if command != nil {
+			g["command"] = command
+		}
+		p["gate"] = g
+	}
+}
+
+// #226 entry 190 (§2.3 assertion 2), live: go-mini-feature-1's task carries
+// its hidden test at its repository path (inventory/transfer_hidden_test.go);
+// the loop places the build (the stub provider's scenario), accept and the
+// gate, and adcd's gate runs go-mini's gate in the live image with the
+// hidden test overlaid. The candidate's reference build passes it: the gate
+// is empty/completed_clean, derived from the acceptance blob (every hidden
+// test expected, so a clean gate is one that ran them). The lying runner's
+// candidate (fault-lying-runner: the command exits 0 and prints ok) fails
+// exactly TestHiddenTransferToSelfIsRejected: found/gate_test_failed, the
+// candidate refused.
+func TestLiveContainerGatesWithTheAcceptance(t *testing.T) {
+	hidden, err := os.ReadFile("../../fixtures/t0/go-mini/tasks/go-mini-feature-1/hidden/inventory/transfer_hidden_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lying struct {
+		ProfileOverlay struct{ Gate struct{ Command []any } } `json:"profile_overlay"`
+	}
+	raw, err := os.ReadFile("../../fixtures/m1/cases/fault-lying-runner/case.json")
+	if err == nil {
+		err = json.Unmarshal(raw, &lying)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		scenario string
+		command  []any
+		outcome  types.Outcome
+		reason   vocab.Reason
+		blocking []string
+	}{
+		{"go-mini-feature-1", nil, types.OutcomeEmpty, vocab.ReasonCompletedClean, nil},
+		{"fault-lying-runner", lying.ProfileOverlay.Gate.Command, types.OutcomeFound, vocab.ReasonGateTestFailed, []string{"TestHiddenTransferToSelfIsRejected"}},
+	} {
+		t.Run(c.scenario, func(t *testing.T) {
+			withAcceptance(t, map[string]string{"inventory/transfer_hidden_test.go": string(hidden)})
+			rw, box, _, reg := liveWorldOn(t, c.scenario, func(b liveBox) string { return b.want }, goMiniGate(t, c.command))
+			rw.untilRun(t) // the build
+			rw.r.place.d.Images = box.h
+			pl := rw.x.Placer.(placer)
+			pl.d.Images = box.h
+			rw.x.Placer = pl
+			rw.r.env.Families, rw.r.place.d.Registry = reg, reg
+			rw.x.Acceptor = rw.r
+			rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+			var gn graph.NodeView
+			for range 12 {
+				if _, err := rw.l.Pass(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				rw.r.Wait()
+				gn = nodesOf(rw.w, rw.task)[types.NodeKindGate]
+				if gn.State.State == types.NodeStateStateCompleted || len(gn.State.Holds) > 0 {
+					break
+				}
+			}
+			if gn.State.State != types.NodeStateStateCompleted {
+				t.Fatalf("the gate node: %s, holds %+v (accept: %+v)", gn.State.State, gn.State.Holds, nodesOf(rw.w, rw.task)[types.NodeKindAccept].State)
+			}
+			rr := selectedOf(t, rw.w, gn)
+			if rr.Result.Outcome != c.outcome || rr.Result.Reason != c.reason || len(rr.Result.Value) != 2 {
+				t.Fatalf("the gate's result: %s/%s %q", rr.Result.Outcome, rr.Result.Reason, rr.Result.Detail)
+			}
+			d := blobDigest(hidden)
+			for _, ref := range rr.Result.Value {
+				if !slices.Equal(ref.Lineage, []string{d}) {
+					t.Errorf("the gate's %s derives from %v, not the acceptance blob", ref.Type, ref.Lineage)
+				}
+			}
+			report, err := blobOf(t, rw.w, rr.Result.Value[1].ContentDigest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var r struct{ Blocking []struct{ Name string } }
+			var tests []string
+			err = json.Unmarshal(report, &r)
+			for _, f := range r.Blocking {
+				if f.Name != "" {
+					tests = append(tests, f.Name)
+				}
+			}
+			if err != nil || !slices.Equal(tests, c.blocking) {
+				t.Errorf("the report's blocking tests: %q (%v), want %q", tests, err, c.blocking)
+			}
+			leftBehind(t, rw, box)
+		})
+	}
 }

@@ -198,7 +198,7 @@ It exits 0 only if every assertion holds. Each case runs these steps through ins
 1. start `adcd run --state-dir $S --resource-groups … --registry …`;
 2. bootstrap the operator;
 3. `adc project create --expect 0 --reason r --scope-file <profile>`;
-4. `adc task create --expect 0 --reason r --scope-file <spec> --attach <acceptance>…` (an operator's create records
+4. `adc task create --expect 0 --reason r --scope-file <spec> --attach <repo path>=<acceptance>…` (each hidden test named by the repository path the gate overlays it at; an operator's create records
    the approval);
 5. `adc task wait $T --until closed|held --timeout 60m --json`.
 

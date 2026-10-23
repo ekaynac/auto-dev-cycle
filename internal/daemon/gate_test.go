@@ -94,7 +94,19 @@ func (gateImages) Resolve(_ context.Context, ref string) (sandbox.Image, error) 
 // runs happen in place (fail: the sandbox fails every run).
 func gateWorld(t *testing.T, base string, files map[string]string, fail error) *runWorld {
 	t.Helper()
-	rw := newRunWorldWith(t, true, builder(writes(files), false, nil), goModule(t, base))
+	return gateWorldWith(t, base, files, fail, nil)
+}
+
+// gateWorldWith is gateWorld whose profile edit, if any, edits the
+// profile further.
+func gateWorldWith(t *testing.T, base string, files map[string]string, fail error, edit func(map[string]any)) *runWorld {
+	t.Helper()
+	rw := newRunWorldWith(t, true, builder(writes(files), false, nil), func(p map[string]any) {
+		goModule(t, base)(p)
+		if edit != nil {
+			edit(p)
+		}
+	})
 	rw.untilRun(t)
 	root, err := os.MkdirTemp("/dev/shm", "adcgate")
 	if err != nil {
@@ -364,5 +376,96 @@ func TestAGateOverARefusedAcceptIsHeld(t *testing.T) {
 	if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed ||
 		len(resultsOn(t, rw.w, v.Node.ID)) != 0 || !strings.Contains(log.String(), "input is no tree accept recorded") {
 		t.Fatalf("a gate over a refused accept: %s, holds %+v, results %+v; %s", v.State.State, v.State.Holds, resultsOn(t, rw.w, v.Node.ID), log.String())
+	}
+}
+
+// hiddenInv is an acceptance test of gateModule's package inv, which the
+// base does not have; its test's name is a canary.
+const hiddenInv = "package inv\n\nimport \"testing\"\n\nfunc TestHiddenInvCanary(t *testing.T) {}\n"
+
+// invEvents is a go test -json stream of package inv's one test.
+func invEvents(outcome string) string {
+	pkg := gateModule + "/inv"
+	return fmt.Sprintf(`{"Action":"start","Package":%q}`+"\n"+`{"Action":"run","Package":%q,"Test":"TestHiddenInvCanary"}`+"\n"+
+		`{"Action":%q,"Package":%q,"Test":"TestHiddenInvCanary"}`+"\n"+`{"Action":%q,"Package":%q}`+"\n", pkg, pkg, outcome, pkg, outcome, pkg)
+}
+
+// overlaid is gateWorld's profile edit for the acceptance rows: its gate
+// prints the tree's gate-events.json, then, only when the acceptance test
+// is in the workspace at its repository path, the candidate's
+// inv-events.json (what the hidden test did on the candidate's code).
+func overlaid(p map[string]any) {
+	p["gate"].(map[string]any)["command"] = []string{"sh", "-c", "cat gate-events.json; if test -f inv/inv_hidden_test.go; then cat inv-events.json; fi"}
+}
+
+// #226 entry 190 (§2.3 assertion 2, §2.6): adcd's gate overlays the task's
+// acceptance tests, read from the blob store, at their repository paths on
+// the candidate's run only (the base is measured without them), and
+// expects the tests they declare: a candidate whose hidden test passes is
+// clean; one whose hidden test fails, or never reports it, is
+// found/gate_test_failed, a candidate refused. The result derives from the
+// acceptance blob (its lineage: the builder never takes it), and no
+// operator read holds the acceptance's digest or its test's name (I18, the
+// canary rule).
+func TestTheGateOverlaysTheAcceptance(t *testing.T) {
+	for name, c := range map[string]struct {
+		files   map[string]string
+		outcome types.Outcome
+		reason  vocab.Reason
+	}{
+		"the hidden test passes":        {map[string]string{"inv-events.json": invEvents("pass")}, types.OutcomeEmpty, vocab.ReasonCompletedClean},
+		"the hidden test fails":         {map[string]string{"inv-events.json": invEvents("fail")}, types.OutcomeFound, vocab.ReasonGateTestFailed},
+		"the hidden test never reports": {map[string]string{"README.md": "hello\n"}, types.OutcomeFound, vocab.ReasonGateTestFailed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withAcceptance(t, map[string]string{"inv/inv_hidden_test.go": hiddenInv})
+			rw := gateWorldWith(t, goEvents("TestA=pass"), c.files, nil, overlaid)
+			v := rw.gating(t)
+			if v.State.State != types.NodeStateStateCompleted {
+				t.Fatalf("the gate node: %s, holds %+v", v.State.State, v.State.Holds)
+			}
+			rr := selectedOf(t, rw.w, v)
+			if rr.Result.Outcome != c.outcome || rr.Result.Reason != c.reason {
+				t.Errorf("the gate's result: %s/%s %q", rr.Result.Outcome, rr.Result.Reason, rr.Result.Detail)
+			}
+			d := blobDigest([]byte(hiddenInv))
+			for _, ref := range rr.Result.Value {
+				if !slices.Equal(ref.Lineage, []string{d}) {
+					t.Errorf("the gate's %s derives from %v, not the acceptance blob", ref.Type, ref.Lineage)
+				}
+			}
+			restartOn(t, rw).noLeak(t, rw.task, d, strings.TrimPrefix(d, "sha256:"), "TestHiddenInvCanary", "inv_hidden_test")
+		})
+	}
+}
+
+// #226 entry 190: an acceptance test the gate cannot overlay is the task's
+// input, no retry fixes it: the gate node is held "runner: failed" before
+// any run, its result never recorded: one at a path the profile protects,
+// one that would replace a file the base holds, one under such a file, and
+// one whose blob is not in the store.
+func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
+	for name, c := range map[string]struct {
+		at   string
+		lost bool
+	}{
+		"a protected path":         {at: "conftest.py"},
+		"a file of the base":       {at: "go.mod"},
+		"under a file of the base": {at: "go.mod/x_test.go"},
+		"a blob not in the store":  {at: "inv/inv_hidden_test.go", lost: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withAcceptance(t, map[string]string{c.at: hiddenInv})
+			rw := gateWorldWith(t, goEvents("TestA=pass"), map[string]string{"inv-events.json": invEvents("pass")}, nil, overlaid)
+			if c.lost {
+				if err := rw.w.blobs.Remove(blobDigest([]byte(hiddenInv))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			v := rw.gating(t)
+			if v.State.State != types.NodeStateStateHeld || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed || v.State.Result != nil {
+				t.Errorf("the gate node: %s, holds %+v, result %v", v.State.State, v.State.Holds, v.State.Result)
+			}
+		})
 	}
 }

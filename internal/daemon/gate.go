@@ -8,19 +8,31 @@ package daemon
 //  1. what the node takes, read in one snapshot: its claim's one input,
 //     accept's result (an accepted tree, recorded with no attempt), and,
 //     through accept's node, what accept took (acceptance): the build's
-//     patch at its attempt's base tree;
+//     patch at its attempt's base tree; and the task's acceptance tests,
+//     its record's (#226 entry 190);
 //  2. a fresh clone of the project's repository, and the accepted tree in
 //     it: accept.Accept again over the base and the patch, without its
 //     guard, whose tree must be the accepted one (the tree is content
 //     addressed: another is the log's inconsistency, refused);
-//  3. the baseline, measured on the base tree (gate.Measure), and the gate
-//     run on the accepted tree against it (gate.Run), each a bounded
+//  3. the baseline, measured on the base tree (gate.Measure) with no
+//     overlay (a hidden test fails at the base by design), and the gate
+//     run on the accepted tree against it (gate.Run) with the task's
+//     acceptance tests overlaid (§2.3 assertion 2, §2.6), each a bounded
 //     sandbox run in the profile's one pinned image, in the profile's one
 //     gate environment, under gateLimits; the changed files are the base's
-//     and the tree's diff;
+//     and the tree's diff. Each acceptance test is read from the blob
+//     store and must hash to its record's digest (readBlob), and its path,
+//     the record's repository path, must be no path the profile protects
+//     (accept.Policy) and none the base holds, nor under a file it holds:
+//     a hidden test never replaces a visible file. A path the candidate
+//     added is replaced (the hidden test is the task's). A refusal is the
+//     task's input, no retry fixes it (errContent, "runner: failed");
 //  4. its result (gate.Result: the receipt, the report and the restricted
 //     results), recorded with no attempt (graph.Commit) by the command the
-//     receipt names.
+//     receipt names, derived from the acceptance blobs it overlaid (their
+//     lineage: the builder never takes it; the reviewer takes it
+//     sanitised). The receipt and the report carry results, never the
+//     acceptance's bytes.
 //
 // The whole run is bounded by gateBound. A failure of the run's checkout
 // (the clone, the one pinned image: the configuration's), of a run the
@@ -47,12 +59,15 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -78,9 +93,10 @@ func (r *runner) Gate(node types.NodeID) bool {
 
 // gating is what a gate run takes.
 type gating struct {
-	view   graph.NodeView
-	tree   string // the accepted tree, hex
-	accept acceptance
+	view       graph.NodeView
+	tree       string // the accepted tree, hex
+	accept     acceptance
+	acceptance []types.AcceptanceBlob // the task's, its record's
 }
 
 // gateNode is one gate run of node (the file's comment).
@@ -137,6 +153,10 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 	if err != nil {
 		return notRun(err.Error(), err)
 	}
+	overlay, digests, err := r.overlayOf(ctx, repo, dir, g.accept.base, policy, g.acceptance)
+	if err != nil {
+		return errors.Join(err, r.hold(node, err))
+	}
 	in := gate.In{Host: r.box, Image: img, Repo: repo, Tree: g.accept.base, Base: g.accept.base, Changed: changed, Gate: prof.Gate,
 		Env: string(prof.Gate.Environments[0].Name), Limits: gateLimits}
 	base, measured, err := gate.Measure(ctx, in)
@@ -156,7 +176,7 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		cause := fmt.Errorf("the base tree's gate did not measure: %s", measured.Why)
 		return notRun(cause.Error(), cause)
 	}
-	in.Tree, in.Baseline = g.tree, &base
+	in.Tree, in.Baseline, in.Overlay = g.tree, &base, overlay
 	v, err := gate.Run(ctx, in)
 	switch {
 	case errors.Is(err, gate.ErrSpec):
@@ -178,7 +198,7 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		if err != nil || cur.State.State != types.NodeStateStateClaimed || cur.State.Key == nil {
 			return errors.Join(err, fmt.Errorf("gate node %s holds no claim", node))
 		}
-		res, err := gate.Result(*cur.State.Key, v, contract, img, gate.Subject{Project: g.view.Project, Revision: buildContractRevision},
+		res, err := gate.Result(*cur.State.Key, v, contract, img, gate.Subject{Project: g.view.Project, Revision: buildContractRevision, Acceptance: digests},
 			types.CommandID(cmd), r.blobs, tx.Now())
 		if err != nil {
 			return err
@@ -250,13 +270,69 @@ func (r *runner) gating(ctx context.Context, node types.NodeID) (gating, error) 
 			return fmt.Errorf("%w: gate node %s's input is no tree accept recorded", errContent, node)
 		}
 		g.tree, acceptNode = rr.Result.Value[0].ID, rr.Node
-		return nil
+		t, err := authority.TaskOf(tx, g.view.Task)
+		g.acceptance = t.Acceptance
+		return err
 	})
 	if err != nil {
 		return g, err
 	}
 	g.accept, err = r.acceptance(ctx, acceptNode, false)
 	return g, err
+}
+
+// overlayOf is the gate run's acceptance overlay: each of the task's
+// acceptance tests at its record's repository path, its bytes the blob
+// store's checked against its digest (at most an upload's bound), and
+// their digests, the result's lineage. A path the profile protects, or
+// one the base tree holds or that is under a file it holds, is refused,
+// as is a blob missing or not its content: each errContent, the task's.
+func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base string, policy accept.Policy, acc []types.AcceptanceBlob) (map[string][]byte, []types.Digest, error) {
+	overlay, digests := map[string][]byte{}, make([]types.Digest, 0, len(acc))
+	var check strings.Builder
+	for _, a := range acc {
+		p := a.Name
+		if policy.Protected(p) {
+			return nil, nil, fmt.Errorf("%w: the acceptance test %s is at a path the profile protects", errContent, p)
+		}
+		for q := p; q != "."; q = path.Dir(q) {
+			fmt.Fprintf(&check, "%s:%s\n", base, q)
+		}
+		b, err := r.readBlob(a.Digest, blobstore.MaxUploadBytes)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: the acceptance test %s: %w", errContent, p, err)
+		}
+		overlay[p], digests = b, append(digests, a.Digest)
+	}
+	if len(acc) == 0 {
+		return nil, digests, nil
+	}
+	// What the base holds at each path and each of its directories: none
+	// at the path, and no file above it.
+	cmd, err := repo.Git(ctx, dir, "cat-file", "--batch-check=%(objecttype)")
+	if err != nil {
+		return nil, nil, err
+	}
+	var out bytes.Buffer
+	cmd.Stdin, cmd.Stdout = strings.NewReader(check.String()), &out
+	if err := cmd.Run(); err != nil {
+		return nil, nil, fmt.Errorf("git cat-file of the base's acceptance paths: %w", err)
+	}
+	kinds := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	i := 0
+	for _, a := range acc {
+		for q := a.Name; q != "."; q = path.Dir(q) {
+			if i >= len(kinds) {
+				return nil, nil, errors.New("git cat-file answered fewer paths than asked")
+			}
+			k := kinds[i]
+			i++
+			if missing := strings.HasSuffix(k, " missing"); !missing && (q == a.Name || k != "tree") {
+				return nil, nil, fmt.Errorf("%w: the acceptance test %s would replace %s, which the base holds", errContent, a.Name, q)
+			}
+		}
+	}
+	return overlay, digests, nil
 }
 
 // changedFiles are the paths that differ between the base tree and tree,

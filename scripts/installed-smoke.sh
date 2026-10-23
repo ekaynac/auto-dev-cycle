@@ -186,7 +186,7 @@ printf 'def test_smoke():\n    pass\n' >/tmp/test_smoke.py
 # create NAME: an operator's task create, its output under NAME; tsk and
 # first are its task and its first seq.
 create() {
-  adc_as /tmp/op "$1" task create --expect 0 --reason smoke --json --scope-file /tmp/spec.json --attach /tmp/test_smoke.py
+  adc_as /tmp/op "$1" task create --expect 0 --reason smoke --json --scope-file /tmp/spec.json --attach tests/test_smoke.py=/tmp/test_smoke.py
   want 0 "$1"
   tsk="$(field "$1" task)" first="$(field "$1" first_seq)"
   [[ "$tsk" == tsk_* && -n "$first" ]] || die "task create: no task id: $(head -c 400 "$out/$1.out")"
