@@ -1,0 +1,215 @@
+{
+  "schema": "adc.review-qualification/v1",
+  "complete": true,
+  "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+  "seed": "2a5d8d7bddaeac4885ade9472d03d549c9bd54909c0ece48669400c1fd84768d",
+  "route": {
+    "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+    "family": "deepseek",
+    "adapter": "http-chat",
+    "model": "deepseek-v4.1-flash",
+    "destination": "ollama-cloud",
+    "endpoint": "https://ollama.com/v1"
+  },
+  "prompt_digest": "sha256:3fb68e906d650a8da74daa8a690a0f5d1d651c57c4791e9d65df5d1ee1c264d4",
+  "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+  "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+  "ran_at": "2026-10-23T23:22:19Z",
+  "cases": [
+    {
+      "id": "defect-transfer-keeps-destination-price",
+      "expect": "no_go",
+      "prompt_digest": "sha256:041b85fc9caead20a810c298cea69323bccaf1be3f1360af220a2b8e74a60a30",
+      "decision": "no_go",
+      "report_digest": "sha256:d0c7a30956a7639cbd46ab488bf76ea831c2b734244ae935745ad2b17d8fe588",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 4,
+        "prompt_digest": "sha256:041b85fc9caead20a810c298cea69323bccaf1be3f1360af220a2b8e74a60a30",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh5y1wf9htp36a7eb192cj"
+      }
+    },
+    {
+      "id": "defect-lowstock-negative-threshold-panics",
+      "expect": "no_go",
+      "prompt_digest": "sha256:dd75e6bd34ef91cfb6be3f800e400a0a3925c096d9665d488dbcaa204283589a",
+      "decision": "no_go",
+      "report_digest": "sha256:d5c2a6ee0d407d53d3abf3ff12240b313e5e9d20300ac1d3515874b96a38fb51",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 1,
+        "prompt_digest": "sha256:dd75e6bd34ef91cfb6be3f800e400a0a3925c096d9665d488dbcaa204283589a",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh5fv5f8sb9dz84h942byp"
+      }
+    },
+    {
+      "id": "defect-sku-package-test-weakened",
+      "expect": "no_go",
+      "prompt_digest": "sha256:728c800d4f1efb24cf4f7d2661428c72a1de827dc947c75e87bdd7c6356318c2",
+      "decision": "no_go",
+      "report_digest": "sha256:a19702004da2c4670ee622eba4f364a63681dc6a4edeeb0c36bd5258ab8f789b",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 6,
+        "prompt_digest": "sha256:728c800d4f1efb24cf4f7d2661428c72a1de827dc947c75e87bdd7c6356318c2",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh7zbafa2trfnzbyat8dzc"
+      }
+    },
+    {
+      "id": "defect-formatcents-loses-sign-below-one-unit",
+      "expect": "no_go",
+      "prompt_digest": "sha256:99c72ae2d4375d2e902ce057e843d91e8536ea88b8ac9829386b7e8ea7dcb596",
+      "decision": "no_go",
+      "report_digest": "sha256:14622b8fb913ece840bda1c90ecf2376bbb82222483352d12fa8e54df427c761",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 5,
+        "prompt_digest": "sha256:99c72ae2d4375d2e902ce057e843d91e8536ea88b8ac9829386b7e8ea7dcb596",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh7t8pf9t9bb9kkcrwf402"
+      }
+    },
+    {
+      "id": "control-transfer",
+      "expect": "go",
+      "prompt_digest": "sha256:b616a39e3a22d37691d71cf5c8506eb4d4a733215d5b5f644100598cdeaa9c35",
+      "decision": "go",
+      "report_digest": "sha256:198de2d5ff8762e43a3cf3b84d619911412889cba349eb2585aac0a8a694e9df",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 7,
+        "prompt_digest": "sha256:b616a39e3a22d37691d71cf5c8506eb4d4a733215d5b5f644100598cdeaa9c35",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh8qq0fabr9bz04th2k94z"
+      }
+    },
+    {
+      "id": "control-lowstock",
+      "expect": "go",
+      "prompt_digest": "sha256:f583f8166643dab31c6d967f9b842faf119c179d2e7bea4e9ada5df1718878e6",
+      "decision": "go",
+      "report_digest": "sha256:97099d3237814712003d1da2bab028b4baba16508052859dcd966a73d7c5c6e9",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 2,
+        "prompt_digest": "sha256:f583f8166643dab31c6d967f9b842faf119c179d2e7bea4e9ada5df1718878e6",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh5mm0f91shneb407k94ck"
+      }
+    },
+    {
+      "id": "control-formatcents",
+      "expect": "go",
+      "prompt_digest": "sha256:fd30257fc01dee34e98d0066f24bee386435bf7d5e283c6b949a8bfb46c9d550",
+      "decision": "go",
+      "report_digest": "sha256:8f9213a54e3b1cd0bc2d3f7fb30c8e595019fe8fd1625c543de7f02fcdc0d995",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 3,
+        "prompt_digest": "sha256:fd30257fc01dee34e98d0066f24bee386435bf7d5e283c6b949a8bfb46c9d550",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh5s4tf99v5cqgxw9zhqxy"
+      }
+    },
+    {
+      "id": "control-sku-package",
+      "expect": "go",
+      "prompt_digest": "sha256:d624fafd0194eb596c4e5cbb355562e995aded013f41d488e855a80be4a63b0e",
+      "decision": "go",
+      "report_digest": "sha256:a41c29b1872aa27444235a468be5f93b0a77cc6f49c73e17a9354292408b965e",
+      "evidence": {
+        "run_id": "f3a2245cc79497f6b96e4beebbe985df",
+        "ran_at": "2026-10-23T23:22:19Z",
+        "seq": 0,
+        "prompt_digest": "sha256:d624fafd0194eb596c4e5cbb355562e995aded013f41d488e855a80be4a63b0e",
+        "route": {
+          "executor": "exe_01m5ky2j22e7vs9yhzt87t9m4m",
+          "family": "deepseek",
+          "adapter": "http-chat",
+          "model": "deepseek-v4.1-flash",
+          "destination": "ollama-cloud",
+          "endpoint": "https://ollama.com/v1"
+        },
+        "adapter_digest": "sha256:6e9eaf113050c4608d18110ed05e7fdb49a5594ac18083a7443bfa8faef9a184",
+        "suite_digest": "sha256:0441199989964d133983bebc14310a2d4749f2467405a36c0c8c44b4f0a9b5d2",
+        "call": "cal_01m5nh523mf8h9n3042kt8py83"
+      }
+    }
+  ],
+  "no_go_on_defects": 4,
+  "go_on_controls": 4,
+  "qualified": true
+}
