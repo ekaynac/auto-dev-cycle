@@ -3,17 +3,24 @@
 // The guard's loader: go list in the prepared image, its output checked,
 // for the type checks' imports.
 //
-// P14e-attr (#226 entries 148 and 168): the guard's own failures are the
-// host's, its run's error (ErrGuardRun), never a refusal, so they never
-// repair the build: a go list that failed but on boxList's positive
-// evidence (errRefused), the child not dispatched, not started or ended
-// without its result, a panic in the guard or its service, and the type
-// check's or the whole run's deadline. Its acting half is closed. The
-// residual is attribution inside what boxList counts as positive evidence
-// (go list's own nonzero exit, a bound its run broke) and inside the type
-// checks (an export-data read failing): such a host fault may still be a
-// refusal, one repair round with a misleading finding, never an
-// acceptance.
+// P14e-attr (#226 entries 148, 168 and 170): the guard's own failures are
+// the host's, its run's error (ErrGuardRun), never a refusal, so they never
+// repair the build: the child not dispatched, not started or ended without
+// its result; a panic in the guard or its service; the type check's or the
+// whole run's deadline; and every listing failure but one. A listing's
+// failure is the candidate's only when it is of the candidate's version,
+// on evidence against its code (errRefused: go list's own exit 1-124 as
+// the list script records it, $r/golist; a measured bound its run broke;
+// an input refused, listable), and the base's listing on the same
+// platform succeeded in the same guard run (listVerdict). A signal, the
+// script's own failures, an unmeasured tree, a cleanup, the base's own
+// failure, and a candidate's listing on a platform the base never listed
+// are the host's. Its acting half is closed. What remains (each a refusal
+// that repairs the build, up to the rounds rail): a host fault that strikes
+// only the candidate's listing, after the base's succeeded on the platform,
+// and exits go list 1-124 (a full results mount mid-write, a module cache
+// entry only the candidate's go.mod needs missing from the image), and an
+// export-data read failing inside the type checks.
 package accept
 
 import (
@@ -34,6 +41,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
@@ -58,20 +66,27 @@ var goImage = []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "GOPATH=/go", "GO
 // writes go's version into $1/version. A miss in the image's read-only
 // build cache (a platform or package it was not warmed for: an error
 // naming the cache or a read-only file system) lists again with a cold
-// cache in the run's /tmp.
-const listScript = `set -eu
+// cache in the run's /tmp. go list's own status is $1/golist (Opus #412
+// B3): nonzero, the script stops there and exits 0; every other failure of
+// the script's own exits listScriptFailed, never go list's.
+const listScript = `set -u
 r=$1
 shift
-go env GOVERSION >"$r/version"
+go env GOVERSION >"$r/version" || exit 3
 f='{{.ImportPath}}{{"\t"}}{{.Export}}{{"\t"}}{{with .Error}}{{printf "%q" .Err}}{{end}}'
+: >"$r/list" || exit 3
 go list -e -export -deps -f "$f" -- "$@" >"$r/list"
-if cut -f3 "$r/list" | grep -qF -e 'read-only file system' -e "$GOCACHE"; then
+s=$?
+if [ "$s" -eq 0 ] && cut -f3 "$r/list" | grep -qF -e 'read-only file system' -e "$GOCACHE"; then
   GOCACHE=/tmp/gocache go list -e -export -deps -f "$f" -- "$@" >"$r/list"
+  s=$?
 fi
-mkdir "$r/x"
+echo "$s" >"$r/golist" || exit 3
+[ "$s" -eq 0 ] || exit 0
+mkdir "$r/x" || exit 3
 awk -F '\t' 'NR == FNR { h[$0] = 1; next } $2 != "" { n = $2; sub(/.*\//, "", n); if (!(n in h)) print $2 }' "$r/have" "$r/list" |
-  xargs -r -d '\n' cp -t "$r/x/" --
-rm -- "$r/have"
+  xargs -r -d '\n' cp -t "$r/x/" -- || exit 3
+rm -- "$r/have" || exit 3
 `
 
 // SandboxLister is the production Lister (operator answer "loader b"): go
@@ -209,6 +224,9 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	} else if cerr != nil {
 		return nil, cerr
 	}
+	if err := goListStatus(filepath.Join(out, "golist")); err != nil { // go list's own status, as copied out, before the listing is read (Opus #412 B3)
+		return nil, err
+	}
 	if err := checkOut(out, x, held); err != nil {
 		return nil, err
 	}
@@ -222,20 +240,57 @@ var errRefused = errors.New("the listing failed on the candidate")
 // refused is err, the candidate's (errRefused).
 func refused(err error) error { return fmt.Errorf("%w: %w", errRefused, err) }
 
-// workloadFailed reports whether err, a sandbox run's, is positive
-// evidence against the candidate: go list's own exit status observed
-// (sandbox.WorkloadExit), or a bound its run broke (sandbox.ErrLeft); never
-// with its container's removal failing (sandbox.ErrCleanup), which is the
-// controller's whatever the run did.
+// workloadFailed reports whether err, a sandbox run's, is evidence against
+// the candidate: a bound its run broke (sandbox.ErrLeft), measured
+// (never with ErrUnmeasured: Opus #412 B1), and never with its container's
+// removal failing (sandbox.ErrCleanup), which is the controller's whatever
+// the run did. The run's own exit status (sandbox.WorkloadExit) never is:
+// go list's own status is the script's $r/golist (goListStatus); the
+// script's other failures, and a signal, are the host's (Opus #412 B2, B3).
 func workloadFailed(err error) bool {
-	var w *sandbox.WorkloadExit
-	switch {
-	case errors.Is(err, sandbox.ErrCleanup):
-		return false
-	case errors.Is(err, sandbox.ErrLeft):
-		return true
+	return errors.Is(err, sandbox.ErrLeft) && !errors.Is(err, sandbox.ErrUnmeasured) && !errors.Is(err, sandbox.ErrCleanup)
+}
+
+// goListStatus is the listing's verdict from go list's own status, the
+// file at p the script wrote (a few bytes, read bounded): nil for 0; the
+// candidate's (errRefused, goListOwn) for go list's own exit 1-124; the
+// host's (ErrGuardRun) for a signal (128 and above), a missing or
+// malformed file, anything else (Opus #412 B2, B3).
+func goListStatus(p string) error {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
 	}
-	return errors.As(err, &w)
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		_ = f.Close()
+		return errors.Join(err, fmt.Errorf("go list's status is no regular file"))
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 16))
+	if err != nil {
+		return err
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return fmt.Errorf("go list's status %.16q: %w", b, err)
+	}
+	return goListExit(code, fmt.Errorf("go list exited %d", code))
+}
+
+// goListExit is go list's own exit code's verdict (one rule: the sandbox's
+// listing, goListStatus, and LocalLister's): nil for 0; the candidate's
+// evidence (errRefused) for 1-124, its own error; the host's (ErrGuardRun)
+// otherwise, a signal (128 and above) included (Opus #412 B2). Whether the
+// evidence is a refusal is listVerdict's: the base's listing must have
+// succeeded on the platform (#226 entry 170).
+func goListExit(code int, err error) error {
+	switch {
+	case code == 0:
+		return nil
+	case code >= 1 && code <= 124:
+		return refused(err)
+	}
+	return fmt.Errorf("%w: %w", ErrGuardRun, err)
 }
 
 // readListing reads a listing's version and list, each bounded before it
@@ -302,7 +357,7 @@ func checkOut(out, x string, held map[string]bool) error {
 		return err
 	}
 	for _, e := range entries {
-		if !slices.Contains([]string{"list", "version", "x"}, e.Name()) {
+		if !slices.Contains([]string{"list", "version", "x", "golist"}, e.Name()) {
 			return fmt.Errorf("an unexpected output (%.40q)", e.Name())
 		}
 	}

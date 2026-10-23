@@ -186,8 +186,8 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 	out, stderr, err := drain(ctx, cmd, maxList, maxStderr)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("go list: %w", context.Cause(ctx))
-	} else if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() > 0 { // go list's own nonzero exit: positive evidence on the candidate, as boxList's (errRefused)
-		return nil, refused(fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)])))
+	} else if exit := (*exec.ExitError)(nil); errors.As(err, &exit) { // go list's own exit: goListExit's one rule, as boxList's
+		return nil, goListExit(exit.ExitCode(), fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)])))
 	} else if err != nil {
 		return nil, fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)]))
 	}
@@ -473,7 +473,7 @@ func (ty *typer) need(files []*ast.File) error {
 	if ty.r.listRuns++; ty.r.lister != nil && ty.r.listRuns > maxListRuns {
 		err = errors.New("over the guard's go list bound")
 	} else if ty.r.lister != nil {
-		ctx, cancel := context.WithDeadline(ty.r.ctx, ty.r.listEnd)
+		ctx, cancel := context.WithDeadline(context.WithValue(ty.r.ctx, baseListing{}, ty.t == ty.r.trees[0]), ty.r.listEnd)
 		got, err = ty.r.lister(ctx, ty.r.dir, ty.platform, ty.gomod, ty.gosum, ext)
 		cancel()
 	}

@@ -117,6 +117,7 @@ type childMsg struct {
 	gomodRef         int // 1 + the index of an earlier listing's payload, 0 none (Astra #293 r2 #2)
 	gosumRef         int
 	paths            []string
+	base             bool // a listing of the base's version, not the candidate's (#226 entry 170)
 	blocks, warnings []Block
 	err              string
 	erred            bool
@@ -145,6 +146,7 @@ func (m childMsg) frame() []byte {
 	case 'l':
 		str(m.platform[0])
 		str(m.platform[1])
+		b = append(b, byte(b2i(m.base)))
 		opt(m.gomod, m.gomodRef)
 		opt(m.gosum, m.gosumRef)
 		num(len(m.paths))
@@ -238,6 +240,7 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 		m.blob, m.max = str(64), int64(num(int(maxFile), 0))
 	case 'l':
 		m.platform = [2]string{str(16), str(16)}
+		m.base = bit()
 		m.gomod, m.gosum = opt(), opt()
 		for n := num(maxResultEntries, 1); len(m.paths) < n && !bad; { // as main lists them: bounded by the frame (Opus #339 M2)
 			m.paths = append(m.paths, str(maxFrame))
@@ -388,10 +391,9 @@ type service struct {
 	readLeft        int64
 	requests, lists int
 	readErr         error
-	latched         bool   // a service panicked (every failure latched here is a panic, a refusal included)
-	failed          string // the first panic, the run's error (ErrGuardRun) whatever the child says
-	listRefused     string // a listing the candidate's code failed (errRefused): the result must block (Astra #287 r2 #5)
-	listDidNotRun   error  // any other listing's failure (ErrGuardRun, the host's): the result is that error
+	latched         bool      // a service panicked (every failure latched here is a panic, a refusal included)
+	failed          string    // the first panic, the run's error (ErrGuardRun) whatever the child says
+	listings        []listing // every listing's version, platform and error: listVerdict's
 }
 
 // converse serves the child on in and out until its result (ok), ctx's end
@@ -415,12 +417,12 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
 				return blocks, warnings, s.readErr, true, nil
-			case s.listDidNotRun != nil: // no verdict: a listing it needed did not run
-				return nil, nil, s.listDidNotRun, true, nil
+			case listHost(s.listings) != nil: // no verdict: a listing failed on the host
+				return nil, nil, listHost(s.listings), true, nil
 			case s.latched: // a service's panic: the guard's run failed, whatever the child says (#226 entry 168)
 				return nil, nil, guardRun(s.failed), true, nil
-			case s.listRefused != "" && len(blocks) == 0:
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listRefused, false, false}), warnings, nil, true, nil
+			case listRefusal(s.listings) != "" && len(blocks) == 0: // the candidate's listing failed (Astra #287 r2 #5): never clean
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", listRefusal(s.listings), false, false}), warnings, nil, true, nil
 			case c.erred:
 				return blocks, warnings, errors.New(c.err), true, nil
 			}
@@ -477,15 +479,53 @@ func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	lctx, cancel := context.WithDeadline(ctx, s.req.ListEnd)
 	defer cancel()
 	l, err := s.list(lctx, s.req.Dir, c.platform, c.gomod, c.gosum, c.paths)
-	switch {
-	case err == nil:
-	case errors.Is(err, errRefused): // positive evidence about the candidate's code (boxList): a block
-		s.listRefused = cmp.Or(s.listRefused, "unverifiable: go list failed ("+errText(err)+")")
-	case s.listDidNotRun == nil: // anything else, classified or not, is the host's (#226 entry 168)
-		s.listDidNotRun = guardRun("go list failed (" + errText(err) + ")")
-	}
+	s.listings = append(s.listings, listing{base: c.base, platform: c.platform, err: err}) // bounded: maxListRuns
 	return procMsg{Listed: l, Err: errText(err), Erred: err != nil}
 }
+
+// baseListing is the context key of a listing's version: true for the
+// base's (typer.need sets it; the child's lister sends it).
+type baseListing struct{}
+
+// listing is one listing a guard run made: its version, platform and error.
+type listing struct {
+	base     bool
+	platform [2]string
+	err      error
+}
+
+// listVerdict is the one rule over a guard run's listings (#226 entries
+// 168 and 170): a failed listing is the candidate's (its refusal, the
+// first's text) only when it is of the candidate's version, its failure is
+// evidence against the candidate's code (errRefused: go list's own exit
+// 1-124, a bound its run broke, an input refused), and the base's listing
+// on the same platform, in the same run, succeeded. Any other failed
+// listing is the host's (ErrGuardRun), which wins: the base's failing, a
+// candidate's on a platform whose base listing failed or never ran, and
+// every error that is not errRefused.
+func listVerdict(ls []listing) (refusal string, host error) {
+	ok := map[[2]string]bool{}
+	for _, l := range ls {
+		if l.base && l.err == nil {
+			ok[l.platform] = true
+		}
+	}
+	for _, l := range ls {
+		switch {
+		case l.err == nil:
+		case !l.base && errors.Is(l.err, errRefused) && ok[l.platform]:
+			refusal = cmp.Or(refusal, "unverifiable: go list failed ("+errText(l.err)+")")
+		case host == nil:
+			host = guardRun("go list failed (" + errText(l.err) + ")")
+		}
+	}
+	return refusal, host
+}
+
+// listHost and listRefusal are listVerdict's two halves.
+func listHost(ls []listing) error { _, h := listVerdict(ls); return h }
+
+func listRefusal(ls []listing) string { r, _ := listVerdict(ls); return r }
 
 // child runs the guard in this process for the controller on in and out.
 func child(in io.Reader, out io.Writer) int {
@@ -521,8 +561,9 @@ func child(in io.Reader, out io.Writer) int {
 			sent[string(v)] = len(sent) + 1
 			return v, 0
 		}
-		list = func(_ context.Context, _ string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
-			m := childMsg{op: 'l', platform: pl, paths: paths}
+		list = func(ctx context.Context, _ string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+			base, _ := ctx.Value(baseListing{}).(bool)
+			m := childMsg{op: 'l', platform: pl, paths: paths, base: base}
 			m.gomod, m.gomodRef = ref(gomod)
 			m.gosum, m.gosumRef = ref(gosum)
 			rep := call(m)
