@@ -1,0 +1,1 @@
+{"schema":"adc.review-report/v1","elapsed_ms":8015,"candidate_round":1,"roster":[{"executor":"exe_01m5ky2j22e7vs9yhzt87t9m4m","family":"deepseek"}],"outcome":"found","reason":"completed_with_findings","decision":"no_go","findings":[{"severity":"medium","title":"Existing invalid-SKU test case was removed"}],"repair_round":2,"charge_links":["cal_01m5n7rxsqe0kaqrg4kxv3dmc5"]}

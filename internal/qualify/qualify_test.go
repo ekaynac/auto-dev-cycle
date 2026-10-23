@@ -1256,9 +1256,17 @@ func TestTheReleasesCopyIsTheSuite(t *testing.T) {
 	}
 	// Records committed where the suite holds them (P31b), as the release
 	// ships them, are read from RecordsDir, and the suite's digest skips
-	// them (Opus #413 L4).
+	// them (Opus #413 L4). The copy holds the committed records already
+	// (Opus #426 B1); records planted beside them are read too.
 	shipped := filepath.Join(lib, Dir, "records")
-	if err := os.Mkdir(shipped, 0o755); err != nil {
+	committed, err := readRecords(RecordsDir(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copied, err := readRecords(shipped); err != nil || len(copied) != len(committed) {
+		t.Fatalf("the release's copy of the committed records: %v, %d of %d", err, len(copied), len(committed))
+	}
+	if err := os.MkdirAll(shipped, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -1271,8 +1279,38 @@ func TestTheReleasesCopyIsTheSuite(t *testing.T) {
 	if again, err := Load(lib); err != nil || again.Digest != s.Digest {
 		t.Errorf("the suite's digest with its records: %v %s", err, again.Digest)
 	}
-	if err := Reviewers(lib, RecordsDir(lib), []types.RegistryExecutor{reviewerOf(route)}); err != nil {
-		t.Errorf("the shipped records: %v", err)
+	routes := map[types.QualifiedRoute]bool{route: true} // the committed routes too, as shipped
+	for _, r := range committed {
+		routes[r.rec.Route] = true
+	}
+	for r := range routes {
+		if err := Reviewers(lib, RecordsDir(lib), []types.RegistryExecutor{reviewerOf(r)}); err != nil {
+			t.Errorf("the shipped records of %s: %v", r.Executor, err)
+		}
+	}
+}
+
+// Opus #426 M1: the committed records qualify this tree. For every route
+// they hold, Reviewers over the repository's own records is nil: a change
+// that stales them (the adapter's sources, MaxTurns, MaxOutputTokens, the
+// suite, the review prompt) fails here, in the PR that makes it, which then
+// records the route again (fixtures/m1/review-qualification/README.md).
+func TestTheCommittedRecordsQualify(t *testing.T) {
+	recs, err := readRecords(RecordsDir(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := map[types.QualifiedRoute]bool{}
+	for _, r := range recs {
+		routes[r.rec.Route] = true
+	}
+	if len(routes) == 0 {
+		t.Fatal("no committed record (P31b): review cannot be active")
+	}
+	for r := range routes {
+		if err := Reviewers(root, RecordsDir(root), []types.RegistryExecutor{reviewerOf(r)}); err != nil {
+			t.Errorf("the committed records no longer qualify %s (%s %s at %s): %v; record the route again", r.Executor, r.Adapter, r.Model, r.Endpoint, err)
+		}
 	}
 }
 
