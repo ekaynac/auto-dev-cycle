@@ -104,6 +104,7 @@ Initial hold registry (M0 defines; later milestones add):
 | `awaiting_input` | approval that `answers` the owed input id (04) | operator or supervisor |
 | `evidence_restore_pending` | lease settlement of the `evidence_target` group (restore verified, 13) | system, then (`escalate_to`) the environment owner the profile names (05); the operator when it names none |
 | `precondition_failed` | probe (precondition passes) | the environment owner named in the profile |
+| `no_sandbox` | config_change (a start of adcd with a sandbox root; M1 P22a, #226 entry 171) | operator |
 
 **`page_after` defaults come from data** (nöbetçi stall profile, 382 terminals: long tails of 4–17 h sat on holds
 whose signal was a human act or unwatched external state). Defaults:

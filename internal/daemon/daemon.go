@@ -263,6 +263,9 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	settling, stopSettle := context.WithTimeout(ctx, settleBound) // after recovery and the sweep, which end the attempts a crash cut (Opus #409 M1); bounded, the rest the passes' (Opus #411 L1)
 	eg.settleEnded(settling)
 	stopSettle()
+	if launch, _ := capabilities().Of("launch"); launch.Active() && run == nil { // #226 entry 171: never refused, never stuck without a hold
+		fmt.Fprintln(logw, "adcd: launch is active with no --sandbox-root: builds hold no_sandbox")
+	}
 	loop := reconciler(d, reg, images, eg, run, cfg.reconcileEvery, reviewsOf(reg, logw), logw) // its passes settle too
 	d.gates = loop.Gates
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,

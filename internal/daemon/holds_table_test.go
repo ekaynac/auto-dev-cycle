@@ -68,6 +68,8 @@ var holdRows = []holdRow{
 	{"dispatch.Dispatcher.miss", "wrong_owner", "imageSignal(card.Image)", "image i", "daemon.placer.Unblocked", "the project's pinned image resolves (placer.imageReady)"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `PlacementSignal("destination " + string(e.Destination.ID))`, "placement: destination d", "daemon.placer.Unblocked", "Configured: the credential is held"},
 	{"dispatch.Dispatcher.attemptRail", "budget_rail", "graph.RailAttempts", "rail:attempts_per_round", "authority.TaskRaiseRailHandler.Logic", "task.raise_rail of attempts_per_round"},
+	// No sandbox root (#226 entry 171): no runner, every placed node held before its match.
+	{"daemon.placer.Place", "no_sandbox", "runnerSandbox", "runner: sandbox", "daemon.placer.Unblocked", "a start with --sandbox-root: its runner clears it (runner.cleared)"},
 	// The runner's holds (runner.holdOn): Unblocked asks runner.cleared.
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerDirs", "runner: dirs", "daemon.placer.Unblocked", "the runner's directories are directories (dirsReady)"},
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerImage", "runner: image", "daemon.placer.Unblocked", "the pinned image resolves (placer.imageReady)"},

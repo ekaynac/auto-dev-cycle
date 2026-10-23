@@ -21,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // attemptBound is one attempt's whole bound: a lease's deadline is its
@@ -36,7 +37,15 @@ type placer struct {
 	// ready is the runner's check that its hold on node (signal) may clear
 	// (runner.cleared); nil with no runner: its holds stay.
 	ready func(tx *eventstore.Tx, node types.NodeID, signal string) (bool, error)
+	// noSandbox: adcd started with no sandbox root, so no runner runs what
+	// it would place (#226 entry 171; plan §0.3): every node is held
+	// no_sandbox instead, nothing matched or leased.
+	noSandbox bool
 }
+
+// runnerSandbox is a no_sandbox hold's signal: a runner's (Unblocked asks
+// runner.cleared, which only a start with a sandbox root has).
+var runnerSandbox = reconcile.RunnerSignal("sandbox")
 
 var _ reconcile.Placer = placer{}
 
@@ -53,8 +62,18 @@ func (e *placeConfig) Error() string { return "daemon: " + e.detail }
 // configuration (dispatch's refusals, and a profile pinning other than one
 // image or a registry with no builder: placeConfig), so a node no match
 // can place waits held, never retried every pass. Any other error (a
-// store's, a node placed meanwhile) is the loop's to log.
+// store's, a node placed meanwhile) is the loop's to log. With no sandbox
+// root (noSandbox) every node is held no_sandbox, the operator's, before
+// any match: a start with one clears it (runner.cleared on runnerSandbox).
 func (p placer) Place(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
+	if p.noSandbox {
+		id, err := ids.New("hld")
+		if err != nil {
+			return nil, err
+		}
+		return graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldNoSandbox, SignalInstance: runnerSandbox,
+			Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
+	}
 	card, exe, err := p.card(tx, node)
 	var cfg *placeConfig
 	if errors.As(err, &cfg) {

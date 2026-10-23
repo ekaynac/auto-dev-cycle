@@ -218,8 +218,8 @@ func IsRunnerSignal(signal string) bool { return strings.HasPrefix(signal, runne
 // to the code that clears it, the one rule Observe collects holds by
 // (#226 entry 156; Opus #400 M1): budget_rail on the day's USD rail
 // (ClearRail: Placer.Reopened); source_invalid_config on a placement or a
-// runner signal, and wrong_owner on a launch's missing image (Unblock:
-// Placer.Unblocked); reviewer_unavailable (ReviewUnblock: Reviewer.Unheld).
+// runner signal, wrong_owner on a launch's missing image, and no_sandbox
+// on a runner signal (Unblock: Placer.Unblocked); reviewer_unavailable (ReviewUnblock: Reviewer.Unheld).
 // The loop leaves every other hold to its own clearer (an answer,
 // task.raise_rail) or to its stated terminal state.
 func Offered(kind, signal string) bool {
@@ -230,6 +230,8 @@ func Offered(kind, signal string) bool {
 		return dispatch.IsPlacementSignal(signal) || IsRunnerSignal(signal)
 	case vocab.HoldWrongOwner:
 		return dispatch.IsImageSignal(signal)
+	case vocab.HoldNoSandbox: // a placed node with no runner (#226 entry 171): a start with a sandbox root clears it
+		return IsRunnerSignal(signal)
 	}
 	return kind == vocab.HoldReviewerUnavailable
 }

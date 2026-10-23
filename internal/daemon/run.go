@@ -929,6 +929,8 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 	var n int
 	var until string
 	switch {
+	case signal == runnerSandbox: // a runner runs: adcd started with a sandbox root (#226 entry 171)
+		return true, nil
 	case signal == runnerDirs:
 		return r.dirsReady(), nil
 	case signal == runnerFailed:

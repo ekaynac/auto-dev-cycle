@@ -16,7 +16,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
-	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
@@ -31,6 +30,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -80,8 +80,8 @@ const reconcileEvery = 5 * time.Second
 // the credentials the placer checks and the settlement driver each pass
 // runs (Opus #409 M1); nil: neither.
 func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, eg *egress, run *runner, every time.Duration, reviews bool, logw io.Writer) *reconcile.Loop {
-	admission, _ := capability.Of("admission")
-	launch, _ := capability.Of("launch")
+	admission, _ := capabilities().Of("admission")
+	launch, _ := capabilities().Of("launch")
 	if every == 0 {
 		every = reconcileEvery
 	}
@@ -107,6 +107,8 @@ func executorOf(d *Daemon, reg registry.Registry, images dispatch.Images, creds 
 	pl := placerOf(reg, images, creds)
 	if run != nil {
 		pl.ready = run.cleared
+	} else {
+		pl.noSandbox = true // no runner: placed nodes hold no_sandbox, and a start with a sandbox root clears them (#226 entry 171)
 	}
 	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: pl,
 		Planner: planner{blobs: d.blobs, env: env(d, reg)}}
@@ -136,16 +138,25 @@ func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry,
 	if err != nil {
 		return nil, err
 	}
-	clones, exchanges, sockets := filepath.Join(cfg.StateDir, "clones"), cfg.Sandbox.ExchangeRoot(), filepath.Join(cfg.Sandbox.Root, "runs", "gateway")
+	return runnerOn(ctx, d, cfg.StateDir, *cfg.Sandbox, *cfg.Sandbox, reg, eg, &containerAdapter{Box: *cfg.Sandbox, Want: want}, logw)
+}
+
+// runnerOn is runnerOf's runner on box, its images and adapters: the
+// sandbox itself for each in adcd; the activation's rows give the
+// processes' boundaries fakes (an in-process adapter, a sandbox running
+// commands in place) and keep everything else adcd's.
+func runnerOn(ctx context.Context, d *Daemon, stateDir string, box sandbox.Host, images dispatch.Images, reg registry.Registry, eg *egress, adapters AdapterStarter,
+	logw io.Writer) (*runner, error) {
+	clones, exchanges, sockets := filepath.Join(stateDir, "clones"), box.ExchangeRoot(), filepath.Join(box.Root, "runs", "gateway")
 	for _, dir := range []string{clones, exchanges, sockets} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 	}
-	return &runner{ctx: ctx, store: d.store, system: d.system, blobs: d.blobs, place: placerOf(reg, *cfg.Sandbox, eg.gw), env: env(d, reg),
+	return &runner{ctx: ctx, store: d.store, system: d.system, blobs: d.blobs, place: placerOf(reg, images, eg.gw), env: env(d, reg),
 		host: &adapterhost.Host{Store: d.store, Blobs: d.blobs, Actor: string(d.system.Actor()), Principal: d.system, Root: exchanges},
-		box:  *cfg.Sandbox, clones: clones, sockets: sockets, gateway: eg.open,
-		adapters: &containerAdapter{Box: *cfg.Sandbox, Want: want}, log: logw}, nil
+		box:  box, clones: clones, sockets: sockets, gateway: eg.open,
+		adapters: adapters, log: logw}, nil
 }
 
 // placerOf is adcd's placer over reg: the task's rails (authority.Rails)
@@ -215,7 +226,7 @@ func handlers() map[string]authority.Handler {
 	hs[authority.GrantRevokeAction] = authority.GrantRevokeHandler{}
 	hs[authority.GrantExtendAction] = authority.GrantExtendHandler{}
 	for action, h := range gated() {
-		if c, _ := capability.Gating(action); c.Active() {
+		if c, _ := capabilities().Gating(action); c.Active() {
 			hs[action] = h
 		}
 	}
@@ -290,7 +301,7 @@ func logics(az authority.Authorizer) map[string]logic {
 // (I15 effect).
 func effectKinds() (eventstore.EffectKinds, error) {
 	defs, out := modelcall.Effects(), eventstore.EffectKinds{}
-	for _, k := range capability.EffectKinds() {
+	for _, k := range capabilities().EffectKinds() {
 		d, ok := defs[k]
 		if !ok {
 			return nil, fmt.Errorf("daemon: the active effect kind %s has no definition in this build", k)
@@ -306,7 +317,7 @@ func effectKinds() (eventstore.EffectKinds, error) {
 // on append and on replay.
 func nodeKinds() []types.NodeKind {
 	ks := slices.Clone(graph.M1Kinds)
-	for _, k := range capability.NodeKinds() {
+	for _, k := range capabilities().NodeKinds() {
 		ks = append(ks, types.NodeKind(k))
 	}
 	return ks

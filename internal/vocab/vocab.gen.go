@@ -169,6 +169,7 @@ const (
 	HoldCapacityReleased       = "capacity_released"
 	HoldEvidenceRestorePending = "evidence_restore_pending"
 	HoldMaintenanceBoundary    = "maintenance_boundary"
+	HoldNoSandbox              = "no_sandbox"
 	HoldPreconditionFailed     = "precondition_failed"
 	HoldQuotaReset             = "quota_reset"
 	HoldReviewerUnavailable    = "reviewer_unavailable"

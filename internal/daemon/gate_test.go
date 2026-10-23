@@ -93,7 +93,23 @@ func (gateImages) Resolve(_ context.Context, ref string) (sandbox.Image, error) 
 // runs happen in place (fail: the sandbox fails every run).
 func gateWorld(t *testing.T, base string, files map[string]string, fail error) *runWorld {
 	t.Helper()
-	rw := newRunWorldWith(t, true, builder(writes(files), false, nil), func(p map[string]any) {
+	rw := newRunWorldWith(t, true, builder(writes(files), false, nil), goModule(t, base))
+	rw.untilRun(t)
+	root, err := os.MkdirTemp("/dev/shm", "adcgate")
+	if err != nil {
+		t.Fatalf("the sandbox root's runs/ needs a tmpfs of its own (/dev/shm): %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	rw.r.box = sandbox.Host{Podman: "/usr/bin/podman", Root: root, Home: "/home/adc-gate-test", Runner: &inPlace{fail: fail}}
+	rw.r.place.d.Images = gateImages{}
+	return rw
+}
+
+// goModule is gateWorld's profile edit: the project's repository a Go
+// module whose base's gate stream is base, its gate printing the tree's
+// gate-events.json.
+func goModule(t *testing.T, base string) func(map[string]any) {
+	return func(p map[string]any) {
 		src := p["repo"].(map[string]any)["url"].(string)
 		for name, body := range map[string]string{"go.mod": "module " + gateModule + "\n\ngo 1.22\n", "gate-events.json": base} {
 			if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
@@ -106,16 +122,7 @@ func gateWorld(t *testing.T, base string, files map[string]string, fail error) *
 			"baseline": map[string]any{"kind": "measured", "relock_requires": "approval"}, "ownership_rules": "default",
 			"environments": []map[string]any{{"name": "ci", "owner": "operator", "facts": map[string]any{"vcs_metadata": false, "network": "none",
 				"runtime": map[string]any{"language_version": "1.22", "os": runtime.GOOS, "arch": runtime.GOARCH}}}}}
-	})
-	rw.untilRun(t)
-	root, err := os.MkdirTemp("/dev/shm", "adcgate")
-	if err != nil {
-		t.Fatalf("the sandbox root's runs/ needs a tmpfs of its own (/dev/shm): %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(root) })
-	rw.r.box = sandbox.Host{Podman: "/usr/bin/podman", Root: root, Home: "/home/adc-gate-test", Runner: &inPlace{fail: fail}}
-	rw.r.place.d.Images = gateImages{}
-	return rw
 }
 
 // gating runs rw's passes, accept's and the gate's runs through its

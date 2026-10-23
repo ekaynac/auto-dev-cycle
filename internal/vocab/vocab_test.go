@@ -281,6 +281,7 @@ func TestHoldsMatchNote02(t *testing.T) {
 		"evidence_restore_pending": {"receipt", "system", "PT1H", "environment_owner"},
 		"precondition_failed":      {"probe", "environment_owner", "PT1H", ""},
 		"capacity_released":        {"revision", "system", "PT30M", ""},
+		"no_sandbox":               {"config_change", "operator", "PT1H", ""},
 	}
 	reg, err := Load()
 	if err != nil {
