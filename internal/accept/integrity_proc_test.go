@@ -224,16 +224,18 @@ func TestProcService(t *testing.T) {
 	for name, c := range map[string]struct {
 		base    *[2]string // the base's listing's platform, nil none
 		baseErr bool
+		candOK  bool // the candidate's listing succeeds
 		refusal bool
 	}{
 		"the base's listed on its platform": {base: &amd, refusal: true},
 		"the base's failed too":             {base: &amd, baseErr: true},
 		"the base's on another platform":    {base: &arm},
 		"no base listing":                   {},
+		"the base's alone failed":           {base: &amd, baseErr: true, candOK: true},
 	} {
 		calls := 0
 		onCandidate := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
-			if calls++; c.base != nil && calls == 1 && !c.baseErr {
+			if calls++; c.base != nil && calls == 1 && !c.baseErr || calls == 2 && c.candOK {
 				return map[string]Listed{}, nil
 			}
 			return nil, refused(errors.New("go list exited 1"))
