@@ -436,7 +436,7 @@ func TestAdapterDigest(t *testing.T) {
 		"the lockfile":                    {"adapters/pnpm-lock.yaml", true},
 		"the contract's source (Astra)":   {"adapters/contract/src/adapter.ts", true},
 		"the contract's package.json":     {"adapters/contract/package.json", true},
-		"the generated validators":        {"gen/ts/validators.cjs", true},
+		"the adapter's validators":        {"gen/ts/adapter-validators.cjs", true},
 		"the generated formats":           {"gen/ts/formats.cjs", true},
 		"the generated package.json":      {"gen/ts/package.json", true},
 		"the workspace's package.json":    {"adapters/package.json", true},
@@ -514,7 +514,7 @@ func TestAdapterClosure(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"adapters/contract/src/adapter.ts", "gen/ts/validators.cjs", "gen/ts/formats.cjs"} {
+	for _, want := range []string{"adapters/contract/src/adapter.ts", "gen/ts/adapter-validators.cjs", "gen/ts/formats.cjs"} {
 		if !seen[want] {
 			t.Errorf("the walk never reached %s: its patterns are broken", want)
 		}

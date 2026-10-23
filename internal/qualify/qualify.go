@@ -160,13 +160,16 @@ const AdapterEntry = "adapters/http-chat/src/main.ts"
 // adapterPaths are what AdapterDigest covers, from the repository root: the
 // http-chat adapter's local runtime closure (Astra #306 M3). Its source
 // and manifest; the contract package it imports (@adc/contract), its
-// source and manifest; the generated validators that package loads and
-// the formats they load (@adc/contract-gen); the workspace's manifests and
-// lockfile, which link the packages and pin every registry dependency.
-// TestAdapterClosure walks the adapter's imports from its entry point and
-// requires every local file it reaches to be under one of them.
+// source and manifest; the generated validators that package loads, the
+// adapter wire contract's alone (adapter-validators.cjs: schemas/adapter/*
+// and what they reference; never validators.cjs, which every schema's
+// change moves: #226 entry 191), and the formats they load
+// (@adc/contract-gen); the workspace's manifests and lockfile, which link
+// the packages and pin every registry dependency. TestAdapterClosure walks
+// the adapter's imports from its entry point and requires every local file
+// it reaches to be under one of them.
 var adapterPaths = []string{"adapters/http-chat/src", "adapters/http-chat/package.json", "adapters/contract/src", "adapters/contract/package.json",
-	"gen/ts/validators.cjs", "gen/ts/formats.cjs", "gen/ts/package.json", "adapters/package.json", "adapters/pnpm-workspace.yaml", "adapters/pnpm-lock.yaml"}
+	"gen/ts/adapter-validators.cjs", "gen/ts/formats.cjs", "gen/ts/package.json", "adapters/package.json", "adapters/pnpm-workspace.yaml", "adapters/pnpm-lock.yaml"}
 
 var (
 	caseID    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,95}$`)

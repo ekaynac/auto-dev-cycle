@@ -30,7 +30,7 @@ git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$root is 
 mkdir -p -- "$out/node_modules/@adc"
 committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/http-chat/package.json adapters/http-chat/src
   adapters/contract/package.json adapters/contract/src
-  gen/ts/package.json gen/ts/validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini
+  gen/ts/package.json gen/ts/adapter-validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini
   fixtures/t0/go-mini fixtures/m1/profiles fixtures/m1/config/groups.json fixtures/m1/config/registry-stub.json
   fixtures/m1/stub-provider/server.mjs fixtures/m1/stub-provider/scenarios fixtures/m1/cases fixtures/m1/stub
   fixtures/m1/review-qualification adapters/package.json adapters/pnpm-workspace.yaml adapters/pnpm-lock.yaml
@@ -40,7 +40,7 @@ for p in "${committed[@]}"; do
 done
 git -C "$root" archive --format=tar HEAD -- "${committed[@]}" | tar -C "$out" -xf - ||
   die "copying the committed files failed"
-for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/http-chat/src/main.ts adapters/contract/src/index.ts gen/ts/validators.cjs; do
+for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/http-chat/src/main.ts adapters/contract/src/index.ts gen/ts/adapter-validators.cjs; do
   [[ -f "$out/$f" ]] || die "$f is missing"
 done
 [[ -f "$out/fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json" ]] || die "py-mini-feature-1 is missing"

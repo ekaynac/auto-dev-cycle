@@ -20,9 +20,13 @@ import (
 // installed lib/adc (make dist's dist/linux-ARCH/lib/adc; P22a-5d), relative
 // to it: the pinned Node, the adapter, the contract package, gen/ts and the
 // production node_modules, whose @adc/contract and @adc/contract-gen are
-// relative symlinks into the same root. It runs as ROOT/node/bin/node
-// ROOT/adapters/http-chat/src/main.ts. The prepared images carry exactly
-// this, under /opt/adc/lib (scripts/prepare-go-image.sh).
+// relative symlinks into the same root. A release's gen/ts holds only the
+// adapter wire contract's validators, their formats and its package.json
+// (scripts/dist-adapters.sh), never every schema's validators, so a change
+// to another schema leaves the digest (#226 entry 191). It runs as
+// ROOT/node/bin/node ROOT/adapters/http-chat/src/main.ts. The prepared
+// images carry exactly this, under /opt/adc/lib
+// (scripts/prepare-go-image.sh).
 var AdapterClosure = []string{"node/bin/node", "adapters/http-chat", "adapters/contract", "gen/ts", "node_modules"}
 
 // The closure's bounds: a few hundred entries and Node's ~120 MiB today.
@@ -31,34 +35,43 @@ const (
 	maxAdapterBytes   = 1 << 30
 )
 
-// AdapterDigest is sha256:HEX over the canonical listing of
-// AdapterClosure's paths under root, one line each, sorted by path: a
-// directory "d PATH", a regular file "f PATH X SHA256" (X is x when any
-// execute bit is set, else -; no other mode bit counts), a symlink
-// "l PATH TARGET", never followed. A link's target must be relative,
-// clean, with its ".." only leading, and lexically within the closure:
-// so the closure holds everything the adapter reaches through it. Any
-// other file type, a missing closure path, a closure path's parent that is
-// not a real directory, a name or target with a space or a control
-// character, or more than the bounded entries or bytes is an error. Root
-// is opened with os.OpenRoot: nothing outside it is read. Two copies of a
-// closure have the same digest; a changed byte, execute bit, file or link
-// target changes it.
+// AdapterDigest is ClosureDigest of AdapterClosure under root.
 func AdapterDigest(root string) (string, error) {
-	r, err := os.OpenRoot(root)
+	d, err := ClosureDigest(root, AdapterClosure)
 	if err != nil {
 		return "", fmt.Errorf("sandbox: the adapter closure: %w", err)
 	}
+	return d, nil
+}
+
+// ClosureDigest is sha256:HEX over the canonical listing of closure's
+// paths under root, one line each, sorted by path: a directory "d PATH", a
+// regular file "f PATH X SHA256" (X is x when any execute bit is set, else
+// -; no other mode bit counts), a symlink "l PATH TARGET", never followed.
+// A link's target must be relative, clean, with its ".." only leading, and
+// lexically within the closure: so the closure holds everything reached
+// through it. Any other file type, a missing closure path, a closure
+// path's parent that is not a real directory, a name or target with a
+// space or a control character, or more than the bounded entries or bytes
+// is an error. Root is opened with os.OpenRoot: nothing outside it is
+// read. Two copies of a closure have the same digest; a changed byte,
+// execute bit, file or link target changes it. AdapterDigest is it of the
+// adapter's closure; any other closure is digested alike.
+func ClosureDigest(root string, closure []string) (string, error) {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return "", err
+	}
 	defer r.Close()
-	w := walker{root: r}
-	for _, top := range AdapterClosure {
+	w := walker{root: r, closure: closure}
+	for _, top := range closure {
 		for p := path.Dir(top); p != "."; p = path.Dir(p) {
 			if st, err := r.Lstat(p); err != nil || !st.IsDir() {
-				return "", fmt.Errorf("sandbox: the adapter closure: %s is not a directory", p)
+				return "", fmt.Errorf("%s is not a directory", p)
 			}
 		}
 		if err := w.walk(top); err != nil {
-			return "", fmt.Errorf("sandbox: the adapter closure: %w", err)
+			return "", err
 		}
 	}
 	slices.SortFunc(w.lines, func(a, b [2]string) int { return strings.Compare(a[0], b[0]) })
@@ -72,6 +85,7 @@ func AdapterDigest(root string) (string, error) {
 // walker lists a closure: each line as {path, line}.
 type walker struct {
 	root    *os.Root
+	closure []string
 	lines   [][2]string
 	entries int
 	bytes   int64
@@ -100,7 +114,7 @@ func (w *walker) walk(p string) error {
 		if !plainName(target) {
 			return fmt.Errorf("the link %s's target holds a space or a control character", p)
 		}
-		if !inClosure(p, target) {
+		if !inClosure(w.closure, p, target) {
 			return fmt.Errorf("the link %s points outside the closure", p)
 		}
 		w.lines = append(w.lines, [2]string{p, "l " + p + " " + target})
@@ -174,16 +188,16 @@ func plainName(s string) bool {
 }
 
 // inClosure: a link's target, read from the link's directory, stays in
-// AdapterClosure by its text alone. It is relative and clean, so its ".."
+// closure by its text alone. It is relative and clean, so its ".."
 // are only leading: they climb the link's own parents (real directories,
 // as walked) before it descends, and where it lands is a closure path or
 // below one.
-func inClosure(link, target string) bool {
+func inClosure(closure []string, link, target string) bool {
 	if path.IsAbs(target) || path.Clean(target) != target {
 		return false
 	}
 	r := path.Join(path.Dir(link), target)
-	return slices.ContainsFunc(AdapterClosure, func(c string) bool { return r == c || strings.HasPrefix(r, c+"/") })
+	return slices.ContainsFunc(closure, func(c string) bool { return r == c || strings.HasPrefix(r, c+"/") })
 }
 
 // ErrAdapter: the image's adapter is not the installed release's. It is an

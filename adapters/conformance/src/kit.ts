@@ -22,7 +22,7 @@ import { performance } from "node:perf_hooks";
 import { classify, frame, lines, maxMessageBytes, parseStrict } from "@adc/contract";
 
 type Validator = ((doc: unknown) => boolean) & { errors?: unknown };
-const validators: Record<string, Validator> = createRequire(import.meta.url)("@adc/contract-gen/validators.cjs");
+const validators: Record<string, Validator> = createRequire(import.meta.url)("@adc/contract-gen/adapter-validators.cjs");
 
 /** The adapter under test: the command the host would spawn. */
 export interface AdapterUnderTest {

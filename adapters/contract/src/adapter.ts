@@ -17,7 +17,7 @@ import { frame, lines } from "./framing.ts";
 import { parseStrict } from "./strict-json.ts";
 
 type Validator = ((doc: unknown) => boolean) & { errors?: unknown };
-const validators: Record<string, Validator> = createRequire(import.meta.url)("@adc/contract-gen/validators.cjs");
+const validators: Record<string, Validator> = createRequire(import.meta.url)("@adc/contract-gen/adapter-validators.cjs");
 
 type Envelope = "attempt" | "fencing_token" | "call";
 /** An event as an adapter yields it: serve adds the envelope. */

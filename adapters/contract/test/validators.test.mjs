@@ -27,3 +27,16 @@ test("every schema file has a validator and a types module", () => {
   assert.deepEqual(Object.keys(validators).sort(), schemas);
   for (const s of schemas) readFileSync(join(root, "gen/ts/types", `${s}.ts`));
 });
+
+// #226 entry 191: the adapter loads adapter-validators.cjs, the adapter wire
+// contract's validators alone (schemas/adapter/*), which classify every
+// shared case of those schemas as validators.cjs does.
+test("the adapter's validators are the adapter schemas', classifying as the full set does", () => {
+  const adapter = createRequire(import.meta.url)(join(root, "gen/ts/adapter-validators.cjs"));
+  const schemas = Object.keys(validators).filter((s) => s.startsWith("adapter/")).sort();
+  assert.ok(schemas.length > 0);
+  assert.deepEqual(Object.keys(adapter).sort(), schemas);
+  const cases = JSON.parse(readFileSync(join(root, "fixtures/contract/cases.json"), "utf8")).filter((c) => c.schema.startsWith("adapter/"));
+  assert.ok(cases.length > 0);
+  for (const c of cases) assert.equal(adapter[c.schema](c.doc), c.valid, `${c.name}: ${JSON.stringify(adapter[c.schema].errors)}`);
+});
