@@ -86,6 +86,10 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 			missing = append(missing, Missing{Name: in.Name, Detail: why})
 			continue
 		}
+		if AcceptRefused(r.Result) && rec.Recorded.Node.Kind != types.NodeKindBuild { // only a repair takes a refusal, as its findings; the gate takes only an accepted tree (I12 consumption): a structural wait, the build repaired (#226 entry 164)
+			missing = append(missing, Missing{Name: in.Name, Detail: "accept refused the candidate: its repair is the next round"})
+			continue
+		}
 		if src.ResultKind == types.ResultKindReviewRequirement { // no receipt: it serves at its subject's selected revision (serves)
 			resolved[in.Name] = Resolved{Result: r.Result.ID}
 			continue

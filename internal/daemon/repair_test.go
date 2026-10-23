@@ -414,3 +414,90 @@ func producerOfView(t *testing.T, rw *runWorld, node types.NodeID, kind types.Re
 	})
 	return p, nil
 }
+
+// #226 entry 164 (the lead's decision 2; I12 consumption): an accept that
+// refuses its candidate (failed/protected_path) is the candidate's fault:
+// it repairs the build as a review's no_go does, review active or not. The
+// refused round's gate is never claimed (it waits: the gate takes only an
+// accepted tree) and never held "runner: failed"; round 2's builder is told
+// why (accept's detail, the controller's text), its intent the brief and
+// the candidate only (the refusal renders no ref).
+func TestARefusedCandidateRepairsTheBuild(t *testing.T) {
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"pyproject.toml": "[x]\n"}), false, nil))
+	rw.untilRun(t)
+	if v := rw.accepting(t, nil); v.State.State != types.NodeStateStateCompleted || selectedOf(t, rw.w, v).Result.Reason != vocab.ReasonProtectedPath {
+		t.Fatalf("round 1's accept: %s", v.State.State)
+	}
+	var log bytes.Buffer
+	rw.x.Reviews = reviews{env: rw.x.Env} // adcd's (executorOf), review inactive: no registry
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, &log)
+	var two round
+	for range 12 {
+		rw.passesFor(t, 1, 0)
+		if two = roundOf(t, rw, 2); two.build.Node.ID != "" {
+			break
+		}
+	}
+	if two.build.Node.ID == "" || two.accept.Node.ID == "" || two.gate.Node.ID == "" {
+		t.Fatalf("no round 2 after a refused candidate: %+v; %s", roundOf(t, rw, 1).accept.State, log.String())
+	}
+	untilAttempt(t, rw, two.build.Node.ID)
+	one := roundOf(t, rw, 1)
+	if one.gate.State.State != types.NodeStateStateWaiting || len(one.gate.State.Holds) != 0 {
+		t.Errorf("round 1's gate over a refused tree: %s, holds %+v", one.gate.State.State, one.gate.State.Holds)
+	}
+	mi, prompt := repairIntent(t, rw, two.build.Node.ID)
+	if len(mi.Included) != 2 { // the brief and the candidate's diff
+		t.Errorf("the repair builder's intent: included %+v", mi.Included)
+	}
+	if p := string(prompt); !strings.Contains(p, "## The accept of your round 1 candidate (findings-1)") || !strings.Contains(p, "It refused it:") ||
+		!strings.Contains(p, "pyproject.toml") {
+		t.Errorf("the repair builder's prompt: %s", p)
+	}
+	if strings.Contains(log.String(), "refused") {
+		t.Errorf("an action was refused: %s", log.String())
+	}
+}
+
+// #226 entry 164: a repair round whose accept refuses its candidate is
+// repaired in turn, and the next round's review is recorded at once on the
+// refused round's requirement and roster (roundReview), as a no_go's repair
+// records it; the refused round's gate and review wait, never held.
+func TestARefusedRepairRoundCarriesItsReview(t *testing.T) {
+	files := map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}
+	rw := gateWorld(t, goEvents("TestA=pass"), files, nil)
+	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the gate: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(noGoDecision, false, nil, writes(map[string]string{"pyproject.toml": "[x]\n"})))
+	var three round
+	for range 30 {
+		rw.passesFor(t, 1, 0)
+		if three = roundOf(t, rw, 3); three.build.Node.ID != "" {
+			break
+		}
+	}
+	two := roundOf(t, rw, 2)
+	if three.build.Node.ID == "" || three.review.Node.ID == "" {
+		t.Fatalf("round 3 after round 2's refused candidate: %+v, round 2's accept %+v", three, two.accept.State)
+	}
+	if rr := selectedOf(t, rw.w, two.accept); rr.Result.Reason != vocab.ReasonProtectedPath {
+		t.Fatalf("round 2's accept: %s/%s", rr.Result.Outcome, rr.Result.Reason)
+	}
+	required := func(v graph.NodeView) types.NodeID {
+		for _, in := range v.Node.Inputs {
+			if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+				return src.Producer
+			}
+		}
+		return ""
+	}
+	if required(three.review) == "" || required(three.review) != required(two.review) {
+		t.Errorf("round 3's review takes %q, round 2's %q", required(three.review), required(two.review))
+	}
+	for _, v := range []graph.NodeView{two.gate, two.review} {
+		if v.State.State != types.NodeStateStateWaiting || len(v.State.Holds) != 0 {
+			t.Errorf("round 2's %s over a refused tree: %s, holds %+v", v.Node.Kind, v.State.State, v.State.Holds)
+		}
+	}
+}

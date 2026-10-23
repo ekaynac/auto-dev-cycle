@@ -143,7 +143,9 @@ func reviewNode(task types.TaskID, project types.ProjectID, plan, build, gate, r
 
 // Repair records the next round of node's candidate (P22a-6d; 13
 // "Successor rounds"), node a completed review whose verdict is no_go or
-// unreviewable (graph.Repair checks it), in one command:
+// unreviewable, or a completed accept that refused the candidate
+// (graph.AcceptRefused; #226 entry 164; graph.Repair checks either), in one
+// command:
 //   - the build's successor, round n+1, on its findings and its candidate
 //     (graph.Repair); its builder sees the findings view only
 //     (graph.Context; intent.Build);
@@ -156,17 +158,19 @@ func reviewNode(task types.TaskID, project types.ProjectID, plan, build, gate, r
 //     its claim, and Unheld clears it or supersedes it onto an independent
 //     roster, so the task is never left stuck unheld (Main, 6d).
 //
+// An accept's refusal is repaired whether review is active or not: the
+// next round's review is recorded only when the refused round has one
+// (roundReview), on its requirement and roster.
+//
 // The task's round rail (rounds_per_task) holds the successor before its
 // claim (graph's roundRail).
 func (r reviews) Repair(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
 	v, err := graph.ViewOf(tx, node)
-	if err != nil || v.Node.Kind != types.NodeKindReview {
-		return nil, errors.Join(err, fmt.Errorf("daemon: node %s is no review", node))
+	if err != nil || v.Node.Kind != types.NodeKindReview && v.Node.Kind != types.NodeKindAccept {
+		return nil, errors.Join(err, fmt.Errorf("daemon: node %s is no review nor accept", node))
 	}
 	build, err := producerOf(tx, node, types.ResultKindPatch)
-	plan, perr := producerOf(tx, node, types.ResultKindPlan)
-	required, rerr := producerOf(tx, node, types.ResultKindReviewRequirement)
-	if err = errors.Join(err, perr, rerr); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	evs, err := graph.Repair(tx, build, node, r.env.Authority)
@@ -185,6 +189,17 @@ func (r reviews) Repair(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Even
 		}
 		evs = append(evs, more...)
 	}
+	reviewed := node
+	if v.Node.Kind == types.NodeKindAccept {
+		if reviewed, err = roundReview(tx, v.Task, node); err != nil || reviewed == "" {
+			return evs, err // no review of the refused round (review inactive): none of the next
+		}
+	}
+	plan, err := producerOf(tx, reviewed, types.ResultKindPlan)
+	required, rerr := producerOf(tx, reviewed, types.ResultKindReviewRequirement)
+	if err = errors.Join(err, rerr); err != nil {
+		return nil, err
+	}
 	req, err := graph.ViewOf(tx, required)
 	if err != nil {
 		return nil, err
@@ -199,6 +214,37 @@ func (r reviews) Repair(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Even
 	}
 	more, err := graph.RecordRoundReview(tx, review, r.reg) // a roster the registry no longer gives: held at its claim, never a stalled repair
 	return append(evs, more...), err
+}
+
+// roundReview is the review, not superseded, of task that takes the gate
+// over accept's tree (graph.TakesGate); "" when there is none.
+func roundReview(tx *eventstore.Tx, task types.TaskID, accept types.NodeID) (types.NodeID, error) {
+	nodes, err := graph.TaskNodes(tx, task)
+	if err != nil {
+		return "", err
+	}
+	for _, g := range nodes {
+		src, ok := oneSource(g.Node)
+		if g.Node.Kind != types.NodeKindGate || !ok || src.Producer != accept {
+			continue
+		}
+		for _, n := range nodes {
+			if graph.TakesGate(n.Node, g.Node.ID) && n.State.State != types.NodeStateStateSuperseded {
+				return n.Node.ID, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// oneSource is node's first result input's source.
+func oneSource(n types.Node) (*types.ResultSource, bool) {
+	for _, in := range n.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok {
+			return src, true
+		}
+	}
+	return nil, false
 }
 
 // producerOf is the producer of node's one input of kind.
