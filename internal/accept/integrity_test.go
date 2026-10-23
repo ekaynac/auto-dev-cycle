@@ -111,8 +111,8 @@ func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) 
 // another test binary). run runs the row's guard on its input at size n
 // (and its own checks) and returns the input's units; the counter's growth
 // across it must be positive, at most per units at size n and at 2n, and
-// at 2n at most three times n's: superlinear work fails, whatever the
-// host's load.
+// at 2n at most 2.25 times n's (exact counts of linear work measure 2.00
+// to 2.06; Opus #424 L1): superlinear work fails, whatever the host's load.
 func linear(t *testing.T, name string, counter *atomic.Int64, per int64, n int, run func(n int) int64) {
 	t.Helper()
 	count := func(n int) (int64, int64) {
@@ -123,7 +123,7 @@ func linear(t *testing.T, name string, counter *atomic.Int64, per int64, n int, 
 	c1, u1 := count(n)
 	c2, u2 := count(2 * n)
 	t.Logf("%s: %d steps for %d units, %d for %d (bound %d per unit)", name, c1, u1, c2, u2, per)
-	if c1 <= 0 || c1 > per*u1 || c2 > per*u2 || c2 > 3*c1 {
+	if c1 <= 0 || c1 > per*u1 || c2 > per*u2 || 4*c2 > 9*c1 {
 		t.Errorf("%s: %d steps for %d units, %d for %d; want at most %d per unit, and linear", name, c1, u1, c2, u2, per)
 	}
 }

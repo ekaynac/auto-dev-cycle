@@ -1006,25 +1006,29 @@ func TestPyGuardReach(t *testing.T) {
 		}
 	}
 	maxWork = old
-	// Astra #272 r3 M1: n star imports binding Z, a binding reading Z n
-	// times (n = 10000, and 20000): bounded, counted by the guard's steps
-	// (pySteps; #226 entry 89), not timed. big.py is not inert (P14c-2a-widen
-	// r2), so it is unread before the expansion.
-	linear(t, "r5-M1 a star expansion bounded", &pySteps, 64, 10000, func(n int) int64 { // 26 a star import, measured
+	// Astra #272 r3 M1: a plain package star-importing 64 plain, inert
+	// modules that bind Z (from .sK import *, which starCheck admits), and a
+	// def body reading Z n times (n = 10000, and 20000; a module-level
+	// binding reading names would not be plain). across follows each read
+	// through each star, 64n follows, so its work bound stops it: counted by
+	// the guard's steps (pySteps; #226 entry 89), not timed. Without the
+	// bound, the count is about 130 a read (Opus #424 M2).
+	const stars = 64
+	linear(t, "r5-M1 a star expansion bounded", &pySteps, 16, 10000, func(n int) int64 { // 6 a read, measured
 		var b strings.Builder
 		files := map[string]string{"other.py": "Y = 1\n", "tests/test_s.py": "import pytest\nfrom big import V\n\n@pytest.mark.skipif(V, reason='r')\ndef test_s():\n    pass\n"}
-		for i := range n {
-			fmt.Fprintf(&b, "from s%d import *\n", i)
-			files[fmt.Sprintf("s%d.py", i)] = "Z = False\n"
+		for i := range stars {
+			fmt.Fprintf(&b, "from .s%d import *\n", i)
+			files[fmt.Sprintf("big/s%d.py", i)] = "Z = False\n"
 		}
-		files["big.py"] = b.String() + "V = Z" + strings.Repeat(" + Z", n-1) + "\n"
-		stars := newFixtureWith(t, func(src string) {
+		files["big/__init__.py"] = b.String() + "\ndef V():\n    return Z" + strings.Repeat(", Z", n-1) + "\n"
+		g := newFixtureWith(t, func(src string) {
 			write(t, src, files)
 			plain(t, src, "add", "--all")
 		})
-		maxWork = 10 * n
+		maxWork = 4 * n
 		defer func() { maxWork = old }()
-		if v := stars.guarded(t, map[string]string{"other.py": "Y = 2\n"}); !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") && !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
+		if v := g.guarded(t, map[string]string{"other.py": "Y = 2\n"}); !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") {
 			t.Errorf("r5-M1 a star expansion bounded (%d): %q", n, whats(pyOwn(v.Blocks)))
 		}
 		return int64(n)

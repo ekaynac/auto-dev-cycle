@@ -38,10 +38,13 @@ func (r *run) pyTestWalk(p string) (bool, int) {
 	t, n, todo := false, 0, []string(nil)
 	for d := path.Dir(p); d != "."; d = path.Dir(d) {
 		cached, ok := r.pyTests[d]
+		if !ok { // each directory walked, with its entries, counted (pySteps)
+			pySteps.Add(int64(1 + len(r.baseDirs[d]) + len(r.candDirs[d])))
+		}
 		if b := path.Base(d); ok {
 			t = cached
 			break
-		} else if n++; pySteps.Add(int64(1+len(r.baseDirs[d])+len(r.candDirs[d]))) > 0 && (b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested)) {
+		} else if n++; b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested) {
 			t, r.pyTests[d] = true, true
 			break
 		}

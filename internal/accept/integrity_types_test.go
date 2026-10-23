@@ -397,7 +397,15 @@ func TestIntegrityRealTypes(t *testing.T) {
 	// Not timed (#226 entry 89): the guard returns at its deadline, not when
 	// the abandoned check ends, so the check (about 6 s alone) still runs
 	// when the guard has returned (typeChecksLive), whatever the host's load.
+	// An earlier row's abandoned check ends first, so that none goes down
+	// inside the window (Opus #424 L2).
+	for end := time.Now().Add(2 * time.Minute); typeChecksLive.Load() != 0; time.Sleep(10 * time.Millisecond) {
+		if !time.Now().Before(end) {
+			t.Fatalf("an earlier abandoned check still runs: %d", typeChecksLive.Load())
+		}
+	}
 	oldTime := maxListTime
+	t.Cleanup(func() { maxListTime = oldTime })
 	maxListTime = 2 * time.Second
 	live := typeChecksLive.Load()
 	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})

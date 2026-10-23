@@ -142,7 +142,8 @@ func pyLex(ctx context.Context, src []byte) (lines []pline, err error) {
 		}
 		switch c := s[i]; {
 		case c == '\n' && depth == 0:
-			if i++; pySteps.Add(int64(len(cur.toks)+len(cur.inner))) >= 0 && len(cur.toks) > 0 {
+			pySteps.Add(int64(len(cur.toks) + len(cur.inner)))
+			if i++; len(cur.toks) > 0 {
 				lines = append(lines, cur)
 			}
 			cur, start = pline{}, true

@@ -238,6 +238,7 @@ func TestOutTypedBounded(t *testing.T) {
 	// wait that runs to the deadline takes 90 s or more.
 	const slotDeadline, slotSlack = 90 * time.Second, 30 * time.Second
 	oldTime := maxListTime
+	t.Cleanup(func() { maxListTime = oldTime }) // a fatal stop below leaves no 90 s deadline behind (Opus #424 L3)
 	maxListTime = slotDeadline
 	outWorkers.Add(1)
 	begin := time.Now()
