@@ -974,25 +974,28 @@ func TestTheListingVerdict(t *testing.T) {
 		fail    error  // the candidate's run's error
 		status  string // go list's status the candidate's run records
 		all     bool   // the base's listing fails too
+		base    bool   // the base's listing alone fails
 		refusal bool
 	}{
-		"an unmeasured tree (B1)":                {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
-		"killed by a signal (B2)":                {fail: exit(137)},
-		"the script's own failure (B3)":          {fail: exit(3)},
-		"go list's status a signal's (B2)":       {status: "137"},
-		"go list's own status 1":                 {status: "1", refusal: true},
-		"a measured bound broken":                {fail: sandbox.ErrLeft, refusal: true},
-		"go list's own status 1, the base's too": {status: "1", all: true},
-		"a measured bound, the base's too":       {fail: sandbox.ErrLeft, all: true},
+		"an unmeasured tree (B1)":                  {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
+		"killed by a signal (B2)":                  {fail: exit(137)},
+		"the script's own failure (B3)":            {fail: exit(3)},
+		"go list's status a signal's (B2)":         {status: "137"},
+		"go list's own status 1":                   {status: "1", refusal: true},
+		"a measured bound broken":                  {fail: sandbox.ErrLeft, refusal: true},
+		"go list's own status 1, the base's too":   {status: "1", all: true},
+		"a measured bound, the base's too":         {fail: sandbox.ErrLeft, all: true},
+		"go list's own status 1, the base's alone": {status: "1", base: true},
 	} {
+		failing := func(mod []byte) bool { return c.all || c.base != candidate(mod) }
 		box.fail = func(mod []byte) error {
-			if c.all || candidate(mod) {
+			if failing(mod) {
 				return c.fail
 			}
 			return nil
 		}
 		box.status = func(mod []byte) string {
-			if c.all || candidate(mod) {
+			if failing(mod) {
 				return c.status
 			}
 			return ""
@@ -1008,5 +1011,30 @@ func TestTheListingVerdict(t *testing.T) {
 	box.fail, box.status = nil, nil
 	if v := f.loaded(t, list, change); !v.Accepted() {
 		t.Errorf("no fault: %q", whats(v.Blocks))
+	}
+	// LocalLister, the same rule (goListExit): a go that exits 1 on the
+	// candidate's go.mod alone is the candidate's; one killed by a signal
+	// there is the host's.
+	root := t.TempDir()
+	write(t, root, map[string]string{"VERSION": runtime.Version() + "\n"})
+	for name, c := range map[string]struct {
+		act     string
+		refusal bool
+	}{
+		"exit 1 on the candidate's": {"exit 1", true},
+		"killed on the candidate's": {"kill -KILL $$", false},
+	} {
+		write(t, root, map[string]string{"bin/go": "#!/bin/sh\nif grep -q \"the candidate's\" go.mod 2>/dev/null; then " + c.act + "; fi\nexec " + box.gobin + " \"$@\"\n"})
+		if err := os.Chmod(filepath.Join(root, "bin/go"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		local := LocalLister(filepath.Join(root, "bin/go"), []string{"GOCACHE=" + box.caches[0], "GOMODCACHE=" + box.caches[1]}, 5*time.Minute, 8<<30)
+		v, err := f.loadedErr(t, local, change)
+		switch {
+		case c.refusal && (err != nil || !finds(v.Blocks, "the listing failed on the candidate")):
+			t.Errorf("LocalLister, %s: the candidate's, a block: %v %q", name, err, whats(v.Blocks))
+		case !c.refusal && (!errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0):
+			t.Errorf("LocalLister, %s: the host's: %v %q", name, err, whats(v.Blocks))
+		}
 	}
 }
