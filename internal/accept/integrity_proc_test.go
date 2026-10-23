@@ -216,6 +216,18 @@ func TestProcService(t *testing.T) {
 	if !ok || !hostErr(blocks, err, "go list failed (copy-out failed)") {
 		t.Errorf("a listing's failure under a clean result: %v %v %q", ok, err, whats(blocks))
 	}
+	// A listing the candidate's code failed (boxList's positive evidence,
+	// errRefused), then a clean result: blocked, never clean.
+	onCandidate := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+		return nil, refused(errors.New("go list exited 1"))
+	}
+	blocks, _, err, ok = fakeChild(req, read, onCandidate, func(next func(childMsg) procMsg) {
+		next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}})
+		next(clean)
+	})
+	if !ok || err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "unverifiable: go list failed (the listing failed on the candidate: go list exited 1)") {
+		t.Errorf("the candidate's listing failure under a clean result: %v %v %q", ok, err, whats(blocks))
+	}
 }
 
 // TestProcServiceSlots (#1, Astra #287 r2; Opus #293 M2, L1, L3):
