@@ -11,6 +11,15 @@
 // Guard seam, test_integrity_violation (the integrity guard is P14b's).
 // Warnings go to the reviewer; each verdict keeps its elapsed time and
 // blocks (D55).
+//
+// The line (#226 entry 168): a block is a finding about the candidate's
+// code, its refusal, which repairs the build (graph.AcceptRefused). The
+// guard's own failures (a go list failing but on the candidate's code, as
+// listVerdict decides it: #226 entry 170; its process not
+// dispatched or not started, a panic in it, its type-check or whole-run
+// deadline) are its run's error (ErrGuardRun): Accept returns them, and
+// adcd records could_not_run/controller_run_failed, retried, bounded, then
+// a visible hold, never a repair.
 package accept
 
 import (

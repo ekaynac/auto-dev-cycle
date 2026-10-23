@@ -1078,49 +1078,6 @@ func TestOrder(t *testing.T) {
 	}
 }
 
-// TestReadRegular: a record or report is a regular file read within its
-// bound: never through a link, never a device, never past the bound, even
-// when its size says otherwise (Astra #306 M4).
-func TestReadRegular(t *testing.T) {
-	dir := t.TempDir()
-	ok := filepath.Join(dir, "ok.json")
-	if err := os.WriteFile(ok, []byte("0123456789"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(ok, filepath.Join(dir, "link.json")); err != nil {
-		t.Fatal(err)
-	}
-	if b, err := readRegular(ok, 10); err != nil || string(b) != "0123456789" {
-		t.Errorf("a file at its bound: %q, %v", b, err)
-	}
-	for name, c := range map[string]struct {
-		path  string
-		limit int64
-		why   string
-	}{
-		"a link to a regular file": {filepath.Join(dir, "link.json"), 10, "symbolic link"},
-		"a link to /dev/zero":      {filepath.Join(dir, "zero.json"), 10, "symbolic link"},
-		"/dev/zero":                {"/dev/zero", 10, "not a regular file"},
-		"/dev/null":                {"/dev/null", 10, "not a regular file"},
-		"a directory":              {dir, 10, "not a regular file"},
-		"a file past its bound":    {ok, 9, "is 10 bytes, over 9"},
-		"a file whose size lies":   {"/proc/self/status", 10, "grew past 10 bytes"},
-	} {
-		if name == "a link to /dev/zero" {
-			if err := os.Symlink("/dev/zero", c.path); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := os.Lstat(c.path); err != nil {
-			t.Logf("%s: %v; skipped", name, err)
-			continue
-		}
-		if b, err := readRegular(c.path, c.limit); err == nil || !strings.Contains(err.Error(), c.why) || int64(len(b)) > c.limit+1 {
-			t.Errorf("%s: %d bytes, %v; want %q, and never past the bound", name, len(b), err, c.why)
-		}
-	}
-}
-
 // The suite's digest covers suite.json, every patch and every sealed file,
 // and neither the records nor the README.
 func TestSuiteDigest(t *testing.T) {

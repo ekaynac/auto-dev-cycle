@@ -89,6 +89,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/fsread"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 )
@@ -208,7 +209,7 @@ func Load(root string) (Suite, error) {
 		return Suite{}, err
 	}
 	dir := filepath.Join(root, Dir)
-	raw, err := readRegular(filepath.Join(dir, "suite.json"), maxSuiteBytes)
+	raw, err := fsread.Regular(filepath.Join(dir, "suite.json"), maxSuiteBytes)
 	if err != nil {
 		return Suite{}, fmt.Errorf("qualify: suite.json: %w", err)
 	}
@@ -300,7 +301,7 @@ func walkInto(h hash.Hash, base, rel string, skip func(string, bool) bool, left 
 		if left.files--; left.files < 0 {
 			return fmt.Errorf("qualify: the digest reads more than %d files", maxDigestFiles)
 		}
-		b, err := readRegular(p, left.bytes)
+		b, err := fsread.Regular(p, left.bytes)
 		if err != nil {
 			return fmt.Errorf("qualify: %s: %w (the digest reads at most %d bytes in all)", r, err, int64(maxDigestBytes))
 		}
@@ -547,7 +548,7 @@ func readRecords(dir string) (records, error) {
 	var out records
 	for _, n := range names {
 		p := filepath.Join(dir, n)
-		raw, err := readRegular(p, maxRecordBytes)
+		raw, err := fsread.Regular(p, maxRecordBytes)
 		var rec types.ReviewQualification
 		if err == nil {
 			rec, err = contract.Decode[types.ReviewQualification]("config/review-qualification", raw)
@@ -662,31 +663,6 @@ func recordNames(dir string) ([]string, error) {
 	return names, nil
 }
 
-// readRegular is the regular file at p, opened never through a link and
-// never a special file, of at most limit bytes: its size is checked before
-// it is read, and the read stops past the limit (Astra #306 M4).
-func readRegular(p string, limit int64) ([]byte, error) {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	switch {
-	case err != nil:
-		return nil, err
-	case !fi.Mode().IsRegular():
-		return nil, errors.New("not a regular file")
-	case fi.Size() > limit:
-		return nil, fmt.Errorf("is %d bytes, over %d", fi.Size(), limit)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, limit+1)) // a file that grows, or whose size lies (/proc), is still read within the bound
-	if err == nil && int64(len(b)) > limit {
-		err = fmt.Errorf("grew past %d bytes", limit)
-	}
-	return b, err
-}
-
 // check is whether the record at p, with its reports beside it, qualifies
 // for s.
 func check(p string, rec types.ReviewQualification, s Suite) error {
@@ -698,7 +674,7 @@ func check(p string, rec types.ReviewQualification, s Suite) error {
 		return errors.New("its reports are not a directory")
 	}
 	if err := s.verify(rec, func(id string) ([]byte, error) {
-		return readRegular(filepath.Join(reports, id+".review-report.json"), review.MaxReport)
+		return fsread.Regular(filepath.Join(reports, id+".review-report.json"), review.MaxReport)
 	}); err != nil {
 		return err
 	}

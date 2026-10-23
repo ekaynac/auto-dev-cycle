@@ -34,6 +34,7 @@ import (
 	"unicode"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 // The guard's real types (P14e, #226 entries 79, 82, 85), per gate platform:
@@ -82,7 +83,8 @@ type Lister func(ctx context.Context, dir string, platform [2]string, gomod, gos
 // run is bounded by timeout, its output by maxList and each process's
 // address space by mem bytes (0: unbounded); a cancelled run kills go's
 // process group. A go.mod replacing a module by a directory (modfile's
-// reading) is refused: only the module cache's source is read. Results are
+// reading) fails: only the module cache's source is read. It never
+// refuses: every failure of its is the host's (#226 entry 176). Results are
 // kept by go.mod, go.sum and paths. gobin's toolchain (its GOROOT's
 // VERSION) must be the guard's own: one release, one export data format.
 func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) Lister {
@@ -130,8 +132,10 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 }
 
 // listable refuses a go.mod replacing a module by a directory (only the
-// module cache's source is read), and a path go list would not take as one
-// import path (a flag, a pattern, a reserved name).
+// module cache's source is read) or naming a module path or version the
+// module path validator refuses (golang.org/x/mod/module: a newline in a
+// replacement's path, Astra #418 M4), and a path go list would not take as
+// one import path (a flag, a pattern, a reserved name).
 func listable(gomod []byte, paths []string) error {
 	if gomod != nil {
 		f, err := modfile.Parse("go.mod", gomod, nil)
@@ -139,6 +143,8 @@ func listable(gomod []byte, paths []string) error {
 			return fmt.Errorf("go.mod not parsed: %w", err)
 		} else if slices.ContainsFunc(f.Replace, func(r *modfile.Replace) bool { return r.New.Version == "" }) {
 			return errors.New("go.mod replaces a module by a directory")
+		} else if err := modulePaths(f); err != nil {
+			return fmt.Errorf("go.mod names an invalid module: %w", err)
 		}
 	}
 	for _, p := range paths { // no flag, pattern or reserved name
@@ -147,6 +153,35 @@ func listable(gomod []byte, paths []string) error {
 			return r > unicode.MaxASCII || !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-._~+/", r)
 		}) {
 			return fmt.Errorf("an import path go list cannot take (%q)", p)
+		}
+	}
+	return nil
+}
+
+// modulePaths checks every module path and version a go.mod names for
+// others to resolve: its requirements, exclusions and replacements, both
+// sides.
+func modulePaths(f *modfile.File) error {
+	for _, r := range f.Require {
+		if err := module.Check(r.Mod.Path, r.Mod.Version); err != nil {
+			return err
+		}
+	}
+	for _, x := range f.Exclude {
+		if err := module.Check(x.Mod.Path, x.Mod.Version); err != nil {
+			return err
+		}
+	}
+	for _, r := range f.Replace {
+		if err := module.CheckPath(r.Old.Path); err != nil {
+			return err
+		} else if r.Old.Version != "" {
+			if err := module.Check(r.Old.Path, r.Old.Version); err != nil {
+				return err
+			}
+		}
+		if err := module.Check(r.New.Path, r.New.Version); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -186,7 +221,7 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 	out, stderr, err := drain(ctx, cmd, maxList, maxStderr)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("go list: %w", context.Cause(ctx))
-	} else if err != nil {
+	} else if err != nil { // the host's, whatever it is: LocalLister never refuses (#226 entry 176)
 		return nil, fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)]))
 	}
 	got := map[string]Listed{}
@@ -471,7 +506,7 @@ func (ty *typer) need(files []*ast.File) error {
 	if ty.r.listRuns++; ty.r.lister != nil && ty.r.listRuns > maxListRuns {
 		err = errors.New("over the guard's go list bound")
 	} else if ty.r.lister != nil {
-		ctx, cancel := context.WithDeadline(ty.r.ctx, ty.r.listEnd)
+		ctx, cancel := context.WithDeadline(context.WithValue(ty.r.ctx, baseListing{}, ty.t == ty.r.trees[0]), ty.r.listEnd)
 		got, err = ty.r.lister(ctx, ty.r.dir, ty.platform, ty.gomod, ty.gosum, ext)
 		cancel()
 	}

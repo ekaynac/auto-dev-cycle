@@ -399,9 +399,10 @@ func TestIntegrityRealTypes(t *testing.T) {
 	oldTime := maxListTime
 	maxListTime = chainTime
 	begin := time.Now()
-	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
-	if took := time.Since(begin); !finds(cv.Blocks, "over the guard's deadline") || !within(t, took-chainTime, unit, 20) { // its deadline, then the rest of a run
-		t.Errorf("a struct chain: %v %q", took, whats(cv.Blocks))
+	_, cerr := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/chain.go": chain.String()}), Policy: f.policy,
+		Guard: integrity(f.repo, f.base, testLister(t))})
+	if took := time.Since(begin); !errors.Is(cerr, ErrGuardRun) || !strings.Contains(cerr.Error(), "over the guard's deadline") || !within(t, took-chainTime, unit, 20) { // its deadline, then the rest of a run; the host's (#226 entry 168)
+		t.Errorf("a struct chain: %v %v", took, cerr)
 	}
 	maxListTime = oldTime
 
@@ -561,9 +562,11 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 	}
 }
 
-// Fail closed: without a loader, or when it fails, a changed Go package is
-// unverifiable; a cancelled load stops the guard; go list's time and
-// memory bounds and the package and export data bounds hold.
+// Fail closed: without a loader a changed Go package is unverifiable; a
+// loader that fails is the guard's run failing (ErrGuardRun: the host's,
+// retried, never a refusal; #226 entry 168); a cancelled load stops the
+// guard; go list's time and memory bounds and the package and export data
+// bounds hold.
 func TestIntegrityTypesFailClosed(t *testing.T) {
 	f := newGuardFixture(t)
 	change := map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n"}
@@ -589,17 +592,18 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	}
 	unit := f.ordinary(t, unitGo)
 	for name, c := range map[string]struct {
-		list Lister
-		why  string
-		wait time.Duration // each go call's fixed time limit, waited out
+		list  Lister
+		why   string
+		wait  time.Duration // each go call's fixed time limit, waited out
+		block bool          // the candidate's: no loader, or go list's own nonzero exit; else the host's (ErrGuardRun)
 	}{
-		"no loader":      {nil, "(testing: no Go type loader)", 0},
-		"a loader fails": {failing, "(testing: no toolchain)", 0},
-		"a missing go":   {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: lstat /nonexistent", 0},
+		"no loader":      {nil, "(testing: no Go type loader)", 0, true},
+		"a loader fails": {failing, "(testing: no toolchain)", 0, false},
+		"a missing go":   {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: lstat /nonexistent", 0, false},
 		"a go of another release": {LocalLister(filepath.Join(old, "bin/go"), nil, time.Minute, 0),
-			"(testing: go list: the toolchain is go1.0, not the guard's " + runtime.Version() + ")", 0},
-		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)", 200 * time.Millisecond},
-		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)", 0},
+			"(testing: go list: the toolchain is go1.0, not the guard's " + runtime.Version() + ")", 0, false},
+		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)", 200 * time.Millisecond, false},
+		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)", 0, false}, // the base's listing fails too: the host's (#226 entry 170)
 	} {
 		var calls atomic.Int64 // the go calls the guard makes, each waiting out c.wait at most (Opus #317 M2): at most one per version and platform of its one module (r2 L2)
 		list := c.list
@@ -611,11 +615,13 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		}
 		start := time.Now()
 		v, err := accept(context.Background(), list)
-		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || calls.Load() > int64(2*len(platforms)) || !within(t, took-time.Duration(calls.Load())*c.wait, unit, 20) {
+		listed := c.block && err == nil && finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) ||
+			!c.block && errors.Is(err, ErrGuardRun) && strings.Contains(err.Error(), strings.TrimSuffix(strings.TrimPrefix(c.why, "(testing: "), ")"))
+		if took := time.Since(start); !listed || calls.Load() > int64(2*len(platforms)) || !within(t, took-time.Duration(calls.Load())*c.wait, unit, 20) {
 			t.Errorf("%s (%v, %d go calls): %v %q", name, time.Since(start), calls.Load(), err, whats(v.Blocks))
 		}
 	}
-	if v, err := accept(context.Background(), LocalLister(filepath.Join(bin, "child"), nil, 300*time.Millisecond, 0)); err != nil || v.Accepted() {
+	if v, err := accept(context.Background(), LocalLister(filepath.Join(bin, "child"), nil, 300*time.Millisecond, 0)); !errors.Is(err, ErrGuardRun) {
 		t.Errorf("a go with a child: %v %q", err, whats(v.Blocks))
 	}
 	b, err := os.ReadFile(filepath.Join(bin, "child.pid"))
@@ -634,17 +640,18 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	if _, err := accept(ctx, cancelling); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled while listing: %v", err)
 	}
-	// H2 (Mythos #265): a guard fault blocks, it does not crash.
+	// H2 (Mythos #265): a guard fault does not crash; it is the guard's run
+	// failing, the host's, never a refusal (#226 entry 168).
 	panicking := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		panic("a lister fault")
 	}
-	if v, err := accept(context.Background(), panicking); err != nil || !finds(v.Blocks, "unverifiable: the guard failed (a lister fault)") {
+	if v, err := accept(context.Background(), panicking); !errors.Is(err, ErrGuardRun) || !strings.Contains(err.Error(), "the guard failed (a lister fault)") {
 		t.Errorf("a panic in the guard: %v %q", err, whats(v.Blocks))
 	}
 	empty := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		panic("")
 	} // L2, Opus #287: a panic whatever its text
-	if v, err := accept(context.Background(), empty); err != nil || !finds(v.Blocks, "unverifiable: the guard failed ()") {
+	if v, err := accept(context.Background(), empty); !errors.Is(err, ErrGuardRun) || !strings.Contains(err.Error(), "the guard failed ()") {
 		t.Errorf("an empty panic in the guard: %v %q", err, whats(v.Blocks))
 	}
 	oldPkgs, oldExport, oldRuns := maxPkgs, maxExport, maxListRuns

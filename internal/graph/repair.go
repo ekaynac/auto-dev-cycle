@@ -64,12 +64,13 @@ func CandidateRound(nodes []NodeView, n types.Node) int64 {
 	return 0
 }
 
-// OfLastRound reports whether review, a review node of nodes (a task's),
-// takes the candidate of the task's last build round (CandidateRound):
-// Repairable's (reconcile.Observe) and CandidateGo's one rule.
-func OfLastRound(nodes []NodeView, review types.Node) bool {
+// OfLastRound reports whether check, a review or an accept node of nodes
+// (a task's), takes the candidate of the task's last build round
+// (CandidateRound): Repairable's (reconcile.Observe: a review's verdict, an
+// accept's refusal, #226 entry 164) and CandidateGo's (a review's) one rule.
+func OfLastRound(nodes []NodeView, check types.Node) bool {
 	last := LastBuildRound(nodes)
-	return last > 0 && review.Kind == types.NodeKindReview && CandidateRound(nodes, review) == last
+	return last > 0 && (check.Kind == types.NodeKindReview || check.Kind == types.NodeKindAccept) && CandidateRound(nodes, check) == last
 }
 
 // CandidateGo reports whether nodes, a task's, decide its candidate: a
@@ -82,6 +83,19 @@ func CandidateGo(nodes []NodeView) bool {
 		return n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
 			*n.Outcome == types.OutcomeEmpty && OfLastRound(nodes, n.Node)
 	})
+}
+
+// AcceptRefused is whether r, an accept's result, is its refusal of the
+// candidate (failed: unsafe_output, protected_path or
+// test_integrity_violation; accept.Result's), the candidate's fault: it
+// repairs the build as a review's RepairVerdict does, and nothing takes
+// its tree (Resolve: the gate waits; #226 entry 164, the lead's decision
+// 2). Only findings about the candidate's code are refusals: the guard's
+// own failures are its run's error, could_not_run, never a refusal (#226
+// entry 168). The one rule: Repair's, Resolve's and the loop's
+// (reconcile.Observe, over the selected result's fields).
+func AcceptRefused(r types.Result) bool {
+	return r.Kind == types.ResultKindTree && r.Outcome == types.OutcomeFailed
 }
 
 // Repair is the events recording round n+1 of build, a repair (13
@@ -97,7 +111,9 @@ func CandidateGo(nodes []NodeView) bool {
 // unreviewable; P22a-6d, Opus 22a-6c L4); a go review, or one not
 // selected, repairs nothing. The kinds follow
 // from the results taken: only a build records a patch, and only a review
-// a review result. Rails on rounds are P17's.
+// a review result. Rails on rounds are P17's. review may be build's accept
+// instead, its result a refusal (AcceptRefused): the findings are then that
+// refusal (#226 entry 164).
 func Repair(tx *eventstore.Tx, build, review types.NodeID, auth Authority) ([]eventstore.Event, error) {
 	b, err := loadNode(tx, build)
 	r, rerr := loadNode(tx, review)
@@ -112,6 +128,9 @@ func Repair(tx *eventstore.Tx, build, review types.NodeID, auth Authority) ([]ev
 		return nil, errors.Join(err, fmt.Errorf("graph: %s is not claimed", review))
 	}
 	findings := &types.ResultSource{Type: "result", Producer: review, ResultKind: types.ResultKindReview}
+	if r.Recorded.Node.Kind == types.NodeKindAccept {
+		findings.ResultKind = types.ResultKindTree
+	}
 	candidate := &types.ResultSource{Type: "result", Producer: build, ResultKind: types.ResultKindPatch}
 	for _, src := range []*types.ResultSource{findings, candidate} {
 		sel, why, err := selectedOf(tx, b, src)
@@ -120,7 +139,9 @@ func Repair(tx *eventstore.Tx, build, review types.NodeID, auth Authority) ([]ev
 			return nil, err
 		case why != "":
 			return nil, fmt.Errorf("graph: no repair of %s: %s", build, why)
-		case src == findings && !RepairVerdict(sel.Result.Outcome, sel.Result.Reason):
+		case src == findings && findings.ResultKind == types.ResultKindTree && !AcceptRefused(sel.Result):
+			return nil, fmt.Errorf("graph: no repair of %s: %s accepted the candidate (%s)", build, review, sel.Result.Outcome)
+		case src == findings && findings.ResultKind == types.ResultKindReview && !RepairVerdict(sel.Result.Outcome, sel.Result.Reason):
 			return nil, fmt.Errorf("graph: no repair of %s: %s's verdict is not no_go (%s)", build, review, sel.Result.Outcome)
 		case src == candidate && !slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool { return in.Result != nil && *in.Result == sel.Result.ID }):
 			// The review's claim fixed another patch, or none of build's

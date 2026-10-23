@@ -167,12 +167,11 @@ func TestTable(t *testing.T) {
 			t.Errorf("%s has Proven prerequisites and wires from the static table: %v %v %v", c.Name, c.Actions, c.EffectKinds, c.NodeKinds)
 		}
 	}
-	// K1 (launch's kept bits, #226 entry 164): launch misses I10's and
-	// I12's admission and consumption and I17's (K2), and I5's admission
-	// and I21's (the activation PR, last): it is not active.
+	// K1 and K2 (launch's kept bits, #226 entry 164): launch misses only
+	// I5's admission and I21's three, the activation PR's (last): it is
+	// not active.
 	launch, _ := Of("launch")
-	want := []Row{{"I5", Admission}, {"I10", Admission}, {"I10", Fold}, {"I10", Consumption}, {"I10", Effect}, {"I12", Admission}, {"I12", Consumption},
-		{"I17", Admission}, {"I17", Consumption}, {"I17", Effect}, {"I21", Admission}, {"I21", Fold}, {"I21", Effect}}
+	want := []Row{{"I5", Admission}, {"I21", Admission}, {"I21", Fold}, {"I21", Effect}}
 	if launch.Active() || !slices.Equal(launch.Missing(), want) {
 		t.Errorf("launch: missing %v", launch.Missing())
 	}

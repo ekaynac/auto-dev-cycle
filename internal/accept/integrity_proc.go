@@ -13,9 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -119,6 +117,7 @@ type childMsg struct {
 	gomodRef         int // 1 + the index of an earlier listing's payload, 0 none (Astra #293 r2 #2)
 	gosumRef         int
 	paths            []string
+	base             bool // a listing of the base's version, not the candidate's (#226 entry 170)
 	blocks, warnings []Block
 	err              string
 	erred            bool
@@ -147,6 +146,7 @@ func (m childMsg) frame() []byte {
 	case 'l':
 		str(m.platform[0])
 		str(m.platform[1])
+		b = append(b, byte(b2i(m.base)))
 		opt(m.gomod, m.gomodRef)
 		opt(m.gosum, m.gosumRef)
 		num(len(m.paths))
@@ -240,6 +240,7 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 		m.blob, m.max = str(64), int64(num(int(maxFile), 0))
 	case 'l':
 		m.platform = [2]string{str(16), str(16)}
+		m.base = bit()
 		m.gomod, m.gosum = opt(), opt()
 		for n := num(maxResultEntries, 1); len(m.paths) < n && !bad; { // as main lists them: bounded by the frame (Opus #339 M2)
 			m.paths = append(m.paths, str(maxFrame))
@@ -265,13 +266,16 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 }
 
 // ErrGuardRun is a guard that did not run to its verdict (Astra chunk 1
-// H2; Lead decision, #226 entry 147): its process not dispatched, not
-// started, ended without its result or past its whole-run deadline, a
-// listing that failed with no positive evidence against the candidate
-// (boxList), and any other error of its run. It is no finding on the
-// candidate: the caller records it as one that could not run, and
-// retries. What the guard found is a block: a listing's failure only on
-// positive evidence (go list's own exit status, a bound its run broke).
+// H2; Lead decisions, #226 entries 147 and 168): its process not
+// dispatched, not started, ended without its result or past its whole-run
+// deadline; a go list that failed but for the candidate's code (only
+// candidateListing's allowlist is the candidate's, #226 entry 176);
+// guard or in its service, a type check past the guard's deadline
+// included; and any other error of its run. It is no finding on the
+// candidate, so it never repairs the build: the caller records it as one
+// that could not run (adcd: could_not_run/controller_run_failed), retries
+// it, bounded, and then holds the node visibly. Only findings about the
+// candidate's code are blocks, the candidate's refusals.
 var ErrGuardRun = errors.New("accept: the integrity guard did not run")
 
 // guardRun is ErrGuardRun for why.
@@ -386,11 +390,9 @@ type service struct {
 	readLeft        int64
 	requests, lists int
 	readErr         error
-	latched         bool   // a service panicked (every failure latched here is a panic, a refusal included)
-	failed          string // the block the result must hold unless it acknowledges the panic
-	panicked        string // the first panic's text, "" included: the guard's recovers wrap it as "unverifiable: …(text)"
-	listFailed      string // a listing's failure: the result must block (Astra #287 r2 #5)
-	listDidNotRun   error  // a listing that did not run (ErrGuardRun): the result is that error
+	latched         bool      // a service panicked (every failure latched here is a panic, a refusal included)
+	failed          string    // the first panic, the run's error (ErrGuardRun) whatever the child says
+	listings        []listing // every listing's version, platform and error: listVerdict's
 }
 
 // converse serves the child on in and out until its result (ok), ctx's end
@@ -414,14 +416,14 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
 				return blocks, warnings, s.readErr, true, nil
-			case s.listDidNotRun != nil: // no verdict: a listing it needed did not run
-				return nil, nil, s.listDidNotRun, true, nil
-			case s.latched && !slices.ContainsFunc(c.blocks, s.acknowledges):
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
-			case s.listFailed != "" && len(blocks) == 0:
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, nil, true, nil
-			case c.erred:
+			case listHost(s.listings) != nil: // no verdict: a listing failed on the host
+				return nil, nil, listHost(s.listings), true, nil
+			case s.latched: // a service's panic: the guard's run failed, whatever the child says (#226 entry 168)
+				return nil, nil, guardRun(s.failed), true, nil
+			case c.erred: // the child's own error (a panic, a deadline: Integrity's ErrGuardRun) wins over a listing's refusal (Astra chunk 5b H2)
 				return blocks, warnings, errors.New(c.err), true, nil
+			case listRefusal(s.listings) != "" && len(blocks) == 0: // the candidate's listing failed (Astra #287 r2 #5): never clean
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", listRefusal(s.listings), false, false}), warnings, nil, true, nil
 			}
 			return blocks, warnings, nil, true, nil
 		}
@@ -446,15 +448,6 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	return nil, nil, nil, false, nil
 }
 
-// acknowledges: b is a block of the guard's recovering the service's
-// panic, whichever recover made it (the guard's own, "the guard failed";
-// decision A's, "…check failed"): unverifiable, the panic's whole text,
-// empty or not, in its closing parentheses (Opus #339 M1, M1′). Every
-// failure the service latches is a panic's, its refusals included.
-func (s *service) acknowledges(b Block) bool {
-	return strings.HasPrefix(b.What, "unverifiable: ") && strings.HasSuffix(b.What, "("+s.panicked+")")
-}
-
 // serve answers a child's read or list; a panic is passed back, the guard's
 // fault as in this process, and latched. A request outside the run's blobs
 // or budgets is refused as one.
@@ -462,7 +455,7 @@ func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	defer func() {
 		if p := recover(); p != nil {
 			if !s.latched {
-				s.latched, s.failed, s.panicked = true, fmt.Sprintf("unverifiable: the guard failed (%v)", p), fmt.Sprint(p)
+				s.latched, s.failed = true, fmt.Sprintf("the guard failed (%v)", p)
 			}
 			m = procMsg{Panic: fmt.Sprint(p), Panicked: true}
 		}
@@ -485,14 +478,48 @@ func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	lctx, cancel := context.WithDeadline(ctx, s.req.ListEnd)
 	defer cancel()
 	l, err := s.list(lctx, s.req.Dir, c.platform, c.gomod, c.gosum, c.paths)
-	if errors.Is(err, ErrGuardRun) && s.listDidNotRun == nil {
-		s.listDidNotRun = err
-	}
-	if err != nil {
-		s.listFailed = cmp.Or(s.listFailed, "unverifiable: go list failed ("+errText(err)+")")
-	}
+	s.listings = append(s.listings, listing{base: c.base, platform: c.platform, err: err}) // bounded: maxListRuns
 	return procMsg{Listed: l, Err: errText(err), Erred: err != nil}
 }
+
+// baseListing is the context key of a listing's version: true for the
+// base's (typer.need sets it; the child's lister sends it).
+type baseListing struct{}
+
+// listing is one listing a guard run made: its version, platform and error.
+type listing struct {
+	base     bool
+	platform [2]string
+	err      error
+}
+
+// listVerdict is the one rule over a guard run's listings (#226 entries
+// 168, 170 and 176): a failed listing is the candidate's (its refusal, the
+// first's text) only when candidateListing holds for it; any other failed
+// listing is the host's (ErrGuardRun).
+func listVerdict(ls []listing) (refusal string, host error) {
+	ok := map[[2]string]bool{}
+	for _, l := range ls {
+		if l.base && l.err == nil {
+			ok[l.platform] = true
+		}
+	}
+	for _, l := range ls {
+		switch {
+		case l.err == nil:
+		case candidateListing(l, ok[l.platform]):
+			refusal = cmp.Or(refusal, "unverifiable: go list failed ("+errText(l.err)+")")
+		case host == nil:
+			host = guardRun("go list failed (" + errText(l.err) + ")")
+		}
+	}
+	return refusal, host
+}
+
+// listHost and listRefusal are listVerdict's two halves.
+func listHost(ls []listing) error { _, h := listVerdict(ls); return h }
+
+func listRefusal(ls []listing) string { r, _ := listVerdict(ls); return r }
 
 // child runs the guard in this process for the controller on in and out.
 func child(in io.Reader, out io.Writer) int {
@@ -528,8 +555,9 @@ func child(in io.Reader, out io.Writer) int {
 			sent[string(v)] = len(sent) + 1
 			return v, 0
 		}
-		list = func(_ context.Context, _ string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
-			m := childMsg{op: 'l', platform: pl, paths: paths}
+		list = func(ctx context.Context, _ string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+			base, _ := ctx.Value(baseListing{}).(bool)
+			m := childMsg{op: 'l', platform: pl, paths: paths, base: base}
 			m.gomod, m.gomodRef = ref(gomod)
 			m.gosum, m.gosumRef = ref(gosum)
 			rep := call(m)

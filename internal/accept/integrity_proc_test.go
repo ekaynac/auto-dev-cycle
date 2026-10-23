@@ -141,13 +141,10 @@ func TestProcService(t *testing.T) {
 		panic("boom")
 	}
 	clean := childMsg{op: 'd'}
-	has := func(bs []Block, what string) bool {
-		for _, b := range bs {
-			if strings.Contains(b.What, what) {
-				return true
-			}
-		}
-		return false
+	// hostErr: the guard's own failure is its run's error, ErrGuardRun,
+	// never a block (#226 entry 168).
+	hostErr := func(bs []Block, err error, what string) bool {
+		return len(bs) == 0 && errors.Is(err, ErrGuardRun) && strings.Contains(err.Error(), what)
 	}
 	// A reader's error, then a clean result: the reader's error. A read
 	// past maxFile is a malformed message.
@@ -161,18 +158,18 @@ func TestProcService(t *testing.T) {
 	if _, _, _, ok := fakeChild(req, read, boom, func(next func(childMsg) procMsg) { next(childMsg{op: 'r', blob: own, max: maxFile + 1}) }); ok {
 		t.Errorf("a read past maxFile: accepted")
 	}
-	// A service's panic, then a clean result: the guard's failure.
+	// A service's panic, then a clean result: the guard's run failed.
 	blocks, _, err, ok := fakeChild(req, read, boom, func(next func(childMsg) procMsg) {
 		if rep := next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}}); !rep.Panicked || rep.Panic != "boom" {
 			t.Errorf("a list's panic: %+v", rep)
 		}
 		next(clean)
 	})
-	if !ok || err != nil || !has(blocks, "unverifiable: the guard failed (boom)") {
+	if !ok || !hostErr(blocks, err, "the guard failed (boom)") {
 		t.Errorf("a panic under a clean result: %v %v %q", ok, err, whats(blocks))
 	}
 	// An empty panic, then a clean result (Opus #339 r2 M1′): latched all
-	// the same, its block "the guard failed ()".
+	// the same, the run's error "the guard failed ()".
 	silent := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		panic("")
 	}
@@ -180,7 +177,7 @@ func TestProcService(t *testing.T) {
 		next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}})
 		next(clean)
 	})
-	if !ok || err != nil || len(blocks) != 1 || blocks[0].What != "unverifiable: the guard failed ()" {
+	if !ok || !hostErr(blocks, err, "the guard failed ()") {
 		t.Errorf("an empty panic under a clean result: %v %v %q", ok, err, whats(blocks))
 	}
 	// A blob outside the run: never read, refused and latched.
@@ -189,7 +186,7 @@ func TestProcService(t *testing.T) {
 		next(childMsg{op: 'r', blob: other})
 		next(clean)
 	})
-	if !ok || err != nil || len(asked) != 0 || !has(blocks, "asked for a blob outside its run") {
+	if !ok || len(asked) != 0 || !hostErr(blocks, err, "asked for a blob outside its run") {
 		t.Errorf("a blob outside the run: %v %v %q, read %q", ok, err, whats(blocks), asked)
 	}
 	// Listings past maxListRuns: refused and latched.
@@ -198,16 +195,17 @@ func TestProcService(t *testing.T) {
 		lists++
 		return nil, nil
 	}
-	blocks, _, _, ok = fakeChild(req, read, count, func(next func(childMsg) procMsg) {
+	blocks, _, err, ok = fakeChild(req, read, count, func(next func(childMsg) procMsg) {
 		for range maxListRuns + 1 {
 			next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}})
 		}
 		next(clean)
 	})
-	if !ok || lists != maxListRuns || !has(blocks, "past its go list bound") {
+	if !ok || lists != maxListRuns || !hostErr(blocks, err, "past its go list bound") {
 		t.Errorf("listings past the bound: %v, %d lists, %q", ok, lists, whats(blocks))
 	}
-	// #5 (Astra #287 r2): a listing's failure, then a clean result: blocked.
+	// #5 (Astra #287 r2): a listing's failure, then a clean result: never
+	// clean; the host's, its run's error (#226 entry 168).
 	failed := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		return nil, errors.New("copy-out failed")
 	}
@@ -215,8 +213,62 @@ func TestProcService(t *testing.T) {
 		next(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}})
 		next(clean)
 	})
-	if !ok || err != nil || !has(blocks, "unverifiable: go list failed (copy-out failed)") {
+	if !ok || !hostErr(blocks, err, "go list failed (copy-out failed)") {
 		t.Errorf("a listing's failure under a clean result: %v %v %q", ok, err, whats(blocks))
+	}
+	// A listing the candidate's code failed (candidateListing) after the base's on
+	// its platform succeeded, then a clean result: blocked, never clean. The
+	// base's failing too, or none on that platform: the host's (#226 entry
+	// 170).
+	amd, arm := [2]string{"linux", "amd64"}, [2]string{"linux", "arm64"}
+	for name, c := range map[string]struct {
+		base     *[2]string // the base's listing's platform, nil none
+		baseErr  bool
+		candOK   bool // the candidate's listing succeeds
+		joined   bool // the candidate's refusal joined to its run's failure (ErrGuardRun)
+		childErr bool // the child's result: an error, no blocks
+		refusal  bool
+	}{
+		"the base's listed on its platform":                   {base: &amd, refusal: true},
+		"the base's failed too":                               {base: &amd, baseErr: true},
+		"the base's on another platform":                      {base: &arm},
+		"no base listing":                                     {},
+		"the base's alone failed":                             {base: &amd, baseErr: true, candOK: true},
+		"a refusal joined to the run's failure (Astra 5b H1)": {base: &amd, joined: true},
+		"the child's own error after a refusal (Astra 5b H2)": {base: &amd, childErr: true},
+	} {
+		calls := 0
+		onCandidate := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+			if calls++; c.base != nil && calls == 1 && !c.baseErr || calls == 2 && c.candOK {
+				return map[string]Listed{}, nil
+			}
+			failed := &listFailure{kind: refusalStatus, err: errors.New("go list exited 1"), status: 1, complete: true}
+			if c.joined {
+				return nil, errors.Join(failed, guardRun("the run's teardown: an I/O error"))
+			}
+			return nil, failed
+		}
+		blocks, _, err, ok = fakeChild(req, read, onCandidate, func(next func(childMsg) procMsg) {
+			if c.base != nil {
+				next(childMsg{op: 'l', platform: *c.base, base: true})
+			}
+			next(childMsg{op: 'l', platform: amd})
+			if c.childErr {
+				next(childMsg{op: 'd', err: "accept: the integrity guard did not run: the guard failed (a type check over the guard's deadline (pkg))", erred: true})
+				return
+			}
+			next(clean)
+		})
+		switch {
+		case !ok:
+			t.Errorf("%s: not ok", name)
+		case c.refusal && (err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "the listing failed on the candidate: go list exited 1)")):
+			t.Errorf("%s: the candidate's: %v %q", name, err, whats(blocks))
+		case c.childErr && (err == nil || len(blocks) != 0 || !strings.Contains(err.Error(), "over the guard's deadline")):
+			t.Errorf("%s: the child's own error: %v %q", name, err, whats(blocks))
+		case !c.refusal && !c.childErr && !hostErr(blocks, err, "go list failed"):
+			t.Errorf("%s: the host's: %v %q", name, err, whats(blocks))
+		}
 	}
 }
 
@@ -367,10 +419,10 @@ func sameVerdict(t *testing.T, in, out Verdict) bool {
 // the in-process guard's, byte for byte. The cases mix list lengths around
 // the report's bounds (maxReported, lowered), fields at and past maxField
 // and 4,096 bytes with multi-byte runes and invalid UTF-8 across the cuts,
-// the three ranks, blocks with warnings and without, an error, and a
-// service panic the child reports (once, whole) or does not (the latch adds
-// it): main's report and detail by construction, as the lists come back
-// whole.
+// the three ranks, blocks with warnings and without, and an error: main's
+// report and detail by construction, as the lists come back whole. A
+// service panic, whatever the child reports, is the run's error
+// (ErrGuardRun; #226 entry 168), never a verdict.
 func TestProcDifferential(t *testing.T) {
 	oldN := reported
 	defer func() { reported = oldN }()
@@ -419,15 +471,8 @@ func TestProcDifferential(t *testing.T) {
 			latched++
 		}
 		expect := slices.Clone(blocks)
-		var why string
-		if panicking {
-			why = "unverifiable: the guard failed (the guard's process asked for a blob outside its run)"
-			if rng.IntN(2) == 0 { // the child's guard reports it, as Integrity's does
-				blocks, reported_ = append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", why, false, false}), reported_+1
-			}
-			if guardErr == "" {
-				expect = append(expect, Block{vocab.ReasonTestIntegrityViolation, "", why, false, false})
-			}
+		if panicking && rng.IntN(2) == 0 { // the child's guard reports some block of its own: the latch is the run's error all the same
+			blocks, reported_ = append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", "unverifiable: the guard failed (it)", false, false}), reported_+1
 		}
 		req := procMsg{Files: map[string]string{"a.go": "b1"}}
 		gb, gw, gerr, ok := fakeChild(req, func(context.Context, string, int64) ([]byte, bool, error) { return nil, true, nil }, nil, func(next func(childMsg) procMsg) {
@@ -437,7 +482,10 @@ func TestProcDifferential(t *testing.T) {
 			next(childMsg{op: 'd', blocks: blocks, warnings: warnings, err: guardErr, erred: guardErr != ""})
 		})
 		name := fmt.Sprintf("case %d (reported %d; %d blocks, %d warnings, panic %v, error %v)", c, reported, len(blocks), len(warnings), panicking, guardErr != "")
-		if !ok || (gerr != nil) != (guardErr != "") || gerr != nil && gerr.Error() != guardErr {
+		// A latched panic is the run's error (ErrGuardRun), whatever the
+		// child reports (#226 entry 168); else the child's own error.
+		latchedErr := panicking && errors.Is(gerr, ErrGuardRun) && strings.Contains(gerr.Error(), "asked for a blob outside its run") && gb == nil
+		if !ok || panicking && !latchedErr || !panicking && ((gerr != nil) != (guardErr != "") || gerr != nil && gerr.Error() != guardErr) {
 			t.Errorf("%s: ok %v, error %v", name, ok, gerr)
 			continue
 		}
