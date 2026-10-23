@@ -234,6 +234,7 @@ export class HttpChatAdapter extends Adapter {
       if (typeof msg !== "object" || msg === null) return yield* this.failed({ outcome: "could_not_run", reason: "degenerate_output", hint: "degenerate", detail: "the reply holds no message" }, reply.text, turn);
       const content = typeof msg.content === "string" ? msg.content : null;
       const calls = toolCalls(msg.tool_calls);
+      const finish: unknown = res.choices[0].finish_reason;
       if (calls === null) return yield* this.failed({ outcome: "could_not_run", reason: "degenerate_output", hint: "degenerate", detail: "a tool call is not an object" }, reply.text, turn);
       const model = typeof res.model === "string" && res.model.length > 0 ? res.model.slice(0, 256) : "unreported";
       const provider = typeof res.provider === "string" && res.provider.length > 0 ? res.provider.slice(0, 256) : "openai-compatible";
@@ -278,6 +279,11 @@ export class HttpChatAdapter extends Adapter {
         const h = await writeOutput(p.exchange.out, p.attempt, "decision.json", JSON.stringify(decision));
         return { outcome: "found", reason: "completed_with_findings", detail: "the reviewer's decision", result: { kind: "decision", handle: h }, usage_final: final };
       }
+      // A builder's last turn ends complete only when the provider says it
+      // stopped: one cut short (length, content_filter, none reported) is
+      // the executor's incomplete run, never a clean end or a partial
+      // patch reported as found.
+      if (finish !== "stop" && finish !== "tool_calls") return ended("executor_incomplete", `the model's last turn ended on finish_reason ${JSON.stringify(finish ?? null).slice(0, 64)}, not stop`);
       let patch: string;
       try {
         patch = await workspace.patch();

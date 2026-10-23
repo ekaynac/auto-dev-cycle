@@ -139,6 +139,36 @@ test("a builder's edit loop returns its cumulative patch, which applies to the b
   assert.deepEqual(events(msgs, "coverage").map((e) => e.observable), ["partial", "partial", "complete"]);
 });
 
+/** finishing is a reply with message whose finish_reason is finish (absent when undefined). */
+const finishing = (finish: string | null | undefined, message: object): Step => ({
+  body: { id: "x", model: "m-reported", choices: [{ index: 0, message: { role: "assistant", content: null, ...message }, ...(finish === undefined ? {} : { finish_reason: finish }) }], usage: { prompt_tokens: 100, completion_tokens: 20 } },
+});
+
+test("a builder's last turn cut short (finish_reason not stop) is executor_incomplete, never a clean end or a partial patch", async (t) => {
+  const write = reply({ tool_calls: [call("c1", "write_file", { path: "src/a.txt", content: "partial\n" })] });
+  for (const [name, script] of Object.entries({
+    "length after a write": [write, finishing("length", { content: "" })],
+    "length with nothing written": [finishing("length", { content: "" })],
+    "content_filter": [write, finishing("content_filter", { content: "done" })],
+    "none reported": [write, finishing(undefined, { content: "done" })],
+    "null": [write, finishing(null, { content: "done" })],
+  })) {
+    const d = dirs(t);
+    const s = await withStub(t, script);
+    const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
+    assert.deepEqual([r.outcome, r.reason, r.result], ["could_not_run", "executor_incomplete", null], name);
+    assert.match(r.detail, /finish_reason/, name);
+    assert.ok(!existsSync(join(d.out, "patch.diff")), name);
+  }
+  // stop (and tool_calls, the stub provider's for a turn with calls) still completes, with its patch.
+  for (const finish of ["stop", "tool_calls"]) {
+    const d = dirs(t);
+    const s = await withStub(t, [write, finishing(finish, { content: "done" })]);
+    const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
+    assert.deepEqual([r.outcome, r.reason, r.result?.kind], ["found", "completed_with_findings", "patch"], finish);
+  }
+});
+
 test("F: no write leaves the workspace (.., absolute, symlinked parent or file, .git)", async (t) => {
   const d = dirs(t);
   symlinkSync(d.outside, join(d.ws, "link"));
