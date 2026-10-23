@@ -44,7 +44,8 @@ jobs:
       - name: Enable pnpm (the version adapters/package.json pins)
         run: corepack enable && cd adapters && pnpm --version
       - name: make ci
-        run: make ci
+        # Two test binaries at once: the runner has 4 GB, and entry.test (1.7 GB) was OOM-killed beside fixtures.test (#417).
+        run: make ci GOTEST_P=2
 
   fixtures:
     name: T0 fixtures well-formed
