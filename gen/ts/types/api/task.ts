@@ -4,9 +4,43 @@
  * One record of GET /v1/board (docs/plan/01 §2.2 "Board and validated pull", D51; M1 slice plan P4b): a task's card, derived only from its task record and its graph nodes in the read's snapshot, placed in its column, or unplaced, with no column and a coarse reason, when its records do not determine one. A board read covers the task and hold data of the projects it reads, by design: a card carries the task's id, project, title, state of approval and admission and creation time, and each node's hold badges with the hold's id, hold, signal instance, owner, since and age; owner_ref only when the reader's scope also reads holds in that project. It never carries the task's requirement or acceptance (its attachments' names or digests), the spec digest computed over them, a hold's reason, escalation or pages. The title is untrusted text.
  */
 export type BoardCard = BoardPlacedCard | BoardUnplacedCard;
+/**
+ * One usage report for one call (docs/design/m0/05 "Usage and settlement" [M7]). Outputs are fenced; accounting is not: reports are accepted from any attempt, stale or not. internal/capacity/ledger reconciles them: deltas deduplicated by (call, sequence), a final replaces their sum only when not lower, and only a provider_reconciliation can lower a figure.
+ */
+export type UsageMeasurement = {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  id: string;
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  call: string;
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  attempt: string;
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  lease: string;
+  kind: "delta" | "final" | "provider_reconciliation";
+  /**
+   * Per call: deltas are numbered from 0; a final or reconciliation also carries one, so a later report of the same kind supersedes an earlier.
+   */
+  sequence: number;
+  tokens: UsageMeasurementTokens;
+  turns: number;
+  milliseconds: number;
+  cost: UsageMeasurementCost;
+  /**
+   * gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_floor recorded before the request is sent, gateway_count after its response is forwarded whole with its usage read, superseding the floor at the same sequence. An adapter's final settles a call only when no request of it has a floor alone and the final is not below the counts.
+   */
+  source_of_truth: "provider_usage" | "adapter_report" | "gateway_count" | "gateway_floor" | "none";
+};
 
 /**
- * One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+ * One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec's requirement or acceptance.
  */
 export interface TaskRead {
   /**
@@ -22,6 +56,10 @@ export interface TaskRead {
    * The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project.
    */
   first_attempt: null | FirstAttempt;
+  /**
+   * The task's benchmark facts (M1 slice plan §2.8; P25, adc dev bench record): its approval and end, each of its nodes with its controller event times and attempts, those attempts' leases with their bound calls and each call's usage measurements as the call ledger holds them, and the operator's answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task's project.
+   */
+  bench: null | TaskBench;
 }
 export interface BoardPlacedCard {
   type: "placed";
@@ -226,4 +264,219 @@ export interface Charge {
    * How many calls are not settled yet.
    */
   outstanding_calls: number;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "TaskBench".
+ */
+export interface TaskBench {
+  /**
+   * The task's approval.recorded time; null with none recorded.
+   */
+  approved_at: null | string;
+  /**
+   * What task.done ended the task as; null while it is not done.
+   */
+  done_as: null | ("candidate" | "abandoned");
+  /**
+   * A candidate's closing review: the completed review of the last build round whose result is go (graph.CandidateGo; the board's done_candidate, before task.done records it too), the latest selected of them, with its result.selected time, outcome and reason; null while the task has none.
+   */
+  closure: null | BenchClosure;
+  /**
+   * Every node of the task, in node id order.
+   */
+  nodes: BenchNode[];
+  /**
+   * The lease of every attempt of the task's nodes, in lease id order.
+   */
+  leases: BenchLease[];
+  /**
+   * For each owed input a node of the task asked for that is answered at its current revision, the asking node, in node then owed input id order.
+   *
+   * Items: Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  answers: string[];
+  /**
+   * Each raise of the task's rails (task.rail_raised), in log order.
+   */
+  rail_raises: BenchRailRaise[];
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchClosure".
+ */
+export interface BenchClosure {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  node: string;
+  /**
+   * RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).
+   */
+  selected_at: string;
+  /**
+   * The four outcomes. There is no boolean ok.
+   */
+  outcome: "found" | "empty" | "could_not_run" | "failed";
+  /**
+   * A registered reason code (schemas/vocab/reasons.yaml). adc-reason asks internal/vocab, which readers and writers share; a document with an unregistered code is invalid.
+   */
+  reason: string;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchNode".
+ */
+export interface BenchNode {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  id: string;
+  kind:
+    | "plan"
+    | "build"
+    | "accept"
+    | "gate"
+    | "runtime_verify"
+    | "integration"
+    | "rebase"
+    | "evidence"
+    | "review"
+    | "review_requirement"
+    | "carry_over"
+    | "closure"
+    | "merge"
+    | "deploy"
+    | "record"
+    | "phase_gate";
+  /**
+   * The round of the candidate the node checks (graph.CandidateRound): a build's own; an accept's, gate's or review's, its candidate build's; 0 for a check of no build.
+   */
+  round: number;
+  state: "waiting" | "runnable" | "held" | "claimed" | "completed" | "superseded";
+  /**
+   * Its selected result's outcome; null with none.
+   */
+  outcome: null | ("found" | "empty" | "could_not_run" | "failed");
+  reason: null | string;
+  /**
+   * Its first node.claimed time; null when never claimed.
+   */
+  claimed_at: null | string;
+  /**
+   * Its latest result.selected time; null with none.
+   */
+  selected_at: null | string;
+  /**
+   * Every attempt on the node's unit, first to last.
+   */
+  attempts: BenchAttempt[];
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchAttempt".
+ */
+export interface BenchAttempt {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  id: string;
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  lease: string;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchLease".
+ */
+export interface BenchLease {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  id: string;
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  executor: string;
+  /**
+   * Instrument, predicate, artifact, precondition and model-family names: lowercase letters and digits, then also '.', '_' and '-' (06 "Names and media types").
+   */
+  role: string;
+  /**
+   * The price the lease was placed at (Lease.Price); null for an executor with none.
+   */
+  price: null | RegistryPrice;
+  /**
+   * What the lease is liable for in USD micros: once it has settled (its settlement recorded), its usd_micros group's liability (capacity.LiabilitiesOf); before, its usd_micros reservation; 0 with neither. Null when that liability is inconsistent_usage or saturated: no figure bounds it.
+   */
+  liability_usd_micros: null | number;
+  /**
+   * Every call the ledger binds to the lease (ledger.BoundTo), in call id order.
+   */
+  calls: BenchCall[];
+}
+export interface RegistryPrice {
+  input_usd_micros_per_mtok: number;
+  output_usd_micros_per_mtok: number;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchCall".
+ */
+export interface BenchCall {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  id: string;
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  attempt: string;
+  /**
+   * Every usage measurement the ledger holds of the call (ledger.Measurements).
+   */
+  measurements: UsageMeasurement[];
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "UsageMeasurementTokens".
+ */
+export interface UsageMeasurementTokens {
+  in: number;
+  out: number;
+  cache_read: number;
+  cache_write: number;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "UsageMeasurementCost".
+ */
+export interface UsageMeasurementCost {
+  /**
+   * Millionths of the currency unit.
+   */
+  amount_micros: number;
+  /**
+   * ISO 4217.
+   */
+  currency: string;
+  basis: "cash" | "subscription_equivalent" | "free" | "local";
+  estimate: boolean;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchRailRaise".
+ */
+export interface BenchRailRaise {
+  /**
+   * A rail of the project profile's budget.rails a task raises: a count rail, or per_task_usd.
+   */
+  rail: "attempts_per_round" | "rounds_per_task" | "merge_operations_per_generation" | "per_task_usd";
+  /**
+   * The task's nodes whose budget_rail hold on the rail the raise's command cleared, in node id order.
+   *
+   * Items: Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  nodes: string[];
 }

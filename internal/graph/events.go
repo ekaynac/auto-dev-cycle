@@ -352,7 +352,10 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, rem
 	case *types.NodeRecorded:
 		return recorded(tx, ev, p)
 	case *types.NodeClaimed:
-		return claimed(tx, ev, p)
+		if err := claimed(tx, ev, p); err != nil {
+			return err
+		}
+		return stamp(tx, ev, p.Node, true)
 	case *types.NodeReused:
 		return reused(tx, ev, p)
 	case *types.NodeReuseReleased:
@@ -366,11 +369,17 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, rem
 	case *types.HoldPaged:
 		return holdPaged(tx, ev, p)
 	case *types.HoldCleared:
-		return holdCleared(tx, ev, p)
+		if err := holdCleared(tx, ev, p); err != nil {
+			return err
+		}
+		return railCleared(tx, ev, p)
 	case *types.ResultRecorded:
 		return resultRecorded(tx, ev, p)
 	case *types.ResultSelected:
-		return selected(tx, ev, p)
+		if err := selected(tx, ev, p); err != nil {
+			return err
+		}
+		return stamp(tx, ev, p.Node, false)
 	case *types.NodeOperated:
 		return operated(tx, ev, p)
 	case *types.QueueObserved:

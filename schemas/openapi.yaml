@@ -1992,6 +1992,38 @@ components:
           type: array
           items:
             type: string
+    api.scope.task-raise-rail:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/task-raise-rail.json
+      title: TaskRaiseRailScope
+      description: 'The scope of task.raise_rail (M1 slice plan P17a, P17b; §6 L3): an operator raises one of a task''s rails above the cap in force, for that task only, and every budget_rail hold of the task on that rail clears. A count rail takes to; per_task_usd takes to_usd (P17b); per_day_usd is the project''s, raised only by a profile change.'
+      type: object
+      additionalProperties: false
+      required:
+        - task
+        - rail
+      properties:
+        task:
+          $ref: ../../common/defs.json#/$defs/TaskID
+        rail:
+          $ref: '#/$defs/RaisableRail'
+        to:
+          $ref: '#/$defs/RailCap'
+        to_usd:
+          $ref: ../../config/project-profile.json#/$defs/USD
+      $defs:
+        RaisableRail:
+          description: 'A rail of the project profile''s budget.rails a task raises: a count rail, or per_task_usd.'
+          enum:
+            - attempts_per_round
+            - rounds_per_task
+            - merge_operations_per_generation
+            - per_task_usd
+        RailCap:
+          description: 'A raised count cap: above the one in force.'
+          type: integer
+          minimum: 2
+          maximum: 1000
     api.seat:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/seat.json
@@ -2046,7 +2078,7 @@ components:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/task.json
       title: TaskRead
-      description: 'One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task''s board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task''s approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease''s model calls measured. The attempt''s fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec''s requirement or acceptance.'
+      description: 'One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task''s board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task''s approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease''s model calls measured. The attempt''s fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec''s requirement or acceptance.'
       type: object
       additionalProperties: false
       required:
@@ -2054,6 +2086,7 @@ components:
         - project
         - card
         - first_attempt
+        - bench
       properties:
         id:
           $ref: ../common/defs.json#/$defs/TaskID
@@ -2066,7 +2099,226 @@ components:
           oneOf:
             - type: "null"
             - $ref: '#/$defs/FirstAttempt'
+        bench:
+          description: 'The task''s benchmark facts (M1 slice plan §2.8; P25, adc dev bench record): its approval and end, each of its nodes with its controller event times and attempts, those attempts'' leases with their bound calls and each call''s usage measurements as the call ledger holds them, and the operator''s answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task''s project.'
+          oneOf:
+            - type: "null"
+            - $ref: '#/$defs/TaskBench'
       $defs:
+        TaskBench:
+          type: object
+          additionalProperties: false
+          required:
+            - approved_at
+            - done_as
+            - closure
+            - nodes
+            - leases
+            - answers
+            - rail_raises
+          properties:
+            approved_at:
+              description: The task's approval.recorded time; null with none recorded.
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Time
+            done_as:
+              description: What task.done ended the task as; null while it is not done.
+              oneOf:
+                - type: "null"
+                - enum:
+                    - candidate
+                    - abandoned
+            closure:
+              description: 'A candidate''s closing review: the completed review of the last build round whose result is go (graph.CandidateGo; the board''s done_candidate, before task.done records it too), the latest selected of them, with its result.selected time, outcome and reason; null while the task has none.'
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/BenchClosure'
+            nodes:
+              description: Every node of the task, in node id order.
+              type: array
+              items:
+                $ref: '#/$defs/BenchNode'
+            leases:
+              description: The lease of every attempt of the task's nodes, in lease id order.
+              type: array
+              items:
+                $ref: '#/$defs/BenchLease'
+            answers:
+              description: For each owed input a node of the task asked for that is answered at its current revision, the asking node, in node then owed input id order.
+              type: array
+              items:
+                $ref: ../common/defs.json#/$defs/NodeID
+            rail_raises:
+              description: Each raise of the task's rails (task.rail_raised), in log order.
+              type: array
+              items:
+                $ref: '#/$defs/BenchRailRaise'
+        BenchClosure:
+          type: object
+          additionalProperties: false
+          required:
+            - node
+            - selected_at
+            - outcome
+            - reason
+          properties:
+            node:
+              $ref: ../common/defs.json#/$defs/NodeID
+            selected_at:
+              $ref: ../common/defs.json#/$defs/Time
+            outcome:
+              $ref: ../common/defs.json#/$defs/Outcome
+            reason:
+              $ref: ../common/defs.json#/$defs/ReasonCode
+        BenchNode:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - kind
+            - round
+            - state
+            - outcome
+            - reason
+            - claimed_at
+            - selected_at
+            - attempts
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/NodeID
+            kind:
+              enum:
+                - plan
+                - build
+                - accept
+                - gate
+                - runtime_verify
+                - integration
+                - rebase
+                - evidence
+                - review
+                - review_requirement
+                - carry_over
+                - closure
+                - merge
+                - deploy
+                - record
+                - phase_gate
+            round:
+              description: 'The round of the candidate the node checks (graph.CandidateRound): a build''s own; an accept''s, gate''s or review''s, its candidate build''s; 0 for a check of no build.'
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            state:
+              enum:
+                - waiting
+                - runnable
+                - held
+                - claimed
+                - completed
+                - superseded
+            outcome:
+              description: Its selected result's outcome; null with none.
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Outcome
+            reason:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/ReasonCode
+            claimed_at:
+              description: Its first node.claimed time; null when never claimed.
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Time
+            selected_at:
+              description: Its latest result.selected time; null with none.
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Time
+            attempts:
+              description: Every attempt on the node's unit, first to last.
+              type: array
+              items:
+                $ref: '#/$defs/BenchAttempt'
+        BenchAttempt:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - lease
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/AttemptID
+            lease:
+              $ref: ../common/defs.json#/$defs/LeaseID
+        BenchLease:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - executor
+            - role
+            - price
+            - liability_usd_micros
+            - calls
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/LeaseID
+            executor:
+              $ref: ../common/defs.json#/$defs/ExecutorID
+            role:
+              $ref: ../records/receipt.json#/$defs/Name
+            price:
+              description: The price the lease was placed at (Lease.Price); null for an executor with none.
+              oneOf:
+                - type: "null"
+                - $ref: ../config/executor-registry.json#/$defs/RegistryPrice
+            liability_usd_micros:
+              description: 'What the lease is liable for in USD micros: once it has settled (its settlement recorded), its usd_micros group''s liability (capacity.LiabilitiesOf); before, its usd_micros reservation; 0 with neither. Null when that liability is inconsistent_usage or saturated: no figure bounds it.'
+              oneOf:
+                - type: "null"
+                - type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+            calls:
+              description: Every call the ledger binds to the lease (ledger.BoundTo), in call id order.
+              type: array
+              items:
+                $ref: '#/$defs/BenchCall'
+        BenchCall:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - attempt
+            - measurements
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/CallID
+            attempt:
+              description: The attempt the call is bound to (its binding).
+              $ref: ../common/defs.json#/$defs/AttemptID
+            measurements:
+              description: Every usage measurement the ledger holds of the call (ledger.Measurements).
+              type: array
+              items:
+                $ref: ../records/usage-measurement.json
+        BenchRailRaise:
+          type: object
+          additionalProperties: false
+          required:
+            - rail
+            - nodes
+          properties:
+            rail:
+              $ref: scope/task-raise-rail.json#/$defs/RaisableRail
+            nodes:
+              description: The task's nodes whose budget_rail hold on the rail the raise's command cleared, in node id order.
+              type: array
+              items:
+                $ref: ../common/defs.json#/$defs/NodeID
         FirstAttempt:
           type: object
           additionalProperties: false
@@ -2367,6 +2619,637 @@ components:
           minLength: 1
           maxLength: 8192
           pattern: ^[^\x00-\x08\x0b-\x1f\x7f-\x9f]+$
+    config.executor-registry:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/config/executor-registry.json
+      title: ExecutorRegistry
+      description: 'The executors `adcd run --registry` places work on (docs/design/m1/00-slice-plan.md Q2, Q8; 01 §2.2 "Source registry"): each with its role, model family, pinned model, destination, credential reference, resource group and price basis. The enums stay open to later milestones (a governed_upstream destination, the attested tier, D48); internal/registry refuses at start whatever M1 does not implement. Kind, family and cost basis are the operator''s declarations: the registry checks them for consistency and the gateway enforces them, but neither establishes them.'
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - executors
+      properties:
+        schema:
+          const: adc.executor-registry/v1
+        executors:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/$defs/RegistryExecutor'
+      $defs:
+        RegistryExecutor:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - role
+            - family
+            - adapter
+            - model
+            - destination
+            - credential_ref
+            - group
+            - cost_basis
+            - price
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/ExecutorID
+            role:
+              enum:
+                - builder
+                - reviewer
+            family:
+              description: The model family review independence compares (06 rule 3); never `unknown`.
+              $ref: ../records/receipt.json#/$defs/Name
+            adapter:
+              description: The harness kind; M1 runs `http-chat` only.
+              $ref: project-profile.json#/$defs/Slug
+            model:
+              description: The pinned model the gateway sends to; it never selects or changes it (D48).
+              type: string
+              pattern: ^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$
+            destination:
+              $ref: '#/$defs/RegistryDestination'
+            credential_ref:
+              description: The name of the credential the gateway injects (P11); never the credential. Null for an endpoint without one.
+              oneOf:
+                - type: "null"
+                - $ref: project-profile.json#/$defs/Slug
+            group:
+              description: The one resource group the executor draws from; the group's members name it.
+              $ref: ../common/defs.json#/$defs/ResourceGroupID
+            cost_basis:
+              enum:
+                - cash
+                - subscription_equivalent
+                - free
+                - local
+            price:
+              description: The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost).
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/RegistryPrice'
+            footprint_prior:
+              description: 'The operator''s prior of one attempt''s footprint on this executor (#226 entries 103, 120): the lease''s footprint, and a direct API''s token reservation, at most context_tokens × expected_turns, shrunk to what the USD rails leave but never below context_tokens (one turn). Optional: a direct_api executor without it is refused at placement (precondition_failed), its node held source_invalid_config. A local endpoint reserves a slot.'
+              $ref: '#/$defs/FootprintPrior'
+        FootprintPrior:
+          type: object
+          additionalProperties: false
+          required:
+            - context_tokens
+            - expected_turns
+          properties:
+            context_tokens:
+              description: The tokens one turn's context holds, at most.
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            expected_turns:
+              description: The turns one attempt is expected to take.
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+        RegistryDestination:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - kind
+            - verification
+            - trust_class
+            - endpoint
+            - retention_days
+          properties:
+            id:
+              description: What a project's data_policy.allowed_destinations names; one endpoint origin has one id.
+              $ref: project-profile.json#/$defs/Slug
+            kind:
+              description: M1 admits direct_api and local_endpoint (no credential; a loopback, RFC 1918 or fc00::/7 IP literal; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.
+              enum:
+                - direct_api
+                - local_endpoint
+                - broker
+                - governed_upstream
+            verification:
+              description: The routing label (01 §2.2). M1 admits verified; attested is M2.
+              enum:
+                - reported
+                - verified
+                - attested
+            trust_class:
+              description: Compared with a project's data_policy.floor.
+              enum:
+                - own
+                - contracted
+                - free_unknown
+            endpoint:
+              description: The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback, RFC 1918 or fc00::/7 IP literal.
+              type: string
+              minLength: 1
+              maxLength: 2048
+            retention_days:
+              description: The declared retention of request data; null is undeclared.
+              oneOf:
+                - type: "null"
+                - type: integer
+                  minimum: 0
+                  maximum: 36500
+        RegistryPrice:
+          type: object
+          additionalProperties: false
+          required:
+            - input_usd_micros_per_mtok
+            - output_usd_micros_per_mtok
+          properties:
+            input_usd_micros_per_mtok:
+              $ref: ../records/resource-group.json#/$defs/Amount
+            output_usd_micros_per_mtok:
+              $ref: ../records/resource-group.json#/$defs/Amount
+    config.project-profile:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/config/project-profile.json
+      title: ProjectProfile
+      description: Everything project-shaped (docs/design/m0/07). Core code reads nothing project-specific from anywhere else. Every field is required; null is explicit. Cross-field rules (environment references, path forms, glob syntax, forge capabilities, budget order) belong to internal/profile.
+      type: object
+      additionalProperties: false
+      required:
+        - schema
+        - id
+        - name
+        - repo
+        - forge
+        - source_tests
+        - package
+        - runtime_verification
+        - toolchain
+        - gate
+        - integration
+        - plugins
+        - protected_paths
+        - protected_documents
+        - data_policy
+        - usage_profile_override
+        - priority
+        - budget
+        - retention
+        - vocabulary
+      properties:
+        schema:
+          const: adc.project-profile/v1
+        id:
+          $ref: ../common/defs.json#/$defs/ProjectID
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        repo:
+          type: object
+          additionalProperties: false
+          required:
+            - url
+            - base_ref
+          properties:
+            url:
+              description: Any git URL.
+              type: string
+              minLength: 1
+            base_ref:
+              description: The branch work lands on; parameterised, never assumed (A15). Full git ref syntax is checked by internal/profile.
+              type: string
+              pattern: ^refs/heads/[^\t\n\f\r ]+$
+        forge:
+          type: object
+          additionalProperties: false
+          required:
+            - kind
+            - capabilities
+            - settings
+          properties:
+            kind:
+              enum:
+                - git
+                - github
+                - gitlab
+            capabilities:
+              description: Declared, because plain git has none of them.
+              type: object
+              additionalProperties: false
+              required:
+                - change_requests
+                - protected_branches
+                - required_checks
+              properties:
+                change_requests:
+                  type: boolean
+                protected_branches:
+                  type: boolean
+                required_checks:
+                  type: boolean
+            settings:
+              description: 'Per forge kind. Reserved in v1: no settings are defined yet, so the object is empty.'
+              type: object
+              additionalProperties: false
+              properties: {}
+        source_tests:
+          description: The gate's workspace (13 "Source tests, package, runtime verification").
+          type: object
+          additionalProperties: false
+          required:
+            - dev_dependencies
+            - vcs_metadata
+          properties:
+            dev_dependencies:
+              type: boolean
+            vcs_metadata:
+              description: True only if the test suite needs it (a declared build-time fact).
+              type: boolean
+        package:
+          description: The deployable artifact; its bytes are hashed and exactly those bytes are deployed.
+          type: object
+          additionalProperties: false
+          required:
+            - recipe
+            - outputs
+          properties:
+            recipe:
+              description: Commands run in order.
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/$defs/Argv'
+            outputs:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                $ref: '#/$defs/RepoPath'
+        runtime_verification:
+          description: Runtime-facing checks against the package artifact, with the runtime facts of a gate environment.
+          type: object
+          additionalProperties: false
+          required:
+            - command
+            - facts_from
+          properties:
+            command:
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/Argv'
+            facts_from:
+              description: The gate environment whose runtime facts apply; null exactly when there is no command.
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/EnvironmentName'
+        toolchain:
+          type: object
+          additionalProperties: false
+          required:
+            - images
+            - dependency_recipe
+          properties:
+            images:
+              description: Images pinned by digest; at least one, since dependency preparation, build and gate run in containers.
+              type: object
+              minProperties: 1
+              propertyNames:
+                $ref: '#/$defs/Slug'
+              additionalProperties:
+                $ref: '#/$defs/PinnedImage'
+            dependency_recipe:
+              description: 'Phase 1 of the sandbox: the only phase with network, limited to the registries named.'
+              type: object
+              additionalProperties: false
+              required:
+                - lockfiles
+                - command
+                - registries
+              properties:
+                lockfiles:
+                  type: array
+                  uniqueItems: true
+                  items:
+                    $ref: '#/$defs/RepoPath'
+                command:
+                  $ref: '#/$defs/Argv'
+                registries:
+                  type: array
+                  uniqueItems: true
+                  items:
+                    enum:
+                      - npm
+                      - pypi
+                      - packagist
+                      - goproxy
+                      - crates
+                      - rubygems
+                      - maven
+        gate:
+          type: object
+          additionalProperties: false
+          required:
+            - command
+            - result_adapter
+            - baseline
+            - environments
+            - ownership_rules
+          properties:
+            command:
+              description: Run in phase 2, without network.
+              $ref: '#/$defs/Argv'
+            result_adapter:
+              description: How gate output becomes per-test results; custom:<plugin> names a result plugin.
+              type: string
+              pattern: ^(junit_xml|tap|go_test_json|none|custom:[a-z0-9][a-z0-9._-]*)$
+            baseline:
+              type: object
+              additionalProperties: false
+              required:
+                - kind
+                - relock_requires
+              properties:
+                kind:
+                  const: measured
+                relock_requires:
+                  const: approval
+            environments:
+              description: Target environments whose gate must hold before merge.
+              type: array
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - name
+                  - facts
+                  - owner
+                properties:
+                  name:
+                    $ref: '#/$defs/EnvironmentName'
+                  facts:
+                    description: Published to the builder brief and the reviewer.
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - vcs_metadata
+                      - network
+                      - runtime
+                    properties:
+                      vcs_metadata:
+                        type: boolean
+                      network:
+                        enum:
+                          - none
+                          - loopback
+                          - full
+                      runtime:
+                        type: object
+                        additionalProperties: false
+                        required:
+                          - language_version
+                          - os
+                          - arch
+                        properties:
+                          language_version:
+                            type: string
+                            minLength: 1
+                          os:
+                            type: string
+                            minLength: 1
+                          arch:
+                            type: string
+                            minLength: 1
+                  owner:
+                    description: Who fixes environment faults (wrong_owner holds).
+                    type: string
+                    minLength: 1
+            ownership_rules:
+              description: Gate-output classification (07); only the default rules exist in v1.
+              const: default
+        integration:
+          description: Phase 3; the topology is controller-owned (A2).
+          type: object
+          additionalProperties: false
+          required:
+            - plugin
+            - topology
+            - receipts_required
+          properties:
+            plugin:
+              enum:
+                - none
+                - docker-compose
+            topology:
+              description: Pinned; changed only by integration.change_topology (04). Null exactly when the plugin is none.
+              oneOf:
+                - type: "null"
+                - type: object
+                  additionalProperties: false
+                  required:
+                    - files
+                    - adopted_revision
+                    - digest
+                  properties:
+                    files:
+                      description: Protected.
+                      type: array
+                      minItems: 1
+                      uniqueItems: true
+                      items:
+                        $ref: '#/$defs/RepoPath'
+                    adopted_revision:
+                      $ref: ../common/defs.json#/$defs/GitID
+                    digest:
+                      description: Of the adopted topology content.
+                      $ref: ../common/defs.json#/$defs/Digest
+            receipts_required:
+              type: array
+              uniqueItems: true
+              items:
+                $ref: ../records/receipt.json#/$defs/Name
+          if:
+            properties:
+              plugin:
+                const: none
+          then:
+            properties:
+              topology:
+                const: null
+          else:
+            properties:
+              topology:
+                not:
+                  const: null
+        plugins:
+          type: object
+          additionalProperties: false
+          required:
+            - deploy
+            - records
+          properties:
+            deploy:
+              enum:
+                - none
+                - script
+                - docker-compose
+            records:
+              description: The delivery record format.
+              enum:
+                - none
+                - markdown_table
+                - json_ledger
+        protected_paths:
+          description: Canon, topology and knowledge documents; changed only through the protected-document operation.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/$defs/Glob'
+        protected_documents:
+          description: The protected paths that hold decisions and conventions; each is covered by protected_paths.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/$defs/Glob'
+        data_policy:
+          type: object
+          additionalProperties: false
+          required:
+            - floor
+            - routing
+            - allowed_destinations
+          properties:
+            floor:
+              enum:
+                - own
+                - contracted
+                - free_unknown
+            routing:
+              enum:
+                - verified
+                - reported_ok
+            allowed_destinations:
+              description: Destinations of the source registry; empty means derived from the usage profile.
+              type: array
+              uniqueItems: true
+              items:
+                $ref: '#/$defs/Slug'
+        usage_profile_override:
+          description: May only narrow the installation's usage profile without approval.
+          oneOf:
+            - type: "null"
+            - enum:
+                - standard
+                - open
+                - on-prem
+        priority:
+          description: Higher runs first.
+          type: integer
+          minimum: 0
+          maximum: 1000
+        budget:
+          type: object
+          additionalProperties: false
+          required:
+            - rails
+          properties:
+            rails:
+              description: 'Rails, not budgets: spending stops at them. The count rails (M1 P17) are optional, so a stored adc.project-profile/v1 still validates (#226 entry 10); an absent one is its default: 3 attempts per round, 5 rounds per task, 2 merge operations per generation. Reaching one raises budget_rail; task.raise_rail raises it for one task.'
+              type: object
+              additionalProperties: false
+              required:
+                - per_task_usd
+                - per_day_usd
+              properties:
+                per_task_usd:
+                  $ref: '#/$defs/USD'
+                per_day_usd:
+                  $ref: '#/$defs/USD'
+                attempts_per_round:
+                  description: Attempts started on one round's node (its unit), invalidations included. Default 3.
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+                rounds_per_task:
+                  description: 'Rounds of one build lineage: a repair past it waits. Default 5.'
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+                merge_operations_per_generation:
+                  description: Merge operations of one queue generation's merge node, across its invalidations. Default 2.
+                  type: integer
+                  minimum: 1
+                  maximum: 1000
+        retention:
+          type: object
+          additionalProperties: false
+          required:
+            - attempt_continuity_post_closure_ttl
+            - supervisor_notes_ttl
+            - blob_payload_ttl
+          properties:
+            attempt_continuity_post_closure_ttl:
+              description: Starts when the task closes; pinned (resumable) records are never purged.
+              $ref: ../common/defs.json#/$defs/Duration
+            supervisor_notes_ttl:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Duration
+            blob_payload_ttl:
+              description: A payload purge leaves tombstones; accounting and history are never purged.
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Duration
+        vocabulary:
+          type: object
+          additionalProperties: false
+          required:
+            - task_id_pattern
+            - branch_prefix
+            - language
+          properties:
+            task_id_pattern:
+              description: An RE2 regular expression for product task ids (e.g. a ledger grammar); null means framework ids.
+              oneOf:
+                - type: "null"
+                - type: string
+                  minLength: 1
+            branch_prefix:
+              description: E.g. adc/ or team/adc/. Full git ref syntax is checked by internal/profile.
+              type: string
+              pattern: ^[^\t\n\f\r ]+/$
+            language:
+              description: Product language(s); framework vocabulary stays English.
+              type: string
+              minLength: 1
+      $defs:
+        Argv:
+          description: A command as argv, run without a shell. Arguments may be empty (some commands need an empty argument); internal/profile requires a non-empty executable and refuses NUL bytes.
+          type: array
+          minItems: 1
+          items:
+            type: string
+        RepoPath:
+          description: 'A path inside the repository: relative, slash-separated, clean (internal/profile checks the form).'
+          type: string
+          minLength: 1
+        Glob:
+          description: 'A repository path pattern: slash-separated segments, each ''**'' or a path.Match pattern (internal/profile compiles it).'
+          type: string
+          minLength: 1
+        Slug:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]{0,62}$
+        EnvironmentName:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]{0,62}$
+        PinnedImage:
+          description: An image reference pinned by digest.
+          type: string
+          pattern: ^[^@\t\n\f\r ]+@sha256:[0-9a-f]{64}$
+        USD:
+          description: An amount in US dollars as a decimal string (no floating point), at most two decimals.
+          type: string
+          pattern: ^(0|[1-9][0-9]{0,8})(\.[0-9]{1,2})?$
     records.approval:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/records/approval.json
@@ -3017,6 +3900,231 @@ components:
               $ref: ../common/defs.json#/$defs/CallID
             demand:
               $ref: '#/$defs/Demand'
+    records.resource-group:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/records/resource-group.json
+      title: ResourceGroup
+      description: 'A pool that leases reserve from (docs/design/m0/05 "Resource groups"). Rate windows (account_quota) and credit balances (broker_balance) are separate groups: a provider can have one and not the other. A broker balance is counted in usd_micros, and an evidence target has a known capacity of exactly one slot (12, 13); capacity.CheckGroup checks those nested rules.'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - kind
+        - capacity_model
+        - release_rule
+        - members
+      properties:
+        id:
+          $ref: ../common/defs.json#/$defs/ResourceGroupID
+        kind:
+          $ref: '#/$defs/ResourceGroupKind'
+        capacity_model:
+          type: object
+          additionalProperties: false
+          required:
+            - unit
+            - limit
+            - window
+            - reset_at
+            - quota_state
+          properties:
+            unit:
+              $ref: '#/$defs/CapacityUnit'
+            limit:
+              description: In the unit's integer amount (usd_micros for money); null is unknown.
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/Amount'
+            window:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Duration
+            reset_at:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Time
+            quota_state:
+              enum:
+                - known
+                - estimated
+                - unknown
+          if:
+            properties:
+              quota_state:
+                const: unknown
+          then:
+            properties:
+              limit:
+                const: null
+          else:
+            properties:
+              limit:
+                not:
+                  const: null
+        release_rule:
+          description: How reserved amounts return [M7]. An evidence target returns only once its restore is verified (13, D40).
+          enum:
+            - on_settle
+            - on_attempt_end
+            - on_window_reset
+            - on_restore_verified
+        members:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: ../common/defs.json#/$defs/ExecutorID
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: evidence_target
+          then:
+            properties:
+              release_rule:
+                const: on_restore_verified
+          else:
+            properties:
+              release_rule:
+                not:
+                  const: on_restore_verified
+      $defs:
+        ResourceGroupKind:
+          enum:
+            - account_quota
+            - broker_balance
+            - gpu
+            - concurrency
+            - controller_gate
+            - controller_integration
+            - evidence_target
+        CapacityUnit:
+          description: 'Every amount is an integer: money in millionths of a US dollar, GPU time in seconds.'
+          enum:
+            - requests
+            - tokens
+            - usd_micros
+            - slots
+            - gpu_seconds
+        Amount:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+    records.usage-measurement:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/records/usage-measurement.json
+      title: UsageMeasurement
+      description: 'One usage report for one call (docs/design/m0/05 "Usage and settlement" [M7]). Outputs are fenced; accounting is not: reports are accepted from any attempt, stale or not. internal/capacity/ledger reconciles them: deltas deduplicated by (call, sequence), a final replaces their sum only when not lower, and only a provider_reconciliation can lower a figure.'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - call
+        - attempt
+        - lease
+        - kind
+        - sequence
+        - tokens
+        - turns
+        - milliseconds
+        - cost
+        - source_of_truth
+      properties:
+        id:
+          $ref: ../common/defs.json#/$defs/MeasurementID
+        call:
+          description: The call-ledger id, recorded in the call's intent (03 effects).
+          $ref: ../common/defs.json#/$defs/CallID
+        attempt:
+          $ref: ../common/defs.json#/$defs/AttemptID
+        lease:
+          $ref: ../common/defs.json#/$defs/LeaseID
+        kind:
+          enum:
+            - delta
+            - final
+            - provider_reconciliation
+        sequence:
+          description: 'Per call: deltas are numbered from 0; a final or reconciliation also carries one, so a later report of the same kind supersedes an earlier.'
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        tokens:
+          $ref: '#/$defs/UsageMeasurementTokens'
+        turns:
+          $ref: resource-group.json#/$defs/Amount
+        milliseconds:
+          $ref: resource-group.json#/$defs/Amount
+        cost:
+          $ref: '#/$defs/UsageMeasurementCost'
+        source_of_truth:
+          description: 'gateway_count and gateway_floor are the gateway''s own count of one request it sent (P11b), kept apart from the adapter''s reports: gateway_floor recorded before the request is sent, gateway_count after its response is forwarded whole with its usage read, superseding the floor at the same sequence. An adapter''s final settles a call only when no request of it has a floor alone and the final is not below the counts.'
+          enum:
+            - provider_usage
+            - adapter_report
+            - gateway_count
+            - gateway_floor
+            - none
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: provider_reconciliation
+          then:
+            properties:
+              source_of_truth:
+                const: provider_usage
+        - if:
+            properties:
+              source_of_truth:
+                enum:
+                  - gateway_count
+                  - gateway_floor
+          then:
+            properties:
+              kind:
+                const: delta
+      $defs:
+        UsageMeasurementTokens:
+          type: object
+          additionalProperties: false
+          required:
+            - in
+            - out
+            - cache_read
+            - cache_write
+          properties:
+            in:
+              $ref: resource-group.json#/$defs/Amount
+            out:
+              $ref: resource-group.json#/$defs/Amount
+            cache_read:
+              $ref: resource-group.json#/$defs/Amount
+            cache_write:
+              $ref: resource-group.json#/$defs/Amount
+        UsageMeasurementCost:
+          type: object
+          additionalProperties: false
+          required:
+            - amount_micros
+            - currency
+            - basis
+            - estimate
+          properties:
+            amount_micros:
+              description: Millionths of the currency unit.
+              $ref: resource-group.json#/$defs/Amount
+            currency:
+              description: ISO 4217.
+              type: string
+              pattern: ^[A-Z]{3}$
+            basis:
+              enum:
+                - cash
+                - subscription_equivalent
+                - free
+                - local
+            estimate:
+              type: boolean
     vocab.registry:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/vocab/registry.json

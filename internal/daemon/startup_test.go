@@ -564,7 +564,8 @@ func TestProjectionsRegistered(t *testing.T) {
 	for _, p := range projections {
 		names = append(names, p.Name)
 	}
-	if want := append(frozen, "lease_grants", "unit_open", "graph_task_nodes", "attempt_starts", "unit_first_attempt", "captures", "graph_task_results", "intent_recorded", "gate_measured", "gate_results"); fmt.Sprint(names) != fmt.Sprint(want) {
+	if want := append(frozen, "lease_grants", "unit_open", "graph_task_nodes", "attempt_starts", "unit_first_attempt", "captures", "graph_task_results", "intent_recorded", "gate_measured", "gate_results",
+		"graph_node_times", "graph_rail_clears", "task_rail_raises"); fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("projections are not builtBeforeRecord, then the ones added since:\n%v\n%v", names, want)
 	}
 }

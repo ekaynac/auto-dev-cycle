@@ -8,13 +8,13 @@
 //   - Project-agnostic: the tasks, routes and fixtures are inputs; nothing
 //     here names a project (§2.8's runs still name py-mini; draft 11 leaves
 //     the stub project open).
-//   - Pure: Record computes from what the recorder reads over the API (adc
-//     task show and the ledger, W18): a Task's controller event times, its
-//     nodes with their attempts and each attempt's executor (attempt →
-//     node, P8a), the attempts' usage measurements, the ledger's bound
-//     calls with their liabilities, the task's interventions, and each
-//     route's registry price. The command that reads them, adc dev bench
-//     record, comes with W18.
+//   - Pure: Record computes from what the recorder reads over the API (the
+//     task read's benchmark facts, W18; P25): a Task's controller event
+//     times, its nodes with their attempts and each attempt's executor
+//     (attempt → node, P8a), the attempts' usage measurements, the
+//     ledger's bound calls with their liabilities, the task's
+//     interventions, and each route's registry price. The command that
+//     reads them is adc dev bench record (internal/cli).
 //   - Trusted, not checked: that Task.Calls is complete (an unmeasured call
 //     left out of it disappears); that Task.Usage carries every report of
 //     each bound call (a dropped gateway count leaves a call unsettled at a

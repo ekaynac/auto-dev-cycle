@@ -87,6 +87,9 @@ var tasks = Resource{
 				if err == nil && ok {
 					read.FirstAttempt, err = metrics(tx, t, f, at.Scope.ReadsRecord(modelCallDomain, &t.Project))
 				}
+				if err == nil && at.Scope.ReadsRecord(modelCallDomain, &t.Project) {
+					read.Bench, err = benchOf(tx, t, byTask[id])
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -100,7 +103,7 @@ var tasks = Resource{
 		_, _, project, err := boardTask(tx, r.ID)
 		return project, err
 	},
-	Fields: []string{"id", "project", "card", "first_attempt"},
+	Fields: []string{"id", "project", "card", "first_attempt", "bench"},
 }
 
 // started is an attempt, its node and its start time.

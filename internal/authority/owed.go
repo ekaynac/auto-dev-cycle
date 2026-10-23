@@ -199,6 +199,26 @@ func (Answers) Owed(tx *eventstore.Tx, rec types.NodeRecorded) ([]types.AnswerSo
 	return out, err
 }
 
+// Answered are the owed inputs node asked for, ruling and data, that hold
+// an answer recorded at their current revision (in force or since
+// withdrawn: an answer given is an intervention either way), in id order:
+// the benchmark's answers (§2.8; adc dev bench record, P25).
+func Answered(tx *eventstore.Tx, node types.NodeID) ([]types.OwedInputID, error) {
+	prefix := "asker/" + string(node) + "/"
+	keys, err := tx.Keys(OwedProjection, prefix)
+	out := []types.OwedInputID{}
+	for _, k := range keys {
+		o, ok, lerr := owedOf(tx, types.OwedInputID(k[len(prefix):]))
+		if err = errors.Join(err, lerr); err != nil || !ok {
+			return nil, errors.Join(err, fmt.Errorf("authority: the asker index names no owed input: %s", k))
+		}
+		if o.Kind != types.OwedInputKindReceipt && o.Answer != nil && o.Answer.Revision == o.Revision {
+			out = append(out, o.ID)
+		}
+	}
+	return out, err
+}
+
 // Approval is the sealed Ref to approval as recorded, which must be the
 // answer in force to owed, which rec's node declares, at revision, its
 // current one, in rec's project; otherwise authority_revoked

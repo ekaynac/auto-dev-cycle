@@ -78,10 +78,14 @@ func OfLastRound(nodes []NodeView, review types.Node) bool {
 // for the loop's task.done as a candidate (reconcile.Observe; 22a-7): a
 // later round's build, or a NO-GO in the last round, is never a candidate.
 func CandidateGo(nodes []NodeView) bool {
-	return slices.ContainsFunc(nodes, func(n NodeView) bool {
-		return n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
-			*n.Outcome == types.OutcomeEmpty && OfLastRound(nodes, n.Node)
-	})
+	return slices.ContainsFunc(nodes, func(n NodeView) bool { return ClosesCandidate(nodes, n) })
+}
+
+// ClosesCandidate reports whether n, a node of nodes (a task's), is a review
+// deciding the task's candidate: CandidateGo's rule for one node.
+func ClosesCandidate(nodes []NodeView, n NodeView) bool {
+	return n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
+		*n.Outcome == types.OutcomeEmpty && OfLastRound(nodes, n.Node)
 }
 
 // Repair is the events recording round n+1 of build, a repair (13

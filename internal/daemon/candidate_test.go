@@ -169,10 +169,17 @@ func (r restarted) noLeak(t *testing.T, task types.TaskID, canaries ...string) {
 		} else if code, out, errb = r.c.adc(r.tok, args...); code != entry.ExitOK {
 			t.Errorf("%s: %d %s", line, code, errb)
 		}
-		for _, secret := range append([]string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary}, canaries...) {
-			if strings.Contains(out, secret) {
-				t.Errorf("%s holds %q: %s", line, secret, out)
-			}
+		noAcceptance(t, line, out, canaries...)
+	}
+}
+
+// noAcceptance requires that out, what line printed or wrote, holds neither
+// the acceptance digest nor the canary, nor any of canaries.
+func noAcceptance(t *testing.T, line, out string, canaries ...string) {
+	t.Helper()
+	for _, secret := range append([]string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary}, canaries...) {
+		if strings.Contains(out, secret) {
+			t.Errorf("%s holds %q: %s", line, secret, out)
 		}
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
@@ -205,6 +207,27 @@ func TestANoGoRepairsTheBuild(t *testing.T) {
 	if strings.Contains(log.String(), "refused") || strings.Contains(log.String(), "runner: failed") {
 		t.Errorf("an action was refused: %s", log.String())
 	}
+	// P25 (Opus #408 L1): the held task's benchmark, over adcd's API. A
+	// stage's round is its candidate's (graph.CandidateRound): rounds 1 to
+	// 5 ran through each stage, though a repair's accept, gate and review
+	// are recorded in round 1; round 6, held on the rounds rail, is pending
+	// in each.
+	released(t)
+	r := restartOn(t, rw)
+	code, _, errb, raw := r.benchRecord(t, rw.task, "--routes", "stub")
+	run, err := contract.Decode[types.BenchmarkRun]("records/benchmark-run", raw)
+	if code != entry.ExitOK || err != nil {
+		t.Fatalf("bench record of the held task: %d %s %v", code, errb, err)
+	}
+	if task := run.Tasks[0]; task.Hold == nil || *task.Hold != vocab.HoldBudgetRail || task.Outcome != nil || task.WallMs != nil {
+		t.Errorf("the held task: %s", raw)
+	}
+	for _, s := range []types.BenchmarkStageStage{"build", "accept", "gate", "review"} {
+		if st, ok := stageOf(run, s); !ok || st.Rounds != 5 || st.Pending != 1 || st.Unfinished != 0 {
+			t.Errorf("stage %s: %+v", s, st)
+		}
+	}
+	noAcceptance(t, "the held task's benchmark", string(raw), hiddenTest)
 }
 
 // selectedRef is the first ref of v's selected result.
