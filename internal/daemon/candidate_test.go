@@ -766,3 +766,72 @@ func TestATryThatEndsSomethingIsProgress(t *testing.T) {
 		t.Errorf("a try ending the review's attempt, then one ending nothing: %d tries, %d nudges: %s", tries, rw.nudged.Load()-nudged, log.String())
 	}
 }
+
+// noRuns starts no run: a granted lease stays granted, never launched.
+type noRuns struct{}
+
+func (noRuns) Run(types.NodeID, types.LeaseID) bool { return false }
+
+// Mythos chunk 5a H1: an open entry that is a lease is ended too:
+//   - the review's attempt completed, its lease's end failing (the run's
+//     own end and End's first try): the open entry is the lease; End's
+//     next due try ends it by its attempt (endOne's completed branch), and
+//     the task ends at runtime;
+//   - a revoked task whose build's lease was granted and never launched:
+//     End ends the lease as one never launched (endLease: refused and
+//     released), and the abandonment records.
+func TestALeaseEntryIsEnded(t *testing.T) {
+	t.Run("the lease's end fails, then works", func(t *testing.T) {
+		var n atomic.Int64
+		rw := candidateRun(t, func(rw *runWorld) {
+			changeLease = func(tx *eventstore.Tx, id types.LeaseID, rev int64, e lease.LeaseEvent, h map[string]types.Hold) ([]eventstore.Event, error) {
+				if e.Kind == lease.Completed && n.Add(1) <= 2 {
+					return nil, errors.New("the store is busy")
+				}
+				return lease.ChangeLease(tx, id, rev, e, h)
+			}
+		})
+		t.Cleanup(func() { changeLease = lease.ChangeLease })
+		review := reviewNodes(rw)[types.NodeKindReview]
+		rw.passesFor(t, 3, 0)
+		if c := endingCard(t, rw); c.EndingBlocked == nil || string(c.EndingBlocked.Cause) != authority.EndingLease {
+			t.Fatalf("the card with the review's lease not ended: %+v", c.EndingBlocked)
+		}
+		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+			t.Fatal("the task is done with its review's lease active")
+		}
+		rw.r.mu.Lock()
+		e := rw.r.ending[review.Node.ID]
+		e.next = time.Now() // the retry is due
+		rw.r.ending[review.Node.ID] = e
+		rw.r.mu.Unlock()
+		rw.passesFor(t, 3, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+			t.Fatalf("the task at the next due try: %s %s", st, as)
+		}
+	})
+	t.Run("a revoked task's lease never launched", func(t *testing.T) {
+		rw := newRunWorld(t, true, builder(nil, false, nil))
+		rw.x.Runner, rw.x.Acceptor = noRuns{}, rw.r
+		rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+		for range 12 {
+			if rw.build = templateNodes(rw.w, rw.task)[types.NodeKindBuild]; rw.build != "" {
+				if _, live := leaseOn(rw.w, rw.build); live {
+					break
+				}
+			}
+			rw.passesFor(t, 1, 0)
+		}
+		l, live := leaseOn(rw.w, rw.build)
+		if !live || l.State != types.LeaseStateGranted {
+			t.Fatalf("the build's lease: %s (live %v)", l.State, live)
+		}
+		rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return identity.RevokeActor(tx, rw.w.op, time.Now())
+		})
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task with a granted lease: %s %s", st, as)
+		}
+	})
+}

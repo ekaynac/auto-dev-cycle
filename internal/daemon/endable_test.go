@@ -34,6 +34,18 @@ func rawDone(task types.TaskID, project types.ProjectID) func(*eventstore.Tx) ([
 	}
 }
 
+// doneSeeded appends task's task.done as a candidate raw (the fold's own
+// checks), as a seeded history ends a task with no review: DoneTask, the
+// command, ends one only once its review go is selected (Mythos chunk 5a
+// L1).
+func doneSeeded(tx *eventstore.Tx, task types.TaskID) ([]eventstore.Event, error) {
+	project, _, err := graph.TaskProject(tx, task)
+	if err != nil {
+		return nil, err
+	}
+	return rawDone(task, project)(tx)
+}
+
 // planResult commits plan's completed result, recorded with no attempt.
 func planResult(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID) error {
 	t.Helper()
@@ -274,7 +286,11 @@ func TestDoneWaitsForEveryAttemptAndLease(t *testing.T) {
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.SealMinimal(tx, attempt, 2, graph.Units{Tasks: authority.Tasks{}}, w.blobs, nil, sys)
 	})
-	if err := w.try(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, task) }); err != nil {
+	if err := w.try(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, task) }); !errors.Is(err, authority.ErrNotEndable) ||
+		!strings.Contains(err.Error(), "completed go") {
+		t.Fatalf("the command's done once nothing runs, with no review go: %v", err)
+	}
+	if err := w.try(sys, rawDone(task, project)); err != nil {
 		t.Fatalf("the done once nothing runs: %v", err)
 	}
 	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
@@ -308,12 +324,12 @@ func TestAdmissionWorkIsBounded(t *testing.T) {
 			if err := planResult(t, w, sys, plan); err != nil {
 				t.Fatal(err)
 			}
-			w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, task) })
+			w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return doneSeeded(tx, task) })
 		}
 		_, next := readyTask(t, w, sys)
 		before := eventstore.ProjectionRowsRead()
 		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.Admit(tx, nodeKinds()) })
-		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, next) })
+		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return doneSeeded(tx, next) })
 		rows := eventstore.ProjectionRowsRead() - before
 		_, abandoned := admittedTask(t, w, sys)
 		w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return identity.RevokeActor(tx, op, time.Now()) })

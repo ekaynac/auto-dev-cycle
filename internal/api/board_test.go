@@ -18,6 +18,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
 // The acceptance a task's card never shows.
@@ -428,6 +429,52 @@ func TestBoardStageRounds(t *testing.T) {
 	for i, want := range []int64{1, 1, 2, 2, 2, 2} {
 		if card.Nodes[i].Round != want {
 			t.Errorf("the %s card's round %d, want %d", card.Nodes[i].Kind, card.Nodes[i].Round, want)
+		}
+	}
+}
+
+// Mythos chunk 5a L4: a task whose ending cannot be read (a lease record
+// its open unit names that does not read as one) is listed unplaced
+// damaged_record, alone: the other cards stand, on the board and in the
+// task read.
+func TestAnUnreadableEndingIsOneTasksDamage(t *testing.T) {
+	f := open(t)
+	f.project(f.op.ID, prjA)
+	good, hurt := f.task(prjA, true), f.task(prjA, true)
+	f.admit(hurt.ID)
+	build := f.recordNode(hurt.ID, prjA, types.NodeKindBuild)
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		raw, _, err := tx.Get(authority.TaskProjection, hurt.ID)
+		var r map[string]any
+		if err == nil {
+			err = json.Unmarshal(raw, &r)
+		}
+		if err != nil {
+			return nil, err
+		}
+		r["approval"].(map[string]any)["status"] = authority.ApprovalRevoked // it would end abandoned
+		b, _ := json.Marshal(r)
+		lea := newID(f.t, "lea")
+		err = errors.Join(tx.Put(authority.TaskProjection, hurt.ID, b), tx.Put(lease.OpenProjection, string(graph.UnitOf(build))+"/"+lea, json.RawMessage(`true`)),
+			tx.Put(lease.LeaseProjection, lea, json.RawMessage(`{"revision":1,"record":{"id":5}}`)))
+		return []eventstore.Event{{ID: newID(f.t, "evt"), Kind: "fixture.appended/v1", Subject: prjA, Payload: []byte(`{}`)}}, err
+	})
+	_, readsA := f.another([]string{prjA}, "board")
+	srv := f.registeredServer(nil)
+	for _, resource := range []string{"board", "tasks"} {
+		got := items(t, srv, resource, readsA)
+		card := func(id types.TaskID) map[string]any {
+			if resource == "board" {
+				return got[string(id)]
+			}
+			c, _ := got[string(id)]["card"].(map[string]any)
+			return c
+		}
+		if c := card(hurt.ID); c["type"] != "unplaced" || c["reason"] != "damaged_record" {
+			t.Errorf("%s: the unreadable ending's card %v", resource, c)
+		}
+		if c := card(good.ID); c["type"] != "placed" || c["column"] != "ready" {
+			t.Errorf("%s: another task's card %v", resource, c)
 		}
 	}
 }

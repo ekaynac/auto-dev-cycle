@@ -135,7 +135,8 @@ func AdmitTask(tx *eventstore.Tx, task types.TaskID, allowed []types.NodeKind) (
 
 // DoneTask is the admitted task's task.done, as a candidate: it frees
 // admission (the loop records it once its candidate is decided, 22a-7).
-// It is refused unless Endable.
+// It is refused unless its candidate is decided (graph.CandidateGo,
+// checked here too, whoever calls it: Mythos chunk 5a L1) and Endable.
 func DoneTask(tx *eventstore.Tx, task types.TaskID) ([]eventstore.Event, error) {
 	return done(tx, task, types.TaskDoneAsCandidate, nil)
 }
@@ -158,6 +159,11 @@ func done(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs, reason *typ
 	}
 	if err := endable(tx, t, as); err != nil { // never stale: a refusal that persists is logged (Opus #408 H1)
 		return nil, fmt.Errorf("authority: task %s is not %s: %w", task, as, err)
+	}
+	if as == types.TaskDoneAsCandidate {
+		if go_, err := decided(tx, t.ID); err != nil || !go_ {
+			return nil, errors.Join(err, fmt.Errorf("authority: task %s is not %s: %w: no review of its last build round completed go", task, as, ErrNotEndable))
+		}
 	}
 	return event(TaskDoneEvent, t.ID, &t.Project, types.TaskDone{Task: t.ID, Project: t.Project, As: as, Reason: reason,
 		At: types.Time(tx.Now().Format(time.RFC3339Nano))})
@@ -201,11 +207,11 @@ func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 
 // EndingOf is how task, admitted, would end now, and Endable's refusal of
 // it: abandoned once its approval is not in force (Abandon's case), else
-// as a candidate when decided (graph.CandidateGo; Done's); ok false when
-// it would end neither way. The loop (reconcile.Observe: Candidate, and
-// Ending either way: Opus #408 re-check M2) and the card (ending_blocked)
-// both read it.
-func EndingOf(tx *eventstore.Tx, task types.TaskID, decided bool) (as types.TaskDoneAs, ok bool, err error) {
+// as a candidate when decided (decided; Done's); ok false when it would
+// end neither way. The loop (reconcile.Observe: Candidate, and Ending
+// either way: Opus #408 re-check M2), the runner's End and the card
+// (ending_blocked) all read it.
+func EndingOf(tx *eventstore.Tx, task types.TaskID) (as types.TaskDoneAs, ok bool, err error) {
 	t, found, err := loadJSON[TaskRecord](tx, TaskProjection, string(task))
 	switch {
 	case err != nil:
@@ -214,12 +220,22 @@ func EndingOf(tx *eventstore.Tx, task types.TaskID, decided bool) (as types.Task
 		return "", false, nil
 	case t.Approval == nil || t.Approval.Status != ApprovalInForce:
 		as = types.TaskDoneAsAbandoned
-	case decided:
-		as = types.TaskDoneAsCandidate
 	default:
-		return "", false, nil
+		go_, err := decided(tx, task)
+		if err != nil || !go_ {
+			return "", false, err
+		}
+		as = types.TaskDoneAsCandidate
 	}
 	return as, true, endable(tx, t, as)
+}
+
+// decided reports whether task's candidate is decided: graph.CandidateGo
+// over its nodes, the board's done_candidate rule (DoneTask's and
+// EndingOf's; Mythos chunk 5a L1, L2).
+func decided(tx *eventstore.Tx, task types.TaskID) (bool, error) {
+	nodes, err := graph.TaskNodes(tx, task)
+	return err == nil && graph.CandidateGo(nodes), err
 }
 
 // Endable is endable for task, read in tx: nil when task's end as as may be

@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"go.jetify.com/typeid"
@@ -98,6 +99,43 @@ func hasPrefixPattern(raw json.RawMessage) bool {
 		Pattern string `json:"pattern"`
 	}
 	return json.Unmarshal(raw, &d) == nil && prefixLike.MatchString(d.Pattern)
+}
+
+// typeIDPattern is the schema's TypeID pattern (common/defs.json, the one
+// the contract runtime checks ids against), unanchored to find ids inside a
+// text: loaded once.
+var typeIDPattern = sync.OnceValues(func() (*regexp.Regexp, error) {
+	b, err := fs.ReadFile(defsFS(), "common/defs.json")
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Defs struct {
+			TypeID struct {
+				Pattern string `json:"pattern"`
+			} `json:"TypeID"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, fmt.Errorf("ids: common/defs.json: %w", err)
+	}
+	p, anchored := strings.CutPrefix(doc.Defs.TypeID.Pattern, "^")
+	p, end := strings.CutSuffix(p, "$")
+	if !anchored || !end || p == "" {
+		return nil, fmt.Errorf("ids: TypeID's pattern %q is not anchored", doc.Defs.TypeID.Pattern)
+	}
+	return regexp.Compile(`\b` + p + `\b`)
+})
+
+// Redact is s with every TypeID in it (the schema's pattern) replaced by
+// with: a text compared across tries that each mint fresh ids. s as it is
+// if the pattern cannot be read.
+func Redact(s, with string) string {
+	re, err := typeIDPattern()
+	if err != nil {
+		return s
+	}
+	return re.ReplaceAllString(s, with)
 }
 
 // Prefixes lists the registered prefixes, sorted.

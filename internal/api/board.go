@@ -112,11 +112,11 @@ var board = Resource{
 			case !recorded:
 				out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonDamagedRecord))
 			default:
-				ending, err := endingOf(tx, t, ns)
-				if err != nil {
-					return nil, err
+				if ending, err := endingOf(tx, t); err != nil { // one task's unreadable record, never the board's (Mythos chunk 5a L4)
+					out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonDamagedRecord))
+				} else {
+					out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project), ending))
 				}
-				out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project), ending))
 			}
 		}
 		return out, nil
@@ -243,12 +243,13 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 
 // endingOf is t's ending_blocked: its end, as the loop would record it
 // (authority.EndingOf: abandoned once its approval is not in force, or a
-// decided candidate, graph.CandidateGo), refused because a unit of it
-// still runs (authority.ErrEnding), with that refusal's phrase, never its
-// text (#226 entry 166); nil otherwise.
-func endingOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) (*types.BoardEndingBlocked, error) {
+// decided candidate), refused because a unit of it still runs
+// (authority.ErrEnding), with that refusal's phrase, never its text (#226
+// entry 166); nil otherwise. Its error is a record it could not read: the
+// caller lists that task unplaced (damaged_record), the board's own rule.
+func endingOf(tx *eventstore.Tx, t authority.TaskRecord) (*types.BoardEndingBlocked, error) {
 	var e authority.ErrEnding
-	switch _, ok, err := authority.EndingOf(tx, t.ID, graph.CandidateGo(nodes)); {
+	switch _, ok, err := authority.EndingOf(tx, t.ID); {
 	case !ok:
 		return nil, err
 	case errors.As(err, &e):

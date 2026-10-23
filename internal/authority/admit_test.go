@@ -74,8 +74,19 @@ func (b *tasks) nodeOf(task string, kind types.NodeKind) types.NodeID {
 	return id
 }
 
+// done is DoneTask of task, the command: it ends a task as a candidate only
+// once a review of its last build round completed go (Mythos chunk 5a L1).
 func (b *tasks) done(task string) error {
 	return b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, types.TaskID(task)) })
+}
+
+// doneRaw is task's task.done as a candidate, appended raw: the fold's
+// own checks (a seeded task with no review).
+func (b *tasks) doneRaw(task string) error {
+	r, _ := b.task(task)
+	return b.raw(authority.TaskDoneEvent, task, func(at types.Time) any {
+		return types.TaskDone{Task: types.TaskID(task), Project: r.Project, As: types.TaskDoneAsCandidate, At: at}
+	})
 }
 
 func (b *tasks) admitted() (types.TaskID, bool) {
@@ -148,7 +159,10 @@ func TestAdmission(t *testing.T) {
 	if err := b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Clear(tx, build, hold, "fix@1") }); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.done(first); err != nil {
+	if err := b.done(first); !errors.Is(err, authority.ErrNotEndable) || !strings.Contains(err.Error(), "completed go") {
+		t.Errorf("the command's done with no review go: %v", err)
+	}
+	if err := b.doneRaw(first); err != nil {
 		t.Fatal(err)
 	}
 	if r, _ := b.task(first); r.State != authority.TaskDoneState || r.DoneAs != string(types.TaskDoneAsCandidate) || contract.Validate("records/task-done", b.events(1)[0].Payload) != nil {
@@ -266,7 +280,7 @@ func TestClaimable(t *testing.T) {
 	if _, _, err := b.cancel(b.op, "c", cancelled); err != nil {
 		t.Fatal(err)
 	}
-	if err := errors.Join(b.admitNext(), b.done(finished), b.admitNext()); err != nil {
+	if err := errors.Join(b.admitNext(), b.doneRaw(finished), b.admitNext()); err != nil {
 		t.Fatal(err)
 	}
 	waiting := b.newTask(b.op, prjB)

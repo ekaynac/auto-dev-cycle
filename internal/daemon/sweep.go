@@ -40,7 +40,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"time"
 
@@ -178,10 +177,6 @@ func leftAt(tx *eventstore.Tx, attempt types.AttemptID) (left, bool, error) {
 	return lf, true, nil
 }
 
-// freshIDs are the type ids an error names (a try's own command and event
-// ids among them): End compares causes without them.
-var freshIDs = regexp.MustCompile(`\b[a-z]{3}_[0-7][0-9a-hjkmnp-tv-z]{25}\b`)
-
 // errNothingEnded is End's try after which what it was to end still runs.
 var errNothingEnded = errors.New("daemon: what still runs was not ended")
 
@@ -218,35 +213,59 @@ func (r *runner) endingNow(task types.TaskID) (authority.ErrEnding, bool, error)
 	var e authority.ErrEnding
 	var still bool
 	err := r.store.View(r.ctx, func(tx *eventstore.Tx) error {
-		nodes, err := graph.TaskNodes(tx, task)
-		if err != nil {
-			return err
+		_, ok, eerr := authority.EndingOf(tx, task)
+		if still = ok && errors.As(eerr, &e); still || eerr == nil || errors.Is(eerr, authority.ErrNotEndable) {
+			return nil
 		}
-		_, ok, eerr := authority.EndingOf(tx, task, graph.CandidateGo(nodes))
-		still = ok && errors.As(eerr, &e)
-		return nil
+		return eerr
 	})
 	return e, still, err
 }
 
+// endEntry ends e's open entry with the rules that exist: an attempt left
+// (leftAt) as the start sweep ends it (endOne); a lease, by its attempt
+// likewise (an attempt sealed or completed with its lease still active or
+// settling: endOne's completed branch is endActive; Mythos chunk 5a H1),
+// or, with no attempt, as a lease never launched is ended (endLease: a
+// granted one refused and released, a releasing one released). What none
+// covers is left: the caller's re-read makes it a failed try.
+func (r *runner) endEntry(e authority.ErrEnding) error {
+	attempt := types.AttemptID(e.Entry)
+	if e.Lease {
+		var l types.Lease
+		var ok bool
+		if err := r.store.View(r.ctx, func(tx *eventstore.Tx) (err error) {
+			l, _, ok, err = lease.LeaseOf(tx, types.LeaseID(e.Entry))
+			return err
+		}); err != nil || !ok {
+			return err
+		}
+		if l.Attempt == nil {
+			return r.endLease(r.ctx, l.ID, e.Node, nil)
+		}
+		attempt = *l.Attempt
+	}
+	var lf left
+	var ok bool
+	if err := r.store.View(r.ctx, func(tx *eventstore.Tx) (err error) {
+		lf, ok, err = leftAt(tx, attempt)
+		return err
+	}); err != nil || !ok {
+		return err
+	}
+	return r.endOne(r.ctx, lf)
+}
+
 // end is one try of End: what task's end is refused on (EndingOf's
-// ErrEnding), its open index's entry, ended as the start sweep ends an
-// attempt left (leftAt, endOne). Then EndingOf is read again (Opus #408
+// ErrEnding), its open index's entry, ended by endEntry. Then EndingOf is read again (Opus #408
 // re-check M1): a try after which the same entry still runs, one leftAt
 // does not cover (a lost attempt, a lease with no attempt) or one whose
 // end failed, is an error: counted, backed off and logged once, never a
 // pass's nudge. A try after which another entry runs is progress.
 func (r *runner) end(task types.TaskID, node types.NodeID) error {
 	before, still, err := r.endingNow(task)
-	if err == nil && still && !before.Lease {
-		var lf left
-		var ok bool
-		if err = r.store.View(r.ctx, func(tx *eventstore.Tx) (err error) {
-			lf, ok, err = leftAt(tx, types.AttemptID(before.Entry))
-			return err
-		}); err == nil && ok {
-			err = r.endOne(r.ctx, lf)
-		}
+	if err == nil && still {
+		err = r.endEntry(before)
 	}
 	if err == nil && still {
 		after, again, rerr := r.endingNow(task)
@@ -268,8 +287,8 @@ func (r *runner) end(task types.TaskID, node types.NodeID) error {
 	}
 	e := r.ending[node]
 	e.tries++
-	e.next = time.Now().Add(retryBase << min(e.tries-1, maxTries-1))
-	if msg := freshIDs.ReplaceAllString(err.Error(), "<id>"); msg != e.cause { // a cause, not the ids each try mints
+	e.next = time.Now().Add(retryAfter(e.tries))                // capped: End never stops
+	if msg := ids.Redact(err.Error(), "<id>"); msg != e.cause { // a cause, not the ids each try mints
 		e.cause = msg
 		r.logf("adcd: what node %s still runs could not be ended (retried with backoff): %v", node, err)
 	}

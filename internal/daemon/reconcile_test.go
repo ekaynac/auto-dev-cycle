@@ -149,7 +149,7 @@ func TestReconcileLoopRuns(t *testing.T) {
 	_, first := readyTask(t, w, sys)
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.Admit(tx, nodeKinds()) })
 	_, second := readyTask(t, w, sys)
-	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, first) })
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return doneSeeded(tx, first) })
 	var log bytes.Buffer
 	l := reconcile.NewLoop(x, reconcile.Gates{Admits: true}, time.Hour, &log)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,7 +170,7 @@ func TestReconcileLoopRuns(t *testing.T) {
 	}
 	waitFor("the start's pass to admit the waiting task", func() bool { return admitted(second) })
 	_, third := readyTask(t, w, sys)
-	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, second) })
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return doneSeeded(tx, second) })
 	l.Nudge()
 	waitFor("a nudged pass to admit the next task", func() bool { return admitted(third) })
 	cancel()

@@ -93,7 +93,7 @@ func plannedIn(t *testing.T, w *seeder, project types.ProjectID) types.NodeID {
 	t.Helper()
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		if prev, busy, err := authority.AdmittedTask(tx); err != nil || busy {
-			evs, derr := authority.DoneTask(tx, prev)
+			evs, derr := doneSeeded(tx, prev)
 			return evs, errors.Join(err, derr)
 		}
 		return nil, nil
@@ -255,7 +255,7 @@ func TestDaemonDoneTaskRunsNothing(t *testing.T) {
 		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
 	})
 	completePlan(t, w, sys, plan)
-	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, first) })
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return doneSeeded(tx, first) })
 	_, second := admittedTask(t, w, sys)
 	if len(templateNodes(w, second)) != 4 {
 		t.Fatalf("B is not admitted")

@@ -583,7 +583,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		// decided or revoked task still runs, which the runner ends (Ending;
 		// re-check M2).
 		var ending authority.ErrEnding
-		switch as, ok, eerr := authority.EndingOf(tx, admitted, graph.CandidateGo(nodes)); {
+		switch as, ok, eerr := authority.EndingOf(tx, admitted); {
 		case !ok:
 		case eerr == nil:
 			s.Candidate = as == types.TaskDoneAsCandidate

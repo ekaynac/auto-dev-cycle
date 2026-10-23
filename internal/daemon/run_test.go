@@ -1115,3 +1115,15 @@ func TestARenderedContextRefusalIsContent(t *testing.T) {
 		}
 	}
 }
+
+// Mythos chunk 5a M1: the runner's one retry wait doubles from retryBase
+// and stops doubling at the maxTries-th: the launch's hold and End's
+// unbounded retries both read it.
+func TestRetryAfterIsCapped(t *testing.T) {
+	for n, want := range map[int]time.Duration{1: retryBase, 2: 2 * retryBase, maxTries: retryBase << (maxTries - 1),
+		maxTries + 7: retryBase << (maxTries - 1)} {
+		if got := retryAfter(n); got != want {
+			t.Errorf("retryAfter(%d) = %s, want %s", n, got, want)
+		}
+	}
+}
