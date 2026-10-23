@@ -81,7 +81,7 @@ MUTS = [
     ("a charge link not a call id", V, 'if !ok || ids.Check(call, "cal") != nil {', 'if !ok {'),
     # Astra #306 M3: the adapter's runtime closure.
     ("the contract's source not digested", Q, '"adapters/contract/src", ', ''),
-    ("the generated validators not digested", Q, '"gen/ts/validators.cjs", ', ''),
+    ("the generated validators not digested", Q, '"gen/ts/adapter-validators.cjs", ', ''),
     # Astra #306 M4: safe, bounded reads.
     ("links followed", Q, 'os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK', 'os.O_RDONLY|syscall.O_NONBLOCK'),
     ("special files read", Q, 'case !fi.Mode().IsRegular():', 'case false:'),

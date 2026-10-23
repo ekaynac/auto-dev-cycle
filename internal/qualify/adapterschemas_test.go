@@ -25,8 +25,12 @@ import (
 //     committed gen/ts files, the only part of sandbox.AdapterClosure a
 //     schema reaches).
 //
-// A change to another schema (api/task.json) moves neither; a change to an
-// adapter schema (adapter/outcome.json) moves both. The release ships no
+// A change to another schema (api/task.json's description) moves neither,
+// nor does one to a shared definition no adapter schema references
+// (common/defs.json's GrantID); a change to an adapter schema
+// (adapter/outcome.json), to a shared definition one references
+// (AttemptID's pattern, inlined) or to the reason list (vocab/reasons.yaml,
+// through formats.cjs) moves both (Opus #428 L2). The release ships no
 // validators.cjs.
 func TestAdapterDigestsIgnoreOtherSchemas(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -48,14 +52,25 @@ func TestAdapterDigestsIgnoreOtherSchemas(t *testing.T) {
 	if slices.Contains(shipped, "gen/ts/validators.cjs") || !slices.Contains(shipped, "gen/ts/adapter-validators.cjs") {
 		t.Fatalf("the release ships %v of gen/ts", shipped)
 	}
-	digests := func(change string) (string, string) {
-		t.Helper()
-		schemas, lib, release := t.TempDir(), t.TempDir(), t.TempDir()
-		if err := copyTree(filepath.Join(root, "schemas"), schemas); err != nil {
-			t.Fatal(err)
+	// edit replaces old with new, once, in the schemas copy's file f.
+	edit := func(f, old, new string) func(string) {
+		return func(schemas string) {
+			p := filepath.Join(schemas, f)
+			b, err := os.ReadFile(p)
+			if err == nil && strings.Count(string(b), old) != 1 {
+				err = errors.New(f + ": the edit's anchor is not there once")
+			}
+			if err == nil {
+				err = os.WriteFile(p, []byte(strings.Replace(string(b), old, new, 1)), 0o644)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-		if change != "" {
-			p := filepath.Join(schemas, change)
+	}
+	described := func(f string) func(string) {
+		return func(schemas string) {
+			p := filepath.Join(schemas, f)
 			var doc map[string]any
 			b, err := os.ReadFile(p)
 			if err == nil {
@@ -71,6 +86,16 @@ func TestAdapterDigestsIgnoreOtherSchemas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+		}
+	}
+	digests := func(change func(string)) (string, string) {
+		t.Helper()
+		schemas, lib, release := t.TempDir(), t.TempDir(), t.TempDir()
+		if err := copyTree(filepath.Join(root, "schemas"), schemas); err != nil {
+			t.Fatal(err)
+		}
+		if change != nil {
+			change(schemas)
 		}
 		for _, p := range adapterPaths {
 			if strings.HasPrefix(p, "gen/ts/") {
@@ -113,14 +138,23 @@ func TestAdapterDigestsIgnoreOtherSchemas(t *testing.T) {
 		}
 		return q, s
 	}
-	q, s := digests("")
+	q, s := digests(nil)
 	if real, err := AdapterDigest(root); err != nil || real != q {
 		t.Fatalf("the regenerated adapter's digest %s, the repository's %s (%v): make gen", q, real, err)
 	}
-	if q2, s2 := digests("api/task.json"); q2 != q || s2 != s {
-		t.Errorf("a change to api/task.json moved the digests: qualify %s → %s, sandbox %s → %s", q, q2, s, s2)
-	}
-	if q3, s3 := digests("adapter/outcome.json"); q3 == q || s3 == s {
-		t.Errorf("a change to adapter/outcome.json left a digest: qualify %s → %s, sandbox %s → %s", q, q3, s, s3)
+	for name, c := range map[string]struct {
+		change func(string)
+		moves  bool
+	}{
+		"api/task.json's description":          {described("api/task.json"), false},
+		"an unreferenced definition (GrantID)": {edit("common/defs.json", `"pattern": "^grt_"`, `"pattern": "^grt_x"`), false},
+		"adapter/outcome.json's description":   {described("adapter/outcome.json"), true},
+		"a referenced definition (AttemptID)":  {edit("common/defs.json", `"pattern": "^att_"`, `"pattern": "^att_x"`), true},
+		"a new reason (vocab/reasons.yaml)":    {edit("vocab/reasons.yaml", "reasons:\n", "reasons:\n  - {code: probe_reason, outcomes: [failed], domain: cycle, introduced: 0.1.0, deprecated: null, source: \"02\", description: \"A probe.\"}\n"), true},
+	} {
+		q2, s2 := digests(c.change)
+		if (q2 != q) != c.moves || (s2 != s) != c.moves {
+			t.Errorf("%s: qualify moved %v, sandbox moved %v; want both %v", name, q2 != q, s2 != s, c.moves)
+		}
 	}
 }
