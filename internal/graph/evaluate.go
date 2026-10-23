@@ -248,7 +248,8 @@ func (e *evaluation) clear(rec nodeRecord, answered map[string]Resolved) (held b
 // clears; another's (graph.Retry's, with its result's reason) is never
 // its (Opus 22a-6b M1).
 func ReceiptWait(h types.NodeHold) bool {
-	return h.Hold == vocab.HoldAwaitingReceipt && h.Reason == nil && strings.HasPrefix(h.SignalInstance, "receipt:")
+	_, ok := parseReceiptSignal(h.SignalInstance)
+	return h.Hold == vocab.HoldAwaitingReceipt && h.Reason == nil && ok
 }
 
 // receiptSignal is the signal instance of the awaiting_receipt hold on m, a
@@ -261,6 +262,20 @@ func receiptSignal(m Missing) string {
 		return ""
 	}
 	return "receipt:" + string(m.Name) + ":" + m.Refusal.Reason.String()
+}
+
+// parseReceiptSignal is the input a receipt wait's signal names, if the
+// signal is exactly one receiptSignal makes: receipt:<input>:<a registered
+// reason>. One rule with receiptSignal.
+func parseReceiptSignal(signal string) (types.Name, bool) {
+	rest, ok := strings.CutPrefix(signal, "receipt:")
+	name, reason, _ := strings.Cut(rest, ":")
+	code, err := vocab.ParseReason(reason) // a registered reason
+	if !ok || err != nil || name == "" || strings.ContainsAny(name, ": \t\n") {
+		return "", false
+	}
+	m := Missing{Name: types.Name(name), Refusal: &receipt.Refusal{Reason: code}}
+	return m.Name, receiptSignal(m) == signal
 }
 
 // receipts re-resolves rec, holding awaiting_receipt: each hold whose

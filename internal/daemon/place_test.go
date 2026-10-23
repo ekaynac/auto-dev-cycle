@@ -297,11 +297,11 @@ func TestALaunchMissHoldClearsOnceFixed(t *testing.T) {
 		hold, signal string
 	}{
 		"the credential missing": {func(p *placer) { p.d.Credentials = noCredentials{} }, func(p *placer) { p.d.Credentials = fakeCredentials{} },
-			"source_invalid_config", dispatch.PlacementSignal("destination stub")},
+			"source_invalid_config", (dispatch.Placement{Of: "destination", ID: "stub"}).Signal()},
 		"the image missing": {func(p *placer) { p.d.Images = fakeImages{false} }, func(p *placer) { p.d.Images = fakeImages{true} },
 			"wrong_owner", "image localhost/adc/py-mini@sha256:" + strings.Repeat("0", 64)}, // py-mini.json's pinned image
 		"the placement changed since the grant": {func(p *placer) { p.d.Registry = repriced(t) }, nil,
-			"source_invalid_config", dispatch.PlacementSignal("executor " + string(stubBuilder))},
+			"source_invalid_config", (dispatch.Placement{Of: "executor", ID: string(stubBuilder)}).Signal()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			perDay := int64(1 << 50)
@@ -371,7 +371,7 @@ func TestAConfigurationRefusalHoldsTheBuild(t *testing.T) {
 			passes(t, l)
 			st := nodesOf(w, task)[types.NodeKindBuild].State
 			if st.State != types.NodeStateStateHeld || len(st.Holds) != 1 || st.Holds[0].Hold != "source_invalid_config" ||
-				st.Holds[0].SignalInstance != dispatch.PlacementSignal("profile "+string(graphProject)) || st.Holds[0].Owner != types.OwnerOperator {
+				st.Holds[0].SignalInstance != (dispatch.Placement{Of: "profile", ID: string(graphProject)}).Signal() || st.Holds[0].Owner != types.OwnerOperator {
 				t.Fatalf("the build: %+v", st)
 			}
 			if _, live := leaseOn(w, build); live {
@@ -475,6 +475,17 @@ func TestAPlacementHoldClearsOnceConfigured(t *testing.T) {
 	passes(t, l)
 	if st := nodesOf(w, task)[types.NodeKindBuild].State; len(st.Holds) != 1 || st.Holds[0].ID != other.ID {
 		t.Errorf("another's hold: %+v", st)
+	}
+	// 5c-1: Unblocked decides on the typed signal, never a text prefix: a
+	// hold whose signal only looks like a placement's (a near miss) is not
+	// cleared, though the configuration now admits the build.
+	for _, forged := range []string{"destination stub", "placement: executor e", "placement: profile " + string(stubBuilder), "placement:executor " + string(stubBuilder)} {
+		w.view(func(tx *eventstore.Tx) error {
+			if evs, err := pl.Unblocked(tx, build, other.ID, forged); err != nil || len(evs) != 0 {
+				t.Errorf("Unblocked on %q: %d events, %v", forged, len(evs), err)
+			}
+			return nil
+		})
 	}
 }
 

@@ -165,11 +165,11 @@ func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 			v := rw.accepting(t, hang)
 			held := ""
 			for _, h := range v.State.Holds {
-				if reconcile.IsRunnerSignal(h.SignalInstance) {
+				if isRunnerHold(h.SignalInstance) {
 					held = h.SignalInstance
 				}
 			}
-			if !strings.HasPrefix(held, reconcile.RunnerSignal(c.held)) {
+			if !strings.HasPrefix(held, runnerText(c.held)) {
 				t.Errorf("the accept node after its run failed: %s, held on %q", v.State.State, held)
 			}
 			got := resultsOn(t, rw.w, v.Node.ID)
@@ -364,8 +364,8 @@ func TestACloneFailureIsClassed(t *testing.T) {
 		err  error
 		held string
 	}{
-		"a network failure":    {sandbox.ErrGit, reconcile.RunnerSignal("retry 1 until ")},
-		"a refused repository": {sandbox.ErrSpec, reconcile.RunnerSignal("profile ")},
+		"a network failure":    {sandbox.ErrGit, runnerText("retry 1 until ")},
+		"a refused repository": {sandbox.ErrSpec, runnerText("profile ")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
@@ -516,7 +516,7 @@ func TestOnlyTheCandidatesOwnFailureIsItsRefusal(t *testing.T) {
 				return
 			}
 			if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 ||
-				!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) ||
+				!strings.HasPrefix(v.State.Holds[0].SignalInstance, runnerText("retry 1 until ")) ||
 				len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun ||
 				got[0].Result.Reason != vocab.ReasonControllerRunFailed {
 				t.Errorf("accept after its guard did not run: %s, holds %+v, results %+v", v.State.State, v.State.Holds, got)
@@ -548,7 +548,7 @@ func TestARefusedAcceptCommitIsHeld(t *testing.T) {
 	rw.passesFor(t, 4, 0)
 	v = nodesOf(rw.w, rw.task)[types.NodeKindAccept]
 	if got := resultsOn(t, rw.w, v.Node.ID); len(got) != 0 || c.n.Load() != 0 || len(v.State.Holds) != 1 ||
-		!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) {
+		!strings.HasPrefix(v.State.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
 		t.Errorf("accept after its refused commit: %s, holds %+v, %d more runs, results %+v", v.State.State, v.State.Holds, c.n.Load(), got)
 	}
 }

@@ -199,14 +199,14 @@ func TestAGateThatCannotRunCouldNotRun(t *testing.T) {
 		"a red base": {base: goEvents("TestA=fail"), detail: "not green", held: string(runnerFailed)},
 		"a base that does not build": {base: fmt.Sprintf(`{"Action":"start","Package":%q}`+"\n"+`{"Action":"output","Package":%q,"Output":"FAIL\t%s [build failed]\n"}`+"\n"+`{"Action":"fail","Package":%q}`+"\n",
 			gateModule, gateModule, gateModule, gateModule), detail: "not green", held: string(runnerFailed)},
-		"the sandbox failed": {base: goEvents("TestA=pass"), fail: errors.New("podman: the run failed"), detail: "could not run", held: reconcile.RunnerSignal("retry 1 until ")},
+		"the sandbox failed": {base: goEvents("TestA=pass"), fail: errors.New("podman: the run failed"), detail: "could not run", held: runnerText("retry 1 until ")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := gateWorld(t, c.base, map[string]string{"README.md": "hello\n"}, c.fail)
 			v := rw.gating(t)
 			held := ""
 			for _, h := range v.State.Holds {
-				if reconcile.IsRunnerSignal(h.SignalInstance) {
+				if isRunnerHold(h.SignalInstance) {
 					held = h.SignalInstance
 				}
 			}
@@ -235,11 +235,11 @@ func TestAGateTheProfileCannotRunHoldsOnTheProfile(t *testing.T) {
 	v := rw.gating(t)
 	held := ""
 	for _, h := range v.State.Holds {
-		if reconcile.IsRunnerSignal(h.SignalInstance) {
+		if isRunnerHold(h.SignalInstance) {
 			held = h.SignalInstance
 		}
 	}
-	if !strings.HasPrefix(held, reconcile.RunnerSignal("profile ")) || len(resultsOn(t, rw.w, v.Node.ID)) != 0 {
+	if !strings.HasPrefix(held, runnerText("profile ")) || len(resultsOn(t, rw.w, v.Node.ID)) != 0 {
 		t.Errorf("the gate of a junit_xml profile: %s, held on %q", v.State.State, held)
 	}
 }
@@ -282,13 +282,13 @@ func TestAnUnreadableStreamIsHeld(t *testing.T) {
 	v = nodesOf(rw.w, rw.task)[types.NodeKindGate]
 	held := ""
 	for _, h := range v.State.Holds {
-		if reconcile.IsRunnerSignal(h.SignalInstance) {
+		if isRunnerHold(h.SignalInstance) {
 			held = h.SignalInstance
 		}
 	}
 	got := resultsOn(t, rw.w, v.Node.ID)
 	if len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonRunnerFault ||
-		!strings.HasPrefix(held, reconcile.RunnerSignal("retry 1 until ")) {
+		!strings.HasPrefix(held, runnerText("retry 1 until ")) {
 		t.Errorf("the gate of an unreadable stream: %s, held on %q, results %+v", v.State.State, held, got)
 	}
 }

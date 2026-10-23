@@ -30,7 +30,7 @@
 //     ClearRail each of its nodes held on the day's USD rail, which a new
 //     day or a profile change may have reopened (#226 entry 120); and
 //     Unblock each of its nodes held on configuration by the placer itself
-//     (a placement hold, dispatch.PlacementSignal, the launch's among them)
+//     (a placement hold, dispatch.Placement, the launch's among them)
 //     or on the launch's missing image (wrong_owner, dispatch.IsImageSignal;
 //     #226 entry 156), which a configuration change may have fixed (Mythos
 //     22a-5c-1 M1); and Run each of its
@@ -76,6 +76,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -222,34 +223,90 @@ type Held struct {
 // once the runner's preconditions hold again (the Placer decides).
 const runnerPrefix = "runner: "
 
-// RunnerSignal is the signal of a runner's hold on what.
-func RunnerSignal(what string) string { return runnerPrefix + what }
+// RunnerHold is a runner hold's signal, typed: What dirs, failed, image or
+// sandbox (no_sandbox's, #226 entry 171); a
+// profile, its Digest; a retry, its N and Until. Signal formats it and
+// ParseRunner reads it back: one rule (5c-1's Unblock decides on the type,
+// never on a text prefix).
+type RunnerHold struct {
+	What   string
+	Digest string    // a profile's
+	N      int       // a retry's
+	Until  time.Time // a retry's
+}
 
-// IsRunnerSignal: signal is a runner hold's (RunnerSignal).
-func IsRunnerSignal(signal string) bool { return strings.HasPrefix(signal, runnerPrefix) }
+// Signal is r's signal instance: "runner: <what>", "runner: profile
+// <digest>" or "runner: retry <n> until <RFC 3339>".
+func (r RunnerHold) Signal() string {
+	switch r.What {
+	case "profile":
+		return runnerPrefix + "profile " + r.Digest
+	case "retry":
+		return fmt.Sprintf("%sretry %d until %s", runnerPrefix, r.N, r.Until.UTC().Format(time.RFC3339Nano))
+	}
+	return runnerPrefix + r.What
+}
 
-// Offered reports whether the loop offers a node's hold of kind on signal
-// to the code that clears it, the one rule Observe collects holds by
-// (#226 entry 156; Opus #400 M1): budget_rail on the day's USD rail
-// (ClearRail: Placer.Reopened); source_invalid_config on a placement or a
-// runner signal, wrong_owner on a launch's missing image, and no_sandbox
-// on a runner signal (Unblock: Placer.Unblocked); reviewer_unavailable (ReviewUnblock: Reviewer.Unheld).
-// The loop leaves every other hold to its own clearer (an answer,
-// task.raise_rail) or to its stated terminal state.
-func Offered(kind, signal string) bool {
-	switch kind {
+var profileDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// ParseRunner is the RunnerHold signal is, if it is exactly one.
+func ParseRunner(signal string) (RunnerHold, bool) {
+	rest, ok := strings.CutPrefix(signal, runnerPrefix)
+	what, arg, _ := strings.Cut(rest, " ")
+	r := RunnerHold{What: what}
+	switch what {
+	case "dirs", "failed", "image", "sandbox":
+	case "profile":
+		r.Digest = arg
+		ok = ok && profileDigest.MatchString(arg)
+	case "retry":
+		var until string
+		_, err := fmt.Sscanf(arg, "%d until %s", &r.N, &until)
+		t, terr := time.Parse(time.RFC3339Nano, until)
+		r.Until, ok = t, ok && err == nil && terr == nil && r.N > 0
+	default:
+		ok = false
+	}
+	return r, ok && r.Signal() == signal
+}
+
+// Offered reports whether the loop offers node hold h to the code that
+// clears it, the one rule Observe collects holds by (#226 entry 156; Opus
+// #400 M1), on typed signals, never a text prefix (5c-1): never a result's
+// retry wait (Reason set: graph.Retry, its signal the caller's); else
+// budget_rail on the day's USD rail (ClearRail: Placer.Reopened);
+// source_invalid_config on a signal that parses as a placement's
+// (dispatch.ParsePlacement) or a runner's (ParseRunner), and wrong_owner on
+// a launch's image signal (dispatch.IsImageSignal) (Unblock:
+// Placer.Unblocked), and no_sandbox on the runner's sandbox signal
+// (Unblock, offered only while a runner runs: Gates.Runs);
+// reviewer_unavailable on a roster signal (graph.ParseIndependence) and
+// review_inactive on ReviewSignal (ReviewUnblock: Reviewer.Unheld). The loop
+// leaves every other hold to its own clearer (an answer, task.raise_rail)
+// or to its stated terminal state.
+func Offered(h types.NodeHold) bool {
+	if h.Reason != nil { // a result's retry wait (graph.Retry), its signal the caller's: never the loop's to clear
+		return false
+	}
+	switch signal := h.SignalInstance; h.Hold {
 	case vocab.HoldBudgetRail:
 		return signal == graph.RailSignal(graph.RailDayUSD)
 	case vocab.HoldSourceInvalidConfig:
-		return dispatch.IsPlacementSignal(signal) || IsRunnerSignal(signal)
+		_, placement := dispatch.ParsePlacement(signal)
+		r, runner := ParseRunner(signal)
+		return placement || runner && r.What != "sandbox" // sandbox is no_sandbox's
 	case vocab.HoldWrongOwner:
 		return dispatch.IsImageSignal(signal)
+	case vocab.HoldReviewerUnavailable:
+		_, _, ok := graph.ParseIndependence(signal)
+		return ok
 	case vocab.HoldReviewInactive: // a start that derives review active clears it (#226 entry 173)
 		return signal == ReviewSignal
 	case vocab.HoldNoSandbox: // a placed node with no runner (#226 entry 171): a start with a sandbox root clears it
-		return IsRunnerSignal(signal)
+		r, ok := ParseRunner(signal)
+		return ok && r.What == "sandbox"
 	}
-	return kind == vocab.HoldReviewerUnavailable
+	return false
 }
 
 // Granted is a placed node and its granted lease.
@@ -542,7 +599,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			}
 			for _, h := range n.State.Holds {
 				switch {
-				case h.Hold != vocab.HoldReviewerUnavailable && h.Hold != vocab.HoldReviewInactive || !Offered(h.Hold, h.SignalInstance):
+				case h.Hold != vocab.HoldReviewerUnavailable && h.Hold != vocab.HoldReviewInactive || !Offered(h):
 				case n.Node.Kind == types.NodeKindReview:
 					s.ReviewHeld = append(s.ReviewHeld, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
 				default:
@@ -590,7 +647,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			}
 			for _, h := range n.State.Holds {
 				switch held := (Held{Node: v, Hold: h.ID, Signal: h.SignalInstance}); {
-				case !Offered(h.Hold, h.SignalInstance), h.Hold == vocab.HoldReviewerUnavailable: // not the loop's; a review's is collected above
+				case !Offered(h), h.Hold == vocab.HoldReviewerUnavailable: // not the loop's; a review's is collected above
 				case h.Hold == vocab.HoldNoSandbox && !g.Runs: // none could clear it (Opus #414 L4)
 				case h.Hold == vocab.HoldBudgetRail:
 					s.DayHeld = append(s.DayHeld, held)

@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
-	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
 // runnerHold is node view v's runner hold signal, if any.
 func runnerHold(holds []types.NodeHold) string {
 	for _, h := range holds {
-		if reconcile.IsRunnerSignal(h.SignalInstance) {
+		if isRunnerHold(h.SignalInstance) {
 			return h.SignalInstance
 		}
 	}
@@ -41,7 +40,7 @@ func TestAReviewUnderALockfileProfileIsPrepared(t *testing.T) {
 		rw.passesFor(t, 1, 0)
 	}
 	review := reviewNodes(rw)[types.NodeKindReview]
-	if len(box.runs) != 1 || !box.runs[0].ReadOnlyWorkspace || strings.HasPrefix(runnerHold(review.State.Holds), reconcile.RunnerSignal("profile ")) {
+	if len(box.runs) != 1 || !box.runs[0].ReadOnlyWorkspace || strings.HasPrefix(runnerHold(review.State.Holds), runnerText("profile ")) {
 		t.Fatalf("the review: %s, holds %+v; interactive runs %+v", review.State.State, review.State.Holds, box.runs)
 	}
 
@@ -49,7 +48,7 @@ func TestAReviewUnderALockfileProfileIsPrepared(t *testing.T) {
 	box, want = fakeContainer(t, "python", lockfiles)
 	build.r.adapters = &containerAdapter{Box: box, Want: want}
 	build.untilRun(t)
-	if h := build.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("profile ")) || len(box.runs) != 0 {
+	if h := build.heldOn(); !strings.HasPrefix(h, runnerText("profile ")) || len(box.runs) != 0 {
 		t.Errorf("a build whose base lacks its lockfile: held on %q, interactive runs %+v", h, box.runs)
 	}
 }

@@ -39,7 +39,7 @@ holds:
     signal_detail: An applicable receipt for the named requirement.
     owner: system
     page_after: PT30M
-    escalate_to: null
+    escalate_to: operator # a wait that may last (an unmeasured gate, an image no longer pinned): the operator owns it from since + page_after on (Opus 22a-6b L3)
   - hold: reviewer_unavailable
     signal: probe
     signal_detail: An independent reviewer family becomes available.

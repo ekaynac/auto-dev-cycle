@@ -59,7 +59,26 @@ type ErrNotIndependent struct {
 // SignalInstance is the signal a hold on e waits for: the contributor a
 // contribution names, else the reviewer's registry entry.
 func (e ErrNotIndependent) SignalInstance() string {
-	return cmp.Or(e.Signal, "registry:"+string(e.Executor))
+	return cmp.Or(e.Signal, independenceSignal("registry", string(e.Executor)))
+}
+
+// independenceSignal is a reviewer_unavailable hold's signal instance,
+// <of>:<subject>: the reviewer's registry entry (registry:<executor>), or
+// the contributor a contribution names (contributor:<executor or node>).
+// ParseIndependence reads it back: one rule.
+func independenceSignal(of, subject string) string { return of + ":" + subject }
+
+// ParseIndependence is the kind and subject of a reviewer_unavailable
+// hold's signal, if it is exactly one (independenceSignal).
+func ParseIndependence(signal string) (of, subject string, ok bool) {
+	of, subject, _ = strings.Cut(signal, ":")
+	switch of {
+	case "registry":
+		ok = ids.Check(subject, "exe") == nil
+	case "contributor":
+		ok = ids.Check(subject, "exe") == nil || ids.Check(subject, "nod") == nil
+	}
+	return of, subject, ok && independenceSignal(of, subject) == signal
 }
 
 func (e ErrNotIndependent) Error() string {

@@ -331,12 +331,12 @@ func TestMatchRefusesBeforeReserving(t *testing.T) {
 		check string // the blocking check; "" for an error before placement
 		held  string // the source_invalid_config hold's signal (Opus 22a-5c-1 M1)
 	}{
-		"a destination the project does not allow": {edit(card(plan), func(c *Card) { c.Policy.AllowedDestinations = []types.Slug{"other"} }), builder, "data_floor", PlacementSignal("profile " + string(project))},
-		"a floor the destination is below":         {edit(card(plan), func(c *Card) { c.Policy.Floor = "own" }), builder, "data_floor", PlacementSignal("profile " + string(project))},
-		"an unregistered executor":                 {card(plan), "exe_01m4tm99haemrs8zjs56wjm467", "data_floor", PlacementSignal("executor exe_01m4tm99haemrs8zjs56wjm467")},
-		"a reviewer on a builder's node":           {card(plan), reviewer, "independence", PlacementSignal("executor " + string(reviewer))},
-		"a builder on a rostered node":             {card(req), builder, "independence", PlacementSignal("executor " + string(builder))},
-		"no pinned image":                          {edit(card(plan), func(c *Card) { c.Image = "" }), builder, "capability", PlacementSignal("profile " + string(project))},
+		"a destination the project does not allow": {edit(card(plan), func(c *Card) { c.Policy.AllowedDestinations = []types.Slug{"other"} }), builder, "data_floor", (Placement{"profile", string(project)}).Signal()},
+		"a floor the destination is below":         {edit(card(plan), func(c *Card) { c.Policy.Floor = "own" }), builder, "data_floor", (Placement{"profile", string(project)}).Signal()},
+		"an unregistered executor":                 {card(plan), "exe_01m4tm99haemrs8zjs56wjm467", "data_floor", (Placement{"executor", "exe_01m4tm99haemrs8zjs56wjm467"}).Signal()},
+		"a reviewer on a builder's node":           {card(plan), reviewer, "independence", (Placement{"executor", string(reviewer)}).Signal()},
+		"a builder on a rostered node":             {card(req), builder, "independence", (Placement{"executor", string(builder)}).Signal()},
+		"no pinned image":                          {edit(card(plan), func(c *Card) { c.Image = "" }), builder, "capability", (Placement{"profile", string(project)}).Signal()},
 		"another project's card":                   {edit(card(plan), func(c *Card) { c.Project = other }), builder, "", ""},
 		"an unclaimed node":                        {card(unclaimed), builder, "", ""},
 	} {
@@ -355,7 +355,7 @@ func TestMatchRefusesBeforeReserving(t *testing.T) {
 	unsized, _ := stub(t, func(r *types.ExecutorRegistry) { r.Executors[0].FootprintPrior = nil })
 	var r *Refused
 	if _, err := e.match(Dispatcher{Rails: unrailed, Registry: unsized}, card(plan), builder); !errors.As(err, &r) || r.Check != "footprint_prior" ||
-		r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil || r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != PlacementSignal("executor "+string(builder)) {
+		r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil || r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != (Placement{"executor", string(builder)}).Signal() {
 		t.Errorf("no footprint_prior: %v (hold %+v)", err, r)
 	}
 	// An attempt_cap past its group's limit is configuration (Opus 22a-5c-1
@@ -363,7 +363,7 @@ func TestMatchRefusesBeforeReserving(t *testing.T) {
 	// executor, nothing requested.
 	big, _ := stub(t, func(r *types.ExecutorRegistry) { r.Executors[0].FootprintPrior.ContextTokens = 1_500_000 })
 	if _, err := e.match(Dispatcher{Rails: unrailed, Registry: big}, card(plan), builder); !errors.As(err, &r) || r.Check != "capacity" ||
-		r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil || r.Hold.SignalInstance != PlacementSignal("executor "+string(builder)) {
+		r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil || r.Hold.SignalInstance != (Placement{"executor", string(builder)}).Signal() {
 		t.Errorf("an attempt_cap over the group's limit: %v", err)
 	}
 	e.view(func(tx *eventstore.Tx) error {
@@ -444,8 +444,8 @@ func TestLaunchReadiness(t *testing.T) {
 		d            Dispatcher
 		hold, signal string
 	}{
-		"the gateway holds no credential": {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(false)}, "source_invalid_config", PlacementSignal("destination stub")},
-		"no gateway (P11 unbuilt)":        {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, "source_invalid_config", PlacementSignal("destination stub")},
+		"the gateway holds no credential": {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}, Credentials: creds(false)}, "source_invalid_config", (Placement{"destination", "stub"}).Signal()},
+		"no gateway (P11 unbuilt)":        {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, "source_invalid_config", (Placement{"destination", "stub"}).Signal()},
 		"the image is absent":             {Dispatcher{Rails: unrailed, Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}, "wrong_owner", "image " + image},
 		"no image store":                  {Dispatcher{Rails: unrailed, Registry: reg, Credentials: creds(true)}, "wrong_owner", "image " + image},
 	} {
@@ -500,7 +500,7 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 				e.missed(id, n, miss, "reviewer_unavailable", "registry:"+string(c.exe))
 				return
 			}
-			e.missed(id, n, miss, "source_invalid_config", PlacementSignal("executor "+string(c.exe)))
+			e.missed(id, n, miss, "source_invalid_config", (Placement{"executor", string(c.exe)}).Signal())
 		})
 	}
 	// A node held between the grant and the launch is no longer claimed:
@@ -546,7 +546,7 @@ func TestLaunchFailsClosed(t *testing.T) {
 		ready        func(Card) Readiness
 		hold, signal string
 	}{
-		"no dispatcher, no readiness":      {Dispatcher{}, func(Card) Readiness { return Readiness{} }, "source_invalid_config", PlacementSignal("executor " + string(builder))},
+		"no dispatcher, no readiness":      {Dispatcher{}, func(Card) Readiness { return Readiness{} }, "source_invalid_config", (Placement{"executor", string(builder)}).Signal()},
 		"no readiness":                     {full, func(Card) Readiness { return Readiness{} }, "", ""},
 		"a readiness for another executor": {full, func(c Card) Readiness { return full.Observe(ctx, c, reviewer) }, "", ""},
 		"a readiness for another image":    {full, func(c Card) Readiness { c.Image += "x"; return full.Observe(ctx, c, builder) }, "", ""},
@@ -557,7 +557,7 @@ func TestLaunchFailsClosed(t *testing.T) {
 			return Dispatcher{Rails: unrailed, Registry: cred, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
 		}, "", ""},
 		"no image store, a good readiness": {Dispatcher{Rails: unrailed, Registry: reg, Credentials: creds(true)}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "wrong_owner", "image " + image},
-		"no gateway, a good readiness":     {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", PlacementSignal("destination stub")},
+		"no gateway, a good readiness":     {Dispatcher{Rails: unrailed, Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", (Placement{"destination", "stub"}).Signal()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := open(t, gs)

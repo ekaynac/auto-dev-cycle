@@ -94,7 +94,7 @@ Initial hold registry (M0 defines; later milestones add):
 | `source_invalid_config` | config_change | operator |
 | `awaiting_approval` | approval | operator or supervisor (per grant) |
 | `awaiting_confirmation` | approval (human or independent review per policy) | per confirmation policy |
-| `awaiting_receipt` | receipt | system |
+| `awaiting_receipt` | receipt | system, then (`escalate_to`) the operator from since + `page_after` on (M1, Opus 22a-6b L3) |
 | `reviewer_unavailable` | probe (an independent reviewer family becomes available) | system |
 | `wrong_owner` | human_act | the named owner (environment, access, tooling) |
 | `maintenance_boundary` | revision (staged install lands) | system |

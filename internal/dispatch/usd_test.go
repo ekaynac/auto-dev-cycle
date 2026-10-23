@@ -564,7 +564,7 @@ func TestUSDNoRails(t *testing.T) {
 	_, err := e.match(Dispatcher{Registry: reg}, card(n), builder)
 	var r *Refused
 	if !errors.As(err, &r) || r.Check != "budget" || r.Outcome != types.OutcomeCouldNotRun || r.Reason != vocab.ReasonPreconditionFailed || r.Hold == nil ||
-		r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != PlacementSignal("profile "+string(project)) {
+		r.Hold.Hold != "source_invalid_config" || r.Hold.SignalInstance != (Placement{"profile", string(project)}).Signal() {
 		t.Fatalf("a priced executor with no rails: %v", err)
 	}
 	if _, live, err := e.liveOn(n); err != nil || live {

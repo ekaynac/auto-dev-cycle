@@ -102,7 +102,7 @@ func (d Dispatcher) usdRail(tx *eventstore.Tx, card Card, executor types.Executo
 		}
 	}
 	if b.unrailed { // configuration: the profile states no USD rail (Opus 22a-5c-1 M1)
-		r, err := configRefusal("budget", "profile "+string(card.Project), "no USD rails: a priced executor is placed only under them")
+		r, err := configRefusal("budget", Placement{"profile", string(card.Project)}, "no USD rails: a priced executor is placed only under them")
 		return r.PlacementCheck, r.Hold, err
 	}
 	caps, perTask, perDay, day := b.caps, b.perTask, b.perDay, b.day

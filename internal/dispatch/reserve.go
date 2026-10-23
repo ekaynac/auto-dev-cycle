@@ -6,12 +6,14 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -76,12 +78,12 @@ func (d Dispatcher) reservation(tx *eventstore.Tx, card Card, executor types.Exe
 // the executor).
 func (d Dispatcher) footprint(executor types.ExecutorID, e types.RegistryExecutor) (int64, *Refused, error) {
 	if e.FootprintPrior == nil {
-		r, err := configRefusal("footprint_prior", "executor "+string(executor), "executor "+string(executor)+" declares no footprint_prior (#226 entry 103)")
+		r, err := configRefusal("footprint_prior", Placement{"executor", string(executor)}, "executor "+string(executor)+" declares no footprint_prior (#226 entry 103)")
 		return 0, r, err
 	}
 	attemptCap := registry.AttemptCap(*e.FootprintPrior)
 	if limit, ok := d.Registry.Limit(e.Group); ok && attemptCap > limit {
-		r, err := configRefusal("capacity", "executor "+string(executor), fmt.Sprintf("executor %s's attempt_cap %d is past its group %s's limit %d", executor, attemptCap, e.Group, limit))
+		r, err := configRefusal("capacity", Placement{"executor", string(executor)}, fmt.Sprintf("executor %s's attempt_cap %d is past its group %s's limit %d", executor, attemptCap, e.Group, limit))
 		return 0, r, err
 	}
 	return attemptCap, nil, nil
@@ -214,24 +216,50 @@ func tokensFor(micros, price int64) int64 {
 const maxAmount = registry.MaxAmount
 
 // placementPrefix marks the signal of a hold placement raised on
-// configuration (PlacementSignal): the reconcile loop clears only those,
+// configuration (Placement): the reconcile loop clears only those,
 // never a source_invalid_config hold another component raised.
 const placementPrefix = "placement: "
 
-// PlacementSignal is the signal instance of a placement hold naming what
-// to change (the executor, the project's profile, the registry).
-func PlacementSignal(what string) string { return placementPrefix + what }
+// Placement is a placement hold's signal, typed: the configuration to
+// change, Of executor, profile or destination with its ID, or registry
+// with none. Signal formats it and ParsePlacement reads it back: one rule
+// (#226 entry 156; 5c-1's Unblock decides on the type, never on a text
+// prefix).
+type Placement struct{ Of, ID string }
 
-// IsPlacementSignal: signal is a placement hold's (PlacementSignal).
-func IsPlacementSignal(signal string) bool { return strings.HasPrefix(signal, placementPrefix) }
+// placementIDs are each Of's ID rule.
+var placementIDs = map[string]func(string) bool{
+	"executor":    func(id string) bool { return ids.Check(id, "exe") == nil },
+	"profile":     func(id string) bool { return ids.Check(id, "prj") == nil },
+	"destination": regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`).MatchString, // records/project-profile's Slug
+	"registry":    func(id string) bool { return id == "" },
+}
+
+// Signal is p's signal instance: "placement: <of> <id>", or
+// "placement: registry".
+func (p Placement) Signal() string {
+	if p.ID == "" {
+		return placementPrefix + p.Of
+	}
+	return placementPrefix + p.Of + " " + p.ID
+}
+
+// ParsePlacement is the Placement signal is, if it is exactly one.
+func ParsePlacement(signal string) (Placement, bool) {
+	rest, ok := strings.CutPrefix(signal, placementPrefix)
+	of, id, _ := strings.Cut(rest, " ")
+	valid, known := placementIDs[of]
+	p := Placement{of, id}
+	return p, ok && known && valid(id) && p.Signal() == signal
+}
 
 // configRefusal is a placement check that configuration blocks, named
 // check, refused precondition_failed with detail, and its node held
 // source_invalid_config on signal (the executor, or the project's profile),
 // the operator's: no later match of it can pass until the configuration
 // changes (Opus 22a-5c-1 M1).
-func configRefusal(check, signal, detail string) (*Refused, error) {
-	m, err := held("", "source_invalid_config", PlacementSignal(signal), types.OwnerOperator, nil)
+func configRefusal(check string, signal Placement, detail string) (*Refused, error) {
+	m, err := held("", "source_invalid_config", signal.Signal(), types.OwnerOperator, nil)
 	if err != nil {
 		return nil, err
 	}

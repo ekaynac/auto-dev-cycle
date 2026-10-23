@@ -280,7 +280,7 @@ func TestADamagedBlobUnderARepairIsRetried(t *testing.T) {
 					break
 				}
 			}
-			if two = roundOf(t, rw, 2); len(two.build.State.Holds) != 1 || !strings.HasPrefix(two.build.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) {
+			if two = roundOf(t, rw, 2); len(two.build.State.Holds) != 1 || !strings.HasPrefix(two.build.State.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
 				t.Fatalf("round 2's build over a damaged blob: %s, holds %+v", two.build.State.State, two.build.State.Holds)
 			}
 			if c.repaired {
