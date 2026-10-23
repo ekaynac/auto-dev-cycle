@@ -508,9 +508,9 @@ func TestARefusedRepairRoundCarriesItsReview(t *testing.T) {
 // Main (#410, with #226 entry 164): a refused candidate's repair runs to a
 // decided task. Round 1's accept refuses its candidate (a protected path, a
 // finding about its code); round 2's builder writes a clean one, accepted,
-// gated green and reviewed go; and the task can end as a candidate
-// (authority.DoneTask: no node claimed or held, nothing running), the
-// refused round's gate and review waiting, never held.
+// gated green and reviewed go; and the loop ends the task as a candidate
+// (22a-7's Done: graph.CandidateGo), once, the refused round's gate
+// waiting, never held, and no review of it recorded.
 func TestARefusedCandidateIsRepairedToADecidedTask(t *testing.T) {
 	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"pyproject.toml": "[x]\n"}, nil)
 	acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister { return nil }
@@ -519,10 +519,11 @@ func TestARefusedCandidateIsRepairedToADecidedTask(t *testing.T) {
 	var two round
 	for range 40 {
 		rw.passesFor(t, 1, 0)
-		if two = roundOf(t, rw, 2); two.review.State.State == types.NodeStateStateCompleted {
+		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
 			break
 		}
 	}
+	two = roundOf(t, rw, 2)
 	one := roundOf(t, rw, 1)
 	if rr := selectedOf(t, rw.w, one.accept); rr.Result.Reason != vocab.ReasonProtectedPath {
 		t.Fatalf("round 1's accept: %s/%s", rr.Result.Outcome, rr.Result.Reason)
@@ -533,7 +534,13 @@ func TestARefusedCandidateIsRepairedToADecidedTask(t *testing.T) {
 	if three := roundOf(t, rw, 3); three.build.Node.ID != "" {
 		t.Errorf("a third round after a go: %+v", three.build.Node)
 	}
-	if err := rw.w.try(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, rw.task) }); err != nil {
-		t.Errorf("the task does not end as a candidate: %v", err)
+	if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+		t.Errorf("the task after round 2's go: %s as %q", st, as)
+	}
+	if n := count(t, rw.w.dir, `SELECT count(*) FROM events WHERE kind = '`+authority.TaskDoneEvent+`'`); n != 1 {
+		t.Errorf("%d task.done events", n)
+	}
+	if one.gate.State.State != types.NodeStateStateWaiting || len(one.gate.State.Holds) != 0 || one.review.Node.ID != "" {
+		t.Errorf("round 1's gate over a refused tree: %s, holds %+v; its review %q (none: its gate never completes)", one.gate.State.State, one.gate.State.Holds, one.review.Node.ID)
 	}
 }
