@@ -72,6 +72,13 @@ func effectOf(t *testing.T, s *eventstore.Store, call types.CallID) eventstore.E
 	return e
 }
 
+// panickingQuery is a usage query that panics.
+type panickingQuery struct{}
+
+func (panickingQuery) Usage(context.Context, types.ModelCall) (modelcall.Usage, bool, error) {
+	panic("a usage query's bug")
+}
+
 // failingQuery is a usage query that fails.
 type failingQuery struct{}
 
@@ -88,7 +95,9 @@ func (failingQuery) Usage(context.Context, types.ModelCall) (modelcall.Usage, bo
 // retry, however many passes), and a failing usage query is logged once
 // while its cause holds. A pending call of an ended attempt (its end's
 // settlement failed) is settled by the Reconciler's end rule (Ended); one
-// whose attempt is lost but not sealed is left to its end.
+// whose attempt is lost but not sealed is left to its end. A panicking
+// usage query is a failed try, never adcd's end (Opus #411 M1); an
+// unbound effect is skipped and logged, never failing the listing (M2).
 func TestTheSettlementDriver(t *testing.T) {
 	t.Run("a settled call, at the next start", func(t *testing.T) {
 		dir, cfg, a, l, call := cutStore(t)
@@ -187,6 +196,24 @@ func TestTheSettlementDriver(t *testing.T) {
 		if after, _ := liable(); after != before {
 			t.Errorf("liable %d after the failed queries, %d before", after, before)
 		}
+		// Opus #411 M1's probe: a usage query that panics, through one Pass:
+		// adcd lives; the panic is the call's failed try, logged once per
+		// cause and backed off.
+		e.recon.Queries = map[types.Slug]modelcall.Query{"stub": panickingQuery{}}
+		due()
+		passOnce(t, d, e)
+		passOnce(t, d, e) // within the backoff: not tried
+		due()
+		passOnce(t, d, e)
+		if n := strings.Count(log.String(), "panicked"); n != 1 || tries() != 5 {
+			t.Errorf("two panicking queries: %d tries, logged %d times: %s", tries(), n, log.String())
+		}
+		if got := effectOf(t, d.store, call); got.State != eventstore.EffectUncertain {
+			t.Errorf("after the panicking queries: %s", got.State)
+		}
+		if after, _ := liable(); after != before {
+			t.Errorf("liable %d after the panicking queries, %d before", after, before)
+		}
 	})
 	t.Run("adcd's loop runs it", func(t *testing.T) {
 		e := &egress{}
@@ -195,6 +222,7 @@ func TestTheSettlementDriver(t *testing.T) {
 		}
 	})
 	t.Run("a pending call of an ended attempt", func(t *testing.T) {
+		unbound := types.CallID(newID(t, "cal")) // an effect intended with no binding (store damage): minted first, it is listed before call
 		dir, _, a, l, call := cutStore(t)
 		sys := types.ActorID(newID(t, "act"))
 		providerSettled(t, dir, a, l, call, func(w *seeder) {
@@ -204,10 +232,18 @@ func TestTheSettlementDriver(t *testing.T) {
 		})
 		w := seed(t, dir, daemonProjection(t, tokens(10)))
 		t.Cleanup(w.done)
-		e := &egress{recon: &modelcall.Reconciler{Store: w.s, Actor: string(sys), Clock: &modelcall.Clock{}}}
-		if err := e.settleEnded(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+		w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			m, _, err := modelcall.Of(tx, call)
+			m.Call = unbound
+			raw, merr := json.Marshal(m)
+			if err = errors.Join(err, merr); err != nil {
+				return nil, err
+			}
+			return nil, tx.IntendEffect(modelcall.EffectOf(unbound), modelcall.Kind, string(unbound), raw)
+		})
+		log := &logBuffer{}
+		e := &egress{recon: &modelcall.Reconciler{Store: w.s, Actor: string(sys), Clock: &modelcall.Clock{}}, log: log}
+		e.settleEnded(context.Background())
 		if got := effectOf(t, w.s, call); got.State != eventstore.EffectPending {
 			t.Fatalf("the call of an attempt lost, not sealed (its end may still settle it): %s", got.State)
 		}
@@ -218,11 +254,20 @@ func TestTheSettlementDriver(t *testing.T) {
 			}
 			return lease.SealMinimal(tx, a, rev, graph.Units{Tasks: authority.Tasks{}}, w.blobs, nil, sys)
 		})
-		if err := e.settleEnded(context.Background()); err != nil {
-			t.Fatal(err)
+		e.mu.Lock()
+		e.retries[unbound] = endRetry{next: time.Now(), tries: e.retries[unbound].tries, cause: e.retries[unbound].cause} // due again
+		e.mu.Unlock()
+		e.settleEnded(context.Background())
+		if modelcall.EffectOf(unbound) >= modelcall.EffectOf(call) {
+			t.Fatal("the unbound call is not listed first")
 		}
 		if got := effectOf(t, w.s, call); got.State != eventstore.EffectCompleted {
-			t.Fatalf("the pending call of an ended attempt: %s (%q)", got.State, got.LastObservation)
+			t.Fatalf("the pending call of an ended attempt, beside an unbound one: %s (%q)", got.State, got.LastObservation)
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if n := strings.Count(log.String(), "is not bound"); n != 1 || e.retries[unbound].tries != 2 {
+			t.Errorf("the unbound call: %d tries, logged %d times: %s", e.retries[unbound].tries, n, log.String())
 		}
 	})
 }

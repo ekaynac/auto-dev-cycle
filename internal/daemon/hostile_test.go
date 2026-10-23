@@ -188,9 +188,7 @@ func TestAHostileZeroFinalThroughAdcdsEgress(t *testing.T) {
 			if f.liable == 0 {
 				return
 			}
-			if err := c.e.settleEnded(context.Background()); err != nil { // its attempt is not sealed (lost): not the driver's yet
-				t.Fatal(err)
-			}
+			c.e.settleEnded(context.Background()) // its attempt is not sealed (lost): not the driver's yet
 			c.w.do(c.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				_, rev, _, err := lease.AttemptAt(tx, c.a)
 				if err != nil {
@@ -198,9 +196,7 @@ func TestAHostileZeroFinalThroughAdcdsEgress(t *testing.T) {
 				}
 				return lease.SealMinimal(tx, c.a, rev, graph.Units{Tasks: authority.Tasks{}}, c.w.blobs, nil, c.sys)
 			})
-			if err := c.e.settleEnded(context.Background()); err != nil {
-				t.Fatal(err)
-			}
+			c.e.settleEnded(context.Background())
 			if got, n := effectOf(t, c.w.s, c.call), c.liable(t); got.State != eventstore.EffectUncertain || n != f.liable {
 				t.Fatalf("the driver over the hostile final: effect %s (%q), liable %d", got.State, got.LastObservation, n)
 			}
@@ -210,9 +206,7 @@ func TestAHostileZeroFinalThroughAdcdsEgress(t *testing.T) {
 			r.next = time.Now() // its retry is due
 			c.e.retries[c.call] = r
 			c.e.mu.Unlock()
-			if err := c.e.settleEnded(context.Background()); err != nil {
-				t.Fatal(err)
-			}
+			c.e.settleEnded(context.Background())
 			if got, n := effectOf(t, c.w.s, c.call), c.liable(t); got.State != eventstore.EffectCompleted || n != 0 {
 				t.Fatalf("after the provider's answer: effect %s (%q), liable %d", got.State, got.LastObservation, n)
 			}

@@ -352,33 +352,41 @@ func OfLease(tx *eventstore.Tx, l types.LeaseID) ([]Bound, error) {
 	return out, nil
 }
 
-// Unsettled are the live (pending or uncertain) model_call effects whose
-// attempt has ended (sealed, completed or superseded: its gateway token is
-// unbound, so no request of the call is sent after), by id: what the
-// Reconciler settles once their standing settles (Opus #409 M1).
-func Unsettled(tx *eventstore.Tx) ([]eventstore.Effect, error) {
-	live, err := tx.LiveEffects(Kind)
+// Live are the calls whose model_call effect is live (pending or
+// uncertain), in effect id order: the ids alone, so a caller loads only
+// those it will settle (Unsettled; Opus #411 M2).
+func Live(tx *eventstore.Tx) ([]types.CallID, error) {
+	ids, err := tx.LiveEffects(Kind)
+	out := make([]types.CallID, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, CallOf(id))
+	}
+	return out, err
+}
+
+// CallOf is the call whose effect id is effect (EffectOf's inverse).
+func CallOf(effect string) types.CallID {
+	return types.CallID("cal_" + strings.TrimPrefix(effect, "eff_"))
+}
+
+// Unsettled is call's effect, and whether it is to be settled once its
+// standing settles (Opus #409 M1): live, its attempt ended (sealed,
+// completed or superseded: its gateway token is unbound, so no request of
+// the call is sent after). A call that is not bound is an error.
+func Unsettled(tx *eventstore.Tx, call types.CallID) (eventstore.Effect, bool, error) {
+	m, ok, err := Of(tx, call)
+	if err == nil && !ok {
+		err = fmt.Errorf("modelcall: %s is not bound", call)
+	}
 	if err != nil {
-		return nil, err
+		return eventstore.Effect{}, false, err
 	}
-	out := live[:0]
-	for _, e := range live {
-		m, ok, err := Of(tx, types.CallID(e.Target))
-		if err == nil && !ok {
-			err = fmt.Errorf("modelcall: effect %s's call %s is not bound", e.ID, e.Target)
-		}
-		if err != nil {
-			return nil, err
-		}
-		a, _, ok, err := lease.AttemptOf(tx, m.Attempt)
-		if err != nil {
-			return nil, err
-		}
-		if ok && lease.SealedStatus(a.Status) {
-			out = append(out, e)
-		}
+	e, err := tx.LoadEffect(EffectOf(call))
+	if err != nil || e.State != eventstore.EffectPending && e.State != eventstore.EffectUncertain {
+		return e, false, err
 	}
-	return out, nil
+	a, _, ok, err := lease.AttemptOf(tx, m.Attempt)
+	return e, err == nil && ok && lease.SealedStatus(a.Status), err
 }
 
 // Recorder records a call's intent as its own command (gateway.Intents). It

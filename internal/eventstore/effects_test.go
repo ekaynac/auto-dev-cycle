@@ -495,20 +495,13 @@ func TestLiveEffects(t *testing.T) {
 		ids[st] = id
 	}
 	other := intend(t, e, "notification")
-	var live []Effect
-	if err := e.s.View(ctx, func(tx *Tx) (err error) { live, err = tx.LiveEffects("model_call"); return err }); err != nil {
+	var got []string
+	if err := e.s.View(ctx, func(tx *Tx) (err error) { got, err = tx.LiveEffects("model_call"); return err }); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{ids[EffectPending], ids[EffectUncertain]}
 	slices.Sort(want)
-	var got []string
-	for _, l := range live {
-		got = append(got, l.ID)
-		if l.Kind != "model_call" || l.ID == other || l.State != EffectPending && l.State != EffectUncertain {
-			t.Errorf("a live effect: %+v", l)
-		}
-	}
-	if !slices.Equal(got, want) {
+	if slices.Contains(got, other) || !slices.Equal(got, want) {
 		t.Errorf("live %v, want %v", got, want)
 	}
 }

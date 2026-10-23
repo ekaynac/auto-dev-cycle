@@ -485,10 +485,14 @@ func (r *runner) otherCall(ctx context.Context, attempt types.AttemptID, cid typ
 }
 
 // guarded is f, a panic in it returned as an error.
-func guarded(f func() error) (err error) {
+func guarded(f func() error) error { return guardedAs("ending the run", f) }
+
+// guardedAs is f, a panic in it returned as an error naming what panicked:
+// a goroutine of adcd's that runs f never crashes it (Opus #411 M1).
+func guardedAs(what string, f func() error) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("ending the run panicked: %v", p)
+			err = fmt.Errorf("%s panicked: %v", what, p)
 		}
 	}()
 	return f()

@@ -258,9 +258,9 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 		}
 	}
 	eg.log = logw
-	if err := eg.settleEnded(ctx); err != nil { // after recovery and the sweep, which end the attempts a crash cut (Opus #409 M1)
-		fmt.Fprintf(logw, "adcd: the model calls of ended attempts could not be read: %v\n", err)
-	}
+	settling, stopSettle := context.WithTimeout(ctx, settleBound) // after recovery and the sweep, which end the attempts a crash cut (Opus #409 M1); bounded, the rest the passes' (Opus #411 L1)
+	eg.settleEnded(settling)
+	stopSettle()
 	loop := reconciler(d, reg, images, eg, run, cfg.reconcileEvery, logw) // its passes settle too
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
