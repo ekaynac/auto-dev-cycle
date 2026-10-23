@@ -77,7 +77,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -332,7 +331,8 @@ func holdsFor(tx *eventstore.Tx, rec nodeRecord, n types.Node) ([]types.NodeHold
 		if err != nil {
 			return nil, nil, err
 		}
-		exe, onExecutor := strings.CutPrefix(h.SignalInstance, "registry:")
+		of, exe, parsed := ParseIndependence(h.SignalInstance)
+		onExecutor := parsed && of == "registry"
 		var why types.RetiredHoldReason
 		switch {
 		case mutation.Is(mutation.SupersessionTransfersEveryHold):

@@ -286,7 +286,7 @@ func TestLiveContainerRefusesAnotherAdapter(t *testing.T) {
 		t.Fatalf("an attempt started: %v %v", ok, err)
 	}
 	st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
-	if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, reconcile.RunnerSignal("profile ")) {
+	if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, runnerText("profile ")) {
 		t.Errorf("the node: %+v", st)
 	}
 	if n := stubRequests(t, log); n != 0 {

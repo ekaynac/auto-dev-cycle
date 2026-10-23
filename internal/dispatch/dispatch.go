@@ -35,7 +35,7 @@
 //     roster the registry no longer gives (as graph.Evaluate holds it),
 //     wrong_owner for an image. No attempt starts, so no rail allowance is
 //     spent (P17 counts attempts). Each clears (#226 entry 156): the two
-//     source_invalid_config holds are placement holds (PlacementSignal),
+//     source_invalid_config holds are placement holds (Placement),
 //     cleared once Configured admits the node again; the image hold
 //     (IsImageSignal) once the pinned image resolves; reviewer_unavailable
 //     as graph.Evaluate's. A node no longer claimed or of another
@@ -249,9 +249,9 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 // its registration (destinations, and any check of an executor the
 // registry does not name) and its role (independence).
 func heldOn(check string, card Card, executor types.ExecutorID, registered bool) (*types.NodeHold, error) {
-	signal := "executor " + string(executor)
+	signal := Placement{"executor", string(executor)}
 	if registered && (check == "data_floor" || check == "capability") {
-		signal = "profile " + string(card.Project)
+		signal = Placement{"profile", string(card.Project)}
 	}
 	r, err := configRefusal(check, signal, "")
 	if err != nil {

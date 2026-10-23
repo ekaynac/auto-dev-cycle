@@ -436,12 +436,12 @@ func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 		refuse, notReady error
 		signal           string // the hold's signal's start
 	}{
-		"another adapter in the image": {refuse: sandbox.ErrAdapter, signal: reconcile.RunnerSignal("profile ")},
-		"an image not prepared for it": {refuse: sandbox.ErrManifest, signal: reconcile.RunnerSignal("profile ")},
-		"an image not present":         {refuse: sandbox.ErrImage, signal: reconcile.RunnerSignal("retry 1 until ")},
-		"a pin with no registry":       {refuse: sandbox.ErrUnqualified, signal: reconcile.RunnerSignal("profile ")},
-		"a container not made":         {notReady: fmt.Errorf("%w: %w", errHost, sandbox.ErrSpec), signal: reconcile.RunnerSignal("retry 1 until ")},
-		"a Ready that fails":           {notReady: errors.New("no"), signal: reconcile.RunnerSignal("retry 1 until ")},
+		"another adapter in the image": {refuse: sandbox.ErrAdapter, signal: runnerText("profile ")},
+		"an image not prepared for it": {refuse: sandbox.ErrManifest, signal: runnerText("profile ")},
+		"an image not present":         {refuse: sandbox.ErrImage, signal: runnerText("retry 1 until ")},
+		"a pin with no registry":       {refuse: sandbox.ErrUnqualified, signal: runnerText("profile ")},
+		"a container not made":         {notReady: fmt.Errorf("%w: %w", errHost, sandbox.ErrSpec), signal: runnerText("retry 1 until ")},
+		"a Ready that fails":           {notReady: errors.New("no"), signal: runnerText("retry 1 until ")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := newRunWorld(t, true, builder(nil, false, nil))
@@ -531,7 +531,7 @@ func TestAFailureBeforeTheLaunchEndsTheLease(t *testing.T) {
 	})
 	st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
 	if len(first) != 1 || l.State != types.LeaseStateReleased || !free || len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig ||
-		st.Holds[0].SignalInstance != reconcile.RunnerSignal("dirs") {
+		st.Holds[0].SignalInstance != runnerText("dirs") {
 		t.Fatalf("after a failed prepare: %d leases, the lease %s, unplaced %v, node %+v", len(first), l.State, free, st)
 	}
 	if _, ok, err := firstAttempt(rw); err != nil || ok {
@@ -738,13 +738,13 @@ func TestSpawnFailuresInARowAreBounded(t *testing.T) {
 			}
 		}
 		rw.untilRun(t)
-		if h := rw.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("retry 1 until ")) {
+		if h := rw.heldOn(); !strings.HasPrefix(h, runnerText("retry 1 until ")) {
 			t.Fatalf("lifted %v: after one spawn failure: held on %q", lifted, h)
 		}
 		for i := 0; i < 40 && rw.runs.count() < 2; i++ {
 			rw.passesFor(t, 1, 20*time.Millisecond)
 		}
-		if h := rw.heldOn(); rw.runs.count() != 2 || !strings.HasPrefix(h, reconcile.RunnerSignal("retry 2 until ")) {
+		if h := rw.heldOn(); rw.runs.count() != 2 || !strings.HasPrefix(h, runnerText("retry 2 until ")) {
 			t.Fatalf("lifted %v: after two spawn failures in a row: %d runs, held on %q", lifted, rw.runs.count(), h)
 		}
 		railed := func() bool {
@@ -945,7 +945,7 @@ func (rw *runWorld) failingGateway(n int) {
 // heldOn is the build's runner hold signal, "" when it holds none.
 func (rw *runWorld) heldOn() string {
 	for _, h := range nodesOf(rw.w, rw.task)[types.NodeKindBuild].State.Holds {
-		if reconcile.IsRunnerSignal(h.SignalInstance) {
+		if isRunnerHold(h.SignalInstance) {
 			return h.SignalInstance
 		}
 	}
@@ -978,7 +978,7 @@ func TestATransientFailureIsRetried(t *testing.T) {
 	retryBase = 500 * time.Millisecond
 	t.Cleanup(func() { retryBase = time.Minute })
 	rw.untilRun(t)
-	if h := rw.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("retry 1 until ")) {
+	if h := rw.heldOn(); !strings.HasPrefix(h, runnerText("retry 1 until ")) {
 		t.Fatalf("the hold after a transient failure: %q", h)
 	}
 	rw.passesFor(t, 3, 0)
@@ -1066,7 +1066,7 @@ func TestAnUnwrittenHoldSpendsNoTry(t *testing.T) {
 	}
 	raise = graph.Raise
 	rw.passesFor(t, 3, 0)
-	if h := rw.heldOn(); !strings.HasPrefix(h, reconcile.RunnerSignal("retry 1 until ")) {
+	if h := rw.heldOn(); !strings.HasPrefix(h, runnerText("retry 1 until ")) {
 		t.Errorf("the next failure is held on %q, want the first retry", h)
 	}
 }
@@ -1126,4 +1126,14 @@ func TestRetryAfterIsCapped(t *testing.T) {
 			t.Errorf("retryAfter(%d) = %s, want %s", n, got, want)
 		}
 	}
+}
+
+// runnerText is a runner hold's signal text, what: a prefix the rows
+// compare a held node's signal with.
+func runnerText(what string) string { return "runner: " + what }
+
+// isRunnerHold: signal is a runner hold's (reconcile.ParseRunner).
+func isRunnerHold(signal string) bool {
+	_, ok := reconcile.ParseRunner(signal)
+	return ok
 }

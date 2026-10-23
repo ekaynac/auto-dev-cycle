@@ -178,7 +178,7 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		// (P17b); the grant reserved it, so the launch does not re-read it.
 		if was != now[i] && was.name != "budget" {
 			return held("placement "+was.name+" changed since the grant", // Configured re-derives it (#226 entry 156)
-				"source_invalid_config", PlacementSignal("executor "+string(l.Executor)), types.OwnerOperator, nil)
+				"source_invalid_config", Placement{"executor", string(l.Executor)}.Signal(), types.OwnerOperator, nil)
 		}
 	}
 	e, _ := d.Registry.Executor(l.Executor) // registered: the placement still holds
@@ -188,7 +188,7 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	}
 	credential := func() (*Miss, error) {
 		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config", // Configured checks it (#226 entry 156)
-			PlacementSignal("destination "+string(e.Destination.ID)), types.OwnerOperator, nil)
+			Placement{"destination", string(e.Destination.ID)}.Signal(), types.OwnerOperator, nil)
 	}
 	switch {
 	case d.Images == nil:
@@ -247,10 +247,15 @@ func imageSignal(image string) string {
 	return imagePrefix + "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// IsImageSignal: signal is a launch's wrong_owner hold on its pinned image
-// (imageSignal), which the reconcile loop clears once the project's pinned
-// image resolves (#226 entry 156).
-func IsImageSignal(signal string) bool { return strings.HasPrefix(signal, imagePrefix) }
+// IsImageSignal: signal is exactly one imageSignal makes (a launch's
+// wrong_owner hold on its pinned image, which the reconcile loop clears
+// once the project's pinned image resolves; #226 entry 156): "image " and
+// a reference of no space or control character, within maxSignal, or the
+// hashed form's sha256:<64 hex>. One rule with imageSignal.
+func IsImageSignal(signal string) bool {
+	ref, ok := strings.CutPrefix(signal, imagePrefix)
+	return ok && ref != "" && !strings.ContainsFunc(ref, func(r rune) bool { return r <= ' ' || r == 0x7f }) && imageSignal(ref) == signal
+}
 
 // reason fits a refusal's reason to lease-event's 1024 bytes.
 func reason(s string) string {

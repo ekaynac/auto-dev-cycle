@@ -43,7 +43,10 @@ var _ reconcile.Placer = placer{}
 // placeConfig is configuration no match of a node can pass until it
 // changes: the node is held source_invalid_config on signal, the
 // operator's (Opus 22a-5c-1 M1).
-type placeConfig struct{ signal, detail string }
+type placeConfig struct {
+	signal dispatch.Placement
+	detail string
+}
 
 func (e *placeConfig) Error() string { return "daemon: " + e.detail }
 
@@ -62,7 +65,7 @@ func (p placer) Place(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event,
 		if err != nil {
 			return nil, err
 		}
-		return graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(id), Hold: "source_invalid_config", SignalInstance: dispatch.PlacementSignal(cfg.signal),
+		return graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(id), Hold: "source_invalid_config", SignalInstance: cfg.signal.Signal(),
 			Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
 	}
 	if err != nil {
@@ -91,8 +94,8 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 }
 
 // Unblocked clears node's placement hold (hold, on signal: the loop passes
-// only placement, runner and launch image holds, dispatch.IsPlacementSignal,
-// reconcile.IsRunnerSignal and dispatch.IsImageSignal) once the
+// only placement, runner and launch image holds, dispatch.ParsePlacement,
+// reconcile.ParseRunner and dispatch.IsImageSignal) once the
 // configuration admits node again: its card is made, and no placement
 // check, missing credential, footprint or missing USD rail refuses it
 // (Dispatcher.Configured); nothing otherwise (Mythos 22a-5c-1 M1). Match
@@ -105,13 +108,17 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 // would miss on the credential anyway.
 func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error) {
 	var ready func(*eventstore.Tx, types.NodeID, string) (bool, error)
+	_, runner := reconcile.ParseRunner(signal)
+	_, placement := dispatch.ParsePlacement(signal)
 	switch {
 	case dispatch.IsImageSignal(signal): // a launch's wrong_owner hold
 		ready = func(tx *eventstore.Tx, node types.NodeID, _ string) (bool, error) { return p.imageReady(tx, node) }
-	case reconcile.IsRunnerSignal(signal): // the runner's hold (Opus 22a-5c-2a H2)
+	case runner: // the runner's hold (Opus 22a-5c-2a H2)
 		if ready = p.ready; ready == nil {
 			return nil, nil
 		}
+	case !placement: // none of the placement's, the runner's or the launch's: never cleared here (5c-1: typed, not a text prefix)
+		return nil, nil
 	}
 	if ready != nil {
 		ok, err := ready(tx, node, signal)
@@ -189,7 +196,7 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	}
 	image, _, err := pinnedImage(*prof)
 	if err != nil {
-		return dispatch.Card{}, "", &placeConfig{"profile " + string(v.Project), fmt.Sprintf("project %s %v", v.Project, err)}
+		return dispatch.Card{}, "", &placeConfig{dispatch.Placement{Of: "profile", ID: string(v.Project)}, fmt.Sprintf("project %s %v", v.Project, err)}
 	}
 	card := dispatch.Card{Node: node, Project: v.Project, Policy: prof.DataPolicy, PolicyDigest: pd, Image: image, Priority: prof.Priority,
 		Deadline: types.Time(tx.Now().Add(attemptBound).UTC().Format(time.RFC3339))}
@@ -202,7 +209,7 @@ func (p placer) card(tx *eventstore.Tx, node types.NodeID) (dispatch.Card, types
 	}
 	builders := p.d.Registry.Executors(types.RegistryExecutorRoleBuilder)
 	if len(builders) == 0 {
-		return card, "", &placeConfig{"registry", "no builder is registered (adcd run --registry)"}
+		return card, "", &placeConfig{dispatch.Placement{Of: "registry"}, "no builder is registered (adcd run --registry)"}
 	}
 	for _, b := range builders {
 		if p.d.Registry.Admits(card.Policy, b) == nil {
