@@ -6,11 +6,11 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -231,7 +231,7 @@ type Placement struct{ Of, ID string }
 var placementIDs = map[string]func(string) bool{
 	"executor":    func(id string) bool { return ids.Check(id, "exe") == nil },
 	"profile":     func(id string) bool { return ids.Check(id, "prj") == nil },
-	"destination": regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`).MatchString, // records/project-profile's Slug
+	"destination": contract.DefPattern("config/project-profile", "Slug").MatchString, // the schema's Slug, read from it (Mythos #425 M1)
 	"registry":    func(id string) bool { return id == "" },
 }
 

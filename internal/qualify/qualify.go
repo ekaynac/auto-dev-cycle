@@ -169,9 +169,8 @@ var adapterPaths = []string{"adapters/http-chat/src", "adapters/http-chat/packag
 	"gen/ts/validators.cjs", "gen/ts/formats.cjs", "gen/ts/package.json", "adapters/package.json", "adapters/pnpm-workspace.yaml", "adapters/pnpm-lock.yaml"}
 
 var (
-	caseID      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,95}$`)
-	probeName   = regexp.MustCompile(`^TestQualProbe[A-Za-z0-9]+$`)
-	digestValue = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	caseID    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,95}$`)
+	probeName = regexp.MustCompile(`^TestQualProbe[A-Za-z0-9]+$`)
 )
 
 // Case is one candidate of the suite: a patch of its task's repository.
@@ -223,7 +222,7 @@ func Load(root string) (Suite, error) {
 	for _, c := range s.Cases {
 		defect := c.Expect == review.NoGo
 		if !caseID.MatchString(c.ID) || seen[c.ID] || defect != (c.Defect != "") || defect != probeName.MatchString(c.Probe) || !defect && c.Probe != "" ||
-			c.Expect != review.Go && !defect || !digestValue.MatchString(string(c.PromptDigest)) {
+			c.Expect != review.Go && !defect || !contract.IsDigest(string(c.PromptDigest)) {
 			return Suite{}, fmt.Errorf("qualify: case %q is not one", c.ID)
 		} else if _, err := os.Stat(filepath.Join(s.taskDir(c), "task.json")); err != nil {
 			return Suite{}, fmt.Errorf("qualify: case %s: %w", c.ID, err)

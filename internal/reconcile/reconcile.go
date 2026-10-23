@@ -76,7 +76,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -84,6 +83,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -247,8 +247,6 @@ func (r RunnerHold) Signal() string {
 	return runnerPrefix + r.What
 }
 
-var profileDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-
 // ParseRunner is the RunnerHold signal is, if it is exactly one.
 func ParseRunner(signal string) (RunnerHold, bool) {
 	rest, ok := strings.CutPrefix(signal, runnerPrefix)
@@ -258,7 +256,7 @@ func ParseRunner(signal string) (RunnerHold, bool) {
 	case "dirs", "failed", "image", "sandbox":
 	case "profile":
 		r.Digest = arg
-		ok = ok && profileDigest.MatchString(arg)
+		ok = ok && contract.IsDigest(arg)
 	case "retry":
 		var until string
 		_, err := fmt.Sscanf(arg, "%d until %s", &r.N, &until)

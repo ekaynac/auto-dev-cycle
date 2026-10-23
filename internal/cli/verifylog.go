@@ -14,13 +14,14 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // trustedHead is SEQ:HASH, the head a backup carries (03 rule 3).
-var trustedHead = regexp.MustCompile(`^(0|[1-9][0-9]{0,17}):(sha256:[0-9a-f]{64})$`)
+var trustedHead = regexp.MustCompile(`^(0|[1-9][0-9]{0,17}):(.+)$`) // its HASH a Digest (contract.IsDigest)
 
 // verifyLog runs `adc dev verify-log --state DIR [--trusted SEQ:HASH]
 // [--json]` (docs/design/m0/00 "M0 exit check"): it takes the state
@@ -56,7 +57,7 @@ func verifyLog(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	})
 	if head != nil {
 		m := trustedHead.FindStringSubmatch(*trusted)
-		if m == nil {
+		if m == nil || !contract.IsDigest(m[2]) {
 			return usage("--trusted %q is not SEQ:sha256:HEX", *trusted)
 		}
 		head.Seq, _ = strconv.ParseInt(m[1], 10, 64) // at most 18 digits: fits

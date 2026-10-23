@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/printer"
+	"go/token"
 	"go/types"
 	"slices"
 	"strings"
@@ -68,7 +69,7 @@ var holdRows = []holdRow{
 	// rosterMiss: raised by Launch's miss and by Match's refusal (placer.Place; Astra chunk 3 H1).
 	{"dispatch.rosterMiss", "reviewer_unavailable", "ni.SignalInstance()", "registry:exe_01m4tm99haemqt8es2qfbwj8pa", "daemon.reviews.Unheld", "a review node's roster is the registry's again, or re-derived"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `Placement{"executor", string(l.Executor)}.Signal()`, "placement: executor exe_01m4tm99haemqt8es2qfbwj8pa", "daemon.placer.Unblocked", "Configured re-derives the placement"},
-	{"dispatch.Dispatcher.miss", "wrong_owner", "imageSignal(card.Image)", "image i", "daemon.placer.Unblocked", "the project's pinned image resolves (placer.imageReady)"},
+	{"dispatch.Dispatcher.miss", "wrong_owner", "imageSignal(card.Image)", "image ghcr.io/x/y@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "daemon.placer.Unblocked", "the project's pinned image resolves (placer.imageReady)"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `Placement{"destination", string(e.Destination.ID)}.Signal()`, "placement: destination stub", "daemon.placer.Unblocked", "Configured: the credential is held"},
 	{"dispatch.Dispatcher.attemptRail", "budget_rail", "graph.RailAttempts", "rail:attempts_per_round", "authority.TaskRaiseRailHandler.Logic", "task.raise_rail of attempts_per_round"},
 	// No sandbox root (#226 entry 171; Opus #414 H1): no runner, every node held before its match, and what a runner would run (a granted lease's, an accept, a gate).
@@ -109,6 +110,11 @@ func TestEveryRaisedHoldHasAClearingPath(t *testing.T) {
 	for u := range unattributedStated {
 		if !slices.Contains(unattributed, u) {
 			t.Errorf("a stated unattributed signal the scan no longer sees: %s", u)
+		}
+	}
+	for d := range derivedStated {
+		if !slices.ContainsFunc(built, func(r holdRow) bool { return r.at+": "+r.kind+" on "+r.signal == d }) {
+			t.Errorf("a stated parameter-derived signal the scan no longer sees: %s", d)
 		}
 	}
 	slices.Sort(sites)
@@ -231,10 +237,56 @@ func isNodeHold(t types.Type) bool {
 // unattributed when the scan cannot attribute it.
 func appendBuilt(built []holdRow, unattributed []string, p *packages.Package, body *ast.BlockStmt, name, kind string, signal ast.Expr) ([]holdRow, []string) {
 	rows, ok := builtOn(p, body, name, kind, signal)
-	if !ok {
-		return built, append(unattributed, name+": "+kind+" on "+types.ExprString(signal))
+	switch at := name + ": " + kind + " on " + types.ExprString(signal); {
+	case !ok:
+		return built, append(unattributed, at)
+	case signal != nil && paramDerived(p, body, signal):
+		if _, stated := derivedStated[at]; !stated {
+			return built, append(unattributed, at+", derived from a parameter")
+		}
 	}
 	return append(built, rows...), unattributed
+}
+
+// derivedStated are the signals derived from a parameter directly
+// (paramDerived) that are rows, each stated with the formatter that makes
+// what the parameter carries.
+var derivedStated = map[string]string{
+	"graph.HoldNotIndependent: reviewer_unavailable on ni.SignalInstance()": "graph.ErrNotIndependent.SignalInstance, the roster signal's formatter (IndependenceSignal), which graph.ParseIndependence reads back (TestTheReceiptAndRosterSignalsRoundTrip)",
+	"dispatch.rosterMiss: reviewer_unavailable on ni.SignalInstance()":      "as graph.HoldNotIndependent's: graph.ErrNotIndependent.SignalInstance",
+}
+
+// outside reports whether e is a bare variable declared outside body and
+// not at package scope: a parameter, or one a closure captures.
+func outside(p *packages.Package, body *ast.BlockStmt, e ast.Expr) bool {
+	for {
+		pe, ok := e.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		e = pe.X
+	}
+	id, ok := e.(*ast.Ident)
+	v, _ := p.TypesInfo.Uses[id].(*types.Var)
+	return ok && v != nil && v.Parent() != v.Pkg().Scope() && (v.Pos() < body.Lbrace || v.Pos() > body.Rbrace)
+}
+
+// paramDerived reports whether signal e is derived from a parameter
+// directly, its value the caller's (Opus #425 L1, Mythos L2): a method
+// called on one (ni.SignalInstance()), or a concatenation with one as an
+// operand (signal + ""). A parameter passed to a formatter, or converted
+// (string(p)), is the formatter's and is not.
+func paramDerived(p *packages.Package, body *ast.BlockStmt, e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return paramDerived(p, body, x.X)
+	case *ast.CallExpr:
+		sel, ok := x.Fun.(*ast.SelectorExpr)
+		return ok && outside(p, body, sel.X) && p.TypesInfo.Selections[sel] != nil
+	case *ast.BinaryExpr:
+		return x.Op == token.ADD && (outside(p, body, x.X) || outside(p, body, x.Y) || paramDerived(p, body, x.X) || paramDerived(p, body, x.Y))
+	}
+	return false
 }
 
 // exprText is e as its source prints it, composite literals whole
@@ -325,9 +377,13 @@ func builtOn(p *packages.Package, body *ast.BlockStmt, name, kind string, signal
 }
 
 // values is e's expression, or, for a local variable, each value body
-// assigns it; false for a variable declared outside body (a parameter, or
-// one a closure captures) or never assigned in it, and for no expression
-// (#402: never matched by its name's text).
+// assigns it; false for a bare variable declared outside body (a
+// parameter, or one a closure captures) or never assigned in it, and for
+// no expression (#402: never matched by its name's text). Any other
+// expression is attributed as it is, a parameter inside it included (Opus
+// #425 L1): the one inside a formatter's call or a conversion is that
+// formatter's row; one derived from a parameter directly (paramDerived) is
+// a row only once stated (derivedStated).
 func values(p *packages.Package, body *ast.BlockStmt, e ast.Expr) ([]string, bool) {
 	if e == nil {
 		return nil, false
@@ -355,9 +411,11 @@ func values(p *packages.Package, body *ast.BlockStmt, e ast.Expr) ([]string, boo
 }
 
 // #402: the scan fails on a raise whose signal it cannot attribute, never
-// passes it by its name's text: a planted package's parameter signal and
-// its signal set after the literal are both reported; an attributed one is
-// a row.
+// passes it by its name's text: a planted package's bare parameter signal,
+// its signal set after the literal, a method of a parameter and a
+// parameter concatenated (derived from a parameter, not stated; Opus #425
+// L1) are reported; an attributed one, a parameter converted into a
+// formatted signal, is a row.
 func TestTheHoldScanFailsOnWhatItCannotAttribute(t *testing.T) {
 	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo, Dir: "."},
 		"./testdata/holdscan")
@@ -366,7 +424,8 @@ func TestTheHoldScanFailsOnWhatItCannotAttribute(t *testing.T) {
 	}
 	_, built, _, unattributed := scanHolds(pkgs)
 	slices.Sort(unattributed)
-	want := []string{"holdscan.AfterLiteral: h.SignalInstance set after its literal", "holdscan.FromParam: source_invalid_config on signal"}
+	want := []string{"holdscan.AfterLiteral: h.SignalInstance set after its literal", "holdscan.Concatenated: source_invalid_config on signal + \"\", derived from a parameter",
+		"holdscan.FromMethod: source_invalid_config on x.String(), derived from a parameter", "holdscan.FromParam: source_invalid_config on signal"}
 	if !slices.Equal(unattributed, want) || len(unattributedFailures(unattributed)) != len(want) {
 		t.Errorf("unattributed %q, want %q, each failing", unattributed, want)
 	}

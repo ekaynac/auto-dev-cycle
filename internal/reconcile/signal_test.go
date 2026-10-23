@@ -37,7 +37,7 @@ func TestRunnerSignalsAndOffered(t *testing.T) {
 	}{
 		"a placement hold": {types.NodeHold{Hold: vocab.HoldSourceInvalidConfig, SignalInstance: "placement: executor exe_01m4tm99haemqt8es2qfbwj8pa"}, true},
 		"a runner hold":    {types.NodeHold{Hold: vocab.HoldSourceInvalidConfig, SignalInstance: "runner: dirs"}, true},
-		"an image hold":    {types.NodeHold{Hold: vocab.HoldWrongOwner, SignalInstance: "image docker.io/x@sha256:00"}, true},
+		"an image hold":    {types.NodeHold{Hold: vocab.HoldWrongOwner, SignalInstance: "image docker.io/x@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, true},
 		"a roster hold":    {types.NodeHold{Hold: vocab.HoldReviewerUnavailable, SignalInstance: "registry:exe_01m4tm99haemqt8es2qfbwj8pa"}, true},
 		"the day's rail":   {types.NodeHold{Hold: vocab.HoldBudgetRail, SignalInstance: "rail:per_day_usd"}, true},
 		"a retry wait on a placement-like signal": {types.NodeHold{Hold: vocab.HoldSourceInvalidConfig, Reason: &reason, SignalInstance: "placement: executor exe_01m4tm99haemqt8es2qfbwj8pa"}, false},

@@ -31,7 +31,7 @@ func TestTheReceiptAndRosterSignalsRoundTrip(t *testing.T) {
 		t.Error("the receipt wait is not one")
 	}
 	for _, c := range [][2]string{{"registry", "exe_01m4tm99haemqt8es2qfbwj8pa"}, {"contributor", "exe_01m4tm99haemqt8es2qfbwj8pa"}, {"contributor", "nod_01m4tm99haemqt8es2qfbwj8pa"}} {
-		s := independenceSignal(c[0], c[1])
+		s := IndependenceSignal(c[0], c[1])
 		if of, subject, ok := ParseIndependence(s); !ok || of != c[0] || subject != c[1] {
 			t.Errorf("%q reads back %q %q %v", s, of, subject, ok)
 		}

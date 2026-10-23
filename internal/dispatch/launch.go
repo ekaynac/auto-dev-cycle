@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -250,11 +251,13 @@ func imageSignal(image string) string {
 // IsImageSignal: signal is exactly one imageSignal makes (a launch's
 // wrong_owner hold on its pinned image, which the reconcile loop clears
 // once the project's pinned image resolves; #226 entry 156): "image " and
-// a reference of no space or control character, within maxSignal, or the
-// hashed form's sha256:<64 hex>. One rule with imageSignal.
+// a pinned reference (sandbox.Pinned: the profile schema's PinnedImage,
+// the rule every pin was admitted by; Opus #425 L2, Mythos L1) within
+// maxSignal, or the hashed form's digest (contract.IsDigest). One rule with
+// imageSignal and the profile.
 func IsImageSignal(signal string) bool {
 	ref, ok := strings.CutPrefix(signal, imagePrefix)
-	return ok && ref != "" && !strings.ContainsFunc(ref, func(r rune) bool { return r <= ' ' || r == 0x7f }) && imageSignal(ref) == signal
+	return ok && (sandbox.Pinned(ref) || contract.IsDigest(ref)) && imageSignal(ref) == signal
 }
 
 // reason fits a refusal's reason to lease-event's 1024 bytes.
