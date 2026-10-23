@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 )
 
 // P14c-2a-shadow (Mythos #266 r2 M3, Opus and Mythos #267): modules
@@ -112,6 +113,15 @@ func pyRel(p, e string) (string, bool) {
 	return strings.CutPrefix(p, e+"/")
 }
 
+// pySteps counts the Python guard's steps, any run's: each root a module
+// name is tried under (pyModNames), each byte of each dotted-name prefix the
+// closures split, each directory entry pyTestWalk reads, each token
+// pyBindings scans, each token the tokenizer yields and each name across
+// follows or queues. Tests bound a run's
+// steps per unit of its input, at two sizes, instead of its time (#226
+// entry 89).
+var pySteps atomic.Int64
+
 // pyModNames are the dotted names the module at p answers to: relative
 // to each sys.path entry holding it (Mythos #267 r2 H1, M1); in a judged
 // file, every trailing suffix (pySuffixes).
@@ -120,6 +130,7 @@ func pyModNames(p string, entries []string, judged bool) (names []string) {
 		return pySuffixes(p)
 	}
 	m := strings.TrimSuffix(strings.TrimSuffix(p, ".py"), "/__init__")
+	pySteps.Add(int64(len(entries)))
 	for _, e := range entries {
 		if rel, ok := pyRel(m, e); ok {
 			names = append(names, strings.ReplaceAll(rel, "/", "."))

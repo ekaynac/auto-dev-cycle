@@ -38,6 +38,9 @@ func (r *run) pyTestWalk(p string) (bool, int) {
 	t, n, todo := false, 0, []string(nil)
 	for d := path.Dir(p); d != "."; d = path.Dir(d) {
 		cached, ok := r.pyTests[d]
+		if !ok { // each directory walked, with its entries, counted (pySteps)
+			pySteps.Add(int64(1 + len(r.baseDirs[d]) + len(r.candDirs[d])))
+		}
 		if b := path.Base(d); ok {
 			t = cached
 			break
@@ -425,6 +428,7 @@ func pyBindings(lines []pline, trusted, imported []string) (map[string]bool, map
 	for _, l := range lines {
 		for _, st := range pySplit(slices.Concat(l.toks, l.inner), ";") {
 			imp := len(st) > 1 && (st[0].text == "import" || st[0].text == "from")
+			pySteps.Add(int64(len(st)))
 			for i, k := range st {
 				if star = star || k.text == "*" && i > 0 && st[i-1].text == "import"; k.kind != 'n' || len(names[k.text]) == 0 {
 					continue

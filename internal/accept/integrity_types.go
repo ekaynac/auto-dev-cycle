@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -548,9 +549,13 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 // later run sees it.
 func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
 	done := make(chan any, 1)
+	typeChecksLive.Add(1)
 	go func() {
 		var v any
-		defer func() { done <- cmp.Or(recover(), v) }() // its panic is the guard's
+		defer func() {
+			typeChecksLive.Add(-1)
+			done <- cmp.Or(recover(), v) // its panic is the guard's
+		}()
 		v, _ = conf.Check(path, fset, files, info)
 	}()
 	select {
@@ -565,6 +570,11 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 		panic("a type check over the guard's deadline (" + path + ")")
 	}
 }
+
+// typeChecksLive counts typeCheck's checks still running: a test sees an
+// abandoned check outlive the guard's return by it, not by a clock (#226
+// entry 89).
+var typeChecksLive atomic.Int64
 
 type importFunc func(string) (*types.Package, error)
 

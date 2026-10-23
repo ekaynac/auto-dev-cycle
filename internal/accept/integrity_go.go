@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -420,6 +421,11 @@ func (s *pkgScan) mRun(call *ast.CallExpr) bool {
 	return ok && sel.Sel.Name == "Run" && s.tval(sel.X) == "testing.M"
 }
 
+// aliasReads counts the alias right-hand sides mentions has read, any
+// run's: a test bounds the walk by this count, not by a clock (#226 entry
+// 89: an alias DAG once made it exponential, Mythos #269 M1).
+var aliasReads atomic.Int64
+
 // mentions: n names a testing type or a testing value.
 func (s *pkgScan) mentions(n ast.Node) (found bool) {
 	ast.Inspect(n, func(n ast.Node) bool {
@@ -427,6 +433,7 @@ func (s *pkgScan) mentions(n ast.Node) (found bool) {
 		if a := s.alias(e); e != nil && a != nil && !found && !slices.Contains(testTypes, s.qual(n)) && s.tval(e) == "" {
 			if found = s.mentioned[a]&1 == 1; s.mentioned[a] == 0 { // once per alias; a cycle (A[P] = B[P], B[P] = A[P]) mentions
 				s.mentioned[a] = 1
+				aliasReads.Add(1)
 				found = s.mentions(a)
 				s.mentioned[a] = 2 + int8(b2i(found))
 			}

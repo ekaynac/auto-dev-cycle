@@ -331,7 +331,10 @@ func (pb *pyBase) closure() error {
 				pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports a name past the depth bound")
 				continue
 			}
+			w := -1 // the prefix's bytes, counted (pySteps)
 			for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
+				w += 1 + len(parts[k-1])
+				pySteps.Add(int64(w))
 				if n := strings.Join(parts[:k], "."); names[n] {
 					continue // each name once
 				} else if pb.opaque[n] {
@@ -428,7 +431,10 @@ func (pb *pyBase) candClosure() (string, error) {
 				} else if strings.Count(m, ".") >= pyMaxDepth {
 					return p, nil // a name past the depth bound
 				}
+				w := -1 // the prefix's bytes, counted (pySteps)
 				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
+					w += 1 + len(parts[k-1])
+					pySteps.Add(int64(w))
 					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__") {
 						return p, nil // a base link or gitlink, a name two files answer to, a non-source form or a module under __pycache__, newly reached (Astra #281 r2 H5, r3 H3, r4 H3, H4)
 					} else if q := mods[n]; q != "" && !queued[q] {
@@ -588,7 +594,8 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 // (Astra #272 M1); a module name in two roots is unread (#272 H1).
 func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(string) bool) (y, unread string, err error) {
 	seen, queue := map[string]bool{d: true}, []string{d}
-	push := func(x string) { // every attempt charged; nothing allocated past the bound (Astra #272 r2 M1)
+	push := func(x string) { // every attempt charged, and counted; nothing allocated past the bound (Astra #272 r2 M1)
+		pySteps.Add(1)
 		if pb.r.work++; !seen[x] && pb.r.work <= maxWork {
 			seen[x], queue = true, append(queue, x)
 		}
@@ -599,7 +606,8 @@ func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(s
 		}
 		return err != nil || unread != ""
 	}
-	follow := func(x string) string { // x resolved: c's attribute it reaches, or queued
+	follow := func(x string) string { // x resolved: c's attribute it reaches, or queued; counted
+		pySteps.Add(1)
 		if pb.r.work++; err != nil || unread != "" || over() {
 			return ""
 		} else if x, unread, err = pb.resolve(x); err == nil && unread == "" {
