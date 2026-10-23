@@ -60,9 +60,8 @@ type sending struct {
 	sent int
 }
 
-// Tokens is the floor of a text of n bytes: what the gateway counts it as
-// before (or without) the upstream's usage.
-func Tokens(n int) int64 { return (int64(n) + bytesPerToken - 1) / bytesPerToken }
+// tokens is the floor of a text of n bytes.
+func tokens(n int) int64 { return (int64(n) + bytesPerToken - 1) / bytesPerToken }
 
 // floor is the count of body before it is sent, under l.
 func floor(body []byte, l types.Lease) Count {
@@ -79,7 +78,7 @@ func floor(body []byte, l types.Lease) Count {
 			out = int64(r.Amount)
 		}
 	}
-	return Count{In: Tokens(len(body)), Out: min(max(out, 0), maxCount)}
+	return Count{In: tokens(len(body)), Out: min(max(out, 0), maxCount)}
 }
 
 // count records the count of request s from its response t, once forwarded whole, superseding its floor. It is
@@ -92,7 +91,7 @@ func (g *Gateway) count(r *http.Request, b Binding, s sending, t *tally, whole b
 	clamp := func(v int64) int64 { return min(max(v, 0), maxCount) }
 	prompt, out := clamp(u.Prompt), clamp(u.Completion)
 	cached := min(clamp(u.Cached), prompt)
-	n := Count{In: max(prompt, Tokens(s.sent)) - cached, Out: max(out, Tokens(content)), CacheRead: cached, Observed: out >= Tokens(content)}
+	n := Count{In: max(prompt, tokens(s.sent)) - cached, Out: max(out, tokens(content)), CacheRead: cached, Observed: out >= tokens(content)}
 	if err := g.cfg.Counts.Count(context.WithoutCancel(r.Context()), b, s.seq, n); err != nil {
 		g.observe(b.Attempt, 0, RouteUncounted)
 	}
