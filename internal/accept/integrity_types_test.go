@@ -603,7 +603,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		"a go of another release": {LocalLister(filepath.Join(old, "bin/go"), nil, time.Minute, 0),
 			"(testing: go list: the toolchain is go1.0, not the guard's " + runtime.Version() + ")", 0, false},
 		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)", 200 * time.Millisecond, false},
-		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: the listing failed on the candidate: go list: exit status 1: 1048576)", 0, true},
+		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: the listing failed on the candidate: go list: exit status 1: 1048576)", 0, false}, // the base's listing fails too: the host's (#226 entry 170)
 	} {
 		var calls atomic.Int64 // the go calls the guard makes, each waiting out c.wait at most (Opus #317 M2): at most one per version and platform of its one module (r2 L2)
 		list := c.list

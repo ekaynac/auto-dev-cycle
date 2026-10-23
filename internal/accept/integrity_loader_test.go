@@ -383,8 +383,14 @@ func TestIntegrityProcess(t *testing.T) {
 			write(t, src, mod)
 			plain(t, src, "add", "--all")
 		})
+		if mod != nil { // the base's own listing fails as the candidate's: the host's (#226 entry 170)
+			if _, err := m.loadedErr(t, testLister(t), helper); !didNotRunErr(err, "go list failed") {
+				t.Errorf("%s: %v", name, err)
+			}
+			continue
+		}
 		in, out := m.guarded(t, helper), m.loaded(t, testLister(t), helper)
-		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || mod == nil && !out.Accepted() {
+		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !out.Accepted() {
 			t.Errorf("%s: in this process %q %q, in its own %q %q", name, whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
 		}
 	}
@@ -510,6 +516,8 @@ type localBox struct {
 	caches  [2]string // GOCACHE, GOMODCACHE
 	ws      *[]string // the workspace's entries at each start
 	mutate  func(results string)
+	status  func(gomod []byte) string // go list's status the run records instead ("": its own)
+	fail    func(gomod []byte) error  // the run's error instead (nil: its own)
 	started atomic.Int32
 	copied  []int // export data files each run copied out
 }
@@ -567,6 +575,17 @@ func (b *localBox) Start(ctx context.Context, r sandbox.Run) ([]byte, error) {
 	if err == nil && b.mutate != nil {
 		b.mutate(r.Attempt.Results())
 	}
+	mod, _ := os.ReadFile(filepath.Join(r.Attempt.Workspace(), "go.mod"))
+	if err == nil && b.status != nil {
+		if st := b.status(mod); st != "" {
+			_ = os.WriteFile(filepath.Join(r.Attempt.Results(), "golist"), []byte(st+"\n"), 0o600)
+		}
+	}
+	if b.fail != nil {
+		if ferr := b.fail(mod); ferr != nil {
+			return out, ferr
+		}
+	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) { // as sandbox.Host.Start reports the workload's own status
 		err = &sandbox.WorkloadExit{Code: exit.ExitCode(), Err: err}
@@ -620,7 +639,9 @@ func TestSandboxLister(t *testing.T) {
 	}
 	// A listing whose output is wrong with no bound broken is no evidence
 	// against the candidate: the guard did not run (ErrGuardRun; #226 entry
-	// 147). A bound its run broke is the candidate's: a block.
+	// 147). A bound its run broke is evidence against it, but here every
+	// listing breaks it, the base's too: the host's (#226 entry 170;
+	// TestTheListingVerdict has the candidate's alone).
 	for name, c := range map[string]struct {
 		mutate func(results string)
 		why    string
@@ -650,11 +671,11 @@ func TestSandboxLister(t *testing.T) {
 			pad := bytes.Repeat([]byte("example.org/"+strings.Repeat("p", 2000)+"\t\t\n"), int(maxList)/2000)
 			b, _ := os.ReadFile(filepath.Join(r, "list"))
 			_ = os.WriteFile(filepath.Join(r, "list"), append(b, pad...), 0o600)
-		}, "a list over its bound", false},
+		}, "a list over its bound", true},
 		"a list past maxListEntries": {func(r string) {
 			b, _ := os.ReadFile(filepath.Join(r, "list"))
 			_ = os.WriteFile(filepath.Join(r, "list"), append(b, bytes.Repeat([]byte("example.org/p\t\t\n"), maxListEntries)...), 0o600)
-		}, "a list over its bound", false},
+		}, "a list over its bound", true},
 		"archives delivered again": {func(r string) {
 			b, _ := os.ReadFile(filepath.Join(r, "list"))
 			for line := range strings.Lines(string(b)) {
@@ -673,7 +694,7 @@ func TestSandboxLister(t *testing.T) {
 				fmt.Fprintf(&b, "%sexample.org/p%d\t\t", map[bool]string{true: "\n"}[i > 0], i)
 			}
 			_ = os.WriteFile(filepath.Join(r, "list"), []byte(b.String()), 0o600)
-		}, "a list over its bound", false},
+		}, "a list over its bound", true},
 	} {
 		box.mutate = c.mutate
 		if c.noRun {
@@ -699,6 +720,16 @@ func TestSandboxLister(t *testing.T) {
 			plain(t, src, "add", "--all")
 		})
 		fresh := LocalLister(box.gobin, []string{"GOCACHE=" + box.caches[0], "GOMODCACHE=" + box.caches[1]}, 5*time.Minute, 8<<30) // main's, its cache its own
+		// The base's own listing fails as the candidate's: the host's, with
+		// either lister (#226 entry 170).
+		if mod != nil {
+			_, err := m.loadedErr(t, list, change)
+			_, merr := m.loadedErr(t, fresh, change)
+			if !didNotRunErr(err, "go list failed") || !didNotRunErr(merr, "go list failed") {
+				t.Errorf("%s: %v; main's %v", name, err, merr)
+			}
+			continue
+		}
 		got, main := m.loaded(t, list, change), m.loaded(t, fresh, change)
 		cause := regexp.MustCompile(`(?s)\(.*\)`) // the lister's own wording of its error
 		norm := func(bs []Block) (out []string) {
@@ -916,4 +947,66 @@ func (f fixture) withIgnored(t *testing.T, guard Guard, files map[string]string,
 // wrapRead is guard reading through read, whatever Accept's reader is.
 func wrapRead(guard Guard, read Reader) Guard {
 	return func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) { return guard(ctx, c, read) }
+}
+
+// Opus #412 B1-B3 and H1' (the lead's decision, #226 entry 170): a
+// listing's failure is the candidate's only when it is of the candidate's
+// version, on evidence against its code, and the base's listing on the same
+// platform succeeded in the same guard run (listVerdict). The candidate's
+// go.mod carries a comment, so the stand-in sandbox fails its listing alone.
+// Each the host's (ErrGuardRun): the candidate's run left an unmeasured
+// tree (B1); killed by a signal (137, B2); the script's own failure (3,
+// B3); go list's recorded status a signal's (137, B2). The candidate's:
+// go list's own status 1, a measured bound broken. The base's listing
+// failing too: the host's, whatever the candidate's.
+func TestTheListingVerdict(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		plain(t, src, "add", "--all")
+	})
+	box := newLocalBox(t)
+	list := boxLister(box, sandbox.Image{}, sandbox.Limits{})
+	change := map[string]string{"pkg/calc.go": strings.Replace(baseFiles["pkg/calc.go"], "package pkg\n", "package pkg\n\nimport \"fmt\"\n", 1) +
+		"\nfunc Sum(xs ...int) int { return len(fmt.Sprint(xs)) }\n", "go.mod": guardBase["go.mod"] + "// the candidate's\n"}
+	candidate := func(mod []byte) bool { return strings.Contains(string(mod), "// the candidate's") }
+	exit := func(code int) error { return &sandbox.WorkloadExit{Code: code, Err: exitErr(t, code)} }
+	for name, c := range map[string]struct {
+		fail    error  // the candidate's run's error
+		status  string // go list's status the candidate's run records
+		all     bool   // the base's listing fails too
+		refusal bool
+	}{
+		"an unmeasured tree (B1)":                {fail: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)},
+		"killed by a signal (B2)":                {fail: exit(137)},
+		"the script's own failure (B3)":          {fail: exit(3)},
+		"go list's status a signal's (B2)":       {status: "137"},
+		"go list's own status 1":                 {status: "1", refusal: true},
+		"a measured bound broken":                {fail: sandbox.ErrLeft, refusal: true},
+		"go list's own status 1, the base's too": {status: "1", all: true},
+		"a measured bound, the base's too":       {fail: sandbox.ErrLeft, all: true},
+	} {
+		box.fail = func(mod []byte) error {
+			if c.all || candidate(mod) {
+				return c.fail
+			}
+			return nil
+		}
+		box.status = func(mod []byte) string {
+			if c.all || candidate(mod) {
+				return c.status
+			}
+			return ""
+		}
+		v, err := f.loadedErr(t, list, change)
+		switch {
+		case c.refusal && (err != nil || !finds(v.Blocks, "go list in the prepared image")):
+			t.Errorf("%s: the candidate's, a block: %v %q", name, err, whats(v.Blocks))
+		case !c.refusal && (!errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0):
+			t.Errorf("%s: the host's, ErrGuardRun: %v %q", name, err, whats(v.Blocks))
+		}
+	}
+	box.fail, box.status = nil, nil
+	if v := f.loaded(t, list, change); !v.Accepted() {
+		t.Errorf("no fault: %q", whats(v.Blocks))
+	}
 }

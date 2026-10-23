@@ -49,15 +49,16 @@ func exitErr(t *testing.T, code int) *exec.ExitError {
 	return exit
 }
 
-// Astra chunk 1 H2 and round 2 (Lead decision, #226 entry 147): a listing's
-// failure is the candidate's (a block) only on positive evidence: go
-// list's own exit status observed and nonzero (sandbox.WorkloadExit), or a
-// bound its run broke (sandbox.ErrLeft). Everything else is ErrGuardRun,
-// never a block: the attempt not made (ENOSPC), the sandbox refusing the
-// run (a mount sandbox.ErrSpec, sandbox.ErrHost), podman failing itself
+// Astra chunk 1 H2 and round 2; the lead's decisions, #226 entries 147,
+// 168 and 170: a listing that fails on every run, the base's included, is
+// never the candidate's: ErrGuardRun, never a block. The run's exit status
+// (sandbox.WorkloadExit) is never go list's own (the script records that):
+// a status 1 or 3 (the script's own failure, B3), a signal (137, B2); a
+// tree unmeasured (B1); the attempt not made (ENOSPC), the sandbox refusing
+// the run (a mount sandbox.ErrSpec, sandbox.ErrHost), podman failing itself
 // (125), its client killed (-1), no status, and a good run whose container
 // was not removed (sandbox.ErrCleanup). The child killed before its result
-// is ErrGuardRun too.
+// is ErrGuardRun too. TestTheListingVerdict has the candidate's own.
 func TestAGuardThatDidNotRunIsAnError(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -66,8 +67,7 @@ func TestAGuardThatDidNotRunIsAnError(t *testing.T) {
 	change := map[string]string{"pkg/calc.go": strings.Replace(baseFiles["pkg/calc.go"], "package pkg\n", "package pkg\n\nimport \"fmt\"\n", 1) +
 		"\nfunc Sum(xs ...int) int { return len(fmt.Sprint(xs)) }\n"}
 	for name, c := range map[string]struct {
-		box   startBox
-		block bool
+		box startBox
 	}{
 		"the attempt not made (ENOSPC)":   {box: startBox{newErr: &os.PathError{Op: "mkdir", Path: "runs/a1", Err: syscall.ENOSPC}}},
 		"a mount the sandbox refused":     {box: startBox{err: fmt.Errorf("%w: a mount source holds a comma", sandbox.ErrSpec)}},
@@ -78,17 +78,17 @@ func TestAGuardThatDidNotRunIsAnError(t *testing.T) {
 		"a good run, its container stays": {box: startBox{err: fmt.Errorf("%w: %w", sandbox.ErrCleanup, exitErr(t, 1))}},
 		"go list exited 1, its container stays": {box: startBox{err: errors.Join(&sandbox.WorkloadExit{Code: 1, Err: exitErr(t, 1)},
 			fmt.Errorf("%w: %w", sandbox.ErrCleanup, exitErr(t, 1)))}},
-		"go list exited 1 on its code": {box: startBox{err: &sandbox.WorkloadExit{Code: 1, Err: exitErr(t, 1)}}, block: true},
-		"its run left past its bound":  {box: startBox{err: errors.Join(sandbox.ErrLeft, sandbox.ErrSpec)}, block: true},
+		"a run that exited 1":                 {box: startBox{err: &sandbox.WorkloadExit{Code: 1, Err: exitErr(t, 1)}}},
+		"the script's own failure (B3)":       {box: startBox{err: &sandbox.WorkloadExit{Code: 3, Err: exitErr(t, 3)}}},
+		"killed by a signal (B2)":             {box: startBox{err: &sandbox.WorkloadExit{Code: 137, Err: exitErr(t, 137)}}},
+		"a tree unmeasured (B1)":              {box: startBox{err: errors.Join(sandbox.ErrLeft, sandbox.ErrUnmeasured)}},
+		"its run left past its bound, always": {box: startBox{err: errors.Join(sandbox.ErrLeft, sandbox.ErrSpec)}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c.box.t = t
 			v, err := f.loadedErr(t, boxLister(c.box, sandbox.Image{}, sandbox.Limits{}), change)
-			switch {
-			case c.block && (err != nil || !finds(v.Blocks, "go list in the prepared image")):
-				t.Errorf("go list failing on the candidate: %v, %q", err, whats(v.Blocks))
-			case !c.block && (!errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0):
-				t.Errorf("a go list that did not run to its own end: %v, %q", err, whats(v.Blocks))
+			if !errors.Is(err, ErrGuardRun) || len(v.Blocks) != 0 {
+				t.Errorf("a listing failing on every run: %v, %q", err, whats(v.Blocks))
 			}
 		})
 	}
