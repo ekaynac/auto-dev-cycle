@@ -116,13 +116,14 @@ var kept = map[Row]bool{
 	{"I7", Admission}: true, {"I7", Fold}: true, {"I7", Consumption}: true, {"I7", Effect}: true, // P22a-6d
 	{"I8", Admission}: true, {"I8", Fold}: true, {"I8", Consumption}: true, {"I8", Effect}: true, // K1
 	{"I9", Admission}: true, {"I9", Fold}: true, {"I9", Consumption}: true, {"I9", Effect}: true, // K1
+	{"I10", Admission}: true, {"I10", Fold}: true, {"I10", Consumption}: true, {"I10", Effect}: true, // K2a (launch's kept bits)
 	{"I11", Admission}: true, {"I11", Fold}: true, {"I11", Consumption}: true, {"I11", Effect}: true,
-	{"I12", Fold}: true, {"I12", Effect}: true,
+	{"I12", Admission}: true, {"I12", Fold}: true, {"I12", Consumption}: true, {"I12", Effect}: true, // K2a: Admission for the Go profile
 	{"I13", Fold}: true, {"I13", Consumption}: true, {"I13", Effect}: true, // Admission is launch's activation's (Opus 22a-6d L1)
 	{"I14", Fold}: true, {"I14", Consumption}: true,
 	{"I15", Admission}: true, {"I15", Fold}: true, {"I15", Consumption}: true, {"I15", Effect}: true,
 	{"I16", Admission}: true, {"I16", Fold}: true, {"I16", Consumption}: true, {"I16", Effect}: true, // K1
-	{"I17", Fold}:      true,
+	{"I17", Admission}: true, {"I17", Fold}: true, {"I17", Consumption}: true, {"I17", Effect}: true, // K2a
 	{"I18", Admission}: true, {"I18", Fold}: true, {"I18", Consumption}: true, {"I18", Effect}: true, // P22a-6d
 	{"I21", Consumption}: true,
 	{"I22", Admission}:   true, {"I22", Fold}: true, {"I22", Consumption}: true, {"I22", Effect}: true,
