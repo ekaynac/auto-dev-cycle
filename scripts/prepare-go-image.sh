@@ -15,6 +15,27 @@
 # Both build from the same Containerfile, base and toolchain; only the
 # lockfiles and the warmed packages differ.
 #
+# BASE_REF=<commit> (auto-dev-cycle only; #226 entry 172): the lockfiles
+# (go.mod, go.sum) and the warmed packages are a task base's, taken from a
+# git archive of that commit of this repository, while the adapter is still
+# the current clean HEAD's dist, checked against HEAD as without it. The
+# label's lockfile hashes are then the base's, which the sandbox checks
+# against the task's base (dependency_recipe.lockfiles), so a task created
+# on an older base (#170's 0d3e81d) keeps its base and its go.mod, and its
+# hidden tests need no re-check. A ref that is no commit here is refused
+# before any podman call; a dirty checkout is refused as always. Without
+# BASE_REF nothing changes.
+#
+# After a new image is pinned (fixtures/m1/profiles/auto-dev-cycle.json,
+# toolchain.images.go), #170's VISIBLE baseline is re-recorded in it as
+# #294 did (#226 entry 92): gate.Measure in the new pinned image, the
+# profile's gate command over base 0d3e81d's tree, with no acceptance
+# overlay, into fixtures/m1/issues/170/baseline-report.json and
+# baseline-stream.json, and baseline.json's image fields (README
+# "Re-recording"; TestGateIssue170 binds them to the pin). The hidden tests
+# are never run there: they stay in the lead's store, and their expected
+# results (baseline.json) hold while the base and its lockfiles do.
+#
 # The adapter is make dist's lib/adc closure of each platform
 # (sandbox.AdapterClosure: node/bin/node, adapters/http-chat,
 # adapters/contract, gen/ts, node_modules), checked against the dist's
@@ -122,14 +143,26 @@ instances() {
 }
 
 # project PROJECT: sets repo, lockfiles (the profile's, in its order) and
-# warm_required (a project with dependencies must warm some).
+# warm_required (a project with dependencies must warm some). With
+# BASE_REF, auto-dev-cycle's repo is a git archive of that commit
+# (base_dir, removed on exit), never the working tree.
+base_dir=""
 project() {
   case "$1" in
     auto-dev-cycle) repo="$here" lockfiles=(go.mod go.sum) warm_required=1 ;;
     go-mini) repo="$here/fixtures/t0/go-mini/repo" lockfiles=(go.mod) warm_required=0 ;;
     *) die "unknown project '$1' (auto-dev-cycle or go-mini)" ;;
   esac
+  [[ -n "${BASE_REF:-}" ]] || return 0
+  [[ "$1" == auto-dev-cycle ]] || die "BASE_REF is auto-dev-cycle's only (got project '$1')"
+  base_commit="$(git -C "$here" rev-parse --verify --quiet "${BASE_REF}^{commit}")" || die "BASE_REF '$BASE_REF' is no commit in $here"
+  base_dir="$(mktemp -d)" || die "cannot make a directory for $BASE_REF's tree"
+  git -C "$here" archive --format=tar "$base_commit" | tar -C "$base_dir" -xf - || die "cannot archive $base_commit"
+  repo="$base_dir"
 }
+
+# rmbase removes base_dir, BASE_REF's archive, if any.
+rmbase() { [[ -z "$base_dir" ]] || rm -rf -- "$base_dir"; }
 
 # platforms LIST: sets plats, the comma-separated LIST sorted (the label's
 # key order), each linux/amd64 or linux/arm64, once.
@@ -219,22 +252,25 @@ context() {
 case "${1:-}" in
   manifest)
     [[ $# -eq 2 ]] || die "usage: prepare-go-image.sh manifest PROJECT"
+    trap rmbase EXIT
     project "$2"
     manifest
     ;;
   context)
     [[ $# -eq 4 || $# -eq 5 ]] || die "usage: prepare-go-image.sh context PROJECT DIST DIR [PLATFORMS]"
+    trap rmbase EXIT
     project "$2"
     platforms "${5:-linux/amd64,linux/arm64}"
     host_adc "$3"
     ctx="$4"
     mkdir -- "$ctx" || die "$ctx must be a new directory"
-    trap '[[ -n "${label:-}" ]] || rm -rf -- "$ctx"' EXIT
+    trap 'rmbase; [[ -n "${label:-}" ]] || rm -rf -- "$ctx"' EXIT
     context "$3" "$ctx"
     printf '%s\n' "$label"
     ;;
   build)
     [[ $# -eq 3 || $# -eq 4 ]] || die "usage: prepare-go-image.sh build PROJECT NAME [PLATFORMS]"
+    trap rmbase EXIT
     project "$2"
     name="$3"
     platforms "${4:-linux/amd64,linux/arm64}"
@@ -266,7 +302,7 @@ case "${1:-}" in
       pod "$kind" exists "$name" || rc=$?
       ((rc == 1)) || die "$name already exists in podman's storage, or podman failed: run 'podman manifest rm $name' first"
     done
-    printf 'prepare-go-image: preparing %s from %s at %s\n' "$2" "$repo" "$head"
+    printf 'prepare-go-image: preparing %s from %s at %s%s\n' "$2" "$repo" "$head" "${base_commit:+, its lockfiles and packages at BASE_REF $base_commit}"
     ctx="$(mktemp -d)"
     built=""
     # Once the build has begun, a failure removes NAME, which may hold a
@@ -279,6 +315,7 @@ case "${1:-}" in
       local rc=$? ex=0 found="" id
       local -a made=() had=()
       rm -rf -- "$ctx"
+      rmbase
       ((rc != 0)) && [[ -n "$built" ]] || return 0
       pod manifest exists "$name" || ex=$?
       if ((ex == 1)); then

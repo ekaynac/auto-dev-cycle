@@ -418,10 +418,16 @@ func (f buildFixture) version(t *testing.T, v string) {
 // row.
 func (f buildFixture) build(t *testing.T) ([]string, string, error) {
 	t.Helper()
+	return f.buildOf(t, "go-mini")
+}
+
+// buildOf is build of project, with env added to the fixture's.
+func (f buildFixture) buildOf(t *testing.T, project string, env ...string) ([]string, string, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), buildNet)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", filepath.Join(f.checkout, "scripts/prepare-go-image.sh"), "build", "go-mini", "localhost/adc-test")
-	cmd.Env = f.env
+	cmd := exec.CommandContext(ctx, "bash", filepath.Join(f.checkout, "scripts/prepare-go-image.sh"), "build", project, "localhost/adc-test")
+	cmd.Env = append(slices.Clone(f.env), env...)
 	if b, err := os.ReadFile(filepath.Join(f.state, "timeout")); err == nil {
 		cmd.Env = append(slices.Clone(f.env), "PREPARE_GO_IMAGE_TIMEOUT="+strings.TrimSpace(string(b)))
 	}
@@ -626,6 +632,111 @@ func TestPrepareBuild(t *testing.T) {
 		}
 		if strings.HasPrefix(name, "run") && !strings.HasPrefix(calls[11], "rm --force --ignore --time=0 adc-prepare-") {
 			t.Errorf("%s: the cut run's container is not removed: %q", name, calls)
+		}
+	}
+}
+
+// commit writes files into f's checkout and commits them, returning the
+// commit; the dist's adc then reports it, as make dist on it would.
+func (f *buildFixture) commit(t *testing.T, files map[string]string) string {
+	t.Helper()
+	for name, body := range files {
+		p := filepath.Join(f.checkout, name)
+		if err := errors.Join(os.MkdirAll(filepath.Dir(p), 0o755), os.WriteFile(p, []byte(body), 0o755)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "c"}} {
+		cmd := exec.Command("git", append([]string{"-C", f.checkout}, args...)...)
+		cmd.Env = f.env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	cmd := exec.Command("git", "-C", f.checkout, "rev-parse", "HEAD")
+	cmd.Env = f.env
+	head, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.head = strings.TrimSpace(string(head))
+	f.version(t, "adc 1234567 (commit "+f.head+", schema set none, go1.27.1, linux/arm64)")
+	return f.head
+}
+
+// #226 entry 172: auto-dev-cycle's image from a task's base. With
+// BASE_REF, the label's lockfile hashes (go.mod, go.sum) are the base
+// commit's, from a git archive of it, while its adapter is HEAD's dist's,
+// checked against HEAD as always. A ref that is no commit fails before any
+// podman call; a dirty checkout is refused all the same; BASE_REF is
+// auto-dev-cycle's only. Without it, the lockfiles are the checkout's.
+func TestPrepareBuildFromABaseRef(t *testing.T) {
+	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return "sha256:" + hex.EncodeToString(h[:]) }
+	const baseMod, baseSum = "module example.com/adc\n", "example.com/dep v1.0.0 h1:base\n"
+	const headMod, headSum = "module example.com/adc\n\nrequire example.com/dep v1.1.0\n", "example.com/dep v1.1.0 h1:head\n"
+	setup := func(t *testing.T) (buildFixture, string) {
+		f := newBuildFixture(t)
+		base := f.commit(t, map[string]string{"go.mod": baseMod, "go.sum": baseSum, "goroot/bin/go": "#!/bin/sh\necho example.com/dep\n"})
+		f.commit(t, map[string]string{"go.mod": headMod, "go.sum": headSum})
+		return f, base
+	}
+	labelOf := func(calls []string) string {
+		for _, c := range calls {
+			if strings.HasPrefix(c, "build ") {
+				_, l, _ := strings.Cut(c, "--label=dev.adc.prepared=")
+				l, _, _ = strings.Cut(l, " -f ")
+				return l
+			}
+		}
+		return ""
+	}
+	f, base := setup(t)
+	calls, out, err := f.buildOf(t, "auto-dev-cycle", "BASE_REF="+base)
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	var adapter []string
+	for _, arch := range []string{"amd64", "arm64"} {
+		d, err := sandbox.AdapterDigest(filepath.Join(f.checkout, "dist/linux-"+arch, "lib/adc"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		adapter = append(adapter, `"linux/`+arch+`":"`+d+`"`)
+	}
+	want := `{"toolchain":"go","lockfiles":{"go.mod":"` + sum(baseMod) + `","go.sum":"` + sum(baseSum) + `"},"adapter":{` + strings.Join(adapter, ",") + "}}"
+	if got := labelOf(calls); got != want {
+		t.Errorf("the label from BASE_REF:\n got %s\nwant %s", got, want)
+	}
+	if !strings.Contains(out, "its lockfiles and packages at BASE_REF "+base) {
+		t.Errorf("the output does not name the base: %s", out)
+	}
+	g, _ := setup(t) // without BASE_REF: the checkout's lockfiles
+	if calls, out, err := g.buildOf(t, "auto-dev-cycle"); err != nil || !strings.Contains(labelOf(calls), `"go.mod":"`+sum(headMod)+`","go.sum":"`+sum(headSum)+`"`) {
+		t.Errorf("without BASE_REF: %v, label %s; %s", err, labelOf(calls), out)
+	}
+	for name, c := range map[string]struct {
+		project, ref string
+		dirty        bool
+		says         string
+	}{
+		"an unknown ref":        {"auto-dev-cycle", strings.Repeat("0", 40), false, "is no commit in"},
+		"a ref that is no name": {"auto-dev-cycle", "no-such-branch", false, "is no commit in"},
+		"a dirty checkout":      {"auto-dev-cycle", "", true, "uncommitted changes"},
+		"go-mini":               {"go-mini", "", false, "BASE_REF is auto-dev-cycle's only"},
+	} {
+		h, base := setup(t)
+		ref := c.ref
+		if ref == "" {
+			ref = base
+		}
+		if c.dirty {
+			if err := os.WriteFile(filepath.Join(h.checkout, "go.mod"), []byte(headMod+"// edited\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		calls, out, err := h.buildOf(t, c.project, "BASE_REF="+ref)
+		if err == nil || len(calls) != 0 || !strings.Contains(out, c.says) {
+			t.Errorf("%s: %v, podman calls %q; %s", name, err, calls, out)
 		}
 	}
 }
