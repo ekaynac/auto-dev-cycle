@@ -293,6 +293,13 @@ func (r reviews) Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID,
 	if err != nil || v.State.State == types.NodeStateStateSuperseded {
 		return nil, err // superseded (a requirement retired) by an action of this pass: nothing to re-derive
 	}
+	if slices.ContainsFunc(v.State.Holds, func(h types.NodeHold) bool { return h.ID == hold && h.Hold == vocab.HoldReviewInactive }) {
+		// The loop offers it only once a start derived review active (#226
+		// entry 173): cleared, the review goes on; a roster the registry no
+		// longer derives is held reviewer_unavailable at its claim, and
+		// cleared or superseded here then.
+		return graph.Clear(tx, node, hold, signal)
+	}
 	review, roster := node, []types.RosterMember(nil)
 	switch v.Node.Kind {
 	case types.NodeKindReview:

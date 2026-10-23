@@ -132,7 +132,12 @@ func LoadConfig(args []string) (Config, error) {
 // API sockets.
 func (c Config) controllerPaths() []string {
 	out := []string{filepath.Clean(c.StateDir), fmt.Sprintf("/run/user/%d/podman/podman.sock", os.Getuid()), "/run/podman/podman.sock"}
-	if lib, err := releaseLib(); err == nil { // the release's lib/adc: the qualification's sealed probes and records, never a run's to see
+	// The release's lib/adc: the qualification's sealed probes and records,
+	// never a run's to see. Unresolved, it is left out, and nothing fails
+	// open (Mythos #413 L3): a start with a sandbox root (the only reader
+	// of these paths) is refused at runnerOf by releaseAdapter, which
+	// resolves the same release.
+	if lib, err := releaseLib(); err == nil {
 		out = append(out, filepath.Clean(lib))
 	}
 	if c.Shared != nil {
@@ -255,9 +260,17 @@ func reviewsOf(reg registry.Registry, logw io.Writer) bool {
 // one whose rows are all kept, so its static Active differs from the
 // start's derived value.
 var reviewCapability = func() capability.Capability {
-	c, _ := capability.Of("review")
+	c, _ := capabilities().Of("review")
 	return c
 }
+
+// capabilities is the activation table adcd reads, every runtime reader
+// (the loop's gates, the actions it wires, the effect and node kinds it
+// registers, the deferred matrix, review's row): this build's
+// (capability.Built). A row needing a capability active before its last
+// bits are set plants a test build that keeps them (capability.Set.Keeping,
+// launchActive), never a gate of its own.
+var capabilities = capability.Built
 
 // reviewsAtStart is the review capability's activation, derived at adcd's
 // start (P22a-6; P31, the lead's ruling): its Proven prerequisite

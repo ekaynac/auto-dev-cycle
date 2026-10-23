@@ -5,11 +5,15 @@ package capability
 import (
 	"bufio"
 	"errors"
+	"go/ast"
+	"go/types"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // inventory is each row's status in docs/design/m1/01-invariant-inventory.md.
@@ -270,5 +274,60 @@ func TestRowsAreTheInventory(t *testing.T) {
 	}
 	if len(doc) != 0 {
 		t.Errorf("capabilities the inventory names and the table does not: %v", doc)
+	}
+}
+
+// Set.Keeping builds a TEST table only: no non-test Go file of the
+// repository calls it, so the bits adcd reads are this build's (Built)
+// and a capability is active only once its PR sets them.
+func TestKeepingIsTestOnly(t *testing.T) {
+	// Typed (Opus #414 L1): any reference to Set.Keeping (a call or a method
+	// value) and any assignment to daemon's capabilities, in the module's
+	// non-test files.
+	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir: "../.."}, "./...")
+	if err != nil || packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("loading: %v", err)
+	}
+	const self = "github.com/ekaynac/auto-dev-cycle/internal/"
+	for _, p := range pkgs {
+		for id, obj := range p.TypesInfo.Uses {
+			f, ok := obj.(*types.Func)
+			if !ok || f.Name() != "Keeping" || f.Pkg() == nil || f.Pkg().Path() != self+"capability" || p.PkgPath == self+"capability" {
+				continue
+			}
+			t.Errorf("%s builds a capability table of its own (Keeping)", p.Fset.Position(id.Pos()))
+		}
+		for _, file := range p.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				a, ok := n.(*ast.AssignStmt)
+				if !ok {
+					return true
+				}
+				for _, l := range a.Lhs {
+					if id, ok := l.(*ast.Ident); ok {
+						if v, ok := p.TypesInfo.Uses[id].(*types.Var); ok && v.Name() == "capabilities" && v.Pkg() != nil && v.Pkg().Path() == self+"daemon" && v.Parent() == v.Pkg().Scope() {
+							t.Errorf("%s assigns daemon's capabilities", p.Fset.Position(id.Pos()))
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	// A test build keeps what it is given, and the build's table is
+	// unchanged by it.
+	launch, _ := Of("launch")
+	more := Built().Keeping(launch.Missing()...)
+	if l, _ := more.Of("launch"); !l.Active() || slices.Contains(more.EffectKinds(), "model_call") != true {
+		t.Errorf("a test build keeping launch's rows: active %v, effect kinds %v", l.Active(), more.EffectKinds())
+	}
+	if len(launch.Missing()) > 0 {
+		if l, _ := Of("launch"); l.Active() || slices.Contains(EffectKinds(), "model_call") {
+			t.Error("a test build changed the build's table")
+		}
+	}
+	if c, _ := more.Gating("task.raise_rail"); !c.Active() {
+		t.Error("the test build's gating reads the build's bits")
 	}
 }

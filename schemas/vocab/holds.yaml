@@ -94,3 +94,15 @@ holds:
     owner: environment_owner
     page_after: PT1H
     escalate_to: null
+  - hold: review_inactive
+    signal: config_change
+    signal_detail: A start of adcd that derives the review capability active (P31's qualification on record; M1 P22a, #226 entry 173).
+    owner: operator
+    page_after: PT1H
+    escalate_to: null
+  - hold: no_sandbox
+    signal: config_change
+    signal_detail: A start of adcd with a sandbox root (--sandbox-root), whose runner runs the held node (M1 P22a; #226 entry 171).
+    owner: operator
+    page_after: PT1H
+    escalate_to: null

@@ -163,7 +163,7 @@ is derived from this table, never edited apart from it.
 | `answers`: `input.answer` | a | I2, I3, I4; I15 | P6 | `action_deferred` |
 | `admission`: one admitted task, held tasks included (D51) | a | I22; I15 | P22a | no task leaves Ready |
 | `launch`: dispatch and attempts, through `match(card, executor)` | a | I5 admission; I6 `model_call` rows; I7 consumption; I8; I9; I10; I11; I12; I16; I17; I21; I22; I15 | P22a | no attempt starts; `match` returns no assignment; `model_call` unregistered |
-| `review`: an independent review node | a | I5; I7; I13; I18; I15; P31's qualification on record | P22a | the candidate template stops before review |
+| `review`: an independent review node | a | I5; I7; I13; I18; I15; P31's qualification on record | P22a | the candidate template stops before review; with `launch` active, the review is recorded and held `review_inactive` until a start derives review active (#226 entry 173) |
 | `merge-local`: merge to a local `git` remote | b | I1 effect; I6 merge rows; I14 (without its GitHub effect check); I20 consumption, effect; P20's merge half; I15 | P22b | `merge` unregistered; the template variant `candidate` ends at review |
 | `merge-github`: delivery to this repository | b | all of `merge-local`'s, plus I14 effect (P27), I6 effect with P20's GitHub settlement rules and `effect_uncertain`, and I20; I15 | P22b | the GitHub target is not constructed |
 | `repeat`: further tasks with no rescue between them | c | I19; I22; I15 | P29 | the `stalled` hold is unregistered; (c) cannot start |
