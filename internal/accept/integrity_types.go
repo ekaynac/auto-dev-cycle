@@ -186,6 +186,8 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 	out, stderr, err := drain(ctx, cmd, maxList, maxStderr)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("go list: %w", context.Cause(ctx))
+	} else if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() > 0 { // go list's own nonzero exit: positive evidence on the candidate, as boxList's (errRefused)
+		return nil, refused(fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)])))
 	} else if err != nil {
 		return nil, fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)]))
 	}

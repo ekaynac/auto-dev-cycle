@@ -96,11 +96,11 @@ func integrity(repo sandbox.Repo, base string, list Lister) Guard {
 func guard(ctx context.Context, changes []Change, read Reader, list Lister, files, links map[string]string, listEnd time.Time, dir string) (blocks, warnings []Block, err error) {
 	r := &run{ctx: ctx, read: read, lister: list, dir: dir, files: files, links: links, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{},
 		touched: map[string]bool{}, started: time.Now(), listEnd: listEnd}
-	defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
+	defer func() { // fail closed: a guard fault is the guard's run failing (ErrGuardRun), never a verdict on the candidate nor a crash of the controller; a done context stops it
 		if p := recover(); p != nil && ctx.Err() != nil {
 			blocks, warnings, err = append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), ctx.Err()
-		} else if p != nil {
-			blocks, warnings, err = append(append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false, false}), r.out.blocks...), append(r.warnings, r.out.warnings...), nil
+		} else if p != nil { // a type check past the guard's deadline included (typeCheck): the host's, retried (#226 entry 168)
+			blocks, warnings, err = nil, nil, guardRun(fmt.Sprintf("the guard failed (%v)", p))
 		}
 	}()
 	err = r.check(changes)

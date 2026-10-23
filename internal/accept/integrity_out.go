@@ -514,11 +514,13 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 }
 
 // outRun runs the layer once the base guard is done with every package:
-// a panic is the layer's Additive block; a done context, the run's error.
+// a panic is the guard's run failing (ErrGuardRun: the host's, retried,
+// never a verdict; #226 entry 168), a type check past its deadline
+// included; a done context, the run's error.
 func (r *run) outRun() (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			r.outBlock("", fmt.Sprintf("unverifiable: decision A's outside-initialization check failed (%v)", p))
+			err = guardRun(fmt.Sprintf("decision A's outside-initialization check failed (%v)", p))
 		}
 	}()
 	r.out.files, r.out.built, r.out.named, r.out.importers = map[string]*outFile{}, map[string]int{}, map[string]map[string]bool{}, map[*typer]*outImporter{}

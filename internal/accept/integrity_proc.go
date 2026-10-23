@@ -13,9 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -265,13 +263,17 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 }
 
 // ErrGuardRun is a guard that did not run to its verdict (Astra chunk 1
-// H2; Lead decision, #226 entry 147): its process not dispatched, not
-// started, ended without its result or past its whole-run deadline, a
-// listing that failed with no positive evidence against the candidate
-// (boxList), and any other error of its run. It is no finding on the
-// candidate: the caller records it as one that could not run, and
-// retries. What the guard found is a block: a listing's failure only on
-// positive evidence (go list's own exit status, a bound its run broke).
+// H2; Lead decisions, #226 entries 147 and 168): its process not
+// dispatched, not started, ended without its result or past its whole-run
+// deadline; a go list that failed but for the candidate's code (only
+// boxList's positive evidence, errRefused, is the candidate's: its go list
+// exiting nonzero on the candidate, a bound its run broke); a panic in the
+// guard or in its service, a type check past the guard's deadline
+// included; and any other error of its run. It is no finding on the
+// candidate, so it never repairs the build: the caller records it as one
+// that could not run (adcd: could_not_run/controller_run_failed), retries
+// it, bounded, and then holds the node visibly. Only findings about the
+// candidate's code are blocks, the candidate's refusals.
 var ErrGuardRun = errors.New("accept: the integrity guard did not run")
 
 // guardRun is ErrGuardRun for why.
@@ -387,10 +389,9 @@ type service struct {
 	requests, lists int
 	readErr         error
 	latched         bool   // a service panicked (every failure latched here is a panic, a refusal included)
-	failed          string // the block the result must hold unless it acknowledges the panic
-	panicked        string // the first panic's text, "" included: the guard's recovers wrap it as "unverifiable: …(text)"
-	listFailed      string // a listing's failure: the result must block (Astra #287 r2 #5)
-	listDidNotRun   error  // a listing that did not run (ErrGuardRun): the result is that error
+	failed          string // the first panic, the run's error (ErrGuardRun) whatever the child says
+	listRefused     string // a listing the candidate's code failed (errRefused): the result must block (Astra #287 r2 #5)
+	listDidNotRun   error  // any other listing's failure (ErrGuardRun, the host's): the result is that error
 }
 
 // converse serves the child on in and out until its result (ok), ctx's end
@@ -416,10 +417,10 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 				return blocks, warnings, s.readErr, true, nil
 			case s.listDidNotRun != nil: // no verdict: a listing it needed did not run
 				return nil, nil, s.listDidNotRun, true, nil
-			case s.latched && !slices.ContainsFunc(c.blocks, s.acknowledges):
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
-			case s.listFailed != "" && len(blocks) == 0:
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, nil, true, nil
+			case s.latched: // a service's panic: the guard's run failed, whatever the child says (#226 entry 168)
+				return nil, nil, guardRun(s.failed), true, nil
+			case s.listRefused != "" && len(blocks) == 0:
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listRefused, false, false}), warnings, nil, true, nil
 			case c.erred:
 				return blocks, warnings, errors.New(c.err), true, nil
 			}
@@ -446,15 +447,6 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	return nil, nil, nil, false, nil
 }
 
-// acknowledges: b is a block of the guard's recovering the service's
-// panic, whichever recover made it (the guard's own, "the guard failed";
-// decision A's, "…check failed"): unverifiable, the panic's whole text,
-// empty or not, in its closing parentheses (Opus #339 M1, M1′). Every
-// failure the service latches is a panic's, its refusals included.
-func (s *service) acknowledges(b Block) bool {
-	return strings.HasPrefix(b.What, "unverifiable: ") && strings.HasSuffix(b.What, "("+s.panicked+")")
-}
-
 // serve answers a child's read or list; a panic is passed back, the guard's
 // fault as in this process, and latched. A request outside the run's blobs
 // or budgets is refused as one.
@@ -462,7 +454,7 @@ func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	defer func() {
 		if p := recover(); p != nil {
 			if !s.latched {
-				s.latched, s.failed, s.panicked = true, fmt.Sprintf("unverifiable: the guard failed (%v)", p), fmt.Sprint(p)
+				s.latched, s.failed = true, fmt.Sprintf("the guard failed (%v)", p)
 			}
 			m = procMsg{Panic: fmt.Sprint(p), Panicked: true}
 		}
@@ -485,11 +477,12 @@ func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	lctx, cancel := context.WithDeadline(ctx, s.req.ListEnd)
 	defer cancel()
 	l, err := s.list(lctx, s.req.Dir, c.platform, c.gomod, c.gosum, c.paths)
-	if errors.Is(err, ErrGuardRun) && s.listDidNotRun == nil {
-		s.listDidNotRun = err
-	}
-	if err != nil {
-		s.listFailed = cmp.Or(s.listFailed, "unverifiable: go list failed ("+errText(err)+")")
+	switch {
+	case err == nil:
+	case errors.Is(err, errRefused): // positive evidence about the candidate's code (boxList): a block
+		s.listRefused = cmp.Or(s.listRefused, "unverifiable: go list failed ("+errText(err)+")")
+	case s.listDidNotRun == nil: // anything else, classified or not, is the host's (#226 entry 168)
+		s.listDidNotRun = guardRun("go list failed (" + errText(err) + ")")
 	}
 	return procMsg{Listed: l, Err: errText(err), Erred: err != nil}
 }
