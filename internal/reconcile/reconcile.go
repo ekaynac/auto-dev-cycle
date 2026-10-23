@@ -155,7 +155,8 @@ type Snapshot struct {
 	Revoked  bool
 	// Candidate: the admitted task's candidate is decided
 	// (graph.CandidateGo) and it may end (authority.Endable). Ending: it is
-	// decided, but a unit of it still runs (authority.ErrEnding).
+	// decided or revoked, but a unit of it still runs (authority.EndingOf's
+	// ErrEnding).
 	Candidate bool
 	Ending    *Ending
 	Open      []Versioned
@@ -576,13 +577,16 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			break
 		}
 	}
-	if err == nil && graph.CandidateGo(nodes) { // the board's done_candidate rule (22a-7)
-		// authority.Endable, DoneTask's own rule (Opus #408 H1): ended, or a
-		// unit still running, which the runner ends (End).
+	if err == nil {
+		// authority.EndingOf, DoneTask's and AbandonTask's own rule (Opus
+		// #408 H1): a decided candidate may end (Candidate), or a unit of a
+		// decided or revoked task still runs, which the runner ends (Ending;
+		// re-check M2).
 		var ending authority.ErrEnding
-		switch eerr := authority.Endable(tx, admitted, types.TaskDoneAsCandidate); {
+		switch as, ok, eerr := authority.EndingOf(tx, admitted, graph.CandidateGo(nodes)); {
+		case !ok:
 		case eerr == nil:
-			s.Candidate = true
+			s.Candidate = as == types.TaskDoneAsCandidate
 		case errors.As(eerr, &ending):
 			s.Ending = &Ending{Task: admitted, Node: ending.Node}
 		case !errors.Is(eerr, authority.ErrNotEndable):
@@ -608,12 +612,12 @@ func Decide(s Snapshot) []Action {
 	switch {
 	case s.Admitted.ID == "" && s.Admits && s.Next.ID != "":
 		return []Action{Admit{Task: s.Next}}
+	case s.Admitted.ID != "" && s.Ending != nil: // a unit still runs: its end comes first, Abandon's or Done's after (Opus #408 re-check M2)
+		return []Action{*s.Ending}
 	case s.Admitted.ID != "" && s.Revoked:
 		return []Action{Abandon{Task: s.Admitted}}
 	case s.Admitted.ID != "" && s.Candidate:
 		return []Action{Done{Task: s.Admitted}}
-	case s.Admitted.ID != "" && s.Ending != nil:
-		return []Action{*s.Ending}
 	case s.Admitted.ID != "" && s.Evaluates:
 		var out []Action
 		if len(s.Open) > 0 {

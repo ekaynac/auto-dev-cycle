@@ -109,19 +109,20 @@ func SealedStatus(s types.AttemptStatus) bool {
 
 // Unended names a lease on unit that has not ended (settled or released),
 // or an attempt on it that is not sealed, if any: what still runs a node,
-// for its task's end (Astra #316 H1). It reads the unit's open index alone.
-func Unended(tx *eventstore.Tx, unit types.UnitID) (string, bool, error) {
+// for its task's end (Astra #316 H1), with the open index's entry (the
+// lease's or the attempt's id). It reads the unit's open index alone.
+func Unended(tx *eventstore.Tx, unit types.UnitID) (what, entry string, running bool, err error) {
 	key, ok, err := tx.FirstKey(OpenProjection, string(unit)+"/")
 	if err != nil || !ok {
-		return "", false, err
+		return "", "", false, err
 	}
 	id := strings.TrimPrefix(key, string(unit)+"/")
 	if strings.HasPrefix(id, "lea_") {
 		l, _, _, err := load[types.Lease](tx, LeaseProjection, id)
-		return fmt.Sprintf("lease %s is %s", id, l.State), true, err
+		return fmt.Sprintf("lease %s is %s", id, l.State), id, true, err
 	}
 	a, _, _, err := load[types.Attempt](tx, AttemptProjection, id)
-	return fmt.Sprintf("attempt %s is %s", id, a.Status), true, err
+	return fmt.Sprintf("attempt %s is %s", id, a.Status), id, true, err
 }
 
 func current[T any](tx *eventstore.Tx, projection, id string, expected int64) (T, error) {

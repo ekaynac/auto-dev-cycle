@@ -181,20 +181,45 @@ func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 	if err != nil {
 		return err
 	}
-	for _, n := range nodes {
+	for _, n := range nodes { // every node claimed or held first, then the open units (Opus #408 re-check L1)
 		if s := n.State.State; as == types.TaskDoneAsCandidate && (s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld) {
 			return fmt.Errorf("%w: task %s's node %s is %s", ErrNotEndable, t.ID, n.Node.ID, s)
 		}
+	}
+	for _, n := range nodes {
 		unit := graph.UnitOf(n.Node.ID)
-		what, running, err := lease.Unended(tx, unit)
+		what, entry, running, err := lease.Unended(tx, unit)
 		if err != nil {
 			return err
 		}
 		if running {
-			return ErrEnding{Unit: unit, Node: n.Node.ID, Lease: strings.HasPrefix(what, "lease "), What: what}
+			return ErrEnding{Unit: unit, Node: n.Node.ID, Entry: entry, Lease: strings.HasPrefix(entry, "lea_"), What: what}
 		}
 	}
 	return nil
+}
+
+// EndingOf is how task, admitted, would end now, and Endable's refusal of
+// it: abandoned once its approval is not in force (Abandon's case), else
+// as a candidate when decided (graph.CandidateGo; Done's); ok false when
+// it would end neither way. The loop (reconcile.Observe: Candidate, and
+// Ending either way: Opus #408 re-check M2) and the card (ending_blocked)
+// both read it.
+func EndingOf(tx *eventstore.Tx, task types.TaskID, decided bool) (as types.TaskDoneAs, ok bool, err error) {
+	t, found, err := loadJSON[TaskRecord](tx, TaskProjection, string(task))
+	switch {
+	case err != nil:
+		return "", false, err
+	case !found || t.State != TaskAdmitted:
+		return "", false, nil
+	case t.Approval == nil || t.Approval.Status != ApprovalInForce:
+		as = types.TaskDoneAsAbandoned
+	case decided:
+		as = types.TaskDoneAsCandidate
+	default:
+		return "", false, nil
+	}
+	return as, true, endable(tx, t, as)
 }
 
 // Endable is endable for task, read in tx: nil when task's end as as may be
@@ -230,6 +255,7 @@ var EndingCauses = []string{EndingSeal, EndingLease}
 type ErrEnding struct {
 	Unit  types.UnitID
 	Node  types.NodeID
+	Entry string // the open index's entry: the lease's or the attempt's id
 	Lease bool
 	What  string
 }

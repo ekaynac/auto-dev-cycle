@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -181,6 +182,9 @@ func leftAt(tx *eventstore.Tx, attempt types.AttemptID) (left, bool, error) {
 // ids among them): End compares causes without them.
 var freshIDs = regexp.MustCompile(`\b[a-z]{3}_[0-7][0-9a-hjkmnp-tv-z]{25}\b`)
 
+// errNothingEnded is End's try after which what it was to end still runs.
+var errNothingEnded = errors.New("daemon: what still runs was not ended")
+
 // errEndRetried is End's failed try, logged by end itself (once per cause)
 // and retried with backoff: start logs nothing more.
 var errEndRetried = errors.New("daemon: the ending is retried")
@@ -205,25 +209,53 @@ func (r *runner) End(task types.TaskID, node types.NodeID) bool {
 	r.mu.Lock()
 	due := !time.Now().Before(r.ending[node].next)
 	r.mu.Unlock()
-	return due && r.start(node, func() error { return r.end(node) })
+	return due && r.start(node, func() error { return r.end(task, node) })
 }
 
-// end is one try of End.
-func (r *runner) end(node types.NodeID) error {
-	var todo []left
+// endingNow is task's end refused because a unit of it still runs
+// (authority.EndingOf's ErrEnding), if it is.
+func (r *runner) endingNow(task types.TaskID) (authority.ErrEnding, bool, error) {
+	var e authority.ErrEnding
+	var still bool
 	err := r.store.View(r.ctx, func(tx *eventstore.Tx) error {
-		id, ok, err := lease.CurrentAttempt(tx, graph.UnitOf(node))
-		if err != nil || !ok {
-			return errors.Join(err, fmt.Errorf("node %s's unit has no attempt to end", node))
+		nodes, err := graph.TaskNodes(tx, task)
+		if err != nil {
+			return err
 		}
-		lf, ok, err := leftAt(tx, id)
-		if ok {
-			todo = append(todo, lf)
-		}
-		return err
+		_, ok, eerr := authority.EndingOf(tx, task, graph.CandidateGo(nodes))
+		still = ok && errors.As(eerr, &e)
+		return nil
 	})
-	for _, lf := range todo {
-		err = errors.Join(err, r.endOne(r.ctx, lf))
+	return e, still, err
+}
+
+// end is one try of End: what task's end is refused on (EndingOf's
+// ErrEnding), its open index's entry, ended as the start sweep ends an
+// attempt left (leftAt, endOne). Then EndingOf is read again (Opus #408
+// re-check M1): a try after which the same entry still runs, one leftAt
+// does not cover (a lost attempt, a lease with no attempt) or one whose
+// end failed, is an error: counted, backed off and logged once, never a
+// pass's nudge. A try after which another entry runs is progress.
+func (r *runner) end(task types.TaskID, node types.NodeID) error {
+	before, still, err := r.endingNow(task)
+	if err == nil && still && !before.Lease {
+		var lf left
+		var ok bool
+		if err = r.store.View(r.ctx, func(tx *eventstore.Tx) (err error) {
+			lf, ok, err = leftAt(tx, types.AttemptID(before.Entry))
+			return err
+		}); err == nil && ok {
+			err = r.endOne(r.ctx, lf)
+		}
+	}
+	if err == nil && still {
+		after, again, rerr := r.endingNow(task)
+		switch {
+		case rerr != nil:
+			err = rerr
+		case again && after.Entry == before.Entry:
+			err = fmt.Errorf("%w: %v", errNothingEnded, after)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

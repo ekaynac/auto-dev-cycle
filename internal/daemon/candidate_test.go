@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -650,4 +651,118 @@ func TestADecidedCandidateEndsAtRuntime(t *testing.T) {
 			t.Errorf("the ended task's card: %+v", c.EndingBlocked)
 		}
 	})
+}
+
+// Opus #408 re-check M1: an open-index entry End cannot act on (here the
+// build's own completed attempt, its lease settled, standing for a lost
+// attempt or a lease left with no attempt) is a failed try: one try, one
+// log line and no nudge over 10 passes, the task still admitted, its card
+// ending_blocked. Never a hot loop.
+func TestAnEntryEndCannotEndBacksOff(t *testing.T) {
+	log := &logBuffer{}
+	rw := candidateRun(t, func(rw *runWorld) {
+		rw.r.log = log
+		a, ok, err := firstAttempt(rw)
+		if err != nil || !ok {
+			t.Fatalf("the build's attempt: %v %v", ok, err)
+		}
+		execSQL(t, rw.w.dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('`+lease.OpenProjection+`', '`+string(graph.UnitOf(rw.build))+`/`+string(a)+`', 'true')`)
+	})
+	nudged := rw.nudged.Load()
+	rw.passesFor(t, 10, 0)
+	rw.r.mu.Lock()
+	tries := rw.r.ending[rw.build].tries
+	rw.r.mu.Unlock()
+	if tries != 1 || rw.nudged.Load() != nudged {
+		t.Errorf("10 passes: %d tries, %d nudges", tries, rw.nudged.Load()-nudged)
+	}
+	if n := strings.Count(log.String(), "could not be ended"); n != 1 {
+		t.Errorf("logged %d times: %s", n, log.String())
+	}
+	if st, _ := taskState(t, rw.w, rw.task); st != authority.TaskAdmitted {
+		t.Errorf("the task: %s", st)
+	}
+	if c := endingCard(t, rw); c.EndingBlocked == nil || c.EndingBlocked.Unit != graph.UnitOf(rw.build) {
+		t.Errorf("the card: %+v", c.EndingBlocked)
+	}
+}
+
+// Opus #408 re-check M2: a decided candidate still ending whose approval
+// is then revoked is ended at runtime too (Ending before Abandon): once the
+// fault clears, its unit ends and the abandonment records, with no restart.
+func TestARevokedTaskStillEndingIsEnded(t *testing.T) {
+	rw, _ := unsealedReview(t, -1)
+	review := reviewNodes(rw)[types.NodeKindReview]
+	rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeActor(tx, rw.w.op, time.Now())
+	})
+	rw.passesFor(t, 4, 0)
+	if st, _ := taskState(t, rw.w, rw.task); st != authority.TaskAdmitted {
+		t.Fatalf("the revoked task with its review's seal failing: %s", st)
+	}
+	sealWith = lease.SealWith // the fault clears
+	rw.r.mu.Lock()
+	e := rw.r.ending[review.Node.ID]
+	e.next = time.Now()
+	rw.r.ending[review.Node.ID] = e
+	rw.r.mu.Unlock()
+	rw.passesFor(t, 4, 0)
+	if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+		t.Fatalf("the revoked task once its unit ended: %s %s", st, as)
+	}
+}
+
+// Opus #408 re-check L1: endable sees a claimed node before an open unit
+// on an earlier node: with the review's attempt left finishing and a plan
+// claimed after it, the loop decides no Ending (nor Done): the claimed
+// plan is evaluated first.
+func TestAClaimedNodeComesBeforeAnOpenUnit(t *testing.T) {
+	rw, _ := unsealedReview(t, -1)
+	plan := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
+		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
+	rw.w.do(rw.w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Record(types.NodeRecorded{Task: rw.task, Project: graphProject, Node: plan})
+	})
+	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, plan.ID, map[string]graph.Resolved{}, 1)
+	})
+	rw.w.view(func(tx *eventstore.Tx) error {
+		s, err := reconcile.Observe(tx, reconcile.Gates{Admits: true, Evaluates: true, Reviews: true})
+		if err != nil || s.Candidate || s.Ending != nil {
+			t.Errorf("a claimed plan and an open unit: candidate %v, ending %+v, %v", s.Candidate, s.Ending, err)
+		}
+		return nil
+	})
+}
+
+// Opus #408 re-check M2, an uncandidated task: a build whose seal did not
+// land, its approval then revoked, is ended at runtime and abandoned.
+func TestARevokedBuildStillEndingIsEnded(t *testing.T) {
+	rw, a, _ := unsealedRun(t)
+	rw.x.Acceptor = rw.r // adcd's: its runner (wiring.go)
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeActor(tx, rw.w.op, time.Now())
+	})
+	rw.passesFor(t, 4, 0)
+	if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+		t.Fatalf("the revoked task with its build's attempt %s left finishing: %s %s", a.ID, st, as)
+	}
+}
+
+// Opus #408 re-check M1: a try that ends what was named, after which
+// another entry runs, is progress (it nudges, no backoff); the next, which
+// End cannot end, backs off.
+func TestATryThatEndsSomethingIsProgress(t *testing.T) {
+	rw, log := unsealedReview(t, 1)
+	review := reviewNodes(rw)[types.NodeKindReview]
+	execSQL(t, rw.w.dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('`+lease.OpenProjection+`', '`+string(graph.UnitOf(review.Node.ID))+`/att_7zzzzzzzzzzzzzzzzzzzzzzzzz', 'true')`)
+	nudged := rw.nudged.Load()
+	rw.passesFor(t, 6, 0)
+	rw.r.mu.Lock()
+	tries := rw.r.ending[review.Node.ID].tries
+	rw.r.mu.Unlock()
+	if tries != 1 || rw.nudged.Load()-nudged != 1 || strings.Count(log.String(), "could not be ended") != 1 {
+		t.Errorf("a try ending the review's attempt, then one ending nothing: %d tries, %d nudges: %s", tries, rw.nudged.Load()-nudged, log.String())
+	}
 }

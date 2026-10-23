@@ -33,7 +33,7 @@ export interface BoardPlacedCard {
    */
   abandoned: boolean;
   /**
-   * Ending blocked: the admitted task's candidate is decided, but a unit of it still runs, so its task.done waits (authority.Endable's refusal, the loop's own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise.
+   * Ending blocked: the admitted task would end (a decided candidate, or abandoned once its approval is not in force), but a unit of it still runs, so its task.done waits (authority.EndingOf's refusal, the loop's own rule); the controller retries its end with backoff. A visible state, not a hold: the node is completed, and a completed node carries no hold (records/node-state.json). Null otherwise.
    */
   ending_blocked: null | BoardEndingBlocked;
   /**
