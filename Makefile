@@ -39,6 +39,9 @@ GOBUILD    := $(GO) build -trimpath -ldflags '$(LDFLAGS)'
 # internal/accept outgrows under CI load: #226 entry 131); below the CI job's
 # 35-minute limit, so a hung package still fails as a timeout with its stacks.
 GOTEST_TIMEOUT := 30m
+# GOTEST_P caps the test binaries go test runs at once (-p), only when set: CI's 4 GB runners OOM-killed entry.test beside fixtures.test (#417).
+GOTEST_P ?=
+GOTEST_FLAGS := -count=1 -timeout $(GOTEST_TIMEOUT)$(if $(GOTEST_P), -p $(GOTEST_P))
 
 BIN_DIR    := bin
 DIST_DIR   := dist
@@ -163,12 +166,12 @@ fixtures-check: ## Prove every T0 fixture task well-formed (needs docker, bubble
 # excludes exactly the containment package, and refuses a failed or empty
 # discovery rather than testing less.
 test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run unsandboxed)
-	@scripts/test-sandbox.sh -- go test -count=1 -timeout $(GOTEST_TIMEOUT) ./test/sandbox/
+	@scripts/test-sandbox.sh -- go test $(GOTEST_FLAGS) ./test/sandbox/
 	@scripts/test-sandbox.sh -- bash -c 'set -euo pipefail; \
 	  mod=$$(go list -m); listed=$$(go list ./...); others=(); \
 	  while IFS= read -r p; do [[ "$$p" == "$$mod/test/sandbox" ]] || others+=("$$p"); done <<<"$$listed"; \
 	  (( $${#others[@]} > 0 )) || { echo "make test: no packages besides test/sandbox" >&2; exit 1; }; \
-	  go test -count=1 -timeout $(GOTEST_TIMEOUT) "$${others[@]}"'
+	  go test $(GOTEST_FLAGS) "$${others[@]}"'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/contract && node --test "test/*.test.mjs" "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/fake && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/conformance && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
@@ -182,7 +185,7 @@ test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run 
 fixtures-contract: build ## Run the M0 contract fixtures, and check each fixture's mutation turns it red
 	@scripts/test-sandbox.sh -- $(BIN_DIR)/adc dev fixtures --contract
 	@$(GOBUILD) -tags adcmutation -o $(BIN_DIR)/adc-mutation ./cmd/adc
-	@scripts/test-sandbox.sh -- go test -count=1 -timeout $(GOTEST_TIMEOUT) -tags adcmutation ./internal/fixtures
+	@scripts/test-sandbox.sh -- go test $(GOTEST_FLAGS) -tags adcmutation ./internal/fixtures
 	@$(BIN_DIR)/adc dev fixtures --contract --list | while read -r name mut; do \
 	  rc=0; scripts/test-sandbox.sh -- env ADC_MUTATION="$$mut" $(BIN_DIR)/adc-mutation dev fixtures --contract --only "$$name" >/dev/null || rc=$$?; \
 	  [[ $$rc -eq 1 ]] || { echo "fixtures-contract: mutation $$mut gave exit $$rc on $$name, want 1 (red)" >&2; exit 1; }; \
