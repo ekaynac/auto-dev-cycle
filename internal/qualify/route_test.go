@@ -5,6 +5,7 @@
 package qualify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +27,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 const config = "../../fixtures/m1/config/"
@@ -43,6 +46,9 @@ type scripted struct {
 	reply func(prompt string) string
 	seen  []map[string]any
 	auth  []string
+	// envelopes: each request's bytes besides its prompt, as the
+	// registry's longest model name would make it (RequestFloor's bound).
+	envelopes []int
 }
 
 func newScripted(t *testing.T) *scripted {
@@ -58,6 +64,8 @@ func newScripted(t *testing.T) *scripted {
 		}
 		u.mu.Lock()
 		u.seen, u.auth = append(u.seen, body), append(u.auth, r.Header.Get("Authorization"))
+		model, _ := body["model"].(string)
+		u.envelopes = append(u.envelopes, len(raw)-len(encoded(prompt))+128-len(model))
 		content := u.reply(prompt)
 		u.mu.Unlock()
 		out, _ := json.Marshal(map[string]any{"id": "chatcmpl-1", "object": "chat.completion", "model": body["model"],
@@ -174,6 +182,8 @@ func TestRoute(t *testing.T) {
 			up.mu.Unlock()
 			if rep, err := review.ReadReport(o.Report); err != nil || rep.Decision != o.Decision {
 				t.Errorf("%s: the report %s, %v", c.ID, o.Report, err)
+			} else if o.evidence == nil || !slices.Equal(rep.ChargeLinks, []types.CallID{o.evidence.Call}) {
+				t.Errorf("%s: the charge links %v, want the call the gateway counted", c.ID, rep.ChargeLinks)
 			}
 			// Astra #306 H1; Opus #306 r2 M1, L2: the evidence is the execution's.
 			if ev := o.evidence; ev == nil || ev.RunID != x.ID || ev.RanAt != types.Time(x.At.Format(time.RFC3339)) || ev.Seq != int64(seq) ||
@@ -222,6 +232,11 @@ func TestRoute(t *testing.T) {
 	}
 	if n := len(up.seen); n != len(s.Cases) {
 		t.Errorf("%d requests for %d cases", n, len(s.Cases))
+	}
+	// Mythos #417 M2: the adapter's requests hold at most
+	// reviewerEnvelopeBytes besides their prompt, which RequestFloor counts.
+	if m := slices.Max(up.envelopes); m > reviewerEnvelopeBytes {
+		t.Errorf("a request holds %d bytes besides its prompt, past reviewerEnvelopeBytes %d", m, reviewerEnvelopeBytes)
 	}
 	up.mu.Unlock()
 	againRun, again := run(records, "good-again", func(c Case) string { return decision(c.Expect) }) // a second run, its own seed: the route qualifies
@@ -308,6 +323,23 @@ func TestRoute(t *testing.T) {
 			t.Errorf("%s: %v, want %q", name, err, c.why)
 		}
 	}
+	// The charge link names only a call the gateway counted: an adapter
+	// that exits before its first frame (its node fails to load, as
+	// without make ts-deps) made none, and its report links none.
+	dead := r
+	dead.Adapter.Env = append(slices.Clone(r.Adapter.Env), "NODE_OPTIONS=--require="+filepath.Join(t.TempDir(), "missing.cjs"))
+	crashed, err := s.Begin(t.TempDir(), "crashed", qr, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := s.Order(crashed.Seed)[0]
+	o0, err := dead.Review(ctx, crashed, first, prompts[first.ID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := review.ReadReport(o0.Report); err != nil || rep.Reason != vocab.ReasonAdapterProtocolError.String() || len(rep.ChargeLinks) != 0 {
+		t.Errorf("an adapter that never started: the report %s, %v; want adapter_protocol_error and no charge link", o0.Report, err)
+	}
 	// Astra #306 H1: the evidence's route is the executor's the review ran
 	// on, never the run's claim; a run claimed for another model is
 	// refused by Record.
@@ -345,5 +377,31 @@ func TestReviewerPrepare(t *testing.T) {
 	if p.Role != "reviewer" || p.Workspace.Writable || len(p.ToolPolicy.Allowed) != 0 || len(p.ToolPolicy.Mediated) != 0 ||
 		p.ToolPolicy.Allowed == nil || p.ToolPolicy.Mediated == nil {
 		t.Errorf("a reviewer's prepare params: %+v", p)
+	}
+}
+
+// encoded is s as a JSON string, as the adapter's JSON.stringify renders it
+// (no HTML escape).
+func encoded(s string) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	_ = e.Encode(s)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+}
+
+// Mythos #417 M2: the reviewer's floor is its request body's as the
+// gateway counts it: the prompt at its bounds JSON-encoded (each quote
+// two bytes), beside the envelope, at the gateway's bytes per token, and
+// its max_tokens.
+func TestRequestFloorIsTheEncodedBody(t *testing.T) {
+	p := review.PromptAtBounds()
+	enc := encoded(string(p))
+	if len(enc) < len(p)+review.MaxDiff {
+		t.Fatalf("the prompt at its bounds encodes to %d bytes from %d: not escaped", len(enc), len(p))
+	}
+	floor := gateway.Floor(enc, types.Lease{}) // its bytes alone, at the gateway's rate
+	if want := MaxOutputTokens + floor.In + int64(reviewerEnvelopeBytes)/16; RequestFloor() < want {
+		t.Errorf("RequestFloor %d, below the encoded body's %d", RequestFloor(), want)
 	}
 }

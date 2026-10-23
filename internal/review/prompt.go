@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -37,6 +38,26 @@ const (
 	maxRequirement = 96 << 10
 	MaxDiff        = 512 << 10 // a reader of a diff for Prompt reads at most MaxDiff+1 bytes
 )
+
+// PromptAtBounds is the prompt Prompt renders at its bounds: a requirement
+// of maxRequirement bytes and a diff of MaxDiff, every byte of both a
+// double quote (one byte, two once JSON-encoded, as a request carries it),
+// and the longest gate summary. adcd's reviewer floor encodes it as the
+// gateway counts a request (qualify.RequestFloor; Mythos #417 M2).
+// Residuals, each raising one review call's gateway floor past what
+// admission priced, never more: a diff holding a run of three or more
+// backticks is fenced longer (Fenced), by up to 2 × MaxDiff bytes; a C0
+// control character other than \b \f \n \r \t encodes to six bytes, not
+// two (the adapter's 8 MiB request bound caps the body).
+func PromptAtBounds() []byte {
+	in := PromptInput{Requirement: strings.Repeat(`"`, maxRequirement), Diff: strings.Repeat(`"`, MaxDiff),
+		Gate: Gate{Passed: math.MinInt, Failed: math.MinInt, Skipped: math.MinInt, Green: true}}
+	p, err := Prompt(in)
+	if err != nil {
+		panic(err) // its inputs are within the bounds
+	}
+	return p
+}
 
 const promptTemplate = `You are reviewing one candidate change to a repository for the task below. The task's own acceptance tests are withheld from you; the repository's tests ran on the candidate, with the result under "Gate".
 

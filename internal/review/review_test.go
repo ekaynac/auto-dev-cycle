@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -415,4 +416,24 @@ func blobText(t *testing.T, blobs *blobstore.Store, d types.Digest) string {
 		t.Fatal(err)
 	}
 	return b.String()
+}
+
+// Mythos #417 M2: PromptAtBounds is the prompt at its bounds: its
+// requirement and diff each at their bound (one byte more is refused), of
+// quotes, and the longest gate summary (an int's most digits, each count).
+func TestPromptAtBounds(t *testing.T) {
+	p := string(PromptAtBounds())
+	gate := Gate{Passed: math.MinInt, Failed: math.MinInt, Skipped: math.MinInt, Green: true}
+	if !strings.Contains(p, "\n"+strings.Repeat(`"`, maxRequirement)+"\n") || !strings.Contains(p, "```diff\n"+strings.Repeat(`"`, MaxDiff)+"\n```") ||
+		!strings.Contains(p, "(-9223372036854775808 passed, -9223372036854775808 failed, -9223372036854775808 skipped)") {
+		t.Errorf("the prompt at its bounds lacks a part at its bound (%d bytes)", len(p))
+	}
+	for name, in := range map[string]PromptInput{
+		"a requirement past its bound": {Requirement: strings.Repeat(`"`, maxRequirement+1), Gate: gate},
+		"a diff past its bound":        {Requirement: "r", Diff: strings.Repeat(`"`, MaxDiff+1), Gate: gate},
+	} {
+		if _, err := Prompt(in); err == nil {
+			t.Errorf("%s: rendered", name)
+		}
+	}
 }

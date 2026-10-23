@@ -148,10 +148,11 @@ func runnerOf(ctx context.Context, d *Daemon, cfg Config, reg registry.Registry,
 		adapters: &containerAdapter{Box: *cfg.Sandbox, Want: want}, log: logw}, nil
 }
 
-// placerOf is adcd's placer over reg: the task's rails (authority.Rails)
-// and, for the launch, the sandbox's images and the gateway's credentials.
+// placerOf is adcd's placer over reg: the task's rails (authority.Rails),
+// each role's request floor (callFloors, as the start check's), and, for
+// the launch, the sandbox's images and the gateway's credentials.
 func placerOf(reg registry.Registry, images dispatch.Images, creds dispatch.Credentials) placer {
-	return placer{d: dispatch.Dispatcher{Registry: reg, Images: images, Credentials: creds, Rails: authority.Rails}}
+	return placer{d: dispatch.Dispatcher{Registry: reg, Images: images, Credentials: creds, Rails: authority.Rails, Floors: callFloors}}
 }
 
 // env is what evaluation reads in adcd (P22a-5b; Opus #312 L5): the

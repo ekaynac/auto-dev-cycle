@@ -325,10 +325,7 @@ const second = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pc")
 // price.
 func twoBuilders(t *testing.T, price types.RegistryPrice) (registry.Registry, []types.ResourceGroup) {
 	_, gs := stub(t, nil)
-	doc, err := registry.Load(config + "registry-stub.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := stubDoc(t)
 	own := gs[0]
 	own.ID, own.Members = "rg_01m4tm99haemtbemfkdve21grh", []types.ExecutorID{second}
 	for i := range doc.Executors {
@@ -512,10 +509,7 @@ func TestUSDRetiredAndUnpriced(t *testing.T) {
 	e.spentOn(d, e.nodeIn(task), e.hostileZeroFinal)
 	const successor = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pb")
 	retired := d
-	doc, err := registry.Load(config + "registry-stub.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := stubDoc(t)
 	for i := range doc.Executors {
 		if doc.Executors[i].ID == builder {
 			doc.Executors[i].ID = successor
@@ -530,6 +524,7 @@ func TestUSDRetiredAndUnpriced(t *testing.T) {
 			}
 		}
 	}
+	var err error
 	if retired.Registry, err = registry.New(doc, groups); err != nil {
 		t.Fatal(err)
 	}
@@ -655,6 +650,52 @@ func TestUSDReservationFits(t *testing.T) {
 			}
 			if l, _, _ := e.state(id, n); l.Reservations[0].Amount != c.tokens || l.Footprint.ContextTokens != 500 || l.Footprint.ExpectedTurns != 2 {
 				t.Errorf("reserved %d tokens, footprint %+v; want %d", l.Reservations[0].Amount, l.Footprint, c.tokens)
+			}
+		})
+	}
+}
+
+// Mythos #417 M1: with a role's request floor above one turn (Floors), a
+// priced lease is never shrunk below one call's floor (registry.Floors.Call,
+// the start check's notion too): a fit of 799 tokens (3,196 micros at $4 per
+// million), past one turn's 500, is refused as the rail that binds, and
+// RoomToday says the day has no room; 800 tokens reserve 800, and the day
+// has room. Without Floors, one turn's context is the floor, as before.
+func TestUSDLeaseNeverBelowOneCallsFloor(t *testing.T) {
+	for name, c := range map[string]struct {
+		floors registry.Floors
+		perDay int64
+		tokens int64 // reserved; 0: refused
+	}{
+		"below the builder's floor":    {registry.Floors{types.RegistryExecutorRoleBuilder: 800}, 3196, 0},
+		"at the builder's floor":       {registry.Floors{types.RegistryExecutorRoleBuilder: 800}, 3200, 800},
+		"no floors: one turn suffices": {nil, 3196, 799},
+		"a reviewer's floor, not ours": {registry.Floors{types.RegistryExecutorRoleReviewer: 800}, 3196, 799},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg, gs := stub(t, nil)
+			e := open(t, gs)
+			perTask, perDay := noCap, c.perDay
+			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay), Floors: c.floors}
+			n := e.nodeIn(task)
+			var room bool
+			e.view(func(tx *eventstore.Tx) (err error) {
+				room, err = d.RoomToday(tx, card(n), builder)
+				return err
+			})
+			if room != (c.tokens > 0) {
+				t.Errorf("RoomToday %v, want %v", room, c.tokens > 0)
+			}
+			id, err := e.match(d, card(n), builder)
+			if c.tokens == 0 {
+				refusedOn(t, err, graph.RailDayUSD)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if l, _, _ := e.state(id, n); l.Reservations[0].Amount != c.tokens {
+				t.Errorf("reserved %d tokens; want %d", l.Reservations[0].Amount, c.tokens)
 			}
 		})
 	}

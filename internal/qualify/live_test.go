@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,11 @@ func TestQualifyLive(t *testing.T) {
 	adapters, err := filepath.Abs(filepath.Join(root, "adapters"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Without the workspace's dependencies the adapter exits before its first
+	// frame, which the host reads as adapter_protocol_error on every case.
+	if missing := adapterDeps(t, filepath.Join(adapters, "http-chat")); len(missing) > 0 {
+		t.Fatalf("the adapters workspace has no dependencies (http-chat lacks %s): run make ts-deps first", strings.Join(missing, ", "))
 	}
 	s := suite(t)
 	gobin, env := goEnv(t)
@@ -116,4 +122,28 @@ func TestQualifyLive(t *testing.T) {
 	if !rec.Qualified {
 		t.Error("this run is under the bar: commit its record all the same")
 	}
+}
+
+// adapterDeps is the dependencies of the package at dir (its package.json's)
+// that its node_modules lacks.
+func adapterDeps(t *testing.T, dir string) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	var missing []string
+	for name := range pkg.Dependencies {
+		if _, err := os.Stat(filepath.Join(dir, "node_modules", name, "package.json")); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	slices.Sort(missing)
+	return missing
 }

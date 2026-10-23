@@ -77,6 +77,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/buildinfo"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -86,6 +87,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -107,9 +109,28 @@ var runBounds = adapterhost.Bounds{Start: 30 * time.Second, Handshake: 30 * time
 // minute for the host's own steps.
 var sessionDeadline = runBounds.Start + runBounds.Handshake + runBounds.Result + runBounds.Shutdown + time.Minute
 
-// builderOutputTokens is prepare's max_output_tokens, one call's: the
-// lease's reservation, which the gateway enforces, bounds the attempt.
-const builderOutputTokens = 8000
+// builderOutputTokens is prepare's max_output_tokens for a build: the
+// output of the builder's whole edit loop (http-chat asks each turn for
+// what is left of it), so its first request's max_tokens too. A reasoning
+// model's thinking counts in it, so it leaves room for thinking over many
+// turns (#226 entry 175; Opus #417 M2): at 8000 a reasoning builder would
+// end most attempts cut short (executor_incomplete). The lease's
+// reservation, which the gateway enforces, bounds the attempt.
+const builderOutputTokens = 128000
+
+// callFloors are each role's request floor: what one request can count at
+// the gateway before its usage is read. One call's floor on an executor
+// (registry.Floors.Call: this, or one turn's context_tokens, whichever is
+// larger) is what adcd's start check requires its footprint_prior to cover
+// (Opus #417 M1) and the least placement shrinks a priced lease to (Mythos
+// #417 M1). A builder's first request asks for builderOutputTokens (its
+// prompt is in context_tokens); a reviewer's one request is
+// qualify.RequestFloor, its max_tokens and its body at its bounds as the
+// gateway counts it (Mythos #417 M2).
+var callFloors = registry.Floors{
+	types.RegistryExecutorRoleBuilder:  builderOutputTokens,
+	types.RegistryExecutorRoleReviewer: qualify.RequestFloor(),
+}
 
 // maxTree bounds the output tree the completion copies to diff; past it
 // the tree is the candidate's fault, unsafe_output.
@@ -399,7 +420,7 @@ func (r *runner) isReview(ctx context.Context, node types.NodeID) (bool, error) 
 // build's, with review.Result over its facts in place of a diff: the
 // decision its reviewer submitted (none, or one review.Parse refuses:
 // could_not_run), its exit, the candidate's round (its patch's producer's),
-// its roster, its call, its elapsed time, and the refs its claim rendered
+// its roster, its call once the gateway counted it, its elapsed time, and the refs its claim rendered
 // (the decision's lineage) with the ids of the gate report among them
 // (gate.ReportIDs: kept out of a no_go's findings view). review.Result
 // publishes the report; the commit checks its reviewer's independence
@@ -418,7 +439,7 @@ func (r *runner) completeReview(ctx context.Context, pl plan, node types.NodeID,
 		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the review's roster could not be read"))
 	}
 	f := review.Facts{Exit: exitmap.Exit{StopRequested: stopped, Protocol: out.Result == nil && !stopped, Statuses: slices.Clone(obs.Statuses), Hints: slices.Clone(out.Hints)},
-		Roster: params.Roster, Calls: []types.CallID{cid}, Elapsed: time.Since(pl.started), Project: pl.view.Project, Inputs: []string{}, GateIDs: []string{}}
+		Roster: params.Roster, Elapsed: time.Since(pl.started), Project: pl.view.Project, Inputs: []string{}, GateIDs: []string{}}
 	if out.Submitted != nil && out.Submitted.Blob != nil {
 		f.Submitted, f.Decision = true, *out.Submitted.Blob
 	}
@@ -435,6 +456,9 @@ func (r *runner) completeReview(ctx context.Context, pl plan, node types.NodeID,
 			f.Inputs = append(f.Inputs, ref.ID)
 		}
 		f.GateIDs = rc.GateIDs
+		if f.Calls, err = ledger.ChargeLinks(tx, cid); err != nil { // the call, once the gateway counted it (Mythos #417 M3)
+			return err
+		}
 		f.CandidateRound, err = candidateRound(tx, pl.view.Node)
 		return err
 	})

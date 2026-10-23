@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eventMethod, serve } from "@adc/contract";
-import { HttpChatAdapter, maxCallsPerTurn } from "../src/adapter.ts";
+import { defaultDecisionSchema, HttpChatAdapter, maxCallsPerTurn, reviewerSystem } from "../src/adapter.ts";
 import { requestKeys } from "../src/gateway.ts";
-import { call, refused, reply, stub, type Answer, type Stub } from "./stub.ts";
+import { call, refused, reply, stub, type Step, type Stub } from "./stub.ts";
 import { start } from "../../../fixtures/m1/stub-provider/server.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +80,7 @@ const result = (msgs: Msg[]) => {
   return r.result;
 };
 
-async function withStub(t: { after: (f: () => void) => void }, script: Answer[], listen?: string): Promise<Stub> {
+async function withStub(t: { after: (f: () => void) => void }, script: Step[], listen?: string): Promise<Stub> {
   const s = await stub(script, listen);
   t.after(() => s.close());
   return s;
@@ -137,6 +137,36 @@ test("a builder's edit loop returns its cumulative patch, which applies to the b
   assert.deepEqual(events(msgs, "usage").map((e) => [e.sequence, e.tokens.in, e.tokens.cache_read]), [[0, 60, 40], [1, 60, 40], [2, 60, 40]]);
   assert.deepEqual(r.usage_final.tokens, { in: 180, out: 60, cache_read: 120, cache_write: 0 });
   assert.deepEqual(events(msgs, "coverage").map((e) => e.observable), ["partial", "partial", "complete"]);
+});
+
+/** finishing is a reply with message whose finish_reason is finish (absent when undefined). */
+const finishing = (finish: string | null | undefined, message: object): Step => ({
+  body: { id: "x", model: "m-reported", choices: [{ index: 0, message: { role: "assistant", content: null, ...message }, ...(finish === undefined ? {} : { finish_reason: finish }) }], usage: { prompt_tokens: 100, completion_tokens: 20 } },
+});
+
+test("a builder's last turn cut short (finish_reason not stop) is executor_incomplete, never a clean end or a partial patch", async (t) => {
+  const write = reply({ tool_calls: [call("c1", "write_file", { path: "src/a.txt", content: "partial\n" })] });
+  for (const [name, script] of Object.entries({
+    "length after a write": [write, finishing("length", { content: "" })],
+    "length with nothing written": [finishing("length", { content: "" })],
+    "content_filter": [write, finishing("content_filter", { content: "done" })],
+    "none reported": [write, finishing(undefined, { content: "done" })],
+    "null": [write, finishing(null, { content: "done" })],
+    "tool_calls with no call delivered": [write, finishing("tool_calls", { content: "done" })],
+    "tool_calls with an empty list": [write, finishing("tool_calls", { content: "", tool_calls: [] })],
+  })) {
+    const d = dirs(t);
+    const s = await withStub(t, script);
+    const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
+    assert.deepEqual([r.outcome, r.reason, r.result], ["could_not_run", "executor_incomplete", null], name);
+    assert.match(r.detail, /finish_reason/, name);
+    assert.ok(!existsSync(join(d.out, "patch.diff")), name);
+  }
+  // stop still completes with its patch, after turns whose calls end on tool_calls (the stub provider's).
+  const d = dirs(t);
+  const s = await withStub(t, [finishing("tool_calls", { tool_calls: [call("c1", "write_file", { path: "src/a.txt", content: "partial\n" })] }), finishing("stop", { content: "done" })]);
+  const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
+  assert.deepEqual([r.outcome, r.reason, r.result?.kind], ["found", "completed_with_findings", "patch"]);
 });
 
 test("F: no write leaves the workspace (.., absolute, symlinked parent or file, .git)", async (t) => {
@@ -262,6 +292,45 @@ test("a reviewer's decision is checked against the run's response schema", async
   assert.deepEqual([r.outcome, r.reason], ["could_not_run", "degenerate_output"]);
   assert.deepEqual(s.seen[0].body.response_format.json_schema.schema, schema);
   assert.equal(events(msgs, "error")[0].class_hint, "degenerate");
+  assert.ok(!existsSync(join(d.out, "decision.json")));
+});
+
+/** follower is a provider that ignores response_format and follows the
+ *  system message: it answers to the schema it reads there, and without one
+ *  guesses as the rehearsal's models did (no summary, improvised findings). */
+const follower: Step = (body) => {
+  const messages: unknown[] = body && typeof body === "object" && "messages" in body && Array.isArray(body.messages) ? body.messages : [];
+  const sys = messages.find((m): m is { role: "system"; content: string } => !!m && typeof m === "object" && "role" in m && m.role === "system" && "content" in m && typeof m.content === "string");
+  const [, shown] = (sys?.content ?? "").split("\nThe response schema (JSON Schema):\n");
+  const required: unknown[] = shown === undefined ? [] : JSON.parse(shown).required;
+  const content = required.includes("approve") ? { approve: true } : required.includes("summary") ? verdict : { decision: "go", findings: [] };
+  return reply({ content: JSON.stringify(content) });
+};
+
+test("a provider that ignores response_format reads the schema in the system message, and its decision is accepted", async (t) => {
+  const approve = { type: "object", required: ["approve"], properties: { approve: { type: "boolean" } }, additionalProperties: false };
+  for (const [schema, want] of [[undefined, verdict], [approve, { approve: true }]] as const) {
+    const d = dirs(t, "review", schema);
+    const s = await withStub(t, [follower]);
+    const r = result(await session(new HttpChatAdapter(), prepare(d, s, "reviewer"), runParams(d, schema ? { response_schema: handle(d, "schema.json") } : {})));
+    assert.deepEqual([r.outcome, r.result?.kind], ["found", "decision"], JSON.stringify(schema));
+    assert.deepEqual(JSON.parse(readFileSync(join(d.out, "decision.json"), "utf8")), want);
+    const sent = s.seen[0].body;
+    assert.deepEqual(sent.messages.map((m: { role: string }) => m.role), ["system", "user"]);
+    assert.equal(sent.messages[0].content, reviewerSystem(schema ?? defaultDecisionSchema));
+    assert.deepEqual(sent.response_format.json_schema.schema, schema ?? defaultDecisionSchema, "response_format stays, for providers that enforce it");
+  }
+});
+
+test("a reasoning reply that spends the whole budget thinking (finish_reason length, empty content) is degenerate_output", async (t) => {
+  const d = dirs(t, "review");
+  const thought = { id: "x", model: "m-reported", choices: [{ index: 0, message: { role: "assistant", content: "", reasoning: "x".repeat(33_000) }, finish_reason: "length" }], usage: { prompt_tokens: 724, completion_tokens: 8000 } };
+  const s = await withStub(t, [{ body: thought }]);
+  const msgs = await session(new HttpChatAdapter(), prepare(d, s, "reviewer"), runParams(d));
+  const r = result(msgs);
+  assert.deepEqual([r.outcome, r.reason], ["could_not_run", "degenerate_output"]);
+  assert.equal(events(msgs, "usage")[0].tokens.out, 8000);
+  assert.equal(s.seen.length, 1);
   assert.ok(!existsSync(join(d.out, "decision.json")));
 });
 

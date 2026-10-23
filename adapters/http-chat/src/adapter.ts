@@ -44,6 +44,12 @@ const system: Record<string, string> = {
   reviewer: "You review the change described in the prompt. Reply only with a JSON object that matches the response schema.",
 };
 
+/** reviewerSystem is the reviewer's system message: the schema it is held
+ *  to is in it, since a provider may ignore response_format (Ollama Cloud
+ *  does: the qualification rehearsal's models guessed one); response_format
+ *  stays for those that enforce it. */
+export const reviewerSystem = (schema: unknown) => `${system.reviewer}\nThe response schema (JSON Schema):\n${JSON.stringify(schema)}`;
+
 /** The bytes of an input file (prompt, response schema) the adapter reads. */
 const maxInputBytes = 1 << 20;
 const clean: AdapterOutcome = { outcome: "empty", reason: "completed_clean", detail: "" };
@@ -188,11 +194,12 @@ export class HttpChatAdapter extends Adapter {
     const messages: Message[] = [];
     let size = 0; // the bytes of messages, kept as they grow
     const push = (m: Message) => void (messages.push(m), (size += Buffer.byteLength(JSON.stringify(m)) + 1));
-    push({ role: "system", content: system[role] });
     try {
-      push({ role: "user", content: await this.input(r.prompt) });
+      const prompt = await this.input(r.prompt);
       if (role === "reviewer" && r.response_schema) schema = JSON.parse(await this.input(r.response_schema));
       check = new Ajv2020({ allErrors: false, strict: false }).compile(schema);
+      push({ role: "system", content: role === "reviewer" ? reviewerSystem(schema) : system[role] });
+      push({ role: "user", content: prompt });
     } catch (e) {
       return ended("executor_incomplete", `http-chat could not read its inputs: ${(e as Error).message}`);
     }
@@ -227,6 +234,7 @@ export class HttpChatAdapter extends Adapter {
       if (typeof msg !== "object" || msg === null) return yield* this.failed({ outcome: "could_not_run", reason: "degenerate_output", hint: "degenerate", detail: "the reply holds no message" }, reply.text, turn);
       const content = typeof msg.content === "string" ? msg.content : null;
       const calls = toolCalls(msg.tool_calls);
+      const finish: unknown = res.choices[0].finish_reason;
       if (calls === null) return yield* this.failed({ outcome: "could_not_run", reason: "degenerate_output", hint: "degenerate", detail: "a tool call is not an object" }, reply.text, turn);
       const model = typeof res.model === "string" && res.model.length > 0 ? res.model.slice(0, 256) : "unreported";
       const provider = typeof res.provider === "string" && res.provider.length > 0 ? res.provider.slice(0, 256) : "openai-compatible";
@@ -271,6 +279,12 @@ export class HttpChatAdapter extends Adapter {
         const h = await writeOutput(p.exchange.out, p.attempt, "decision.json", JSON.stringify(decision));
         return { outcome: "found", reason: "completed_with_findings", detail: "the reviewer's decision", result: { kind: "decision", handle: h }, usage_final: final };
       }
+      // A builder's last turn (no tool call) ends complete only when the
+      // provider says it stopped: one cut short (length, content_filter,
+      // none reported) or one reporting tool calls it delivered none of
+      // (tool_calls; Mythos #417 L1) is the executor's incomplete run, never
+      // a clean end or a partial patch reported as found.
+      if (finish !== "stop") return ended("executor_incomplete", `the model's last turn ended on finish_reason ${JSON.stringify(finish ?? null).slice(0, 64)}, not stop`);
       let patch: string;
       try {
         patch = await workspace.patch();

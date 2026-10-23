@@ -49,13 +49,28 @@ func must[T any](v T, err error) T {
 	return v
 }
 
-// stub is the stub registry over the fixture groups, edited by edit.
-func stub(t *testing.T, edit func(*types.ExecutorRegistry)) (registry.Registry, []types.ResourceGroup) {
+// stubDoc is registry-stub.json with each executor's footprint_prior the
+// rows' own, a 500-token turn and 2 turns, which the arithmetic here and in
+// usd_test.go is in. The fixture's priors cover adcd's per-call floors
+// (daemon callFloors, Opus #417 M1), which dispatch never reads.
+func stubDoc(t *testing.T) types.ExecutorRegistry {
 	t.Helper()
 	doc, err := registry.Load(config + "registry-stub.json")
 	if err != nil {
 		t.Fatal(err)
 	}
+	for i := range doc.Executors {
+		if doc.Executors[i].FootprintPrior != nil {
+			doc.Executors[i].FootprintPrior = &types.FootprintPrior{ContextTokens: 500, ExpectedTurns: 2}
+		}
+	}
+	return doc
+}
+
+// stub is the stub registry (stubDoc) over the fixture groups, edited by edit.
+func stub(t *testing.T, edit func(*types.ExecutorRegistry)) (registry.Registry, []types.ResourceGroup) {
+	t.Helper()
+	doc := stubDoc(t)
 	var gs []types.ResourceGroup
 	raw, err := os.ReadFile(config + "groups.json")
 	if err == nil {
@@ -627,10 +642,7 @@ func (c credSet) Holds(_ context.Context, _, credential types.Slug) (bool, error
 // names A, which the gateway checked, so the launch is refused and the
 // lease released, with no attempt.
 func TestReadinessSnapshotsCredential(t *testing.T) {
-	doc, err := registry.Load(config + "registry-stub.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	doc := stubDoc(t)
 	_, gs := stub(t, nil)
 	regA, err := registry.New(doc, gs)
 	if err != nil {

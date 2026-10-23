@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -133,4 +134,42 @@ func m(att types.AttemptID, seq, in int64) types.UsageMeasurement {
 	return types.UsageMeasurement{ID: types.MeasurementID(id), Call: calA, Attempt: att, Lease: "lea_01m3250v57fhm9v1z9xd1wk8gw",
 		Kind: types.UsageMeasurementKindDelta, Sequence: seq, Tokens: types.UsageMeasurementTokens{In: types.Amount(in)},
 		Cost: types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash}, SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport}
+}
+
+// Opus #417 L1, Mythos #417 M3: a review links its call only once the
+// gateway recorded its own floor or count of a request of it; an adapter's
+// usage report alone, or none, links nothing; another call's count is not
+// this call's.
+func TestChargeLinks(t *testing.T) {
+	src := func(s types.UsageMeasurementSourceOfTruth, seq int64) types.UsageMeasurement {
+		x := m("att_01m3250vnfeyrv67x6w0ddqr6a", seq, 10)
+		x.SourceOfTruth = s
+		return x
+	}
+	other := src(types.UsageMeasurementSourceOfTruthGatewayCount, 0)
+	other.Call = calB
+	for name, c := range map[string]struct {
+		ms   []types.UsageMeasurement
+		want []types.CallID
+	}{
+		"none":                             {nil, []types.CallID{}},
+		"another call's count":             {[]types.UsageMeasurement{other}, []types.CallID{}},
+		"an adapter's report alone":        {[]types.UsageMeasurement{src(types.UsageMeasurementSourceOfTruthAdapterReport, 0)}, []types.CallID{}},
+		"the gateway's floor":              {[]types.UsageMeasurement{src(types.UsageMeasurementSourceOfTruthGatewayFloor, 0)}, []types.CallID{calA}},
+		"a report and the gateway's count": {[]types.UsageMeasurement{src(types.UsageMeasurementSourceOfTruthAdapterReport, 0), src(types.UsageMeasurementSourceOfTruthGatewayCount, 1)}, []types.CallID{calA}},
+	} {
+		l := openLedger(t)
+		if len(c.ms) > 0 {
+			if err := l.record(c.ms...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var got []types.CallID
+		if err := l.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+			got, err = ChargeLinks(tx, calA)
+			return err
+		}); err != nil || !slices.Equal(got, c.want) || got == nil {
+			t.Errorf("%s: %v, %v; want %v", name, got, err, c.want)
+		}
+	}
 }

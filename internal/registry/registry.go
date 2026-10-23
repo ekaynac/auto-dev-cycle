@@ -77,6 +77,7 @@ const (
 	RuleRouting       Rule = "the project requires verified routing"
 	RuleNotAllowed    Rule = "the destination is not among the project's allowed destinations"
 	RuleUsageProfile  Rule = "an empty allowed_destinations derives from a usage profile, which M1 does not have"
+	RuleFootprint     Rule = "a direct API's footprint_prior (context_tokens × expected_turns) is below one request's floor for its role"
 )
 
 // Refusal is New's or Admits' refusal: the executor's index in the
@@ -157,6 +158,55 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 		return Registry{}, err
 	}
 	return r, r.distinct(doc.Executors)
+}
+
+// Floors are the tokens one request of each role can count at the gateway
+// before its usage is read (adcd's: daemon callFloors).
+type Floors map[types.RegistryExecutorRole]int64
+
+// Call is one call's floor on e, the one notion the start check
+// (CheckFloors) and placement (dispatch: a USD fit below it is refused)
+// share (Mythos #417 M1): the least a lease of e reserves, one turn's
+// context (its footprint_prior's context_tokens) or its role's request
+// floor, whichever is larger. An unknown role's floor is zero.
+func (f Floors) Call(e types.RegistryExecutor) int64 {
+	n := f[e.Role]
+	if p := e.FootprintPrior; p != nil {
+		n = max(n, p.ContextTokens)
+	}
+	return n
+}
+
+// MaxAmount is the contract's largest amount (resource-group.json Amount).
+const MaxAmount = 1<<53 - 1
+
+// AttemptCap is p's context_tokens × expected_turns, at most MaxAmount: a
+// direct API's unpriced reservation (dispatch) and what CheckFloors holds
+// against one call's floor; the one saturating product (Mythos #417 L2).
+func AttemptCap(p types.FootprintPrior) int64 {
+	if p.ContextTokens != 0 && p.ExpectedTurns > MaxAmount/p.ContextTokens {
+		return MaxAmount
+	}
+	return min(p.ContextTokens*p.ExpectedTurns, MaxAmount)
+}
+
+// CheckFloors refuses doc's first direct API executor whose attempt cap
+// (AttemptCap) is below one call's floor (Floors.Call; Opus #417 M1): no
+// lease of it could cover one request's floor, so a call would owe more
+// than admission priced. Placement refuses a lease the rails shrink below
+// that floor. An executor with no footprint_prior is refused at placement
+// instead, and a local endpoint reserves a slot, not tokens.
+func CheckFloors(doc types.ExecutorRegistry, floors Floors) error {
+	for i, e := range doc.Executors {
+		p := e.FootprintPrior
+		if p == nil || e.Destination.Kind != types.RegistryDestinationKindDirectApi {
+			continue
+		}
+		if c, floor := AttemptCap(*p), floors.Call(e); c < floor {
+			return fmt.Errorf("%w: %d × %d = %d tokens, below the %s's %d", &Refusal{Executor: i, Rule: RuleFootprint}, p.ContextTokens, p.ExpectedTurns, c, e.Role, floor)
+		}
+	}
+	return nil
 }
 
 // origin is the destination's normalised origin, scheme://host:port in

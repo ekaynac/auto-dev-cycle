@@ -14,6 +14,8 @@ export interface Seen {
 }
 
 export type Answer = { status?: number; body: unknown; headers?: Record<string, string> };
+/** A script entry: an answer, or one made from the request's body. */
+export type Step = Answer | ((body: unknown) => Answer);
 
 export interface Stub {
   base: string;
@@ -39,11 +41,12 @@ async function body(req: IncomingMessage): Promise<any> {
 }
 
 /** stub serves script; listen is a socket path, or loopback when unset. */
-export async function stub(script: Answer[], listen?: string): Promise<Stub> {
+export async function stub(script: Step[], listen?: string): Promise<Stub> {
   const seen: Seen[] = [];
   const server = createServer(async (req, res) => {
     seen.push({ method: req.method ?? "", path: req.url ?? "", authorization: req.headers.authorization, body: await body(req) });
-    const a = script[seen.length - 1] ?? { status: 500, body: { error: "the script ran out" } };
+    const step = script[seen.length - 1] ?? { status: 500, body: { error: "the script ran out" } };
+    const a = typeof step === "function" ? step(seen.at(-1)!.body) : step;
     res.writeHead(a.status ?? 200, { "content-type": "application/json", ...a.headers });
     res.end(JSON.stringify(a.body));
   });

@@ -225,6 +225,9 @@ func (c Config) Validate() error {
 		if _, err := registry.New(*c.Registry, c.Groups); err != nil {
 			return configError(err.Error()) // fixed text: a rule and an index
 		}
+		if err := registry.CheckFloors(*c.Registry, callFloors); err != nil {
+			return configError(err.Error()) // a rule, an index and the numbers
+		}
 	}
 	return nil
 }
