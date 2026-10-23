@@ -152,6 +152,8 @@ test("a builder's last turn cut short (finish_reason not stop) is executor_incom
     "content_filter": [write, finishing("content_filter", { content: "done" })],
     "none reported": [write, finishing(undefined, { content: "done" })],
     "null": [write, finishing(null, { content: "done" })],
+    "tool_calls with no call delivered": [write, finishing("tool_calls", { content: "done" })],
+    "tool_calls with an empty list": [write, finishing("tool_calls", { content: "", tool_calls: [] })],
   })) {
     const d = dirs(t);
     const s = await withStub(t, script);
@@ -160,13 +162,11 @@ test("a builder's last turn cut short (finish_reason not stop) is executor_incom
     assert.match(r.detail, /finish_reason/, name);
     assert.ok(!existsSync(join(d.out, "patch.diff")), name);
   }
-  // stop (and tool_calls, the stub provider's for a turn with calls) still completes, with its patch.
-  for (const finish of ["stop", "tool_calls"]) {
-    const d = dirs(t);
-    const s = await withStub(t, [write, finishing(finish, { content: "done" })]);
-    const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
-    assert.deepEqual([r.outcome, r.reason, r.result?.kind], ["found", "completed_with_findings", "patch"], finish);
-  }
+  // stop still completes with its patch, after turns whose calls end on tool_calls (the stub provider's).
+  const d = dirs(t);
+  const s = await withStub(t, [finishing("tool_calls", { tool_calls: [call("c1", "write_file", { path: "src/a.txt", content: "partial\n" })] }), finishing("stop", { content: "done" })]);
+  const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
+  assert.deepEqual([r.outcome, r.reason, r.result?.kind], ["found", "completed_with_findings", "patch"]);
 });
 
 test("F: no write leaves the workspace (.., absolute, symlinked parent or file, .git)", async (t) => {

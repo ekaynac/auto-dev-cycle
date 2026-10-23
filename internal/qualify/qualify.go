@@ -89,6 +89,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 )
 
@@ -105,6 +106,35 @@ const (
 	MaxTurns        = 1
 	MaxOutputTokens = 32000
 )
+
+// reviewerEnvelopeBytes bounds what the http-chat reviewer's one request
+// holds besides its prompt: the model's name (at most 128 bytes, the
+// registry's pattern), the system message with the response schema,
+// response_format with the schema again, max_tokens, stream and the keys.
+// TestRoute holds the adapter's real requests to it.
+const reviewerEnvelopeBytes = 8 << 10
+
+// RequestFloor is the gateway's floor (gateway.Floor, its own count of a
+// request before its usage is read) of the reviewer's one request at its
+// bounds (Mythos #417 M2): max_tokens MaxOutputTokens over a body holding
+// the prompt at its bounds (review.PromptAtBounds, its residuals named
+// there) JSON-encoded in a message, beside reviewerEnvelopeBytes of the
+// rest. adcd's reviewer floor (daemon callFloors) is it.
+func RequestFloor() int64 {
+	type message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	body, err := json.Marshal(struct {
+		Messages  []message `json:"messages"`
+		MaxTokens int64     `json:"max_tokens"`
+	}{[]message{{"system", strings.Repeat("e", reviewerEnvelopeBytes)}, {"user", string(review.PromptAtBounds())}}, MaxOutputTokens})
+	if err != nil {
+		panic(err) // two strings and an integer always encode
+	}
+	c := gateway.Floor(body, types.Lease{})
+	return c.In + c.Out
+}
 
 const (
 	recordSchema = "adc.review-qualification/v1"

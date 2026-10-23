@@ -63,8 +63,10 @@ type sending struct {
 // tokens is the floor of a text of n bytes.
 func tokens(n int) int64 { return (int64(n) + bytesPerToken - 1) / bytesPerToken }
 
-// floor is the count of body before it is sent, under l.
-func floor(body []byte, l types.Lease) Count {
+// Floor is the count of body before it is sent, under l: the one count a
+// request's floor is, which adcd's per-call floors are derived through
+// too (qualify.RequestFloor).
+func Floor(body []byte, l types.Lease) Count {
 	out := int64(0)
 	if req, ok := object(body, "max_tokens", "max_completion_tokens"); ok {
 		for _, k := range []string{"max_tokens", "max_completion_tokens"} {

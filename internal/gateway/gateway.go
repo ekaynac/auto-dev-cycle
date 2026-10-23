@@ -504,7 +504,7 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		s = sending{cred, g.seq, len(out)}
 		g.seq++
 		g.mu.Unlock()
-		return g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l))
+		return g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, Floor(out, l))
 	})
 	if !ok {
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}

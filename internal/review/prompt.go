@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -38,18 +39,25 @@ const (
 	MaxDiff        = 512 << 10 // a reader of a diff for Prompt reads at most MaxDiff+1 bytes
 )
 
-// MaxPromptBytes is a prompt's size at its bounds: the template, a
-// requirement of maxRequirement, the longest gate summary, and a diff of
-// MaxDiff in the shortest fence. adcd's registry load reads it for a
-// reviewer's per-call floor (Opus #417 M1). A diff holding a run of three
-// or more backticks is fenced longer (Fenced), by twice the run's excess:
-// a hostile candidate can pass it, by at most 2 × MaxDiff bytes, which
-// only raises one review call's gateway floor past what admission priced.
-const MaxPromptBytes = len(promptTemplate) - 3*len("%s") + maxRequirement + maxGate + len("```diff\n") + MaxDiff + len("\n```")
-
-// maxGate is the longest gate summary Prompt renders: the longer verdict
-// and three counts of the most digits an int has.
-const maxGate = len("green: every test it ran passed") + len(" ( passed,  failed,  skipped).") + 3*len("-9223372036854775808")
+// PromptAtBounds is the prompt Prompt renders at its bounds: a requirement
+// of maxRequirement bytes and a diff of MaxDiff, every byte of both a
+// double quote (one byte, two once JSON-encoded, as a request carries it),
+// and the longest gate summary. adcd's reviewer floor encodes it as the
+// gateway counts a request (qualify.RequestFloor; Mythos #417 M2).
+// Residuals, each raising one review call's gateway floor past what
+// admission priced, never more: a diff holding a run of three or more
+// backticks is fenced longer (Fenced), by up to 2 × MaxDiff bytes; a C0
+// control character other than \b \f \n \r \t encodes to six bytes, not
+// two (the adapter's 8 MiB request bound caps the body).
+func PromptAtBounds() []byte {
+	in := PromptInput{Requirement: strings.Repeat(`"`, maxRequirement), Diff: strings.Repeat(`"`, MaxDiff),
+		Gate: Gate{Passed: math.MinInt, Failed: math.MinInt, Skipped: math.MinInt, Green: true}}
+	p, err := Prompt(in)
+	if err != nil {
+		panic(err) // its inputs are within the bounds
+	}
+	return p
+}
 
 const promptTemplate = `You are reviewing one candidate change to a repository for the task below. The task's own acceptance tests are withheld from you; the repository's tests ran on the candidate, with the result under "Gate".
 

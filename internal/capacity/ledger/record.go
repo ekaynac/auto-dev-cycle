@@ -150,3 +150,27 @@ func Measurements(tx *eventstore.Tx, call types.CallID) ([]types.UsageMeasuremen
 	}
 	return out, nil
 }
+
+// ChargeLinks is a review's charge links (review.Facts.Calls): call, only
+// when the gateway counted a request of it (a gateway_floor or
+// gateway_count measurement; an adapter's own usage report is no request,
+// Opus #417 L1). An adapter that ended before any request (one that never
+// started) made no call to link. The one rule, qualify's and adcd's
+// (Mythos #417 M3).
+func ChargeLinks(tx *eventstore.Tx, call types.CallID) ([]types.CallID, error) {
+	ms, err := Measurements(tx, call)
+	if err != nil {
+		return nil, err
+	}
+	return linked(call, ms), nil
+}
+
+// linked is call, when ms holds the gateway's own measurement of it.
+func linked(call types.CallID, ms []types.UsageMeasurement) []types.CallID {
+	if slices.ContainsFunc(ms, func(m types.UsageMeasurement) bool {
+		return m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor || m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount
+	}) {
+		return []types.CallID{call}
+	}
+	return []types.CallID{}
+}

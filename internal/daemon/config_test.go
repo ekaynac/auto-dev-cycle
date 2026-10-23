@@ -103,8 +103,8 @@ func TestLoadConfigRegistry(t *testing.T) {
 	}
 	reviewer := callFloors[types.RegistryExecutorRoleReviewer]
 	builder := callFloors[types.RegistryExecutorRoleBuilder]
-	lowReviewer := prior(`{"context_tokens": 36000, "expected_turns": 2}`, reviewer/2-1)
-	lowBuilder := prior(`{"context_tokens": 64000, "expected_turns": 2}`, builder/2-1)
+	lowReviewer := prior(`{"context_tokens": 60000, "expected_turns": 2}`, reviewer/2-1)
+	lowBuilder := prior(`{"context_tokens": 64000, "expected_turns": 3}`, builder/2-1)
 	for name, c := range map[string]struct {
 		args []string
 		rule string

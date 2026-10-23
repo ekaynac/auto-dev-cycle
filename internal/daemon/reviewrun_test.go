@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,9 +19,11 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -133,10 +136,20 @@ func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen, edit 
 // most 12 passes): the world and what the peer was prepared with.
 func reviewRun(t *testing.T, decision string) (*runWorld, reviewerSeen) {
 	t.Helper()
+	return reviewRunWith(t, decision, nil)
+}
+
+// reviewRunWith is reviewRun, setup called on the world once its gate has
+// completed, before the review is placed.
+func reviewRunWith(t *testing.T, decision string, setup func(*runWorld)) (*runWorld, reviewerSeen) {
+	t.Helper()
 	files := map[string]string{"gate-events.json": goEvents("TestA=pass", hiddenTest+"=fail")}
 	rw := gateWorld(t, goEvents("TestA=pass"), files, nil)
 	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
 		t.Fatalf("the gate: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	if setup != nil {
+		setup(rw)
 	}
 	seen := make(chan reviewerSeen, 4)
 	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(decision, false, seen, writes(files))) // a repair's builder writes the same candidate
@@ -432,15 +445,62 @@ func TestTheBuildersBudgetHasRoomToThink(t *testing.T) {
 	}
 }
 
-// Opus #417 M1: the reviewer's floor covers its one request at the
-// gateway: its max_tokens and a prompt at its bounds, counted as the
-// gateway counts it before the upstream's usage.
-func TestTheReviewersFloorCoversItsPrompt(t *testing.T) {
-	p, err := review.Prompt(review.PromptInput{Requirement: strings.Repeat("r", 96<<10), Diff: strings.Repeat("d", review.MaxDiff), Gate: review.Gate{Green: true}})
-	if err != nil {
-		t.Fatal(err)
+// Opus #417 M1, Mythos #417 M2: the reviewer's floor is its one request's
+// as the gateway counts it (qualify.RequestFloor).
+func TestTheReviewersFloorIsItsRequests(t *testing.T) {
+	if got := callFloors[types.RegistryExecutorRoleReviewer]; got != qualify.RequestFloor() {
+		t.Errorf("the reviewer's floor %d, want qualify.RequestFloor %d", got, qualify.RequestFloor())
 	}
-	if want := qualify.MaxOutputTokens + gateway.Tokens(len(p)); callFloors[types.RegistryExecutorRoleReviewer] < want {
-		t.Errorf("the reviewer's floor %d is below its request's %d", callFloors[types.RegistryExecutorRoleReviewer], want)
+}
+
+// Mythos #417 M3: adcd's review links its call (the report's charge_links)
+// only once the gateway counted a request of it (ledger.ChargeLinks, the
+// rule qualify uses too): a reviewer that made no request links none; one
+// whose call the gateway floored, before the session ended, links it.
+func TestAReviewLinksOnlyACallTheGatewayCounted(t *testing.T) {
+	for name, counted := range map[string]bool{"no request": false, "a floored request": true} {
+		var call types.CallID
+		rw, _ := reviewRunWith(t, goDecision, func(rw *runWorld) {
+			rw.ended = func(b gateway.Binding) {
+				var role string
+				rw.w.view(func(tx *eventstore.Tx) error {
+					l, _, _, err := lease.LeaseOf(tx, b.Lease)
+					role = string(l.Role)
+					return err
+				})
+				if role != "reviewer" {
+					return
+				}
+				call = b.Call
+				if !counted {
+					return
+				}
+				ev, err := ledger.Measure(types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: b.Call, Attempt: b.Attempt, Lease: b.Lease,
+					Kind: types.UsageMeasurementKindDelta, Tokens: types.UsageMeasurementTokens{In: 10, Out: 10},
+					Cost: types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true}, SourceOfTruth: types.UsageMeasurementSourceOfTruthGatewayFloor})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				rw.w.do(rw.w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) { return []eventstore.Event{ev}, nil })
+			}
+		})
+		node := reviewNodes(rw)[types.NodeKindReview]
+		rs := reviewResults(rw, node.Node.ID)
+		if call == "" || len(rs) != 1 || len(rs[0].Result.Value) == 0 {
+			t.Fatalf("%s: the review's call %q, its results %+v", name, call, rs)
+		}
+		raw, err := blobOf(t, rw.w, rs[0].Result.Value[len(rs[0].Result.Value)-1].ContentDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := review.ReadReport(raw)
+		want := []types.CallID{}
+		if counted {
+			want = []types.CallID{call}
+		}
+		if err != nil || !slices.Equal(rep.ChargeLinks, want) {
+			t.Errorf("%s: the report's charge links %v, %v; want %v", name, rep.ChargeLinks, err, want)
+		}
 	}
 }

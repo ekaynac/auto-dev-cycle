@@ -12,6 +12,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -27,9 +28,10 @@ import (
 //     expected_turns;
 //   - a priced one reserves min(fit, attempt_cap), where fit is the most
 //     tokens the USD rails leave at the executor's higher token rate
-//     (dayFit's computation over both rails): a fit below one turn
-//     (context_tokens) is refused as the rail that binds, its budget_rail
-//     hold named;
+//     (dayFit's computation over both rails): a fit below one call's floor
+//     (registry.Floors.Call: one turn's context_tokens, or its role's
+//     request floor, Mythos #417 M1) is refused as the rail that binds, its
+//     budget_rail hold named;
 //   - a reservation past its group's stated limit is refused
 //     precondition_failed, held source_invalid_config naming the executor:
 //     no attempt of it could ever be granted (Opus 22a-5c-1 M1).
@@ -59,10 +61,10 @@ func (d Dispatcher) reservation(tx *eventstore.Tx, card Card, executor types.Exe
 	if !capped {
 		return res, fp, &b, nil, nil
 	}
-	if fit < fp.ContextTokens {
+	if floor := d.Floors.Call(e); fit < floor {
 		hold, err := graph.RailHold(rail)
 		return res, fp, &b, &Refused{Check: "budget", PlacementCheck: types.PlacementCheck{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonBudgetRailReached,
-			Detail: fmt.Sprintf("%s: %d USD micros left buy %d tokens, less than one turn's %d (#226 entry 120)", rail, left, fit, fp.ContextTokens)}, Hold: &hold}, err
+			Detail: fmt.Sprintf("%s: %d USD micros left buy %d tokens, less than one call's floor %d (#226 entry 120)", rail, left, fit, floor)}, Hold: &hold}, err
 	}
 	res.Amount = min(fit, attemptCap)
 	return res, fp, &b, nil, nil
@@ -77,7 +79,7 @@ func (d Dispatcher) footprint(executor types.ExecutorID, e types.RegistryExecuto
 		r, err := configRefusal("footprint_prior", "executor "+string(executor), "executor "+string(executor)+" declares no footprint_prior (#226 entry 103)")
 		return 0, r, err
 	}
-	attemptCap := mulSat(e.FootprintPrior.ContextTokens, e.FootprintPrior.ExpectedTurns)
+	attemptCap := registry.AttemptCap(*e.FootprintPrior)
 	if limit, ok := d.Registry.Limit(e.Group); ok && attemptCap > limit {
 		r, err := configRefusal("capacity", "executor "+string(executor), fmt.Sprintf("executor %s's attempt_cap %d is past its group %s's limit %d", executor, attemptCap, e.Group, limit))
 		return 0, r, err
@@ -121,8 +123,8 @@ func (d Dispatcher) Configured(tx *eventstore.Tx, card Card, executor types.Exec
 	return err == nil && !b.unrailed, err
 }
 
-// RoomToday: the day's USD rail leaves card's node at least one turn on
-// executor now (#226 entry 120), so a per_day_usd hold on it is stale: a
+// RoomToday: the day's USD rail leaves card's node at least one call's
+// floor (Floors.Call) on executor now (#226 entry 120), so a per_day_usd hold on it is stale: a
 // new UTC day, or a profile change, reopened it. It is reservation's own
 // computation over the day's rail alone (spend.fit), so the clear and the
 // match cannot disagree (Opus 22a-5c-1 L3). An unpriced executor, one with
@@ -137,7 +139,7 @@ func (d Dispatcher) RoomToday(tx *eventstore.Tx, card Card, executor types.Execu
 		return b.unrailed, err
 	}
 	_, _, fit, capped := b.fit(e, graph.RailDayUSD)
-	return !capped || fit >= e.FootprintPrior.ContextTokens, nil
+	return !capped || fit >= d.Floors.Call(e), nil
 }
 
 // spend is a task's rails and what its task and its project's day have
@@ -209,15 +211,7 @@ func tokensFor(micros, price int64) int64 {
 }
 
 // maxAmount is the contract's largest amount (resource-group.json Amount).
-const maxAmount = 1<<53 - 1
-
-// mulSat is a×b, at most maxAmount.
-func mulSat(a, b int64) int64 {
-	if a != 0 && b > maxAmount/a {
-		return maxAmount
-	}
-	return min(a*b, maxAmount)
-}
+const maxAmount = registry.MaxAmount
 
 // placementPrefix marks the signal of a hold placement raised on
 // configuration (PlacementSignal): the reconcile loop clears only those,

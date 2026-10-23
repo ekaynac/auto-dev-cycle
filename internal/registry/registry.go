@@ -28,7 +28,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/netip"
 	"net/url"
@@ -165,20 +164,46 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 // before its usage is read (adcd's: daemon callFloors).
 type Floors map[types.RegistryExecutorRole]int64
 
-// CheckFloors refuses doc's first direct API executor whose footprint_prior
-// (context_tokens × expected_turns, its unpriced reservation) is below its
-// role's floor (Opus #417 M1): a lease of it could never cover one request's
-// floor, so a call would owe more than admission priced. An executor with
-// no footprint_prior is refused at placement instead, and a local endpoint
-// reserves a slot, not tokens.
+// Call is one call's floor on e, the one notion the start check
+// (CheckFloors) and placement (dispatch: a USD fit below it is refused)
+// share (Mythos #417 M1): the least a lease of e reserves, one turn's
+// context (its footprint_prior's context_tokens) or its role's request
+// floor, whichever is larger. An unknown role's floor is zero.
+func (f Floors) Call(e types.RegistryExecutor) int64 {
+	n := f[e.Role]
+	if p := e.FootprintPrior; p != nil {
+		n = max(n, p.ContextTokens)
+	}
+	return n
+}
+
+// MaxAmount is the contract's largest amount (resource-group.json Amount).
+const MaxAmount = 1<<53 - 1
+
+// AttemptCap is p's context_tokens × expected_turns, at most MaxAmount: a
+// direct API's unpriced reservation (dispatch) and what CheckFloors holds
+// against one call's floor; the one saturating product (Mythos #417 L2).
+func AttemptCap(p types.FootprintPrior) int64 {
+	if p.ContextTokens != 0 && p.ExpectedTurns > MaxAmount/p.ContextTokens {
+		return MaxAmount
+	}
+	return min(p.ContextTokens*p.ExpectedTurns, MaxAmount)
+}
+
+// CheckFloors refuses doc's first direct API executor whose attempt cap
+// (AttemptCap) is below one call's floor (Floors.Call; Opus #417 M1): no
+// lease of it could cover one request's floor, so a call would owe more
+// than admission priced. Placement refuses a lease the rails shrink below
+// that floor. An executor with no footprint_prior is refused at placement
+// instead, and a local endpoint reserves a slot, not tokens.
 func CheckFloors(doc types.ExecutorRegistry, floors Floors) error {
 	for i, e := range doc.Executors {
-		p, floor := e.FootprintPrior, floors[e.Role]
+		p := e.FootprintPrior
 		if p == nil || e.Destination.Kind != types.RegistryDestinationKindDirectApi {
 			continue
 		}
-		if fp := p.ContextTokens * p.ExpectedTurns; p.ContextTokens <= math.MaxInt64/max(p.ExpectedTurns, 1) && fp < floor {
-			return fmt.Errorf("%w: %d × %d = %d tokens, below the %s's %d", &Refusal{Executor: i, Rule: RuleFootprint}, p.ContextTokens, p.ExpectedTurns, fp, e.Role, floor)
+		if c, floor := AttemptCap(*p), floors.Call(e); c < floor {
+			return fmt.Errorf("%w: %d × %d = %d tokens, below the %s's %d", &Refusal{Executor: i, Rule: RuleFootprint}, p.ContextTokens, p.ExpectedTurns, c, e.Role, floor)
 		}
 	}
 	return nil

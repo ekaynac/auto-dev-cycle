@@ -279,11 +279,12 @@ export class HttpChatAdapter extends Adapter {
         const h = await writeOutput(p.exchange.out, p.attempt, "decision.json", JSON.stringify(decision));
         return { outcome: "found", reason: "completed_with_findings", detail: "the reviewer's decision", result: { kind: "decision", handle: h }, usage_final: final };
       }
-      // A builder's last turn ends complete only when the provider says it
-      // stopped: one cut short (length, content_filter, none reported) is
-      // the executor's incomplete run, never a clean end or a partial
-      // patch reported as found.
-      if (finish !== "stop" && finish !== "tool_calls") return ended("executor_incomplete", `the model's last turn ended on finish_reason ${JSON.stringify(finish ?? null).slice(0, 64)}, not stop`);
+      // A builder's last turn (no tool call) ends complete only when the
+      // provider says it stopped: one cut short (length, content_filter,
+      // none reported) or one reporting tool calls it delivered none of
+      // (tool_calls; Mythos #417 L1) is the executor's incomplete run, never
+      // a clean end or a partial patch reported as found.
+      if (finish !== "stop") return ended("executor_incomplete", `the model's last turn ended on finish_reason ${JSON.stringify(finish ?? null).slice(0, 64)}, not stop`);
       let patch: string;
       try {
         patch = await workspace.patch();

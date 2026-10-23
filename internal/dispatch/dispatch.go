@@ -91,6 +91,10 @@ type Dispatcher struct {
 	Images      Images
 	Credentials Credentials
 	Rails       graph.Rails // each task's rails (P17a, P17b); nil: graph.DefaultCaps, which has no USD rail, so a priced executor is refused
+	// Floors are each role's request floor (adcd's callFloors): a priced
+	// lease is never shrunk below one call's (Floors.Call). Nil: one turn's
+	// context_tokens alone.
+	Floors registry.Floors
 }
 
 // Refused is a match that placed nothing: the placement check that

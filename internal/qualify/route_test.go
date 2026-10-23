@@ -5,6 +5,7 @@
 package qualify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,9 @@ type scripted struct {
 	reply func(prompt string) string
 	seen  []map[string]any
 	auth  []string
+	// envelopes: each request's bytes besides its prompt, as the
+	// registry's longest model name would make it (RequestFloor's bound).
+	envelopes []int
 }
 
 func newScripted(t *testing.T) *scripted {
@@ -60,6 +64,8 @@ func newScripted(t *testing.T) *scripted {
 		}
 		u.mu.Lock()
 		u.seen, u.auth = append(u.seen, body), append(u.auth, r.Header.Get("Authorization"))
+		model, _ := body["model"].(string)
+		u.envelopes = append(u.envelopes, len(raw)-len(encoded(prompt))+128-len(model))
 		content := u.reply(prompt)
 		u.mu.Unlock()
 		out, _ := json.Marshal(map[string]any{"id": "chatcmpl-1", "object": "chat.completion", "model": body["model"],
@@ -227,6 +233,11 @@ func TestRoute(t *testing.T) {
 	if n := len(up.seen); n != len(s.Cases) {
 		t.Errorf("%d requests for %d cases", n, len(s.Cases))
 	}
+	// Mythos #417 M2: the adapter's requests hold at most
+	// reviewerEnvelopeBytes besides their prompt, which RequestFloor counts.
+	if m := slices.Max(up.envelopes); m > reviewerEnvelopeBytes {
+		t.Errorf("a request holds %d bytes besides its prompt, past reviewerEnvelopeBytes %d", m, reviewerEnvelopeBytes)
+	}
 	up.mu.Unlock()
 	againRun, again := run(records, "good-again", func(c Case) string { return decision(c.Expect) }) // a second run, its own seed: the route qualifies
 	if _, err := s.Record(againRun, again); err != nil {
@@ -369,24 +380,28 @@ func TestReviewerPrepare(t *testing.T) {
 	}
 }
 
-// Opus #417 L1: a review links its call only on the gateway's own floor or
-// count of a request; an adapter's usage report alone links none.
-func TestChargeLinksAreTheGatewaysCount(t *testing.T) {
-	const call = types.CallID("cal_01m4tm99haemqt8es2qfbwj8pb")
-	m := func(src types.UsageMeasurementSourceOfTruth) types.UsageMeasurement {
-		return types.UsageMeasurement{Call: call, SourceOfTruth: src}
+// encoded is s as a JSON string, as the adapter's JSON.stringify renders it
+// (no HTML escape).
+func encoded(s string) []byte {
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	_ = e.Encode(s)
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+}
+
+// Mythos #417 M2: the reviewer's floor is its request body's as the
+// gateway counts it: the prompt at its bounds JSON-encoded (each quote
+// two bytes), beside the envelope, at the gateway's bytes per token, and
+// its max_tokens.
+func TestRequestFloorIsTheEncodedBody(t *testing.T) {
+	p := review.PromptAtBounds()
+	enc := encoded(string(p))
+	if len(enc) < len(p)+review.MaxDiff {
+		t.Fatalf("the prompt at its bounds encodes to %d bytes from %d: not escaped", len(enc), len(p))
 	}
-	for name, c := range map[string]struct {
-		ms   []types.UsageMeasurement
-		want []types.CallID
-	}{
-		"no measurement":                {nil, nil},
-		"an adapter's report alone":     {[]types.UsageMeasurement{m(types.UsageMeasurementSourceOfTruthAdapterReport)}, nil},
-		"the gateway's floor":           {[]types.UsageMeasurement{m(types.UsageMeasurementSourceOfTruthGatewayFloor)}, []types.CallID{call}},
-		"the gateway's count, a report": {[]types.UsageMeasurement{m(types.UsageMeasurementSourceOfTruthAdapterReport), m(types.UsageMeasurementSourceOfTruthGatewayCount)}, []types.CallID{call}},
-	} {
-		if got := chargeLinks(call, c.ms); !slices.Equal(got, c.want) {
-			t.Errorf("%s: %v, want %v", name, got, c.want)
-		}
+	floor := gateway.Floor(enc, types.Lease{}) // its bytes alone, at the gateway's rate
+	if want := MaxOutputTokens + floor.In + int64(reviewerEnvelopeBytes)/16; RequestFloor() < want {
+		t.Errorf("RequestFloor %d, below the encoded body's %d", RequestFloor(), want)
 	}
 }
