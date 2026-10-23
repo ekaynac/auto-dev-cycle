@@ -138,6 +138,24 @@ func TestTable(t *testing.T) {
 		!slices.Equal(review.Pending, []string{"P31's qualification on record"}) {
 		t.Errorf("review: missing %v, pending %v", review.Missing(), review.Pending)
 	}
+	// K1 (launch's kept bits, #226 entry 164): launch misses I10's and
+	// I12's admission and consumption and I17's (K2), and I5's admission
+	// and I21's (the activation PR, last): it is not active.
+	launch, _ := Of("launch")
+	want := []Row{{"I5", Admission}, {"I10", Admission}, {"I10", Fold}, {"I10", Consumption}, {"I10", Effect}, {"I12", Admission}, {"I12", Consumption},
+		{"I17", Admission}, {"I17", Consumption}, {"I17", Effect}, {"I21", Admission}, {"I21", Fold}, {"I21", Effect}}
+	if launch.Active() || !slices.Equal(launch.Missing(), want) {
+		t.Errorf("launch: missing %v", launch.Missing())
+	}
+	// Opus #409 L1: I6's bits are its model_call half; the merge
+	// capabilities stay inactive on P20's merge half, their Pending, while
+	// it is open.
+	for _, name := range []string{"merge-local", "merge-github"} {
+		c, _ := Of(name)
+		if c.Active() || !slices.ContainsFunc(c.Pending, func(p string) bool { return strings.HasPrefix(p, "P20's merge half") }) {
+			t.Errorf("%s: active %v, pending %v", name, c.Active(), c.Pending)
+		}
+	}
 }
 
 // requiredBy is the inventory summary's "Required by" column, row for row
