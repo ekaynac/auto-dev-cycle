@@ -189,3 +189,30 @@ func TestACandidateIsACompletedReview(t *testing.T) {
 		}
 	}
 }
+
+// #410 (K2), Opus: a refused round (its accept refused, so the build is
+// repaired) leaves its gate and review waiting, never claimed: they are no
+// candidate, and the next round's GO is the task's candidate.
+func TestARefusedRoundsWaitingChecksAreNoCandidate(t *testing.T) {
+	empty, found := types.OutcomeEmpty, types.OutcomeFound
+	patch := func(b string) types.InputSpec {
+		return types.InputSpec{Name: "candidate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(b), ResultKind: types.ResultKindPatch}}}
+	}
+	tree := func(a string) types.InputSpec {
+		return types.InputSpec{Name: "tree", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: types.NodeID(a), ResultKind: types.ResultKindTree}}}
+	}
+	v := func(id string, kind types.NodeKind, round int64, st types.NodeStateState, o *types.Outcome, in ...types.InputSpec) NodeView {
+		return NodeView{Node: types.Node{ID: types.NodeID(id), Kind: kind, Round: round, Inputs: append([]types.InputSpec{}, in...)}, State: types.NodeState{State: st}, Outcome: o}
+	}
+	done, waiting := types.NodeStateStateCompleted, types.NodeStateStateWaiting
+	refused := []NodeView{v("b1", types.NodeKindBuild, 1, done, &found), v("a1", types.NodeKindAccept, 1, done, &found, patch("b1")),
+		v("g1", types.NodeKindGate, 1, waiting, nil, tree("a1")), v("r1", types.NodeKindReview, 1, waiting, nil, patch("b1"))}
+	if CandidateGo(refused) {
+		t.Error("a refused round's waiting checks are a candidate")
+	}
+	next := append(refused, v("b2", types.NodeKindBuild, 2, done, &found), v("a2", types.NodeKindAccept, 1, done, &empty, patch("b2")),
+		v("g2", types.NodeKindGate, 1, done, &empty, tree("a2")), v("r2", types.NodeKindReview, 1, done, &empty, patch("b2")))
+	if !CandidateGo(next) || OfLastRound(next, next[3].Node) || !OfLastRound(next, next[7].Node) {
+		t.Error("the round after a refused one: its GO is not the candidate")
+	}
+}
