@@ -592,11 +592,11 @@ func Reviewers(root, recordsDir string, reviewers []types.RegistryExecutor) erro
 		return fmt.Errorf("%w: the qualification suite cannot be read: %v", ErrUnqualified, err)
 	}
 	recs, err := recordsOf(recordsDir)
+	if err != nil { // the directory's fault, no reviewer's (Mythos #413 L2)
+		return err
+	}
 	for _, e := range reviewers {
-		if err == nil {
-			err = recs.check(RouteOf(e), s)
-		}
-		if err != nil {
+		if err := recs.check(RouteOf(e), s); err != nil {
 			return fmt.Errorf("reviewer %s: %w", e.ID, err)
 		}
 	}
