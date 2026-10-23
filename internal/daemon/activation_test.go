@@ -27,6 +27,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/cli"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -1038,5 +1039,40 @@ func TestNoAdmittedTaskStopsUnseen(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// #226 entry 184 through adcd's served reads (Main's ask; server.go's
+// wiring): a task whose gate completed, adcd started on its state with no
+// registry (as installed, its loop's own first pass), shows stalled on its
+// card over adcd's real socket: adc task show --json and adc board --json,
+// each validated against its schema.
+func TestAStalledTaskOverAdcdsSocket(t *testing.T) {
+	rw := gateCompleted(t)
+	task := rw.task
+	r := restartOn(t, rw)
+	r.c.logs.waitFor("task " + string(task) + " is stalled: " + reconcile.StallNoReviewer)
+	if c := r.card(t, task); c.Stalled == nil || string(c.Stalled.Cause) != reconcile.StallNoReviewer {
+		t.Fatalf("adc task show: the card's stalled %+v\n%s", c.Stalled, r.c.logs.String())
+	}
+	code, out, errb := r.c.adc(r.tok, "board", "--json")
+	var board struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if code != entry.ExitOK || json.Unmarshal([]byte(out), &board) != nil {
+		t.Fatalf("adc board: %d %s %s", code, out, errb)
+	}
+	found := false
+	for _, raw := range board.Items {
+		var c types.BoardPlacedCard
+		if contract.Validate("api/board", raw) != nil || json.Unmarshal(raw, &c) != nil {
+			t.Fatalf("a board card: %s", raw)
+		}
+		if c.ID == task {
+			found = c.Stalled != nil && string(c.Stalled.Cause) == reconcile.StallNoReviewer
+		}
+	}
+	if !found {
+		t.Errorf("adc board: no stalled card for %s: %s", task, out)
 	}
 }
