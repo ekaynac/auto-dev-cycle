@@ -186,6 +186,8 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 	out, stderr, err := drain(ctx, cmd, maxList, maxStderr)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("go list: %w", context.Cause(ctx))
+	} else if killedStep(out) { // the host's, whatever its status (Opus #412 r2 L2)
+		return nil, fmt.Errorf("%w: go list: a step was killed by a signal", ErrGuardRun)
 	} else if exit := (*exec.ExitError)(nil); errors.As(err, &exit) { // go list's own exit: goListExit's one rule, as boxList's
 		return nil, goListExit(exit.ExitCode(), fmt.Errorf("go list: %w: %s", err, bytes.TrimSpace(stderr[:min(len(stderr), 512)])))
 	} else if err != nil {
