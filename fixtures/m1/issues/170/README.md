@@ -8,6 +8,7 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 | `baseline.json` | The `go test -count=1 -json ./internal/cli/...` record at the base, as counts, with the image it was measured in, and the acceptance tests' expected results. |
 | `baseline-report.json` | The gate's measured baseline (`gate.Baseline`, P15): measured by `gate.Measure` in the pinned image (`ghcr.io/ekaynac/adc-prepared-go@sha256:7ab5adabc1296d67745fe8d236f48aaa19b06b9ce5e8e57bafd6b564d87d1116`, image `a9ba0c53952b`, linux/arm64), bound to its command, that platform image and the base tree, with the three tests that skip as root. |
 | `baseline-stream.json` | The measured run's `go test -json` stream, which the gate's row judges against the baseline. |
+| `base-go.mod`, `base-go.sum` | The base commit's `go.mod` and `go.sum`, copied byte for byte (`git cat-file blob 0d3e81d:go.mod`): `TestGateIssue170` checks `baseline.json`'s image label against their hashes (Opus #427 L3). |
 
 ## Selection evidence (ยง2.2)
 

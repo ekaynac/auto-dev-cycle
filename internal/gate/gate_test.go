@@ -537,7 +537,7 @@ func TestGateIssue170(t *testing.T) {
 	if err := in.check(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
 		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, the profile pins %s; %d results)", err, b.Image, pin, len(b.Results))
 	}
-	baselineLabel(t, b.Base, pin)
+	baselineLabel(t, pin)
 	var v Verdict
 	if v.Results, err = results.ParseGoTestJSON(strings.NewReader(string(run)), nil, &b.Report); err != nil {
 		t.Fatal(err)
@@ -548,13 +548,16 @@ func TestGateIssue170(t *testing.T) {
 }
 
 // baselineLabel (Opus #427 L3): #170's baseline.json records the pinned
-// image's label, and it is the base's: its base commit's tree is the
-// report's base tree, its lockfile hashes are that commit's go.mod and
-// go.sum as git holds them, and its adapter is keyed by linux/arm64 alone,
-// the one platform pinned; its image and image id are the profile's pin
-// and the platform image recorded apart.
-func baselineLabel(t *testing.T, tree, pin string) {
+// image's label, and it is the base's: its base commit is the report's,
+// its lockfile hashes are that commit's go.mod and go.sum (base-go.mod and
+// base-go.sum, copied from it: the test sandbox holds no git objects), and
+// its adapter is keyed by linux/arm64 alone, the one platform pinned; its
+// image and image id are the profile's pin and the platform image recorded
+// apart.
+func baselineLabel(t *testing.T, pin string) {
 	t.Helper()
+	const dir = "../../fixtures/m1/issues/170/"
+	var report struct{ Base string }
 	var doc struct {
 		Base        string
 		Environment struct {
@@ -569,32 +572,29 @@ func baselineLabel(t *testing.T, tree, pin string) {
 			} `json:"image_label"`
 		}
 	}
-	raw, err := os.ReadFile("../../fixtures/m1/issues/170/baseline.json")
-	if err == nil {
-		err = json.Unmarshal(raw, &doc)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	git := func(args ...string) []byte {
-		cmd := exec.Command("git", args...)
-		cmd.Dir, cmd.Env = "../..", append(testguard.HomeEnv(t), gitEnv...)
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("git %q: %v", args, err)
+	for file, into := range map[string]any{"baseline-report.json": &report, "baseline.json": &doc} {
+		raw, err := os.ReadFile(dir + file)
+		if err == nil {
+			err = json.Unmarshal(raw, into)
 		}
-		return out
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	env, l := doc.Environment, doc.Environment.ImageLabel.Prepared
-	if base := strings.TrimSpace(string(git("rev-parse", doc.Base+"^{tree}"))); base != tree || env.Image != pin || env.ImageID != pinnedARM64 || l.Toolchain != "go" {
-		t.Errorf("baseline.json: base %s (tree %s), image %s (%s), toolchain %q; the report's tree is %s, the pin %s (%s)", doc.Base, base, env.Image, env.ImageID, l.Toolchain, tree, pin, pinnedARM64)
+	if doc.Base == "" || doc.Base != report.Base || env.Image != pin || env.ImageID != pinnedARM64 || l.Toolchain != "go" {
+		t.Errorf("baseline.json: base %s, image %s (%s), toolchain %q; the report's base is %s, the pin %s (%s)", doc.Base, env.Image, env.ImageID, l.Toolchain, report.Base, pin, pinnedARM64)
 	}
 	if len(l.Adapter) != 1 || !contract.IsDigest(l.Adapter["linux/arm64"]) {
 		t.Errorf("baseline.json's adapter keys: %v, want exactly linux/arm64", l.Adapter)
 	}
 	want := map[string]string{}
 	for _, f := range []string{"go.mod", "go.sum"} {
-		want[f] = fmt.Sprintf("sha256:%x", sha256.Sum256(git("cat-file", "blob", doc.Base+":"+f)))
+		raw, err := os.ReadFile(dir + "base-" + f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[f] = fmt.Sprintf("sha256:%x", sha256.Sum256(raw))
 	}
 	if !maps.Equal(l.Lockfiles, want) {
 		t.Errorf("baseline.json's lockfiles %v, the base's %v", l.Lockfiles, want)
