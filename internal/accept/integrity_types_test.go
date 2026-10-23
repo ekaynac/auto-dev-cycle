@@ -405,18 +405,30 @@ func TestIntegrityRealTypes(t *testing.T) {
 	}
 	maxListTime = oldTime
 
-	// Mythos #269 M1 (on main): an alias DAG made mentions exponential (8^12
-	// visits); it gets a verdict within seconds.
-	var dag strings.Builder
-	dag.WriteString("package pkg\n")
-	for i := range 12 {
-		a := fmt.Sprintf("A%d", i+1)
-		fmt.Fprintf(&dag, "\ntype A%d = func(%s) %s\n", i, strings.Repeat(a+", ", 7)+a, a)
+	// Mythos #269 M1 (on main): an alias DAG made mentions exponential (8^n
+	// visits at depth n). Counted, not timed (#226 entry 89; the timed bound
+	// flaked beside another test binary on #423's CI): each alias's
+	// right-hand side is read once per scan and platform (2 per alias,
+	// measured), so reads grow linearly with the DAG. At most 4 per alias, at
+	// depth 12 and 24; an exponential walk reads thousands at depth 12.
+	const maxAliasReads = 4
+	reads := func(depth int) int64 {
+		var dag strings.Builder
+		dag.WriteString("package pkg\n")
+		for i := range depth {
+			a := fmt.Sprintf("A%d", i+1)
+			fmt.Fprintf(&dag, "\ntype A%d = func(%s) %s\n", i, strings.Repeat(a+", ", 7)+a, a)
+		}
+		fmt.Fprintf(&dag, "\ntype A%d = int\n", depth)
+		before := aliasReads.Load()
+		if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); len(v.Blocks) > 0 {
+			t.Errorf("an alias DAG of depth %d: %q", depth, whats(v.Blocks))
+		}
+		return aliasReads.Load() - before
 	}
-	dag.WriteString("\ntype A12 = int\n")
-	start := time.Now()
-	if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); !within(t, time.Since(start), unit, 20) {
-		t.Errorf("an alias DAG: %v (%q)", time.Since(start), whats(v.Blocks))
+	r12, r24 := reads(12), reads(24)
+	if t.Logf("alias reads: %d at depth 12, %d at depth 24", r12, r24); r12 == 0 || r12 > 12*maxAliasReads || r24 > 24*maxAliasReads {
+		t.Errorf("an alias DAG: %d reads at depth 12, %d at depth 24; want at most %d per alias", r12, r24, maxAliasReads)
 	}
 
 	// The background flag on 52087d3 "parser differential (build tags)": a
