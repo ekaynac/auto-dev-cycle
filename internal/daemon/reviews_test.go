@@ -231,33 +231,6 @@ func TestAReviewerUnavailableHoldClearsByItself(t *testing.T) {
 	})
 }
 
-// Mythos #337 L2: with review active, Validate refuses a configuration
-// with no registry, or a registry with no reviewer.
-func TestReviewNeedsARegistryWithAReviewer(t *testing.T) {
-	reviewActive = func() bool { return true }
-	t.Cleanup(func() {
-		reviewActive = func() bool { return false }
-	})
-	if err := (Config{StateDir: "/srv/adc/state"}).Validate(); err == nil || !strings.Contains(err.Error(), "--registry") {
-		t.Errorf("review active, no registry: %v", err)
-	}
-}
-
-// Mythos #337 L2, while review is inactive: adcd states at start, once,
-// that reviews hold with no reviewer registered, and says nothing with one.
-func TestAStartWithNoReviewerSaysReviewsHold(t *testing.T) {
-	for name, c := range map[string]struct {
-		reg  registry.Registry
-		says bool
-	}{"no registry": {registry.Registry{}, true}, "a reviewer registered": {stubRegistry(t, nil, nil), false}} {
-		var log bytes.Buffer
-		reconciler(&Daemon{}, c.reg, nil, nil, nil, 0, &log)
-		if says := strings.Contains(log.String(), "reviews hold until a registry with a reviewer is given"); says != c.says {
-			t.Errorf("%s: the start log %q", name, log.String())
-		}
-	}
-}
-
 // P22a-6a (P16b): the roster is the first admitted reviewer of no
 // contributor's family: a start whose registry names the build's executor
 // as a reviewer (its family the contributor's) records the review on

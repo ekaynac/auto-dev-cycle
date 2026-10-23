@@ -3,7 +3,9 @@
 #
 # Packages the fake adapter and the http-chat adapter (P13) with their workspace dependencies,
 # fixtures/t0/py-mini and go-mini, the parts of fixtures/m1 the installed cycle harness runs (the profiles, groups.json and
-# registry-stub.json, the stub provider's server.mjs and scenarios, the cases and stub/) and the harness itself (P24:
+# registry-stub.json, the stub provider's server.mjs and scenarios, the cases and stub/), the reviewer qualification's suite
+# and records with the adapters workspace's manifests and lockfile (qualify.Load's root: adcd's start checks the review
+# route's qualification against them; no run mounts lib/adc) and the harness itself (P24:
 # scripts/installed-cycle.sh and scripts/lib), into OUTDIR (dist's lib/adc; docs/design/m0/15 S2). The repository's own files are its committed content (git archive HEAD: never
 # an untracked .env or .venv, nor an uncommitted edit), with its LICENSE and NOTICE. The workspace packages keep their source paths
 # (adapters/fake, adapters/http-chat, adapters/contract, gen/ts): Node strips TypeScript types only outside node_modules, so
@@ -31,6 +33,7 @@ committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/
   gen/ts/package.json gen/ts/validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini
   fixtures/t0/go-mini fixtures/m1/profiles fixtures/m1/config/groups.json fixtures/m1/config/registry-stub.json
   fixtures/m1/stub-provider/server.mjs fixtures/m1/stub-provider/scenarios fixtures/m1/cases fixtures/m1/stub
+  fixtures/m1/review-qualification adapters/package.json adapters/pnpm-workspace.yaml adapters/pnpm-lock.yaml
   scripts/installed-cycle.sh scripts/lib)
 for p in "${committed[@]}"; do
   git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null || die "$p is not committed"
@@ -42,6 +45,7 @@ for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/http-chat/src/main.ts
 done
 [[ -f "$out/fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json" ]] || die "py-mini-feature-1 is missing"
 for f in fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json fixtures/m1/stub-provider/server.mjs fixtures/m1/profiles/go-mini.json \
+  fixtures/m1/review-qualification/suite.json adapters/pnpm-lock.yaml \
   scripts/installed-cycle.sh scripts/lib/secrets.sh scripts/lib/base-remote.sh; do
   [[ -f "$out/$f" ]] || die "$f is missing"
 done

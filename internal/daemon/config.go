@@ -23,6 +23,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
@@ -130,6 +131,9 @@ func LoadConfig(args []string) (Config, error) {
 // API sockets.
 func (c Config) controllerPaths() []string {
 	out := []string{filepath.Clean(c.StateDir), fmt.Sprintf("/run/user/%d/podman/podman.sock", os.Getuid()), "/run/podman/podman.sock"}
+	if lib, err := releaseLib(); err == nil { // the release's lib/adc: the qualification's sealed probes and records, never a run's to see
+		out = append(out, filepath.Clean(lib))
+	}
 	if c.Shared != nil {
 		out = append(out, filepath.Clean(c.Shared.RunDir))
 	}
@@ -216,26 +220,66 @@ func (c Config) Validate() error {
 	if _, err := capacity.NewReservations(c.Groups); err != nil {
 		return configError("the resource groups break a capacity rule or use one not wired yet")
 	}
-	var reg registry.Registry
-	if c.Registry != nil {
-		var err error
-		if reg, err = registry.New(*c.Registry, c.Groups); err != nil {
+	if c.Registry != nil { // with no reviewer registered review is not refused: it is inactive, its reason logged at the start (reviewsAtStart)
+		if _, err := registry.New(*c.Registry, c.Groups); err != nil {
 			return configError(err.Error()) // fixed text: a rule and an index
 		}
-	}
-	if reviewActive() && len(reg.Executors(types.RegistryExecutorRoleReviewer)) == 0 {
-		// Mythos #337 L2: with no registry every executor's family is
-		// unknown, so every review would hold reviewer_not_independent.
-		return configError("review is active: --registry is required, with a reviewer registered")
 	}
 	return nil
 }
 
-// reviewActive reports whether the review capability is active; a test
-// makes it so.
-var reviewActive = func() bool {
+// qualificationAt is where adcd's start reads the reviewer qualification
+// (qualify.Reviewers): the suite's and adapter's root, its release's
+// lib/adc (releaseLib), and the records under it; a test plants others.
+var qualificationAt = func() (root, records string, err error) {
+	lib, err := releaseLib()
+	return lib, filepath.Join(lib, qualify.Dir, "records"), err
+}
+
+// qualifiedReviewers is qualify.Reviewers; a test passes it, since only
+// qualify.Route.Review makes a record that qualifies (its own tests run
+// it: TestReviewers).
+var qualifiedReviewers = qualify.Reviewers
+
+// reviewsOf is reviewsAtStart's activation alone.
+func reviewsOf(reg registry.Registry, logw io.Writer) bool {
+	active, _ := reviewsAtStart(reg, logw)
+	return active
+}
+
+// reviewCapability is review's row of the build's table; a test plants
+// one whose rows are all kept, so its static Active differs from the
+// start's derived value.
+var reviewCapability = func() capability.Capability {
 	c, _ := capability.Of("review")
-	return c.Active()
+	return c
+}
+
+// reviewsAtStart is the review capability's activation, derived at adcd's
+// start (P22a-6; P31, the lead's ruling): its Proven prerequisite
+// (capability.ReviewQualified) is met only when every reviewer reg
+// registers is qualified by the release's records (qualify.Reviewers;
+// fail closed); otherwise review stays inactive and one start line says
+// why (open: what keeps it inactive besides its rows). It never refuses
+// the start. No runtime decision reads the table's
+// static Active for review: Gates.Reviews is this value
+// (TestReviewIsDerivedAtStart).
+func reviewsAtStart(reg registry.Registry, logw io.Writer) (active bool, open []string) {
+	root, records, err := qualificationAt()
+	if err == nil {
+		var reviewers []types.RegistryExecutor
+		for _, id := range reg.Executors(types.RegistryExecutorRoleReviewer) {
+			e, _ := reg.Executor(id)
+			reviewers = append(reviewers, e)
+		}
+		err = qualifiedReviewers(root, records, reviewers)
+	} else {
+		err = fmt.Errorf("the release's qualification cannot be found: %w", err)
+	}
+	if err != nil {
+		fmt.Fprintf(logw, "adcd: review stays inactive: %s: %v\n", capability.ReviewQualified, err)
+	}
+	return reviewCapability().ActiveWith(map[string]error{capability.ReviewQualified: err})
 }
 
 // readGroups reads a JSON array of resource groups, each checked against

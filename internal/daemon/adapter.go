@@ -154,12 +154,11 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 // executable is os.Executable; a row plants a release.
 var executable = os.Executable
 
-// releaseAdapter is the digest of adcd's own installed release's adapter
-// closure: <root>/bin/adcd, resolved, gives <root>, whose lib/adc it digests
-// (sandbox.AdapterDigest). adcd computes it once, at start (runnerOf), and
-// does not start without it (Opus #393 L1): a build is never placed on a
-// runner that would refuse every image.
-func releaseAdapter() (string, error) {
+// releaseLib is adcd's own installed release's lib/adc: <root>/bin/adcd,
+// resolved, gives <root>. It holds the adapter closure (releaseAdapter)
+// and the reviewer qualification's suite and records (reviewsAtStart); no
+// run mounts it (controllerPaths).
+func releaseLib() (string, error) {
 	exe, err := executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
@@ -167,7 +166,19 @@ func releaseAdapter() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	lib := filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib", "adc")
+	return filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib", "adc"), nil
+}
+
+// releaseAdapter is the digest of adcd's own installed release's adapter
+// closure: <root>/bin/adcd, resolved, gives <root>, whose lib/adc it digests
+// (sandbox.AdapterDigest). adcd computes it once, at start (runnerOf), and
+// does not start without it (Opus #393 L1): a build is never placed on a
+// runner that would refuse every image.
+func releaseAdapter() (string, error) {
+	lib, err := releaseLib()
+	if err != nil {
+		return "", err
+	}
 	d, err := sandbox.AdapterDigest(lib)
 	if err != nil {
 		return "", fmt.Errorf("%w: the installed release's adapter (%s) cannot be digested: %w", ErrConfig, lib, err)

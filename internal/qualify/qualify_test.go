@@ -1156,3 +1156,100 @@ func TestSuiteDigest(t *testing.T) {
 		restore(t, p, old)
 	}
 }
+
+// reviewerOf is a registry reviewer executor whose route is r.
+func reviewerOf(r types.QualifiedRoute) types.RegistryExecutor {
+	return types.RegistryExecutor{ID: r.Executor, Family: r.Family, Adapter: r.Adapter, Model: r.Model,
+		Destination: types.RegistryDestination{ID: r.Destination, Endpoint: r.Endpoint}}
+}
+
+// P31 at adcd's start (P22a-6; the lead: fail closed): Reviewers is nil
+// only when every registered reviewer is qualified by its records (genuine
+// test runs, never real ones), for the suite and adapter under the root.
+// No reviewer, no record, one of two reviewers qualified, a record of
+// another executor or of another endpoint, and a root holding no suite
+// each leave it unqualified, naming the reviewer.
+func TestReviewers(t *testing.T) {
+	s := suite(t)
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	qualified := func(r types.QualifiedRoute) string {
+		dir := t.TempDir()
+		for i, name := range []string{"earlier", "later"} {
+			x := begin(t, s, dir, name, r, at.Add(time.Duration(i)*time.Hour))
+			if _, err := s.Record(x, outcomes(t, s, x, all(s, ""))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	if RouteOf(reviewerOf(route)) != route {
+		t.Fatal("reviewerOf is not RouteOf's inverse")
+	}
+	dir := qualified(route)
+	if err := Reviewers(root, dir, []types.RegistryExecutor{reviewerOf(route)}); err != nil {
+		t.Fatalf("a qualified reviewer: %v", err)
+	}
+	otherExecutor, otherEndpoint := route, route
+	otherExecutor.Executor = "exe_01m4tm99haemr8ajyf09v4ytzc"
+	otherEndpoint.Endpoint = "http://127.0.0.1:18081/v1"
+	for name, c := range map[string]struct {
+		root, records string
+		reviewers     []types.RegistryExecutor
+		why           string
+	}{
+		"no reviewer":                  {root, dir, nil, "no reviewer is registered"},
+		"no record":                    {root, t.TempDir(), []types.RegistryExecutor{reviewerOf(route)}, "reviewer " + string(route.Executor) + ": qualify: the reviewer route is not qualified: no record of the route"},
+		"one of two qualified":         {root, dir, []types.RegistryExecutor{reviewerOf(route), reviewerOf(otherExecutor)}, "reviewer " + string(otherExecutor.Executor) + ": "},
+		"a record of another executor": {root, dir, []types.RegistryExecutor{reviewerOf(otherExecutor)}, "no record of the route"},
+		"a record of another endpoint": {root, dir, []types.RegistryExecutor{reviewerOf(otherEndpoint)}, "no record of the route"},
+		"a root with no suite":         {t.TempDir(), dir, []types.RegistryExecutor{reviewerOf(route)}, "the qualification suite cannot be read"},
+	} {
+		if err := Reviewers(c.root, c.records, c.reviewers); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// The lead's ruling (b): adcd's start reads the suite and adapter from its
+// release's lib/adc, a copy of the repository's committed files
+// (scripts/dist-adapters.sh ships the suite, the records and the adapters
+// workspace's files). Load's digests are the repository's at that copy's
+// root, so a record committed from a run here qualifies there.
+func TestTheReleasesCopyIsTheSuite(t *testing.T) {
+	s := suite(t)
+	lib := t.TempDir()
+	for _, p := range append([]string{Dir, s.Project}, adapterPaths...) {
+		src, dst := filepath.Join(root, p), filepath.Join(lib, p)
+		fi, err := os.Stat(src)
+		if err == nil && fi.IsDir() {
+			err = os.CopyFS(dst, os.DirFS(src))
+		} else if err == nil {
+			var b []byte
+			if b, err = os.ReadFile(src); err == nil {
+				err = errors.Join(os.MkdirAll(filepath.Dir(dst), 0o755), os.WriteFile(dst, b, 0o644))
+			}
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "scripts", "dist-adapters.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := string(raw)
+	if i := strings.Index(list, "committed=("); i < 0 || !strings.Contains(list[i:], ")") {
+		t.Fatal("dist-adapters.sh has no committed list")
+	} else {
+		list = list[i+len("committed=(") : i+strings.Index(list[i:], ")")]
+	}
+	for _, p := range append([]string{Dir, s.Project}, adapterPaths...) {
+		if !slices.ContainsFunc(strings.Fields(list), func(f string) bool { return f == p || strings.HasPrefix(p, f+"/") }) {
+			t.Errorf("the release does not ship %s", p)
+		}
+	}
+	got, err := Load(lib)
+	if err != nil || got.Digest != s.Digest || got.Adapter != s.Adapter {
+		t.Fatalf("the release's copy: %v; suite %s, adapter %s; the repository's %s, %s", err, got.Digest, got.Adapter, s.Digest, s.Adapter)
+	}
+}

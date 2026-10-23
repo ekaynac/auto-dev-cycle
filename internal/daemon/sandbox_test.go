@@ -19,7 +19,8 @@ import (
 // --sandbox-root is refused at start unless the root is short, apart from
 // the state directory, and its runs/ on a filesystem of its own; the
 // refusal documents cgroup delegation. The forbidden paths are the state
-// directory, the shared socket and the Podman API sockets.
+// directory, the shared socket, the Podman API sockets and the release's
+// lib/adc.
 func TestSandboxConfig(t *testing.T) {
 	state := stateDir(t)
 	root, err := os.MkdirTemp("", "sbx")
@@ -59,7 +60,11 @@ func TestSandboxConfig(t *testing.T) {
 	if err != nil || cfg.Sandbox == nil || cfg.Sandbox.Podman != "/usr/bin/podman" {
 		t.Fatalf("an accepted sandbox: %+v %v", cfg.Sandbox, err)
 	}
-	for _, f := range []string{state, run, "/run/podman/podman.sock"} { // the whole shared run directory (22a-5d-3)
+	lib, err := releaseLib()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{state, run, "/run/podman/podman.sock", lib} { // the whole shared run directory (22a-5d-3); the release's lib/adc (the qualification)
 		if !slices.Contains(cfg.Sandbox.Forbidden, f) {
 			t.Errorf("forbidden %q missing from %q", f, cfg.Sandbox.Forbidden)
 		}

@@ -521,6 +521,29 @@ func Check(dir string, route types.QualifiedRoute, s Suite) error {
 	return nil
 }
 
+// Reviewers is nil when every reviewer executor of a registry is qualified
+// (Check, on its route: RouteOf) by the records under records, for the
+// suite and adapter under root (Load); otherwise ErrUnqualified, naming
+// the first reviewer that is not and why. A registry with no reviewer
+// qualifies none. adcd's start derives the review capability from it
+// (capability.ReviewQualified; P22a-6): every reviewer, since a roster may
+// take any of them (the lead).
+func Reviewers(root, records string, reviewers []types.RegistryExecutor) error {
+	if len(reviewers) == 0 {
+		return fmt.Errorf("%w: no reviewer is registered (--registry)", ErrUnqualified)
+	}
+	s, err := Load(root)
+	if err != nil {
+		return fmt.Errorf("%w: the qualification suite cannot be read: %v", ErrUnqualified, err)
+	}
+	for _, e := range reviewers {
+		if err := Check(records, RouteOf(e), s); err != nil {
+			return fmt.Errorf("reviewer %s: %w", e.ID, err)
+		}
+	}
+	return nil
+}
+
 // recordNames are the names of the records (*.json) in dir, sorted, read
 // within maxEntries and maxRecords.
 func recordNames(dir string) ([]string, error) {
