@@ -48,6 +48,12 @@ func TestCandidateTemplate(t *testing.T) {
 	if !slices.Equal(kinds, []types.NodeKind{types.NodeKindPlan, types.NodeKindBuild, types.NodeKindAccept, types.NodeKindGate}) {
 		t.Fatalf("the template's kinds: %v", kinds)
 	}
+	// I12 consumption (K2a): the gate takes accept's tree, one input, and nothing else.
+	if g := nodes[3].Node; len(g.Inputs) != 1 {
+		t.Errorf("the gate's inputs: %+v", g.Inputs)
+	} else if src, ok := g.Inputs[0].Source.Variant.(*types.ResultSource); !ok || src.Producer != nodes[2].Node.ID || src.ResultKind != types.ResultKindTree {
+		t.Errorf("the gate's input is not accept's tree: %+v", g.Inputs[0].Source.Variant)
+	}
 	evs, err := RecordTemplate(nodes, task, project, M1Kinds)
 	if err != nil || len(evs) != len(nodes) {
 		t.Fatalf("recording the template: %d events, %v", len(evs), err)
