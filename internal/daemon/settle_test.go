@@ -271,3 +271,111 @@ func TestTheSettlementDriver(t *testing.T) {
 		}
 	})
 }
+
+// blockedSink is a log whose writes block until release is closed, each
+// sending what it writes on wrote first: a stderr pipe whose reader stopped.
+type blockedSink struct {
+	wrote   chan string
+	release chan struct{}
+}
+
+func newBlockedSink(t *testing.T) blockedSink {
+	b := blockedSink{wrote: make(chan string, 16), release: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-b.release:
+		default:
+			close(b.release)
+		}
+	})
+	return b
+}
+
+func (b blockedSink) Write(p []byte) (int, error) {
+	b.wrote <- string(p)
+	<-b.release
+	return len(p), nil
+}
+
+// Astra #411 H1: no log line is written under a lock. With the log blocked
+// on the driver's line (a usage query failing), the driver's lock is free:
+// a second Settle returns at once (a run goes on) and a Pass completes;
+// once the log takes the line, the run ends. Likewise End's line never
+// holds the runner's lock.
+func TestALogThatBlocksHoldsNoLock(t *testing.T) {
+	t.Run("the settlement driver", func(t *testing.T) {
+		_, cfg, _, _, _ := cutStore(t)
+		d, err := Start(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		e, err := newEgress(d, registry.Registry{}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink := newBlockedSink(t)
+		e.log, e.recon.Queries = sink, map[types.Slug]modelcall.Query{"stub": failingQuery{}}
+		e.Settle(context.Background())
+		if line := <-sink.wrote; !strings.Contains(line, "could not be settled") {
+			t.Fatalf("the blocked line: %q", line)
+		}
+		if !e.mu.TryLock() {
+			t.Fatal("the driver's lock is held while its log blocks")
+		}
+		e.mu.Unlock()
+		e.Settle(context.Background()) // returns: a run goes on
+		l := reconcile.NewLoop(reconcile.Executor{Store: d.store, System: d.system, Settler: e}, reconcile.Gates{}, time.Hour, io.Discard)
+		if _, err := l.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		close(sink.release)
+		e.wait()
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.settling || len(sink.wrote) != 0 {
+			t.Errorf("after the release: settling %v, %d more lines", e.settling, len(sink.wrote))
+		}
+	})
+	t.Run("the listing's fault", func(t *testing.T) {
+		w := seed(t, stateDir(t), daemonProjection(t, tokens(10)))
+		w.done() // a store that no longer reads: the listing fails
+		sink := newBlockedSink(t)
+		e := &egress{recon: &modelcall.Reconciler{Store: w.s, Actor: newID(t, "act"), Clock: &modelcall.Clock{}}, log: sink}
+		e.Settle(context.Background())
+		if line := <-sink.wrote; !strings.Contains(line, "could not be listed") {
+			t.Fatalf("the blocked line: %q", line)
+		}
+		if !e.mu.TryLock() {
+			t.Fatal("the driver's lock is held while its listing's log blocks")
+		}
+		e.mu.Unlock()
+		close(sink.release)
+		e.wait()
+		e.Settle(context.Background()) // the same cause: not logged again
+		e.wait()
+		if n := len(sink.wrote); n != 0 {
+			t.Errorf("the same listing fault logged %d more times", n)
+		}
+	})
+	t.Run("End", func(t *testing.T) {
+		rw, _ := unsealedReview(t, -1)
+		sink := newBlockedSink(t)
+		rw.r.log = sink
+		if _, err := rw.l.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if line := <-sink.wrote; !strings.Contains(line, "could not be ended") {
+			t.Fatalf("the blocked line: %q", line)
+		}
+		if !rw.r.mu.TryLock() {
+			t.Fatal("the runner's lock is held while End's log blocks")
+		}
+		rw.r.mu.Unlock()
+		if _, err := rw.l.Pass(context.Background()); err != nil { // End not due, nothing else waits on the lock
+			t.Fatal(err)
+		}
+		close(sink.release)
+		rw.r.Wait()
+	})
+}

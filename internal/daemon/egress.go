@@ -33,7 +33,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -43,15 +42,15 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
-	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
 // egress is the daemon's gateway and the model calls' reconciler, with its
 // settlement driver's state: whether a run of it goes on (Settle), the
-// retries of each call it could not settle, and the listing's last logged
-// cause.
+// retries of each call it could not settle, and the listing's failures
+// (their last logged cause). mu guards the state alone: nothing is logged
+// under it (Astra #411 H1).
 type egress struct {
 	gw    *gateway.Gateway
 	recon *modelcall.Reconciler
@@ -60,7 +59,7 @@ type egress struct {
 	mu       sync.Mutex
 	settling bool
 	retries  map[types.CallID]endRetry
-	listed   string
+	listing  endRetry
 	runs     sync.WaitGroup
 }
 
@@ -216,17 +215,21 @@ func (e *egress) settleEnded(ctx context.Context) {
 			return err
 		})
 	}); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		e.mu.Lock()
-		defer e.mu.Unlock()
-		if msg := ids.Redact(err.Error(), "<id>"); msg != e.listed && ctx.Err() == nil {
-			e.listed = msg
-			e.logf("adcd: the model calls of ended attempts could not be listed: %v", err)
+		var log bool
+		e.listing, log = e.listing.failed(err, time.Now())
+		e.mu.Unlock()
+		if log { // never under e.mu (Astra #411 H1)
+			logTo(e.log, "adcd: the model calls of ended attempts could not be listed: %v", err)
 		}
 		return
 	}
 	now := time.Now()
 	e.mu.Lock()
-	e.listed = ""
+	e.listing = endRetry{}
 	due, kept := live[:0], make(map[types.CallID]endRetry, len(e.retries))
 	for _, call := range live {
 		r, retried := e.retries[call]
@@ -273,30 +276,19 @@ func (e *egress) settleOne(ctx context.Context, call types.CallID) {
 		return // another runner settles it now, or adcd stops: the next pass reads it again
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if err == nil && after.State != eventstore.EffectPending && after.State != eventstore.EffectUncertain {
 		delete(e.retries, call)
+		e.mu.Unlock()
 		return
-	}
-	r := e.retries[call]
-	r.tries++
-	r.next = time.Now().Add(retryAfter(r.tries))
-	if err != nil {
-		if msg := ids.Redact(err.Error(), "<id>"); msg != r.cause {
-			r.cause = msg
-			e.logf("adcd: the model call %s could not be settled (retried with backoff): %v", call, err)
-		}
 	}
 	if e.retries == nil {
 		e.retries = map[types.CallID]endRetry{}
 	}
-	e.retries[call] = r
-}
-
-// logf logs one line to e's log, if any.
-func (e *egress) logf(format string, args ...any) {
-	if e.log != nil {
-		fmt.Fprintf(e.log, format+"\n", args...)
+	var log bool
+	e.retries[call], log = e.retries[call].failed(err, time.Now()) // still live with no error: tried again later, nothing logged
+	e.mu.Unlock()
+	if log { // never under e.mu (Astra #411 H1)
+		logTo(e.log, "adcd: the model call %s could not be settled (retried with backoff): %v", call, err)
 	}
 }
 
