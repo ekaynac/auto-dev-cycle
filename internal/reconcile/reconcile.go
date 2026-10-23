@@ -687,6 +687,17 @@ type Executor struct {
 	// Reviews records and re-derives the review nodes (adcd's); nil
 	// records none: RecordReview, Require and ReviewUnblock change nothing.
 	Reviews Reviews
+	// Settler settles the model calls of ended attempts (adcd's egress),
+	// on every pass whatever the pass observes; nil settles none.
+	Settler Settler
+}
+
+// Settler is the model calls' settlement driver (Opus #409 M1), outside
+// any command.
+type Settler interface {
+	// Settle starts a settlement of the calls due, unless one goes on, and
+	// returns: it never blocks the pass.
+	Settle(ctx context.Context)
 }
 
 // Reviews is what RecordReview, Require and ReviewUnblock do, in the
@@ -721,7 +732,7 @@ type Acceptor interface {
 	// it is due, forgetting any other it waited on, and returns false when
 	// it starts nothing (none due, or each going).
 	Reseal(nodes []types.NodeID) bool
-	// End ends what node, of a decided candidate's task, still runs, when
+	// End ends what node, of a decided or revoked task, still runs, when
 	// its retry is due, and returns false when it starts nothing.
 	End(task types.TaskID, node types.NodeID) bool
 }
@@ -963,6 +974,9 @@ func (l *Loop) Run(ctx context.Context) {
 // one or one that changes nothing silently: the next pass decides again. A
 // panic in the observation or an action is recovered as the pass's error.
 func (l *Loop) Pass(ctx context.Context) (ran int, err error) {
+	if l.Exec.Settler != nil {
+		l.Exec.Settler.Settle(ctx)
+	}
 	var s Snapshot
 	if err := recovered("the observation", func() error {
 		return l.Exec.Store.View(ctx, func(tx *eventstore.Tx) (err error) {

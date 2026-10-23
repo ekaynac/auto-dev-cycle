@@ -29,7 +29,8 @@
 //     source gateway_floor before the send, then gateway_count once the usage is read, which an adapter's final must
 //     not fall below to settle the call. A floor, which precedes its request's send, is refused once the call's
 //     effect has left pending; a count at a floored sequence is always accepted, late or not.
-//   - The reconciler (reconcile.go, P20) moves the effect out of pending at run end and settles it.
+//   - The reconciler (reconcile.go, P20) moves the effect out of pending at run end and settles it; a call whose effect
+//     is still live once its attempt ended (Unsettled) is settled by adcd's driver with the same rule (Opus #409 M1).
 //   - Inert (§1's gating table): nothing in adcd registers the kind, the event or the projector; P22a does.
 package modelcall
 
@@ -347,6 +348,35 @@ func OfLease(tx *eventstore.Tx, l types.LeaseID) ([]Bound, error) {
 			return nil, err
 		}
 		out = append(out, Bound{m, e})
+	}
+	return out, nil
+}
+
+// Unsettled are the live (pending or uncertain) model_call effects whose
+// attempt has ended (sealed, completed or superseded: its gateway token is
+// unbound, so no request of the call is sent after), by id: what the
+// Reconciler settles once their standing settles (Opus #409 M1).
+func Unsettled(tx *eventstore.Tx) ([]eventstore.Effect, error) {
+	live, err := tx.LiveEffects(Kind)
+	if err != nil {
+		return nil, err
+	}
+	out := live[:0]
+	for _, e := range live {
+		m, ok, err := Of(tx, types.CallID(e.Target))
+		if err == nil && !ok {
+			err = fmt.Errorf("modelcall: effect %s's call %s is not bound", e.ID, e.Target)
+		}
+		if err != nil {
+			return nil, err
+		}
+		a, _, ok, err := lease.AttemptOf(tx, m.Attempt)
+		if err != nil {
+			return nil, err
+		}
+		if ok && lease.SealedStatus(a.Status) {
+			out = append(out, e)
+		}
 	}
 	return out, nil
 }

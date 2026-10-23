@@ -190,15 +190,16 @@ var errNothingEnded = errors.New("daemon: what still runs was not ended")
 // and retried with backoff: start logs nothing more.
 var errEndRetried = errors.New("daemon: the ending is retried")
 
-// endRetry is a decided candidate's node End ends at runtime: when its next
-// try is due, its failed tries in a row, and the last cause it logged.
+// endRetry is a retried end: a node End ends at runtime, or a model call
+// the egress settles (settleEnded): when its next try is due, its failed
+// tries in a row, and the last cause it logged.
 type endRetry struct {
 	next  time.Time
 	tries int
 	cause string
 }
 
-// End ends what node of task, a decided candidate's, still runs (Opus #408
+// End ends what node of task, a decided or revoked task's, still runs (Opus #408
 // H1; #226 entry 166), as the start sweep would (endOne), when its retry is
 // due: retryBase, doubling, capped at retryBase·2^(maxTries-1), with no
 // limit on the tries (a fault that clears needs no restart), kept in memory

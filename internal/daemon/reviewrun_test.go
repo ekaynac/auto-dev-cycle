@@ -43,6 +43,10 @@ type reviewerSeen struct {
 	entries int
 }
 
+// reviewerRuns, when set, is called as a reviewer's run starts (its
+// attempt running): true ends the session there, no result returned.
+var reviewerRuns func() bool
+
 // reviewer is a reviewer adapter in this process: as builder, but on run
 // it writes decision to its exchange's out/ and submits it (kind decision),
 // as adapters/http-chat's reviewer does; it sends what it was prepared with
@@ -51,10 +55,6 @@ type reviewerSeen struct {
 // (a tool.request) before it submits. Prepared as a builder (a repair
 // round's build, P22a-6d), it runs as builder does: edit, when given, over
 // its workspace, then empty and clean.
-// reviewerRuns, when set, is called as a reviewer's run starts (its
-// attempt running): true ends the session there, no result returned.
-var reviewerRuns func() bool
-
 func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen, edit ...func(string)) *inproc.Peer {
 	return inproc.New(func(in io.Reader, out io.Writer) {
 		r, w := wire.NewReader(in), wire.NewWriter(out)

@@ -16,6 +16,13 @@ package daemon
 //     the socket server closed, once; then the call's settlement
 //     (Reconciler.Ended), when the call was ever intended, under its own
 //     bounded context, retried by a later end until it succeeds.
+//   - The settlement driver (Opus #409 M1; settleEnded): a call whose
+//     effect is still pending or uncertain once its attempt ended (its
+//     end's settlement failed, or a restart left it uncertain) is settled
+//     by the same Reconciler at start, after recovery and the start sweep,
+//     and on the reconcile loop's passes, with the runner's backoff. With
+//     no usage query (none exists in this build) a call whose usage does
+//     not settle keeps its liability.
 //   - Egress capture (§8 item 4) is configured only for an exit run
 //     (Config.CaptureEgress): each body sent is kept in the capture store
 //     and recorded (api.RecordCapture), and purged at its expiry.
@@ -24,6 +31,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -32,14 +41,25 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
-// egress is the daemon's gateway and the model calls' reconciler.
+// egress is the daemon's gateway and the model calls' reconciler, with its
+// settlement driver's state: whether a run of it goes on (Settle), the
+// retries of each call it could not settle, and the listing's last logged
+// cause.
 type egress struct {
 	gw    *gateway.Gateway
 	recon *modelcall.Reconciler
+	log   io.Writer // nil: nothing logged
+
+	mu       sync.Mutex
+	settling bool
+	retries  map[types.CallID]endRetry
+	listed   string
+	runs     sync.WaitGroup
 }
 
 // newEgress is d's egress over reg; capture keeps the bodies sent (exit
@@ -147,6 +167,121 @@ func (e *egress) open(b gateway.Binding, socket string) (types.AdapterPreparePar
 
 // settleCall is egress.settle; a test makes it fail.
 var settleCall = (*egress).settle
+
+// Settle starts settleEnded under ctx unless a run of it goes on
+// (reconcile.Settler: the loop's pass, on its timer and its nudges).
+func (e *egress) Settle(ctx context.Context) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.settling {
+		return
+	}
+	e.settling = true
+	e.runs.Add(1)
+	go func() {
+		defer e.runs.Done()
+		err := e.settleEnded(ctx)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.settling = false
+		if msg := ""; err != nil && ctx.Err() == nil {
+			if msg = ids.Redact(err.Error(), "<id>"); msg != e.listed {
+				e.logf("adcd: the model calls of ended attempts could not be read: %v", err)
+			}
+			e.listed = msg
+		} else if err == nil {
+			e.listed = ""
+		}
+	}()
+}
+
+// wait waits for a settlement run going on.
+func (e *egress) wait() { e.runs.Wait() }
+
+// settleEnded is the model calls' settlement driver (Opus #409 M1; the
+// file's comment): every call whose effect is still pending or uncertain
+// once its attempt ended (modelcall.Unsettled), due, is settled by the
+// Reconciler's own rule: a pending one as its attempt's end does (Ended:
+// out of pending, then reconciled), an uncertain one by Reconcile; another
+// runner (an attempt's end) settling it leaves it to that one. A try that
+// fails, or leaves the effect live (its usage unsettled: the liability is
+// kept, never released at zero), is retried with the runner's backoff
+// (retryAfter, capped, never ending), each in memory as End's; a failure's
+// cause is logged once per call while it holds. adcd runs it at start,
+// after recovery and the start sweep, and on each pass (Settle). It
+// returns the listing's failure; each call's own is logged.
+func (e *egress) settleEnded(ctx context.Context) error {
+	var live []eventstore.Effect
+	if err := e.recon.Store.View(ctx, func(tx *eventstore.Tx) (err error) {
+		live, err = modelcall.Unsettled(tx)
+		return err
+	}); err != nil {
+		return err
+	}
+	now := time.Now()
+	e.mu.Lock()
+	due, kept := live[:0], make(map[types.CallID]endRetry, len(e.retries))
+	for _, eff := range live {
+		call := types.CallID(eff.Target)
+		r, retried := e.retries[call]
+		if retried {
+			kept[call] = r
+		}
+		if !retried || !now.Before(r.next) {
+			due = append(due, eff)
+		}
+	}
+	e.retries = kept // a call settled meanwhile, or by another runner, is forgotten
+	e.mu.Unlock()
+	for _, eff := range due {
+		if ctx.Err() != nil {
+			return nil
+		}
+		e.settleOne(ctx, eff)
+	}
+	return nil
+}
+
+// settleOne is one try of settleEnded's on eff, within settleBound.
+func (e *egress) settleOne(ctx context.Context, eff eventstore.Effect) {
+	call := types.CallID(eff.Target)
+	sctx, cancel := context.WithTimeout(ctx, settleBound)
+	defer cancel()
+	settle := e.recon.Reconcile
+	if eff.State == eventstore.EffectPending {
+		settle = e.recon.Ended
+	}
+	after, err := settle(sctx, call)
+	if errors.Is(err, modelcall.ErrRunning) || ctx.Err() != nil {
+		return // another runner settles it now, or adcd stops: the next pass reads it again
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err == nil && after.State != eventstore.EffectPending && after.State != eventstore.EffectUncertain {
+		delete(e.retries, call)
+		return
+	}
+	r := e.retries[call]
+	r.tries++
+	r.next = time.Now().Add(retryAfter(r.tries))
+	if err != nil {
+		if msg := ids.Redact(err.Error(), "<id>"); msg != r.cause {
+			r.cause = msg
+			e.logf("adcd: the model call %s could not be settled (retried with backoff): %v", call, err)
+		}
+	}
+	if e.retries == nil {
+		e.retries = map[types.CallID]endRetry{}
+	}
+	e.retries[call] = r
+}
+
+// logf logs one line to e's log, if any.
+func (e *egress) logf(format string, args ...any) {
+	if e.log != nil {
+		fmt.Fprintf(e.log, format+"\n", args...)
+	}
+}
 
 // settle ends call's effect once its attempt is over, if it was intended.
 func (e *egress) settle(ctx context.Context, call types.CallID) error {

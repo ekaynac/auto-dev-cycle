@@ -148,6 +148,36 @@ func (t *Tx) LiveEffect(kind, target string) (Effect, bool, error) {
 		`kind = ? AND target = ? AND state IN ('pending', 'uncertain')`, kind, target)
 }
 
+// LiveEffects are the recorded effects of kind that are pending or
+// uncertain, by id: what a reconciler of the kind settles.
+func (t *Tx) LiveEffects(kind string) ([]Effect, error) {
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT id FROM effects WHERE kind = ? AND state IN ('pending', 'uncertain') ORDER BY id`, kind)
+	if err != nil {
+		return nil, t.io(err)
+	}
+	var live []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, t.io(err)
+		}
+		live = append(live, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, t.io(err)
+	}
+	out := make([]Effect, 0, len(live))
+	for _, id := range live {
+		e, err := loadEffect(t.ctx, t.tx, id)
+		if err != nil {
+			return nil, t.io(err)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 // oneEffect is the effect this command intends that match selects, or the
 // one recorded effect the where clause (a constant) selects; two recorded
 // are ErrAmbiguousEffect.
