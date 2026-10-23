@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/cli"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
@@ -190,6 +192,9 @@ type activated struct {
 	gs   []types.ResourceGroup
 	log  *logBuffer
 	sent chan sent
+	// peer, when set, is the adapter a start with a sandbox root runs
+	// (activatedOn); else the requesting builder.
+	peer *inproc.Peer
 }
 
 // activatedWorld is an activated world whose images resolve with images;
@@ -477,6 +482,9 @@ func activatedOn(t *testing.T, a *activated) *activated {
 	t.Cleanup(func() { acceptLister = defaultLister })
 	starter := &socketStarter{sockets: map[types.AttemptID]string{}}
 	starter.peer = requestingBuilder(map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}, starter, nil, a.sent)
+	if a.peer != nil {
+		starter.peer = a.peer
+	}
 	box := sandbox.Host{Podman: "/usr/bin/podman", Root: root, Home: "/home/adc-gate-test", Runner: &inPlace{}}
 	run, err := runnerOn(context.Background(), a.d, a.rw.w.dir, box, gateImages{}, a.reg, a.eg, starter, a.log)
 	if err != nil {
@@ -607,7 +615,16 @@ func activatedReviewing(t *testing.T, a *activated, reg registry.Registry) *acti
 // superseded onto the registry's roster (reviews.Unheld).
 func TestAnInactiveReviewIsHeld(t *testing.T) {
 	held := func(t *testing.T) (*activated, graph.NodeView) {
+		// Review inactive explicitly (Opus #423 L2): the qualification fails,
+		// whatever the test binary's release root holds.
+		qualifiedReviewers = func(string, string, []types.RegistryExecutor) error {
+			return errors.New("no qualification on record (the row's)")
+		}
+		t.Cleanup(func() { qualifiedReviewers = qualify.Reviewers })
 		a := activatedWorld(t, gateImages{}, true, nil)
+		if reviewsOf(a.reg, a.log) {
+			t.Fatal("review is derived active")
+		}
 		a.passes(t, 24, func() bool {
 			r := a.node(types.NodeKindReview)
 			return slices.ContainsFunc(r.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewInactive })
@@ -676,7 +693,7 @@ func TestAnInactiveReviewIsHeld(t *testing.T) {
 		if !live || l.State != types.LeaseStateGranted {
 			t.Fatalf("the review's lease under review active: %v %+v\n%s", live, l, started.log.String())
 		}
-		qualifiedReviewers = qualify.Reviewers // the qualification gone
+		qualifiedReviewers = func(string, string, []types.RegistryExecutor) error { return errors.New("the qualification is gone") }
 		again := activatedOn(t, started)
 		if reviewsOf(again.reg, again.log) {
 			t.Fatal("review is still derived active")
@@ -731,4 +748,83 @@ func TestNoReviewerHoldsTheBuild(t *testing.T) {
 	if b := a.node(types.NodeKindBuild); len(b.State.Holds) != 0 || len(a.sent) == 0 {
 		t.Fatalf("the build once a registry is given: %s %+v\n%s", b.State.State, b.State.Holds, a.log.String())
 	}
+}
+
+// Opus #423 M1: review derived active (a passing qualification, review's
+// rows kept: reviewsAtStart), never a hand-set Gates, through adcd's own
+// loop. With a go reviewer the task ends done as a candidate (every node
+// completed), then adcd starts again on the state (projections equal to
+// the replay) and verify-log passes. With a no_go reviewer the review is
+// repaired: round 2's build, accept, gate and review are recorded, and its
+// build runs.
+func TestReviewDerivedActiveThroughAdcd(t *testing.T) {
+	files := map[string]string{"gate-events.json": goEvents("TestA=pass", "TestB=pass")}
+	for name, decision := range map[string]string{"go": goDecision, "no_go": noGoDecision} {
+		t.Run(name, func(t *testing.T) {
+			a := activatedWorld(t, gateImages{}, true, nil)
+			a.passes(t, 24, func() bool { return a.node(types.NodeKindGate).State.State == types.NodeStateStateCompleted })
+			a.peer = reviewer(decision, false, nil, writes(files))
+			started := activatedReviewing(t, a, a.reg)
+			if g := started.rw.l.Gates; !g.Admits || !g.Evaluates || !g.Reviews || !g.Runs {
+				t.Fatalf("the derived gates: %+v", g)
+			}
+			if decision == noGoDecision {
+				rw := started.rw
+				started.passes(t, 40, func() bool {
+					return roundOf(t, rw, 2).build.Node.ID != "" && attemptOn(rw, roundOf(t, rw, 2).build.Node.ID)
+				})
+				one, two := roundOf(t, rw, 1), roundOf(t, rw, 2)
+				if one.review.State.State != types.NodeStateStateCompleted || one.review.Outcome == nil || *one.review.Outcome != types.OutcomeFound {
+					t.Fatalf("round 1's review: %s %v\n%s", one.review.State.State, one.review.Outcome, started.log.String())
+				}
+				if two.build.Node.ID == "" || two.accept.Node.ID == "" || two.gate.Node.ID == "" || two.review.Node.ID == "" || !attemptOn(rw, two.build.Node.ID) {
+					t.Fatalf("round 2: %+v\n%s", two, started.log.String())
+				}
+				return
+			}
+			started.passes(t, 40, func() bool {
+				st, _ := taskState(t, started.rw.w, started.rw.task)
+				return st == authority.TaskDoneState
+			})
+			if st, as := taskState(t, started.rw.w, started.rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsCandidate) {
+				t.Fatalf("the task: %s %s (task.done as a candidate)\n%s", st, as, started.log.String())
+			}
+			c, ok := taskReadAs(t, started.rw.w, started.rw.w.op, started.rw.task).Card.Variant.(*types.BoardPlacedCard)
+			if !ok || c.Column != types.BoardPlacedCardColumnDoneCandidate {
+				t.Errorf("the card: %+v", c)
+			}
+			for _, kind := range []types.NodeKind{types.NodeKindPlan, types.NodeKindBuild, types.NodeKindAccept, types.NodeKindGate, types.NodeKindReviewRequirement, types.NodeKindReview} {
+				if v := started.node(kind); v.State.State != types.NodeStateStateCompleted {
+					t.Errorf("the %s: %s %+v", kind, v.State.State, v.State.Holds)
+				}
+			}
+			if v := started.node(types.NodeKindReview); v.Outcome == nil || *v.Outcome != types.OutcomeEmpty {
+				t.Errorf("the review's outcome: %v", v.Outcome)
+			}
+			started.rw.r.Wait()
+			dir := started.rw.w.dir
+			started.rw.w.done()
+			d, err := Start(context.Background(), Config{StateDir: dir, Groups: started.gs}) // Start refuses projections that differ from the replay
+			if err != nil {
+				t.Fatalf("adcd's start on the state: %v", err)
+			}
+			if err := d.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := cli.Main(context.Background(), []string{"dev", "verify-log", "--state", dir}, &out, &errb, nil); code != entry.ExitOK {
+				t.Errorf("verify-log: %d %s %s", code, out.String(), errb.String())
+			}
+		})
+	}
+}
+
+// attemptOn reports whether node's unit has started an attempt.
+func attemptOn(rw *runWorld, node types.NodeID) bool {
+	var ok bool
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		_, ok, err = lease.FirstOn(tx, graph.UnitOf(node))
+		return err
+	})
+	return ok
 }

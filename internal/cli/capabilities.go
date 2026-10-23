@@ -89,7 +89,11 @@ func devCapabilities(args []string, stdout, stderr io.Writer) int {
 				missing = append(missing, r.Invariant+" "+r.Check)
 			}
 		}
-		fmt.Fprintf(stdout, "%s: inactive until %s; rows not kept: %s; pending: %s\n", v.Name, v.ActivatedBy, orNone(missing), orNone(v.Pending))
+		if len(missing) == 0 { // its rows all kept: it waits on its prerequisites alone (Opus #423 L1)
+			fmt.Fprintf(stdout, "%s: inactive: %s\n", v.Name, orNone(v.Pending))
+			continue
+		}
+		fmt.Fprintf(stdout, "%s: inactive until %s; rows not kept: %s; pending: %s\n", v.Name, v.ActivatedBy, strings.Join(missing, ", "), orNone(v.Pending))
 	}
 	return entry.ExitOK
 }

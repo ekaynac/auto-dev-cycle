@@ -49,7 +49,8 @@ func TestDevCapabilities(t *testing.T) {
 	out.Reset()
 	if code := Main(context.Background(), []string{"dev", "capabilities"}, &out, &errs, nil); code != entry.ExitOK ||
 		!strings.Contains(out.String(), "intake: active\n") || !strings.Contains(out.String(), "launch: active\n") ||
-		!strings.Contains(out.String(), "review: inactive until P22a; rows not kept: none; pending: P31's qualification on record") {
+		!strings.Contains(out.String(), "review: inactive: P31's qualification on record (checked by adcd at start") ||
+		!strings.Contains(out.String(), "repeat: inactive until P29; rows not kept: ") {
 		t.Errorf("the text form: %d %q", code, out.String())
 	}
 	if code := Main(context.Background(), []string{"dev", "capabilities", "extra"}, &out, &errs, nil); code != entry.ExitUsage {
