@@ -167,7 +167,7 @@ func env(d *Daemon, reg registry.Registry) graph.Env {
 // accept the build's patch, the gate accept's tree, each whole (P14a); the
 // plan takes none (Opus #325 L6).
 var noRequirement = map[types.NodeKind][]types.ResultKind{
-	types.NodeKindBuild:  {types.ResultKindPlan, types.ResultKindReview, types.ResultKindPatch}, // a repair round's findings and candidate (P22a-6d): selected, whole
+	types.NodeKindBuild:  {types.ResultKindPlan, types.ResultKindReview, types.ResultKindTree, types.ResultKindPatch}, // a repair round's findings (a review's, or an accept's refusal: #226 entry 164) and candidate (P22a-6d): selected, whole
 	types.NodeKindAccept: {types.ResultKindPatch},
 	types.NodeKindGate:   {types.ResultKindTree},
 	// The review (P22a-6a): the plan (the requirement review.Prompt

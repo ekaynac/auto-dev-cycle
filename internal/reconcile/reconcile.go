@@ -187,8 +187,9 @@ type Snapshot struct {
 	Reviewable   Versioned
 	Requirements []Versioned
 	// Repairable are its completed reviews whose verdict is no_go or
-	// unreviewable, of the task's last build round: each repaired once
-	// (Repair; P22a-6d).
+	// unreviewable, and its accepts that refused their candidate
+	// (graph.AcceptRefused; #226 entry 164), of the task's last build
+	// round: each repaired once (Repair; P22a-6d).
 	Repairable []Versioned
 	ReviewHeld []Held
 	// Next is the task admission takes next (ID "": none, or one is
@@ -332,7 +333,8 @@ func (r Require) expected() []eventstore.Expectation {
 }
 
 // Repair records the next round of a review's candidate, its verdict no_go
-// or unreviewable (Reviews.Repair; P22a-6d).
+// or unreviewable, or of an accept's, which refused it (Reviews.Repair;
+// P22a-6d; #226 entry 164).
 type Repair struct{ Review Versioned }
 
 func (Repair) action() string    { return ReviewAction }
@@ -459,7 +461,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 	reviews := g.Evaluates && g.Reviews
 	var gates []Versioned               // the task's completed gates
 	var reviewNodes []types.Node        // the task's review nodes, in any state: which gates they take (graph.TakesGate)
-	var verdicts []graph.NodeView       // the completed reviews whose verdict asks for a repair
+	var verdicts []graph.NodeView       // the completed reviews whose verdict asks for a repair, and the accepts that refused their candidate
 	required := map[types.NodeID]bool{} // the requirement a review that is not superseded takes
 	var claimedReqs []Versioned
 	var heldReqs []Held
@@ -473,6 +475,10 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		}
 		if reviews && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
 			graph.RepairVerdict(*n.Outcome, *n.Reason) { // no_go, or unreviewable: Repair's rule
+			verdicts = append(verdicts, n)
+		}
+		if g.Evaluates && n.Node.Kind == types.NodeKindAccept && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
+			graph.AcceptRefused(types.Result{Kind: types.ResultKindTree, Outcome: *n.Outcome}) { // the candidate's fault: repaired, review active or not (#226 entry 164)
 			verdicts = append(verdicts, n)
 		}
 		for _, in := range n.Node.Inputs {
