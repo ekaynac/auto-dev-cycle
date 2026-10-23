@@ -113,6 +113,31 @@ func TestHoldLifecycle(t *testing.T) {
 	}
 	g.must(clear(a, f))
 
+	// awaiting_receipt (Opus 22a-6b L3) escalates from the system to the
+	// operator, once, never before page_after: then the operator owns it.
+	rc := newHold(t, "awaiting_receipt", types.OwnerSystem, nil)
+	g.must(raised(a, rc, nil))
+	if h := g.holds(a)[0]; h.EscalateTo == nil || *h.EscalateTo != types.OwnerOperator || h.PageAfter == nil || *h.PageAfter != "PT30M" {
+		t.Fatalf("the receipt hold's recorded escalation: %+v", h)
+	}
+	g.must(page(a, rc.ID, types.OwnerSystem, nil, "telegram"))
+	if err := g.do(page(a, rc.ID, types.OwnerOperator, nil, "email")); err == nil {
+		t.Fatal("the receipt hold escalated before page_after")
+	}
+	g.must(clear(a, rc))
+	rc = newHold(t, "awaiting_receipt", types.OwnerSystem, nil)
+	rc.PageAfter = ptr(types.Duration("PT0S")) // due at once
+	g.must(raised(a, rc, nil))
+	g.must(page(a, rc.ID, types.OwnerSystem, nil, "telegram"))
+	g.must(page(a, rc.ID, types.OwnerOperator, nil, "email"))
+	if h := g.holds(a)[0]; h.Owner != types.OwnerOperator || len(h.Pages) != 2 {
+		t.Fatalf("the receipt hold escalated: %+v", h)
+	}
+	if err := g.do(page(a, rc.ID, types.OwnerOperator, nil, "telegram")); err == nil {
+		t.Fatal("the operator was paged twice for the receipt hold")
+	}
+	g.must(clear(a, rc))
+
 	// A page_after past what the clock holds is an error, never due.
 	long := newHold(t, "evidence_restore_pending", types.OwnerSystem, nil)
 	for _, d := range []types.Duration{"P9999999999D", "P999999999D"} { // too many digits; past the clock
@@ -138,8 +163,9 @@ func TestHoldLifecycle(t *testing.T) {
 		}
 	}
 	r := newHold(t, "", types.OwnerOperator, nil)
+	r.SignalInstance = "placement: executor exe_01m4tm99haemqt8es2qfbwj8pa" // the caller's signal, read as a placement one: the reason still marks the retry wait (reconcile.Offered never offers it)
 	g.must(retry(credit.ID, r))
-	if h := g.holds(a)[0]; h.Hold != "broker_credit_exhausted" || *h.Reason != vocab.ReasonBrokerCreditExhausted {
+	if h := g.holds(a)[0]; h.Hold != "broker_credit_exhausted" || h.Reason == nil || *h.Reason != vocab.ReasonBrokerCreditExhausted {
 		t.Fatalf("the retry hold: %+v", h)
 	}
 	if err := g.do(retry(credit.ID, newHold(t, "", types.OwnerOperator, nil))); err == nil {

@@ -133,9 +133,9 @@ func independentOf(tx *eventstore.Tx, rec nodeRecord, families Families) ([]stri
 		for _, m := range roster {
 			switch {
 			case c.family == receipt.UnknownFamily:
-				return nil, ErrNotIndependent{m.Executor, "the family of contributor " + c.by + " is unknown", "contributor:" + c.by}
+				return nil, ErrNotIndependent{m.Executor, "the family of contributor " + c.by + " is unknown", IndependenceSignal("contributor", c.by)}
 			case string(m.Family) == c.family:
-				return nil, ErrNotIndependent{m.Executor, "its family " + c.family + " contributed to the candidate (" + c.by + ")", "contributor:" + c.by}
+				return nil, ErrNotIndependent{m.Executor, "its family " + c.family + " contributed to the candidate (" + c.by + ")", IndependenceSignal("contributor", c.by)}
 			}
 		}
 	}

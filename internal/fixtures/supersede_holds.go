@@ -109,7 +109,7 @@ func supersessionMovesHolds(ctx context.Context, dir string) (steps []Step, viol
 		ruling, waiting = waiting, ruling
 	}
 	hid, err := ids.New("hld")
-	unavailable := types.NodeHold{ID: types.HoldID(hid), Hold: vocab.HoldReviewerUnavailable, SignalInstance: "registry:" + string(exeA), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}
+	unavailable := types.NodeHold{ID: types.HoldID(hid), Hold: vocab.HoldReviewerUnavailable, SignalInstance: graph.IndependenceSignal("registry", string(exeA)), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}
 	for _, step := range []func(*eventstore.Tx) ([]eventstore.Event, error){
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return graph.Page(tx, second, ruling.ID, ruling.Owner, ruling.OwnerRef, ptrTo(types.Name("telegram")))

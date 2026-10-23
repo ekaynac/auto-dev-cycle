@@ -36,9 +36,14 @@ var (
 	// or carries another adapter than the installed release's.
 	ErrManifest = errors.New("sandbox: the image manifest does not match the pinned toolchain and the base's lockfiles")
 
-	pinned = regexp.MustCompile(`^[^@\t\n\f\r ]+@sha256:[0-9a-f]{64}$`)
+	pinned = contract.DefPattern("config/project-profile", "PinnedImage") // the schema's rule, one with dispatch.IsImageSignal (Opus #425 L2)
 	imgID  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
+
+// Pinned reports whether ref is a pinned image reference: the profile
+// schema's PinnedImage, the one rule (Resolve's, and the launch's image
+// signal's, dispatch.IsImageSignal).
+func Pinned(ref string) bool { return pinned.MatchString(ref) }
 
 // Image is a pinned image resolved in the host's storage. A run starts the
 // resolved ID, so the reference cannot move between check and start. OS

@@ -10,9 +10,10 @@ import (
 	"io"
 	"os"
 	"path"
-	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
 
 // AdapterClosure is what the builder's http-chat adapter needs of an
@@ -29,8 +30,6 @@ const (
 	maxAdapterEntries = 1 << 14
 	maxAdapterBytes   = 1 << 30
 )
-
-var digestPin = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // AdapterDigest is sha256:HEX over the canonical listing of
 // AdapterClosure's paths under root, one line each, sorted by path: a
@@ -204,7 +203,7 @@ func (adapterError) Unwrap() error { return ErrManifest }
 // is refused.
 func (img Image) CheckAdapter(want string) error {
 	got, ok := img.Manifest.Adapter[img.OS+"/"+img.Arch]
-	if !ok || !digestPin.MatchString(want) || got != want {
+	if !ok || !contract.IsDigest(want) || got != want {
 		return ErrAdapter
 	}
 	return nil

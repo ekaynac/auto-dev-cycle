@@ -94,7 +94,7 @@ Initial hold registry (M0 defines; later milestones add):
 | `source_invalid_config` | config_change | operator |
 | `awaiting_approval` | approval | operator or supervisor (per grant) |
 | `awaiting_confirmation` | approval (human or independent review per policy) | per confirmation policy |
-| `awaiting_receipt` | receipt | system |
+| `awaiting_receipt` | receipt | system; `escalate_to: operator` after `page_after` is **recorded only** (M1, Opus 22a-6b L3; Opus #425 M1, Mythos M2): each hold carries it and the fold admits the operator's page from since + `page_after` on, but nothing in adcd pages until P29, so the owner stays `system`, and no read (the holds read, the board's badge) shows `escalate_to` or `page_after` |
 | `reviewer_unavailable` | probe (an independent reviewer family becomes available) | system |
 | `wrong_owner` | human_act | the named owner (environment, access, tooling) |
 | `maintenance_boundary` | revision (staged install lands) | system |

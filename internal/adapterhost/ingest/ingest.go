@@ -32,6 +32,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -76,8 +77,6 @@ func unsafeErr(check, format string, args ...any) *Unsafe {
 // handleRe is the handle pattern of schemas/adapter/event.json: one path
 // component that cannot be "." or "..".
 var handleRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$`)
-
-var digestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 const (
 	resolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV
@@ -340,7 +339,7 @@ func Stage(outDir *os.File, name, declared string, size, bound int64, store *blo
 	if !handleRe.MatchString(name) {
 		return nil, unsafeErr(CheckPath, "handle %q is not one plain path component", name)
 	}
-	if !digestRe.MatchString(declared) {
+	if !contract.IsDigest(declared) {
 		return nil, unsafeErr(CheckDigest, "malformed declared digest %q", declared)
 	}
 	if size < 0 || size > bound {

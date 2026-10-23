@@ -733,7 +733,7 @@ func TestNoReviewerHoldsTheBuild(t *testing.T) {
 	a = activatedOn(t, a)
 	a.passes(t, 12, func() bool { return len(a.node(types.NodeKindBuild).State.Holds) > 0 })
 	b := a.node(types.NodeKindBuild)
-	if len(b.State.Holds) != 1 || b.State.Holds[0].Hold != vocab.HoldSourceInvalidConfig || b.State.Holds[0].SignalInstance != dispatch.PlacementSignal("registry") {
+	if len(b.State.Holds) != 1 || b.State.Holds[0].Hold != vocab.HoldSourceInvalidConfig || b.State.Holds[0].SignalInstance != (dispatch.Placement{Of: "registry"}).Signal() {
 		t.Fatalf("the build with no registry: %s %+v\n%s", b.State.State, b.State.Holds, a.log.String())
 	}
 	if _, live := leaseOn(a.rw.w, b.Node.ID); live {

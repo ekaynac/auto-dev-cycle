@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
 
 // closureTree writes a small lib/adc into a new directory: the closure,
@@ -58,7 +60,7 @@ func adapterDigest(t *testing.T, dir string) string {
 // mode bit, or a file outside the closure, does not.
 func TestAdapterDigest(t *testing.T) {
 	base := adapterDigest(t, closureTree(t))
-	if !digestPin.MatchString(base) || adapterDigest(t, closureTree(t)) != base {
+	if !contract.IsDigest(base) || adapterDigest(t, closureTree(t)) != base {
 		t.Fatalf("two copies: %s and %s", base, adapterDigest(t, closureTree(t)))
 	}
 	cases := []struct {

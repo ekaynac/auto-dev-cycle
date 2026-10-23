@@ -810,11 +810,11 @@ func logTo(w io.Writer, format string, args ...any) {
 	}
 }
 
-// The runner's hold signals (reconcile.RunnerSignal): its directories; its
+// The runner's hold signals (reconcile.RunnerHold): its directories; its
 // project's profile at the hold; a bounded retry; and the retries spent.
 var (
-	runnerDirs   = reconcile.RunnerSignal("dirs")
-	runnerFailed = reconcile.RunnerSignal("failed")
+	runnerDirs   = reconcile.RunnerHold{What: "dirs"}.Signal()
+	runnerFailed = reconcile.RunnerHold{What: "failed"}.Signal()
 )
 
 // retryBase is the first retry's wait; each next one doubles it (Opus
@@ -904,7 +904,7 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 		if err != nil {
 			return nil, 0, err
 		}
-		signal = reconcile.RunnerSignal("profile " + string(d))
+		signal = reconcile.RunnerHold{What: "profile", Digest: string(d)}.Signal()
 	case contentFault(cause):
 		signal = runnerFailed
 	default:
@@ -924,7 +924,7 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 
 // runnerImage is the hold of a node whose run found its profile's pinned
 // image absent (errImageMissing).
-var runnerImage = reconcile.RunnerSignal("image")
+var runnerImage = reconcile.RunnerHold{What: "image"}.Signal()
 
 // retrySignal is node's next bounded retry: its count, and "retry <n>
 // until <time>", or "failed" once maxTries are spent.
@@ -935,8 +935,7 @@ func (r *runner) retrySignal(tx *eventstore.Tx, node types.NodeID) (int, string)
 	if n >= maxTries {
 		return n, runnerFailed
 	}
-	until := tx.Now().Add(retryAfter(n)).UTC().Format(time.RFC3339Nano)
-	return n, reconcile.RunnerSignal(fmt.Sprintf("retry %d until %s", n, until))
+	return n, reconcile.RunnerHold{What: "retry", N: n, Until: tx.Now().Add(retryAfter(n))}.Signal()
 }
 
 // raise is graph.Raise; a test makes it fail.
@@ -957,28 +956,27 @@ func (r *runner) dirsReady() bool {
 // project's profile changed since the hold; or a retry's time has come.
 // The spent retries ("failed") never clear.
 func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (bool, error) {
-	var n int
-	var until string
+	hold, ok := reconcile.ParseRunner(signal)
 	switch {
-	case signal == runnerSandbox: // a runner runs: adcd started with a sandbox root (#226 entry 171)
-		return true, nil
-	case signal == runnerDirs:
-		return r.dirsReady(), nil
-	case signal == runnerFailed:
+	case !ok: // not one the runner raised: never its to clear
 		return false, nil
-	case signal == runnerImage:
+	case hold.What == "sandbox": // a runner runs: adcd started with a sandbox root (#226 entry 171)
+		return true, nil
+	case hold.What == "dirs":
+		return r.dirsReady(), nil
+	case hold.What == "failed":
+		return false, nil
+	case hold.What == "image":
 		return r.place.imageReady(tx, node)
-	}
-	if _, err := fmt.Sscanf(signal, reconcile.RunnerSignal("retry %d until %s"), &n, &until); err == nil {
-		t, err := time.Parse(time.RFC3339Nano, until)
-		return err == nil && !tx.Now().Before(t), err
+	case hold.What == "retry":
+		return !tx.Now().Before(hold.Until), nil
 	}
 	v, err := graph.ViewOf(tx, node)
 	if err != nil {
 		return false, err
 	}
 	d, _, err := authority.ProjectProfileDigest(tx, v.Project)
-	return err == nil && signal != reconcile.RunnerSignal("profile "+string(d)), err
+	return err == nil && hold.Digest != string(d), err
 }
 
 // complete records the build's result from the facts of attempt's run and

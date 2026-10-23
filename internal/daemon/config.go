@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -94,8 +93,6 @@ const (
 		"<root>/runs a directory on its own filesystem, apart from theirs and the home's; and the home not /home/adc. " +
 		"Run limits also need cgroup delegation: under a systemd service, Delegate=yes"
 )
-
-var headHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func configError(detail string) error { return fmt.Errorf("%w: %s", ErrConfig, detail) }
 
@@ -198,7 +195,7 @@ func (c Config) Validate() error {
 		return configError("--state-dir is required")
 	case !absClean(c.StateDir):
 		return configError("the state directory must be an absolute, clean path")
-	case c.TrustedHead != nil && (c.TrustedHead.Seq < 0 || !headHash.MatchString(c.TrustedHead.Hash)):
+	case c.TrustedHead != nil && (c.TrustedHead.Seq < 0 || !contract.IsDigest(c.TrustedHead.Hash)):
 		return configError("the trusted head is not a non-negative seq and a sha256:HEX hash")
 	case c.Shared != nil && (c.Shared.RunDir == "" || c.Shared.Group == ""):
 		return configError("the shared socket needs both --shared-run-dir and --shared-group")

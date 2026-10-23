@@ -281,7 +281,7 @@ through `lease.completed`. P21a keeps this check.
 | admission | none: the reconcile loop (`internal/reconcile`, P22a-4) admits and evaluates, but checks no frontier | GAP | P29 |
 | fold/replay | none: no projection derives a task's frontier (a running attempt, a requested or granted lease, a registered hold, a claimable producer) | GAP | P29 (the frontier, derived from graph, lease and hold projections; the board reuses it) |
 | consumption | none: nothing raises `stalled` | GAP | P29 (every reconcile pass checks; a frontierless task gets `stalled`, naming the frontier, owned by the operator) |
-| effect | `holds.yaml` has no `stalled` entry; paging exists for registered holds only (`graph.Page`) | GAP | P29 (the entry, with signal `revision`, `page_after: PT15M`, `escalate_to: null`) |
+| effect | `holds.yaml` has no `stalled` entry; paging exists for registered holds only (`graph.Page`), and nothing in adcd calls it: an escalation a hold records (`awaiting_receipt`'s `escalate_to: operator` after `page_after`, #425) is recorded only, its owner staying `system`, and no read shows `escalate_to` or `page_after` (Opus #425 M1, Mythos M2) | GAP | P29 (the entry, with signal `revision`, `page_after: PT15M`, `escalate_to: null`; the pages, and the reads' escalation) |
 
 ## I20. Merge approval, fresh review after a base move, and required configuration (D52)
 
