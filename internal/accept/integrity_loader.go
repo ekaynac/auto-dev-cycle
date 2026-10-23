@@ -3,11 +3,17 @@
 // The guard's loader: go list in the prepared image, its output checked,
 // for the type checks' imports.
 //
-// A stated residual (#226 entry 148; Astra chunk 1 r3): a host fault inside
-// the guard's listing or type check (copy-out, measurement, the go list
-// wrapper shell, a malformed listing, export-data reads) may be recorded as
-// the candidate's refusal. It is never an acceptance; the cost is one
-// wasted round with a misleading finding. Item P14e-attr (#226 entry 148).
+// P14e-attr (#226 entries 148 and 168): the guard's own failures are the
+// host's, its run's error (ErrGuardRun), never a refusal, so they never
+// repair the build: a go list that failed but on boxList's positive
+// evidence (errRefused), the child not dispatched, not started or ended
+// without its result, a panic in the guard or its service, and the type
+// check's or the whole run's deadline. Its acting half is closed. The
+// residual is attribution inside what boxList counts as positive evidence
+// (go list's own nonzero exit, a bound its run broke) and inside the type
+// checks (an export-data read failing): such a host fault may still be a
+// refusal, one repair round with a misleading finding, never an
+// acceptance.
 package accept
 
 import (

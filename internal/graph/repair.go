@@ -90,7 +90,10 @@ func CandidateGo(nodes []NodeView) bool {
 // test_integrity_violation; accept.Result's), the candidate's fault: it
 // repairs the build as a review's RepairVerdict does, and nothing takes
 // its tree (Resolve: the gate waits; #226 entry 164, the lead's decision
-// 2). The one rule: Repair's, Resolve's and the loop's (reconcile.Observe).
+// 2). Only findings about the candidate's code are refusals: the guard's
+// own failures are its run's error, could_not_run, never a refusal (#226
+// entry 168). The one rule: Repair's, Resolve's and the loop's
+// (reconcile.Observe, over the selected result's fields).
 func AcceptRefused(r types.Result) bool {
 	return r.Kind == types.ResultKindTree && r.Outcome == types.OutcomeFailed
 }

@@ -181,19 +181,42 @@ func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 	}
 }
 
-// P22a-5c-2b-2: the guard's go list failing in its sandbox is the guard's
-// to judge: the test's package is unverifiable, and the candidate is
-// refused (failed/test_integrity_violation), never accepted.
-func TestAFailedGoListRefusesTheCandidate(t *testing.T) {
-	rw := goTestWorld(t)
-	v := rw.accepting(t, func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
-		return nil, errors.New("podman: the sandbox failed")
-	})
-	if v.State.State != types.NodeStateStateCompleted {
-		t.Fatalf("the accept node: %s", v.State.State)
-	}
-	if res := selectedOf(t, rw.w, v).Result; res.Outcome != types.OutcomeFailed || res.Reason != vocab.ReasonTestIntegrityViolation || !strings.Contains(res.Detail, "unverifiable") {
-		t.Errorf("accept's result: %s/%s %q", res.Outcome, res.Reason, res.Detail)
+// Opus #410 H1 (the lead's decision, #226 entry 168): the guard's own
+// failures are the host's, never the candidate's: its go list failing in
+// its sandbox (an error with no positive evidence against the candidate's
+// code, boxList's errRefused), and the guard past its deadline, are each
+// could_not_run/controller_run_failed with no attempt and a bounded retry
+// hold, and never repair the build: no second round, no "refused" accept,
+// however many passes run. Only a finding about the candidate's code
+// repairs it (TestARefusedCandidateRepairsTheBuild).
+func TestTheGuardsOwnFailureRepairsNothing(t *testing.T) {
+	bound := acceptBound
+	acceptBound = 3 * time.Second // the deadline cutting a guard that does not end
+	t.Cleanup(func() { acceptBound = bound })
+	for name, lister := range map[string]accept.Lister{
+		"go list failing in its sandbox": func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
+			return nil, errors.New("podman: the sandbox failed")
+		},
+		"the guard past its deadline": func(ctx context.Context, _ string, _ [2]string, _, _ []byte, _ []string) (map[string]accept.Listed, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rw := goTestWorld(t)
+			v := rw.accepting(t, lister)
+			got := resultsOn(t, rw.w, v.Node.ID)
+			if v.State.State == types.NodeStateStateCompleted || len(v.State.Holds) != 1 ||
+				!strings.HasPrefix(v.State.Holds[0].SignalInstance, reconcile.RunnerSignal("retry 1 until ")) ||
+				len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonControllerRunFailed {
+				t.Fatalf("accept after the guard's own failure: %s, holds %+v, results %+v", v.State.State, v.State.Holds, got)
+			}
+			rw.x.Reviews = reviews{env: rw.x.Env} // adcd's: a refusal would repair
+			rw.passesFor(t, 6, 0)
+			if two := roundOf(t, rw, 2); two.build.Node.ID != "" {
+				t.Errorf("a repair round after the guard's own failure: %+v", two.build.Node)
+			}
+		})
 	}
 }
 
@@ -215,7 +238,7 @@ func TestAnAcceptRetryClears(t *testing.T) {
 	}
 	acceptLister = func(sandbox.Host, sandbox.Image) accept.Lister {
 		return func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]accept.Listed, error) {
-			return nil, errors.New("no listing")
+			return map[string]accept.Listed{}, nil // go list now ending, listing nothing: a verdict (its imports not loaded)
 		}
 	}
 	time.Sleep(retryBase)

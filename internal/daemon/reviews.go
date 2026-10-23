@@ -224,9 +224,11 @@ func roundReview(tx *eventstore.Tx, task types.TaskID, accept types.NodeID) (typ
 		return "", err
 	}
 	for _, g := range nodes {
-		src, ok := oneSource(g.Node)
-		if g.Node.Kind != types.NodeKindGate || !ok || src.Producer != accept {
+		if g.Node.Kind != types.NodeKindGate {
 			continue
+		}
+		if tree, err := producerOf(tx, g.Node.ID, types.ResultKindTree); err != nil || tree != accept {
+			continue // a gate takes one tree, its accept's (Opus #410 L2)
 		}
 		for _, n := range nodes {
 			if graph.TakesGate(n.Node, g.Node.ID) && n.State.State != types.NodeStateStateSuperseded {
@@ -235,16 +237,6 @@ func roundReview(tx *eventstore.Tx, task types.TaskID, accept types.NodeID) (typ
 		}
 	}
 	return "", nil
-}
-
-// oneSource is node's first result input's source.
-func oneSource(n types.Node) (*types.ResultSource, bool) {
-	for _, in := range n.Inputs {
-		if src, ok := in.Source.Variant.(*types.ResultSource); ok {
-			return src, true
-		}
-	}
-	return nil, false
 }
 
 // producerOf is the producer of node's one input of kind.

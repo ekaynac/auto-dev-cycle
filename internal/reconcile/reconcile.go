@@ -478,7 +478,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			verdicts = append(verdicts, n)
 		}
 		if g.Evaluates && n.Node.Kind == types.NodeKindAccept && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
-			graph.AcceptRefused(types.Result{Kind: types.ResultKindTree, Outcome: *n.Outcome}) { // the candidate's fault: repaired, review active or not (#226 entry 164)
+			n.Reason != nil && graph.AcceptRefused(types.Result{Kind: types.ResultKindTree, Outcome: *n.Outcome, Reason: *n.Reason}) { // the selected result's fields, Repair's (Opus #410 L1): the candidate's fault, repaired, review active or not (#226 entry 164)
 			verdicts = append(verdicts, n)
 		}
 		for _, in := range n.Node.Inputs {
