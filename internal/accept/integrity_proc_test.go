@@ -222,21 +222,28 @@ func TestProcService(t *testing.T) {
 	// 170).
 	amd, arm := [2]string{"linux", "amd64"}, [2]string{"linux", "arm64"}
 	for name, c := range map[string]struct {
-		base    *[2]string // the base's listing's platform, nil none
-		baseErr bool
-		candOK  bool // the candidate's listing succeeds
-		refusal bool
+		base     *[2]string // the base's listing's platform, nil none
+		baseErr  bool
+		candOK   bool // the candidate's listing succeeds
+		joined   bool // the candidate's refusal joined to its run's failure (ErrGuardRun)
+		childErr bool // the child's result: an error, no blocks
+		refusal  bool
 	}{
-		"the base's listed on its platform": {base: &amd, refusal: true},
-		"the base's failed too":             {base: &amd, baseErr: true},
-		"the base's on another platform":    {base: &arm},
-		"no base listing":                   {},
-		"the base's alone failed":           {base: &amd, baseErr: true, candOK: true},
+		"the base's listed on its platform":                   {base: &amd, refusal: true},
+		"the base's failed too":                               {base: &amd, baseErr: true},
+		"the base's on another platform":                      {base: &arm},
+		"no base listing":                                     {},
+		"the base's alone failed":                             {base: &amd, baseErr: true, candOK: true},
+		"a refusal joined to the run's failure (Astra 5b H1)": {base: &amd, joined: true},
+		"the child's own error after a refusal (Astra 5b H2)": {base: &amd, childErr: true},
 	} {
 		calls := 0
 		onCandidate := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 			if calls++; c.base != nil && calls == 1 && !c.baseErr || calls == 2 && c.candOK {
 				return map[string]Listed{}, nil
+			}
+			if c.joined {
+				return nil, errors.Join(refused(errors.New("go list exited 1")), guardRun("the run's teardown: an I/O error"))
 			}
 			return nil, refused(errors.New("go list exited 1"))
 		}
@@ -245,6 +252,10 @@ func TestProcService(t *testing.T) {
 				next(childMsg{op: 'l', platform: *c.base, base: true})
 			}
 			next(childMsg{op: 'l', platform: amd})
+			if c.childErr {
+				next(childMsg{op: 'd', err: "accept: the integrity guard did not run: the guard failed (a type check over the guard's deadline (pkg))", erred: true})
+				return
+			}
 			next(clean)
 		})
 		switch {
@@ -252,7 +263,9 @@ func TestProcService(t *testing.T) {
 			t.Errorf("%s: not ok", name)
 		case c.refusal && (err != nil || len(blocks) != 1 || !strings.Contains(blocks[0].What, "unverifiable: go list failed (the listing failed on the candidate: go list exited 1)")):
 			t.Errorf("%s: the candidate's: %v %q", name, err, whats(blocks))
-		case !c.refusal && !hostErr(blocks, err, "go list failed"):
+		case c.childErr && (err == nil || len(blocks) != 0 || !strings.Contains(err.Error(), "over the guard's deadline")):
+			t.Errorf("%s: the child's own error: %v %q", name, err, whats(blocks))
+		case !c.refusal && !c.childErr && !hostErr(blocks, err, "go list failed"):
 			t.Errorf("%s: the host's: %v %q", name, err, whats(blocks))
 		}
 	}
