@@ -1095,6 +1095,7 @@ components:
             - created_at
             - nodes
             - ending_blocked
+            - stalled
           properties:
             type:
               const: placed
@@ -1129,6 +1130,11 @@ components:
               oneOf:
                 - type: "null"
                 - $ref: '#/$defs/BoardEndingBlocked'
+            stalled:
+              description: 'Stalled: the admitted task, not ending, with no node claimed or held and no action of the controller''s reconcile loop moving it at its last pass (reconcile.StallOf, #226 entry 184), with the controller''s phrase for why. A visible state, not a hold; null otherwise (and before the loop''s first pass).'
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/BoardStalled'
             approval:
               description: 'Its spec''s approval: none, in force, or revoked.'
               enum:
@@ -1156,6 +1162,19 @@ components:
               enum:
                 - the attempt's seal did not land
                 - the lease did not end
+        BoardStalled:
+          description: 'Why the admitted task does not move: the controller''s phrase (reconcile.StallCauses), never an error''s text.'
+          type: object
+          additionalProperties: false
+          required:
+            - cause
+          properties:
+            cause:
+              enum:
+                - no reviewer registered
+                - a decided step has no executor
+                - a decided step was refused
+                - no action decided
         BoardUnplacedCard:
           description: 'A task whose column its records do not determine: never placed. Its project is its task record''s, else the one its nodes pinned; null (read only under an every-project read) when neither is readable.'
           type: object

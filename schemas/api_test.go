@@ -161,7 +161,7 @@ func TestReadResponses(t *testing.T) {
 	nodeCard := map[string]any{"id": "nod_01m3250vkwffc979nzjw0g2sf9", "kind": "gate", "round": 1, "state": "held", "holds": []any{badge}, "waiting": []any{wait}}
 	card := map[string]any{"type": "placed", "id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": prjID, "title": "fix the parser", "column": "verifying",
 		"admitted": true, "cancelled": false, "abandoned": false, "approval": "in_force", "created_at": "2026-10-07T00:00:00Z", "nodes": []any{nodeCard},
-		"ending_blocked": nil}
+		"ending_blocked": nil, "stalled": nil}
 	unplaced := map[string]any{"type": "unplaced", "id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": nil, "reason": "task_unrecorded"}
 	for _, c := range []struct {
 		schema string
@@ -173,6 +173,7 @@ func TestReadResponses(t *testing.T) {
 		{"api/note", note}, {"api/note", with(note, "subject", prpID)}, {"api/hold", nodeHold}, {"api/hold", leaseHold},
 		{"api/board", card}, {"api/board", with(with(card, "nodes", []any{}), "column", "awaiting_approval")},
 		{"api/board", with(card, "ending_blocked", map[string]any{"unit": "unt_01m3250vkwffc979nzjw0g2sf9", "cause": "the attempt's seal did not land"})},
+		{"api/board", with(card, "stalled", map[string]any{"cause": "no reviewer registered"})},
 		{"api/board", unplaced}, {"api/board", with(unplaced, "project", prjID)}} {
 		if err := valid(t, c.schema, c.d); err != nil {
 			t.Errorf("%s: %v", c.schema, err)

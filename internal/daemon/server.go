@@ -216,7 +216,7 @@ func Routes() []string { return slices.Clone(routeList) }
 // programming error.
 func routes(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, cmds commands) *http.ServeMux {
 	cmds.gate = gate
-	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered()}
+	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered(), Stalled: cmds.stalled}
 	blobs := api.Blobs{Store: store, Blobs: cmds.blobs, Gate: gate, Now: cmds.clock, Log: cmds.log}
 	served := map[string]http.Handler{
 		"GET " + api.EventsPath:  api.Events{Store: store, Poll: lim.poll, Gate: gate},

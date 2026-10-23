@@ -1317,3 +1317,16 @@ func TestTheQualificationReadsAreBounded(t *testing.T) {
 		t.Errorf("a digest over its bytes: %v", err)
 	}
 }
+
+// Mythos #413 L2: a records-directory fault is the directory's, never
+// reported as a reviewer's.
+func TestARecordsFaultNamesNoReviewer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Reviewers(root, dir, []types.RegistryExecutor{reviewerOf(route)})
+	if !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "x.json is not a record") || strings.HasPrefix(err.Error(), "reviewer ") {
+		t.Errorf("a record that is not one: %v", err)
+	}
+}

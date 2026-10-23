@@ -41,8 +41,8 @@ package daemon
 // unplaced, its reservation freed, and the loop matches the build again. A
 // launch whose own command failed is read back: an attempt it started is
 // completed as one that never ran. The run is bounded by the session's
-// deadline and the stores' own bounds. Inert until launch is active: the
-// loop decides no Run until then. The builder's manifest.intent is recorded
+// deadline and the stores' own bounds. The loop decides a Run only while
+// launch is active (this build, P22a). The builder's manifest.intent is recorded
 // in the launch command (builderIntent; P22a-5c-2b-1, W17). A placed
 // review runs the same way (22a-6c): its reviewer's intent and prompt
 // (reviewerIntent), an empty read-only workspace (emptyWorkspace), no
@@ -115,7 +115,14 @@ var sessionDeadline = runBounds.Start + runBounds.Handshake + runBounds.Result +
 // model's thinking counts in it, so it leaves room for thinking over many
 // turns (#226 entry 175; Opus #417 M2): at 8000 a reasoning builder would
 // end most attempts cut short (executor_incomplete). The lease's
-// reservation, which the gateway enforces, bounds the attempt.
+// reservation is NOT enforced per request (Astra #423 M1): the gateway
+// records each request's floor before it sends and refuses one once the
+// call's effect has left pending (modelcall.sends), but never compares
+// the call's accumulated usage, or the next request's floor, with the
+// reservation. An attempt may pass its reservation, and the USD rail with
+// it, by its own requests, bounded by the attempt and recorded
+// conservatively. The per-request allowance is P17c, before any priced
+// builder runs.
 const builderOutputTokens = 128000
 
 // callFloors are each role's request floor: what one request can count at
@@ -953,6 +960,8 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 	var n int
 	var until string
 	switch {
+	case signal == runnerSandbox: // a runner runs: adcd started with a sandbox root (#226 entry 171)
+		return true, nil
 	case signal == runnerDirs:
 		return r.dirsReady(), nil
 	case signal == runnerFailed:

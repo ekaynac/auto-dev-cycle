@@ -166,14 +166,20 @@ func TestTheReviewIsRecordedOnceTheGateCompleted(t *testing.T) {
 	}
 }
 
-// P22a-6a: with review inactive, nothing of the review is recorded.
+// P22a-6a, as #226 entry 173 changes it: with review inactive (and launch
+// active) the review is recorded and held review_inactive, never claimed
+// nor placed.
 func TestNoReviewWhileReviewIsInactive(t *testing.T) {
 	rw := gateCompleted(t)
 	rw.reviewing(stubRegistry(t, nil, nil))
 	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
 	rw.passesFor(t, 4, 0)
-	if got := reviewNodes(rw); len(got) != 0 {
-		t.Errorf("review nodes while review is inactive: %+v", got)
+	review := reviewNodes(rw)[types.NodeKindReview]
+	if review.Node.ID == "" || len(review.State.Holds) != 1 || review.State.Holds[0].Hold != vocab.HoldReviewInactive {
+		t.Fatalf("the review while review is inactive: %+v", review.State)
+	}
+	if _, live := leaseOn(rw.w, review.Node.ID); live {
+		t.Error("the inactive review is placed")
 	}
 }
 

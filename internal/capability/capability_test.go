@@ -5,11 +5,15 @@ package capability
 import (
 	"bufio"
 	"errors"
+	"go/ast"
+	"go/types"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // inventory is each row's status in docs/design/m1/01-invariant-inventory.md.
@@ -76,8 +80,8 @@ func TestKeptIsTheInventory(t *testing.T) {
 
 // TestTable: names are unique, I15 gates every capability (all four rows
 // but intake's admission alone), an action or effect kind belongs to one
-// capability's actions at most, and this build activates intake, answers
-// and admission only (P22a-3).
+// capability's actions at most, and this build activates intake, answers,
+// admission and launch (P22a-3, P22a).
 func TestTable(t *testing.T) {
 	seen, actions := map[string]bool{}, map[string]string{}
 	var active []string
@@ -115,11 +119,12 @@ func TestTable(t *testing.T) {
 			t.Errorf("Of(%s)", c.Name)
 		}
 	}
-	if !slices.Equal(active, []string{"intake", "answers", "admission"}) {
+	// P22a: launch is active (its activation PR keeps its last rows).
+	if !slices.Equal(active, []string{"intake", "answers", "admission", "launch"}) {
 		t.Errorf("active: %v", active)
 	}
-	if ks := EffectKinds(); len(ks) != 0 {
-		t.Errorf("registered effect kinds before launch: %v", ks)
+	if ks := EffectKinds(); !slices.Equal(ks, []string{"model_call"}) {
+		t.Errorf("registered effect kinds: %v, want launch's model_call", ks)
 	}
 	if ks := NodeKinds(); len(ks) != 0 {
 		t.Errorf("node kinds added before merge: %v", ks)
@@ -130,18 +135,16 @@ func TestTable(t *testing.T) {
 	if waiting := (Capability{Rows: of("I2", Admission), Pending: []string{"a prerequisite"}}); waiting.Active() {
 		t.Error("a capability with a pending prerequisite is active")
 	}
-	// P22a-6d: review misses only I5's and I13's admission, which enforce
-	// under launch alone and are kept by launch's activation (Opus 22a-6d
-	// L1), and stays inactive on its P31 Pending (the qualification on
-	// record).
+	// P22a-6d: review's rows are kept (I5's and I13's admission by launch's
+	// activation, Opus 22a-6d L1): it is inactive here on its P31 Proven
+	// prerequisite alone (the qualification on record).
 	review, _ := Of("review")
-	if review.Active() || !slices.Equal(review.Missing(), []Row{{"I5", Admission}, {"I13", Admission}}) ||
+	if review.Active() || len(review.Missing()) != 0 ||
 		len(review.Pending) != 0 || !slices.Equal(review.Proven, []string{ReviewQualified}) {
 		t.Errorf("review: missing %v, pending %v, proven %v", review.Missing(), review.Pending, review.Proven)
 	}
 	// The qualification is derived at adcd's start (ActiveWith): unchecked
-	// or failing, it stays open with its reason; passed, it clears, and
-	// review stays inactive on its rows alone.
+	// or failing, it stays open with its reason; passed, review is active.
 	if active, open := review.ActiveWith(nil); active || !slices.Equal(open, []string{ReviewQualified + ": not checked"}) {
 		t.Errorf("review unchecked: %v %v", active, open)
 	}
@@ -149,7 +152,7 @@ func TestTable(t *testing.T) {
 		!slices.Equal(open, []string{ReviewQualified + ": no record of the route"}) {
 		t.Errorf("review unqualified: %v %v", active, open)
 	}
-	if active, open := review.ActiveWith(map[string]error{ReviewQualified: nil}); active || len(open) != 0 {
+	if active, open := review.ActiveWith(map[string]error{ReviewQualified: nil}); !active || len(open) != 0 {
 		t.Errorf("review qualified: %v %v", active, open)
 	}
 	proven := Capability{Rows: of("I2", Admission), Proven: []string{"a proof"}}
@@ -167,13 +170,11 @@ func TestTable(t *testing.T) {
 			t.Errorf("%s has Proven prerequisites and wires from the static table: %v %v %v", c.Name, c.Actions, c.EffectKinds, c.NodeKinds)
 		}
 	}
-	// K1 and K2a (launch's kept bits, #226 entry 164): launch misses only
-	// I5's admission and I21's three, the activation PR's (last): it is
-	// not active.
+	// K1, K2a and the activation PR (#226 entries 164, 181): launch's rows
+	// are kept, I5's admission and I21's three last; it is active.
 	launch, _ := Of("launch")
-	want := []Row{{"I5", Admission}, {"I21", Admission}, {"I21", Fold}, {"I21", Effect}}
-	if launch.Active() || !slices.Equal(launch.Missing(), want) {
-		t.Errorf("launch: missing %v", launch.Missing())
+	if !launch.Active() || len(launch.Missing()) != 0 {
+		t.Errorf("launch: active %v, missing %v", launch.Active(), launch.Missing())
 	}
 	// Opus #409 L1: I6's bits are its model_call half; the merge
 	// capabilities stay inactive on P20's merge half, their Pending, while
@@ -270,5 +271,61 @@ func TestRowsAreTheInventory(t *testing.T) {
 	}
 	if len(doc) != 0 {
 		t.Errorf("capabilities the inventory names and the table does not: %v", doc)
+	}
+}
+
+// Set.Keeping builds a TEST table only: no non-test Go file of the
+// repository calls it, so the bits adcd reads are this build's (Built)
+// and a capability is active only once its PR sets them.
+func TestKeepingIsTestOnly(t *testing.T) {
+	// Typed (Opus #414 L1): any reference to Set.Keeping (a call or a method
+	// value) and any assignment to daemon's capabilities, in the module's
+	// non-test files.
+	pkgs, err := packages.Load(&packages.Config{Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir: "../.."}, "./...")
+	if err != nil || packages.PrintErrors(pkgs) > 0 {
+		t.Fatalf("loading: %v", err)
+	}
+	const self = "github.com/ekaynac/auto-dev-cycle/internal/"
+	for _, p := range pkgs {
+		for id, obj := range p.TypesInfo.Uses {
+			f, ok := obj.(*types.Func)
+			if !ok || f.Name() != "Keeping" || f.Pkg() == nil || f.Pkg().Path() != self+"capability" { // its own package too (Astra #423 L1): a method declaration is no use
+				continue
+			}
+			t.Errorf("%s builds a capability table of its own (Keeping)", p.Fset.Position(id.Pos()))
+		}
+		for _, file := range p.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				a, ok := n.(*ast.AssignStmt)
+				if !ok {
+					return true
+				}
+				for _, l := range a.Lhs {
+					if id, ok := l.(*ast.Ident); ok {
+						if v, ok := p.TypesInfo.Uses[id].(*types.Var); ok && v.Name() == "capabilities" && v.Pkg() != nil && v.Pkg().Path() == self+"daemon" && v.Parent() == v.Pkg().Scope() {
+							t.Errorf("%s assigns daemon's capabilities", p.Fset.Position(id.Pos()))
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	// A test build keeps what it is given (here repeat's rows, unkept in
+	// this build), and the build's table is unchanged by it.
+	repeat, _ := Of("repeat")
+	if len(repeat.Missing()) == 0 {
+		t.Fatal("repeat has no unkept row to keep")
+	}
+	more := Built().Keeping(repeat.Missing()...)
+	if r, _ := more.Of("repeat"); !r.Active() {
+		t.Errorf("a test build keeping repeat's rows: missing %v", r.Missing())
+	}
+	if r, _ := Of("repeat"); r.Active() {
+		t.Error("a test build changed the build's table")
+	}
+	if c, _ := more.Gating("task.raise_rail"); !c.Active() {
+		t.Error("the test build's gating does not read the build's bits")
 	}
 }

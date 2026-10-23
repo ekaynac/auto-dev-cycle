@@ -238,12 +238,16 @@ func TestAnAcceptRetryClears(t *testing.T) {
 // through its runner, and none without one.
 func TestTheExecutorRunsThroughTheRunner(t *testing.T) {
 	r := &runner{}
-	x := executorOf(&Daemon{}, registry.Registry{}, fakeImages{true}, fakeCredentials{}, r)
+	x := executorOf(&Daemon{}, registry.Registry{}, fakeImages{true}, fakeCredentials{}, r, io.Discard)
 	if x.Runner != reconcile.Runner(r) || x.Acceptor != reconcile.Acceptor(r) {
 		t.Errorf("the executor's runner %v and acceptor %v, want %p", x.Runner, x.Acceptor, r)
 	}
-	if x := executorOf(&Daemon{}, registry.Registry{}, fakeImages{true}, fakeCredentials{}, nil); x.Runner != nil || x.Acceptor != nil {
-		t.Errorf("an executor with no runner: %v %v", x.Runner, x.Acceptor)
+	x = executorOf(&Daemon{}, registry.Registry{}, fakeImages{true}, fakeCredentials{}, nil, io.Discard) // Opus #414 H1: no runner holds what it would run
+	if _, ok := x.Runner.(sandboxless); !ok {
+		t.Errorf("an executor with no runner: %T", x.Runner)
+	}
+	if _, ok := x.Acceptor.(sandboxless); !ok {
+		t.Errorf("an executor with no runner: acceptor %T", x.Acceptor)
 	}
 }
 

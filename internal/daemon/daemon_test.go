@@ -133,7 +133,7 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	}
 	// The seat and admin actions are wired: seat.take reaches its logic, which
 	// refuses the system actor (not a supervisor) with a recorded reason.
-	if hs := handlers(); len(hs) != 17 || hs[authority.InputAnswerAction] == nil || hs[authority.ProjectCreateAction] == nil || hs[authority.TaskCreateAction] == nil || hs[authority.TaskCancelAction] == nil || hs[authority.TokenIssueAction] == nil || hs[authority.TokenRevokeAction] == nil || hs[authority.TokenReplaceAction] == nil || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil || hs[authority.NoteAction] == nil ||
+	if hs := handlers(); len(hs) != 18 || hs[authority.TaskRaiseRailAction] == nil || hs[authority.InputAnswerAction] == nil || hs[authority.ProjectCreateAction] == nil || hs[authority.TaskCreateAction] == nil || hs[authority.TaskCancelAction] == nil || hs[authority.TokenIssueAction] == nil || hs[authority.TokenRevokeAction] == nil || hs[authority.TokenReplaceAction] == nil || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil || hs[authority.NoteAction] == nil ||
 		hs[authority.GrantCreateAction] == nil || hs[authority.GrantRevokeAction] == nil || hs[authority.GrantExtendAction] == nil {
 		t.Fatalf("the wired handlers: %v", hs)
 	}
@@ -156,14 +156,31 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 
 // logBuffer is a log writer the test reads while Run writes it.
 type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	written *sync.Cond // broadcast at each Write (waitFor); made at the first use
 }
 
 func (b *logBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.written != nil {
+		b.written.Broadcast()
+	}
 	return b.buf.Write(p)
+}
+
+// waitFor blocks until the log holds s: an event, never a time (the test's
+// own -timeout bounds a log that never says it).
+func (b *logBuffer) waitFor(s string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.written == nil {
+		b.written = sync.NewCond(&b.mu)
+	}
+	for !strings.Contains(b.buf.String(), s) {
+		b.written.Wait()
+	}
 }
 
 func (b *logBuffer) String() string {

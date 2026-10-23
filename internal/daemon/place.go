@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -21,6 +23,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // attemptBound is one attempt's whole bound: a lease's deadline is its
@@ -29,13 +32,114 @@ const attemptBound = time.Hour
 
 // placer is adcd's reconcile.Placer (P22a-5c-1): it places the admitted
 // task's builds on the registry's builders under the task's rails, and
-// clears a day-rail hold the day reopened. Inert while launch is inactive:
-// the loop decides no Match or ClearRail until then.
+// clears a day-rail hold the day reopened. The loop decides a Match or a
+// ClearRail only while launch is active (this build, P22a).
 type placer struct {
 	d dispatch.Dispatcher
 	// ready is the runner's check that its hold on node (signal) may clear
 	// (runner.cleared); nil with no runner: its holds stay.
 	ready func(tx *eventstore.Tx, node types.NodeID, signal string) (bool, error)
+	// noSandbox: adcd started with no sandbox root, so no runner runs what
+	// it would place (#226 entry 171; plan §0.3): every node is held
+	// no_sandbox instead, nothing matched or leased.
+	noSandbox bool
+}
+
+// runnerSandbox is a no_sandbox hold's signal: a runner's (Unblocked asks
+// runner.cleared, which only a start with a sandbox root has).
+var runnerSandbox = reconcile.RunnerSignal("sandbox")
+
+// raiseNoSandbox holds node no_sandbox, the operator's: what a runner
+// would run, with none (#226 entry 171; Opus #414 H1).
+func raiseNoSandbox(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
+	id, err := ids.New("hld")
+	if err != nil {
+		return nil, err
+	}
+	return graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldNoSandbox, SignalInstance: runnerSandbox,
+		Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
+}
+
+// sandboxless is adcd's Runner and Acceptor with no sandbox root (no
+// runner; Opus #414 H1): what a runner would run is held no_sandbox
+// instead, never left with no hold. A granted lease is refused and
+// released, and its node held, in one command; a claimed accept or gate,
+// and an accept waiting on its input's seal (Reseal), held. End can hold
+// nothing: the node it ends is completed, which carries no hold
+// (records/node-state); the task's card names the unit still running
+// (ending_blocked), and its line is logged once. A start with a sandbox
+// root clears every no_sandbox hold (runner.cleared) and runs the work.
+type sandboxless struct {
+	r      *runner // its store, system actor and log only
+	mu     *sync.Mutex
+	logged map[types.NodeID]bool
+}
+
+func newSandboxless(d *Daemon, logw io.Writer) sandboxless {
+	return sandboxless{r: &runner{ctx: context.Background(), store: d.store, system: d.system, log: logw}, mu: &sync.Mutex{}, logged: map[types.NodeID]bool{}}
+}
+
+// Run releases granted lease l and holds node.
+func (s sandboxless) Run(node types.NodeID, l types.LeaseID) bool {
+	err := s.r.command(context.Background(), func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		cur, rev, ok, err := lease.LeaseOf(tx, l)
+		if err != nil || !ok || cur.State != types.LeaseStateGranted {
+			return nil, err
+		}
+		evs, err := lease.RefuseStart(tx, l, rev, vocab.ReasonPreconditionFailed.String())
+		if err != nil {
+			return nil, err
+		}
+		held, err := raiseNoSandbox(tx, node)
+		return append(evs, held...), err
+	})
+	return s.applied(node, err)
+}
+
+// Accept holds node.
+func (s sandboxless) Accept(node types.NodeID) bool { return s.hold(node) }
+
+// Gate holds node.
+func (s sandboxless) Gate(node types.NodeID) bool { return s.hold(node) }
+
+// Reseal holds each accept node of nodes, waiting on its input's seal.
+func (s sandboxless) Reseal(nodes []types.NodeID) bool {
+	any := false
+	for _, n := range nodes {
+		any = s.hold(n) || any
+	}
+	return any
+}
+
+// End holds nothing (a completed node carries none) and logs its node once.
+func (s sandboxless) End(_ types.TaskID, node types.NodeID) bool {
+	s.mu.Lock()
+	seen := s.logged[node]
+	s.logged[node] = true
+	s.mu.Unlock()
+	if !seen {
+		s.r.logf("adcd: what node %s still runs is ended only by a start with --sandbox-root (the task's card: ending_blocked)", node)
+	}
+	return false
+}
+
+// hold holds node no_sandbox in its own command.
+func (s sandboxless) hold(node types.NodeID) bool {
+	return s.applied(node, s.r.command(context.Background(), func(tx *eventstore.Tx) ([]eventstore.Event, error) { return raiseNoSandbox(tx, node) }))
+}
+
+// applied reports whether a command applied, logging a failure once per node.
+func (s sandboxless) applied(node types.NodeID, err error) bool {
+	if err != nil {
+		s.mu.Lock()
+		seen := s.logged[node]
+		s.logged[node] = true
+		s.mu.Unlock()
+		if !seen {
+			s.r.logf("adcd: the no_sandbox hold on %s could not be written: %v", node, err)
+		}
+	}
+	return err == nil
 }
 
 var _ reconcile.Placer = placer{}
@@ -53,8 +157,13 @@ func (e *placeConfig) Error() string { return "daemon: " + e.detail }
 // configuration (dispatch's refusals, and a profile pinning other than one
 // image or a registry with no builder: placeConfig), so a node no match
 // can place waits held, never retried every pass. Any other error (a
-// store's, a node placed meanwhile) is the loop's to log.
+// store's, a node placed meanwhile) is the loop's to log. With no sandbox
+// root (noSandbox) every node is held no_sandbox, the operator's, before
+// any match: a start with one clears it (runner.cleared on runnerSandbox).
 func (p placer) Place(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
+	if p.noSandbox {
+		return raiseNoSandbox(tx, node)
+	}
 	card, exe, err := p.card(tx, node)
 	var cfg *placeConfig
 	if errors.As(err, &cfg) {

@@ -7,7 +7,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -53,7 +52,7 @@ var deferred = map[string]Owner{
 func deferredActions() map[string]Owner {
 	out := maps.Clone(deferred)
 	for action := range gated() {
-		if c, _ := capability.Gating(action); !c.Active() {
+		if c, _ := capabilities().Gating(action); !c.Active() {
 			out[action] = Owner{Milestone: "M1", Ref: fmt.Sprintf("design/m1/00 §1 %s: handler built, activated by %s", c.Name, c.ActivatedBy)}
 		}
 	}

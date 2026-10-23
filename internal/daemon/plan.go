@@ -22,8 +22,8 @@ import (
 // 117): the controller records a claimed plan node's result itself, one
 // ref, the plan brief of its task's spec (internal/brief): the blob
 // published in the controller's blob store, a root ref in the project's
-// scope under the project's data policy. Inert while launch is inactive:
-// the loop decides no Plan until then.
+// scope under the project's data policy. The loop decides a Plan only
+// while launch is active (this build, P22a).
 type planner struct {
 	blobs *blobstore.Store
 	env   graph.Env

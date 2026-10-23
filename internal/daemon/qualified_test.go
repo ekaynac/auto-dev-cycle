@@ -88,8 +88,8 @@ func TestReviewIsDerivedAtStart(t *testing.T) {
 		var log logBuffer
 		reg := stubRegistry(t, nil, nil)
 		active, open := reviewsAtStart(reg, &log)
-		if active || len(open) != 0 || log.String() != "" || !slices.Equal(got, reg.Executors(types.RegistryExecutorRoleReviewer)) {
-			t.Errorf("qualified: active %v (its rows: I5, I13 admission), open %v, log %q, checked %v", active, open, log.String(), got)
+		if !active || len(open) != 0 || log.String() != "" || !slices.Equal(got, reg.Executors(types.RegistryExecutorRoleReviewer)) {
+			t.Errorf("qualified: active %v (its rows kept), open %v, log %q, checked %v", active, open, log.String(), got)
 		}
 	})
 	// The lead's condition: no runtime decision reads the table's static

@@ -37,8 +37,8 @@ package daemon
 // loop offers to Unblock (reconcile.ControllerRun), so no pass runs the
 // node again until it clears. A build attempt not sealed yet (its seal is
 // the command after its result) is no failure: nothing is held, and the
-// next pass runs the node. Inert until launch is active: the loop decides
-// no Accept until then.
+// next pass runs the node. The loop decides an Accept only while launch is
+// active (active in this build, P22a).
 
 import (
 	"bytes"

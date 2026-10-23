@@ -276,6 +276,57 @@ func TestLiveContainerRunsTheBuild(t *testing.T) {
 	leftBehind(t, rw, box)
 }
 
+// A5 (the activation plan §3 A): the live build through adcd's own wiring,
+// launch active (this build's table):
+// adcd's egress (newEgress), its runner on the live sandbox host with the
+// container adapter (runnerOn, as runnerOf makes it) and its own loop
+// (reconciler, the gates derived from the table; none set by hand). The
+// build is placed, launched in its container, its adapter's turns reach
+// the stub provider through the gateway, and its diff is recorded.
+func TestLiveContainerRunsTheBuildThroughAdcd(t *testing.T) {
+	rw, box, log, reg := liveWorld(t, func(b liveBox) string { return b.want }, nil)
+	d := &Daemon{store: rw.w.s, blobs: rw.w.blobs, system: rw.r.system, clock: time.Now}
+	eg, err := newEgress(d, reg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := runnerOn(context.Background(), d, rw.w.dir, box.h, box.h, reg, eg, &containerAdapter{Box: box.h, Want: box.want}, testLog{t})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rw.r = run
+	rw.l = reconciler(d, reg, box.h, eg, run, time.Hour, false, io.Discard)
+	for range 12 {
+		rw.build = templateNodes(rw.w, rw.task)[types.NodeKindBuild]
+		if id, ok, err := firstAttempt(rw); rw.build != "" && err == nil && ok && attemptAt(rw.w, id).Status == types.AttemptStatusCompleted {
+			break
+		}
+		if _, err := rw.l.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		run.Wait()
+	}
+	rw.build = templateNodes(rw.w, rw.task)[types.NodeKindBuild]
+	a, l := rw.attemptOf(t)
+	var res types.Result
+	var byAttempt bool
+	rw.w.view(func(tx *eventstore.Tx) (err error) {
+		res, byAttempt, err = graph.AttemptResult(tx, a.ID)
+		return err
+	})
+	if !byAttempt || res.Outcome != types.OutcomeFound || a.Status != types.AttemptStatusCompleted || l.State != types.LeaseStateSettled || len(res.Value) != 1 {
+		t.Fatalf("the result %+v (by the attempt %v), attempt %s, lease %s", res, byAttempt, a.Status, l.State)
+	}
+	patch, err := blobOf(t, rw.w, res.Value[0].ContentDigest)
+	if err != nil || !bytes.Contains(patch, []byte("+func (s *Store) Transfer(")) {
+		t.Errorf("the recorded diff: %s, %v", patch, err)
+	}
+	if n := stubRequests(t, log); n < 2 {
+		t.Errorf("the stub provider saw %d requests, want the builder's turns", n)
+	}
+	leftBehind(t, rw, box)
+}
+
 // An image whose adapter is not the installed release's is refused before
 // anything is prepared: no attempt starts, no request reaches the stub, no
 // container is made, and the build is held on the project's profile.

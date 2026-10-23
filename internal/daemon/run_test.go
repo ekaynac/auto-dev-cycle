@@ -52,6 +52,14 @@ const builderClean = `{"outcome":"empty","reason":"completed_clean","detail":""}
 // clean (the controller's diff decides), or, when noResult, ends the
 // session with no result.
 func builder(edit func(workspace string), noResult bool, prompts chan<- []byte) *inproc.Peer {
+	return builderWith(edit, noResult, prompts, nil)
+}
+
+// builderWith is builder whose run, after edit, calls onRun (when set)
+// with what it was prepared with (a row's gateway request, through its
+// attempt's socket) and reports the final usage onRun returns (nil: none,
+// the adapter cannot know it).
+func builderWith(edit func(workspace string), noResult bool, prompts chan<- []byte, onRun func(types.AdapterPrepareParams) *types.AdapterRunResultUsageFinalValue) *inproc.Peer {
 	return inproc.New(func(in io.Reader, out io.Writer) {
 		r, w := wire.NewReader(in), wire.NewWriter(out)
 		var prep types.AdapterPrepareParams
@@ -77,10 +85,14 @@ func builder(edit func(workspace string), noResult bool, prompts chan<- []byte) 
 				if edit != nil {
 					edit(prep.Workspace.Path)
 				}
+				var final *types.AdapterRunResultUsageFinalValue
+				if onRun != nil {
+					final = onRun(prep)
+				}
 				if noResult {
 					return
 				}
-				if res, err = json.Marshal(types.AdapterRunResult{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}); err != nil {
+				if res, err = json.Marshal(types.AdapterRunResult{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, UsageFinal: final}); err != nil {
 					return
 				}
 			}

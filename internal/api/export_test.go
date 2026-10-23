@@ -16,5 +16,8 @@ var Redact = redact
 // BoardCard exposes the board's derivation to the tests, ending_blocked
 // none (endingOf reads the store).
 func BoardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool) types.BoardCard {
-	return boardCard(t, nodes, now, ownerRefs, nil)
+	return boardCard(t, nodes, now, ownerRefs, nil, nil)
 }
+
+// StalledOf exposes stalledOf to the tests.
+var StalledOf = stalledOf

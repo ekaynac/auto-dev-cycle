@@ -27,6 +27,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
@@ -447,19 +448,35 @@ func TestCommandsBusy(t *testing.T) {
 }
 
 // Every wired handler has its logic, issuer or request, and nothing else
-// does.
+// does, under this build's table (launch active) and with launch pending
+// (Opus #414 re-check L2: a handler wired with none is refused before
+// anything is submitted); the matrix derives from either.
 func TestEveryHandlerHasLogic(t *testing.T) {
 	reg, err := vocab.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ls, is, rs := logics(authorizer(reg)), issuers(authorizer(reg)), requests(authorizer(reg), nil)
-	for action := range handlers() {
-		if b2i(ls[action] != nil)+b2i(is[action] != nil)+b2i(rs[action] != nil) != 1 {
-			t.Errorf("%s has a handler and not exactly one of a logic, an issuer and a request", action)
+	layered := func(table string) {
+		ls, is, rs := logics(authorizer(reg)), issuers(authorizer(reg)), requests(authorizer(reg), nil)
+		for action := range handlers() {
+			if b2i(ls[action] != nil)+b2i(is[action] != nil)+b2i(rs[action] != nil) != 1 {
+				t.Errorf("%s: %s has a handler and not exactly one of a logic, an issuer and a request", table, action)
+			}
+		}
+		if len(ls)+len(is)+len(rs) != len(handlers()) {
+			t.Errorf("%s: logics %d, issuers %d, requests %d, handlers %d", table, len(ls), len(is), len(rs), len(handlers()))
+		}
+		if _, err := Matrix(reg); err != nil {
+			t.Errorf("%s: the matrix: %v", table, err)
 		}
 	}
-	if len(ls)+len(is)+len(rs) != len(handlers()) || rs[authority.TaskCreateAction] == nil || is[authority.EnrolAction] == nil || is[authority.TokenIssueAction] == nil || is[authority.TokenReplaceAction] == nil || ls[authority.TokenRevokeAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
+	layered("this build")
+	if _, ok := handlers()[authority.TaskRaiseRailAction]; !ok {
+		t.Error("this build: task.raise_rail is not wired")
+	}
+	launchPending(t, func() { layered("launch pending") })
+	ls, is, rs := logics(authorizer(reg)), issuers(authorizer(reg)), requests(authorizer(reg), nil)
+	if len(ls)+len(is)+len(rs) != len(handlers()) || ls[authority.TaskRaiseRailAction] == nil || rs[authority.TaskCreateAction] == nil || is[authority.EnrolAction] == nil || is[authority.TokenIssueAction] == nil || is[authority.TokenReplaceAction] == nil || ls[authority.TokenRevokeAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
 		ls[authority.GrantCreateAction] == nil || ls[authority.GrantRevokeAction] == nil || ls[authority.GrantExtendAction] == nil {
 		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}
@@ -548,4 +565,58 @@ func fakeSecret(t *testing.T) identity.Secret {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// Opus #414 re-check L2: task.raise_rail through adcd's command server,
+// launch active (this build): the operator's adc task raise-rail raises a
+// task's rounds_per_task, and the budget_rail hold on that rail on the
+// task's node is cleared in the same command.
+func TestRaiseRailThroughTheCommandServer(t *testing.T) {
+	var task types.TaskID
+	var node types.NodeID
+	c := runCommanded(t, func(w *seeder, op types.ActorID) {
+		node = plannedIn(t, w, graphProject)
+		w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			var err error
+			if task, err = graph.TaskOf(tx, node); err != nil {
+				return nil, err
+			}
+			h, err := graph.RailHold(graph.RailRounds)
+			if err != nil {
+				return nil, err
+			}
+			return graph.Raise(tx, node, h, nil)
+		})
+	})
+	var version int64
+	var before graph.Caps
+	if err := c.d.store.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		if version, err = tx.SubjectVersion(string(task)); err == nil {
+			before, err = authority.Rails(tx, task)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	to := before.RoundsPerTask + 2
+	scope := fmt.Sprintf(`{"task":%q,"rail":"rounds_per_task","to":%d}`, task, to)
+	code, out, errb := c.adc(c.op.Reveal(), "task", "raise-rail", "--expect", fmt.Sprint(version), "--reason", "r", "--json", "--scope", scope)
+	if a, ok := response(t, out).(*types.CommandApplied); code != entry.ExitOK || !ok || a.Disposition != "applied" {
+		t.Fatalf("adc task raise-rail: %d %s %s", code, out, errb)
+	}
+	var after graph.Caps
+	var held []types.NodeHold
+	if err := c.d.store.View(context.Background(), func(tx *eventstore.Tx) error {
+		v, err := graph.ViewOf(tx, node)
+		held = v.State.Holds
+		if err == nil {
+			after, err = authority.Rails(tx, task)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if after.RoundsPerTask != to || len(held) != 0 {
+		t.Errorf("after the raise: rounds_per_task %d (want %d), holds %+v", after.RoundsPerTask, to, held)
+	}
 }

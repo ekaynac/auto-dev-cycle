@@ -38,8 +38,8 @@ func TestDevCapabilities(t *testing.T) {
 	if !in.Active || !by["answers"].Active || !by["admission"].Active || !slices.Equal(in.Actions, []string{"project.create", "task.create", "task.cancel"}) {
 		t.Errorf("intake: %+v", in)
 	}
-	unkept := slices.ContainsFunc(launch.Rows, func(r capabilityRow) bool { return r.Invariant == "I21" && !r.Kept }) // the activation PR's (K1 keeps I16)
-	if launch.Active || !slices.Equal(launch.EffectKinds, []string{"model_call"}) || !unkept {
+	unkept := slices.ContainsFunc(launch.Rows, func(r capabilityRow) bool { return !r.Kept })
+	if !launch.Active || !slices.Equal(launch.EffectKinds, []string{"model_call"}) || unkept || !slices.Equal(launch.Actions, []string{"task.raise_rail"}) {
 		t.Errorf("launch: %+v", launch)
 	}
 	if review.Active || len(review.Pending) != 1 || !strings.HasPrefix(review.Pending[0], "P31's qualification on record (checked by adcd at start") ||
@@ -48,7 +48,9 @@ func TestDevCapabilities(t *testing.T) {
 	}
 	out.Reset()
 	if code := Main(context.Background(), []string{"dev", "capabilities"}, &out, &errs, nil); code != entry.ExitOK ||
-		!strings.Contains(out.String(), "intake: active\n") || !strings.Contains(out.String(), "launch: inactive until P22a; rows not kept: ") {
+		!strings.Contains(out.String(), "intake: active\n") || !strings.Contains(out.String(), "launch: active\n") ||
+		!strings.Contains(out.String(), "review: inactive: P31's qualification on record (checked by adcd at start") ||
+		!strings.Contains(out.String(), "repeat: inactive until P29; rows not kept: ") {
 		t.Errorf("the text form: %d %q", code, out.String())
 	}
 	if code := Main(context.Background(), []string{"dev", "capabilities", "extra"}, &out, &errs, nil); code != entry.ExitUsage {

@@ -78,6 +78,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -142,6 +143,10 @@ type Gates struct {
 	// committed and its review matched (review active; P22a-6a). It acts
 	// only with Evaluates.
 	Reviews bool
+	// Runs: a runner runs what the loop places (adcd started with a sandbox
+	// root). Without one no no_sandbox hold is offered to Unblock: none could
+	// clear (Opus #414 L4).
+	Runs bool
 }
 
 // Snapshot is what Decide reads.
@@ -186,10 +191,19 @@ type Snapshot struct {
 	// review takes (P22a-6a; Opus 22a-6a re-check H1).
 	Reviewable   Versioned
 	Requirements []Versioned
+	// Inactive are its review nodes, not completed nor held review_inactive,
+	// while launch is active and review is not: each is held (HoldReview;
+	// #226 entry 173).
+	Inactive []Versioned
 	// Repairable are its completed reviews whose verdict is no_go or
 	// unreviewable, of the task's last build round: each repaired once
-	// (Repair; P22a-6d).
+	// (Repair; P22a-6d), with launch active whether review is or not: the
+	// repair is the controller's alone, and its review is then held
+	// review_inactive while review is inactive (#226 entry 184).
 	Repairable []Versioned
+	// Busy: a node of the admitted task is claimed or held (a stalled task
+	// has none; StallOf).
+	Busy       bool
 	ReviewHeld []Held
 	// Next is the task admission takes next (ID "": none, or one is
 	// admitted).
@@ -218,8 +232,8 @@ func IsRunnerSignal(signal string) bool { return strings.HasPrefix(signal, runne
 // to the code that clears it, the one rule Observe collects holds by
 // (#226 entry 156; Opus #400 M1): budget_rail on the day's USD rail
 // (ClearRail: Placer.Reopened); source_invalid_config on a placement or a
-// runner signal, and wrong_owner on a launch's missing image (Unblock:
-// Placer.Unblocked); reviewer_unavailable (ReviewUnblock: Reviewer.Unheld).
+// runner signal, wrong_owner on a launch's missing image, and no_sandbox
+// on a runner signal (Unblock: Placer.Unblocked); reviewer_unavailable (ReviewUnblock: Reviewer.Unheld).
 // The loop leaves every other hold to its own clearer (an answer,
 // task.raise_rail) or to its stated terminal state.
 func Offered(kind, signal string) bool {
@@ -230,6 +244,10 @@ func Offered(kind, signal string) bool {
 		return dispatch.IsPlacementSignal(signal) || IsRunnerSignal(signal)
 	case vocab.HoldWrongOwner:
 		return dispatch.IsImageSignal(signal)
+	case vocab.HoldReviewInactive: // a start that derives review active clears it (#226 entry 173)
+		return signal == ReviewSignal
+	case vocab.HoldNoSandbox: // a placed node with no runner (#226 entry 171): a start with a sandbox root clears it
+		return IsRunnerSignal(signal)
 	}
 	return kind == vocab.HoldReviewerUnavailable
 }
@@ -341,8 +359,26 @@ func (r Repair) expected() []eventstore.Expectation {
 	return []eventstore.Expectation{{Subject: r.Review.ID, Version: r.Review.Version}}
 }
 
-// ReviewUnblock re-derives a review's roster held reviewer_unavailable
-// (Reviews.Unheld).
+// HoldReview holds a review node review_inactive, the operator's, on
+// ReviewSignal: launch is active and review is not (#226 entry 173), so the
+// review is recorded but never claimed or placed; a lease granted on its
+// unit before (review active at an earlier start) is released in the same
+// command. A start that derives review active clears it (ReviewUnblock:
+// Reviews.Unheld).
+type HoldReview struct{ Node Versioned }
+
+func (HoldReview) action() string    { return ReviewAction }
+func (r HoldReview) subject() string { return r.Node.ID }
+func (r HoldReview) expected() []eventstore.Expectation {
+	return []eventstore.Expectation{{Subject: r.Node.ID, Version: r.Node.Version}}
+}
+
+// ReviewSignal is a review_inactive hold's signal: the review capability,
+// active once a start derives it.
+const ReviewSignal = "capability: review"
+
+// ReviewUnblock re-derives a review's roster held reviewer_unavailable, or
+// clears its review_inactive hold once review is active (Reviews.Unheld).
 type ReviewUnblock struct{ Held Held }
 
 func (ReviewUnblock) action() string    { return ReviewAction }
@@ -470,8 +506,18 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		v := Versioned{ID: string(n.Node.ID)}
 		if n.Node.Kind == types.NodeKindReview {
 			reviewNodes = append(reviewNodes, n.Node)
+			if st := n.State.State; g.Evaluates && !g.Reviews && st != types.NodeStateStateCompleted && st != types.NodeStateStateSuperseded &&
+				!slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewInactive }) {
+				iv := Versioned{ID: string(n.Node.ID)}
+				if iv.Version, err = tx.SubjectVersion(iv.ID); err == nil {
+					s.Inactive = append(s.Inactive, iv)
+				}
+			}
 		}
-		if reviews && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
+		if st := n.State.State; st == types.NodeStateStateClaimed || st == types.NodeStateStateHeld {
+			s.Busy = true
+		}
+		if g.Evaluates && n.Node.Kind == types.NodeKindReview && n.State.State == types.NodeStateStateCompleted && n.Outcome != nil &&
 			graph.RepairVerdict(*n.Outcome, *n.Reason) { // no_go, or unreviewable: Repair's rule
 			verdicts = append(verdicts, n)
 		}
@@ -488,13 +534,15 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			v.Version, err = tx.SubjectVersion(v.ID)
 			claimedReqs = append(claimedReqs, v)
 		case st == types.NodeStateStateHeld && reviews && (n.Node.Kind == types.NodeKindReview || n.Node.Kind == types.NodeKindReviewRequirement) &&
-			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool { return h.Hold == vocab.HoldReviewerUnavailable }):
+			slices.ContainsFunc(n.State.Holds, func(h types.NodeHold) bool {
+				return h.Hold == vocab.HoldReviewerUnavailable || h.Hold == vocab.HoldReviewInactive
+			}):
 			if v.Version, err = tx.SubjectVersion(v.ID); err != nil {
 				break
 			}
 			for _, h := range n.State.Holds {
 				switch {
-				case h.Hold != vocab.HoldReviewerUnavailable || !Offered(h.Hold, h.SignalInstance):
+				case h.Hold != vocab.HoldReviewerUnavailable && h.Hold != vocab.HoldReviewInactive || !Offered(h.Hold, h.SignalInstance):
 				case n.Node.Kind == types.NodeKindReview:
 					s.ReviewHeld = append(s.ReviewHeld, Held{Node: v, Hold: h.ID, Signal: h.SignalInstance})
 				default:
@@ -543,6 +591,7 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 			for _, h := range n.State.Holds {
 				switch held := (Held{Node: v, Hold: h.ID, Signal: h.SignalInstance}); {
 				case !Offered(h.Hold, h.SignalInstance), h.Hold == vocab.HoldReviewerUnavailable: // not the loop's; a review's is collected above
+				case h.Hold == vocab.HoldNoSandbox && !g.Runs: // none could clear it (Opus #414 L4)
 				case h.Hold == vocab.HoldBudgetRail:
 					s.DayHeld = append(s.DayHeld, held)
 				default:
@@ -571,7 +620,9 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		}
 	}
 	for _, gate := range gates { // keyed by gate (Opus 22a-6a′ L2): a later round's gate is reviewable too
-		if err == nil && reviews && !slices.ContainsFunc(reviewNodes, func(r types.Node) bool { return graph.TakesGate(r, types.NodeID(gate.ID)) }) {
+		// Recorded with launch active, review active or not (#226 entry 173: an
+		// inactive review's node is held review_inactive, never a stop with no hold).
+		if err == nil && g.Evaluates && !slices.ContainsFunc(reviewNodes, func(r types.Node) bool { return graph.TakesGate(r, types.NodeID(gate.ID)) }) {
 			gate.Version, err = tx.SubjectVersion(gate.ID)
 			s.Reviewable = gate
 			break
@@ -646,6 +697,9 @@ func Decide(s Snapshot) []Action {
 		}
 		if s.Reviewable.ID != "" {
 			out = append(out, RecordReview{Gate: s.Reviewable})
+		}
+		for _, n := range s.Inactive {
+			out = append(out, HoldReview{Node: n})
 		}
 		for _, n := range s.Requirements {
 			out = append(out, Require{Node: n})
@@ -769,29 +823,129 @@ var errNoPlacer = errors.New("reconcile: no placer: the loop places nothing")
 // nothing.
 var errNothing = errors.New("reconcile: the action changes nothing")
 
+// errNoExecutor is an action with no executor to run it (a nil Runner,
+// Acceptor, Planner or Reviews): it changes nothing, and a task that only
+// it would move is stalled (StallNoExecutor).
+var errNoExecutor = fmt.Errorf("%w: no executor runs it", errNothing)
+
+// The causes a stalled task's card shows (the board's stalled; #226 entry
+// 184): the controller's phrases, never an error's text.
+const (
+	StallNoReviewer = "no reviewer registered"
+	StallNoExecutor = "a decided step has no executor"
+	StallRefused    = "a decided step was refused"
+	StallNothing    = "no action decided"
+)
+
+// StallCauses are every cause StallOf gives, in its precedence order.
+var StallCauses = []string{StallNoReviewer, StallNoExecutor, StallRefused, StallNothing}
+
+// Stalled is an action's refusal that names why its task cannot move (a
+// cause of StallCauses): it changes nothing, as errNothing.
+type Stalled struct{ Cause string }
+
+func (s Stalled) Error() string { return "reconcile: stalled: " + s.Cause }
+
+// Is makes a Stalled errNothing too: nothing is logged per action.
+func (s Stalled) Is(target error) bool { return target == errNothing }
+
+// StallOf is whether s's admitted task is stalled after a pass whose
+// decided actions ended with outcomes (one per action, nil when applied),
+// and why: the one rule (#226 entry 184). A task is stalled when launch is
+// active, it is admitted and not ending (ending_blocked is shown apart),
+// no node of it is claimed or held, and no action decided for it applied
+// or met a store that moved (stale_expected_state: the next pass decides
+// again). Its cause is the first of StallCauses an outcome gives: an
+// action's own Stalled, an action with no executor, a refused action; else
+// no action decided (none, or each changing nothing).
+func StallOf(s Snapshot, outcomes []error) (string, bool) {
+	if s.Admitted.ID == "" || !s.Evaluates || s.Busy || s.Ending != nil {
+		return "", false
+	}
+	rank := len(StallCauses) - 1
+	for _, err := range outcomes {
+		var st Stalled
+		switch {
+		case err == nil, errors.Is(err, eventstore.ErrStaleExpectedState):
+			return "", false
+		case errors.As(err, &st) && slices.Contains(StallCauses, st.Cause):
+			rank = min(rank, slices.Index(StallCauses, st.Cause))
+		case errors.Is(err, errNoExecutor), errors.Is(err, errNoPlacer):
+			rank = min(rank, slices.Index(StallCauses, StallNoExecutor))
+		case !errors.Is(err, errNothing):
+			rank = min(rank, slices.Index(StallCauses, StallRefused))
+		}
+	}
+	return StallCauses[rank], true
+}
+
+// Stalls are the admitted task's stall as the loop found it at its last
+// pass (StallOf), for the board's card: none, or one task and its cause.
+// Safe for concurrent use; a nil Stalls tracks nothing.
+type Stalls struct {
+	mu    sync.Mutex
+	task  types.TaskID
+	cause string
+}
+
+// Of is task's cause, if the last pass found it stalled.
+func (s *Stalls) Of(task types.TaskID) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cause, s.task == task && s.cause != ""
+}
+
+// set records task's cause ("" when it is not stalled), reporting whether
+// it changed.
+func (s *Stalls) set(task types.TaskID, cause string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cause == "" {
+		task = ""
+	}
+	changed := s.task != task || s.cause != cause
+	s.task, s.cause = task, cause
+	return changed
+}
+
 // Run runs a in one command; stale_expected_state when a subject it read
 // has changed.
 func (x Executor) Run(ctx context.Context, a Action) error {
 	if r, ok := a.(Run); ok {
-		if x.Runner == nil || !x.Runner.Run(types.NodeID(r.Granted.Node.ID), r.Granted.Lease) {
+		if x.Runner == nil {
+			return errNoExecutor
+		}
+		if !x.Runner.Run(types.NodeID(r.Granted.Node.ID), r.Granted.Lease) {
 			return errNothing
 		}
 		return nil
 	}
 	if acc, ok := a.(Accept); ok {
-		if x.Acceptor == nil || !x.Acceptor.Accept(types.NodeID(acc.Node.ID)) {
+		if x.Acceptor == nil {
+			return errNoExecutor
+		}
+		if !x.Acceptor.Accept(types.NodeID(acc.Node.ID)) {
 			return errNothing
 		}
 		return nil
 	}
 	if g, ok := a.(Gate); ok {
-		if x.Acceptor == nil || !x.Acceptor.Gate(types.NodeID(g.Node.ID)) {
+		if x.Acceptor == nil {
+			return errNoExecutor
+		}
+		if !x.Acceptor.Gate(types.NodeID(g.Node.ID)) {
 			return errNothing
 		}
 		return nil
 	}
 	if e, ok := a.(Ending); ok {
-		if x.Acceptor == nil || !x.Acceptor.End(e.Task, e.Node) {
+		if x.Acceptor == nil {
+			return errNoExecutor
+		}
+		if !x.Acceptor.End(e.Task, e.Node) {
 			return errNothing
 		}
 		return nil
@@ -801,7 +955,10 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 		for _, n := range rs.Nodes {
 			nodes = append(nodes, types.NodeID(n.ID))
 		}
-		if x.Acceptor == nil || !x.Acceptor.Reseal(nodes) {
+		if x.Acceptor == nil {
+			return errNoExecutor
+		}
+		if !x.Acceptor.Reseal(nodes) {
 			return errNothing
 		}
 		return nil
@@ -837,7 +994,7 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 	case Plan:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if x.Planner == nil {
-				return nil, errNothing
+				return nil, errNoExecutor
 			}
 			return nil, x.Planner.Plan(tx, types.NodeID(a.Node.ID))
 		}
@@ -848,31 +1005,56 @@ func (x Executor) Run(ctx context.Context, a Action) error {
 			}
 			return x.Placer.Reopened(tx, types.NodeID(a.Held.Node.ID), a.Held.Hold)
 		}
+	case HoldReview:
+		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			// A review granted while review was active, then started again with
+			// it inactive, never runs: its lease is refused and released in the
+			// same command, as a sandboxless run's is (Opus #414 re-check L1).
+			var evs []eventstore.Event
+			l, live, err := granted(tx, graph.UnitOf(types.NodeID(a.Node.ID)))
+			if err == nil && live {
+				_, rev, _, lerr := lease.LeaseOf(tx, l)
+				if lerr != nil {
+					return nil, lerr
+				}
+				evs, err = lease.RefuseStart(tx, l, rev, vocab.ReasonPreconditionFailed.String())
+			}
+			if err != nil {
+				return nil, err
+			}
+			id, err := ids.New("hld")
+			if err != nil {
+				return nil, err
+			}
+			held, err := graph.Raise(tx, types.NodeID(a.Node.ID), types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldReviewInactive, SignalInstance: ReviewSignal,
+				Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
+			return append(evs, held...), err
+		}
 	case RecordReview:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if x.Reviews == nil {
-				return nil, errNothing
+				return nil, errNoExecutor
 			}
 			return x.Reviews.Record(tx, types.NodeID(a.Gate.ID))
 		}
 	case Require:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if x.Reviews == nil {
-				return nil, errNothing
+				return nil, errNoExecutor
 			}
 			return nil, x.Reviews.Require(tx, types.NodeID(a.Node.ID))
 		}
 	case Repair:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if x.Reviews == nil {
-				return nil, errNothing
+				return nil, errNoExecutor
 			}
 			return x.Reviews.Repair(tx, types.NodeID(a.Review.ID))
 		}
 	case ReviewUnblock:
 		logic = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if x.Reviews == nil {
-				return nil, errNothing
+				return nil, errNoExecutor
 			}
 			return x.Reviews.Unheld(tx, types.NodeID(a.Held.Node.ID), a.Held.Hold, a.Held.Signal)
 		}
@@ -922,7 +1104,11 @@ type Loop struct {
 	// Every is the period between passes (5 s in adcd).
 	Every time.Duration
 	Log   io.Writer
-	nudge chan struct{}
+	// Stalls, when set, keeps the admitted task's stall each pass finds
+	// (StallOf), which the board's card shows; a change of it is logged
+	// once (#226 entry 184).
+	Stalls *Stalls
+	nudge  chan struct{}
 	// logged are the refusals the last pass logged or kept quiet, by action
 	// and subject; failed is the pass failure logged last ("" after a pass
 	// that did not fail).
@@ -988,9 +1174,17 @@ func (l *Loop) Pass(ctx context.Context) (ran int, err error) {
 	}
 	logged := map[string]string{}
 	defer func() { l.logged = logged }()
+	var outcomes []error
+	defer func() {
+		if err == nil && ctx.Err() == nil {
+			l.stall(s, outcomes)
+		}
+	}()
 	for _, a := range Decide(s) {
 		var panicked *panicError
-		switch err := recovered(a.action(), func() error { return l.Exec.Run(ctx, a) }); {
+		err := recovered(a.action(), func() error { return l.Exec.Run(ctx, a) })
+		outcomes = append(outcomes, err)
+		switch {
 		case err == nil:
 			ran++
 		case errors.As(err, &panicked):
@@ -1005,6 +1199,22 @@ func (l *Loop) Pass(ctx context.Context) (ran int, err error) {
 		}
 	}
 	return ran, nil
+}
+
+// stall records s's admitted task's stall after a pass (StallOf) in
+// l.Stalls, logging it once each time its cause changes: no spin, no line
+// per pass.
+func (l *Loop) stall(s Snapshot, outcomes []error) {
+	if l.Stalls == nil {
+		return
+	}
+	cause, stalled := StallOf(s, outcomes)
+	if !stalled {
+		cause = ""
+	}
+	if l.Stalls.set(types.TaskID(s.Admitted.ID), cause) && stalled {
+		fmt.Fprintf(l.Log, "adcd: reconcile: task %s is stalled: %s\n", s.Admitted.ID, cause)
+	}
 }
 
 // panicError is a panic recovered in a pass.

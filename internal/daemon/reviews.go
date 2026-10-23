@@ -66,7 +66,8 @@ type reviews struct {
 var _ reconcile.Reviews = reviews{}
 
 // Record records gate's review nodes (the file's comment): nothing when a
-// review takes gate already, or no reviewer is registered.
+// review takes gate already; with no reviewer registered, nothing, and the
+// task is stalled (reconcile.StallNoReviewer: its card shows it).
 func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Event, error) {
 	g, err := graph.ViewOf(tx, gate)
 	if err != nil {
@@ -103,8 +104,11 @@ func (r reviews) Record(tx *eventstore.Tx, gate types.NodeID) ([]eventstore.Even
 		return nil, err
 	}
 	roster, ok, err := r.roster(tx, g.Task, g.Project)
-	if err != nil || !ok {
+	switch {
+	case err != nil:
 		return nil, err
+	case !ok: // no reviewer registered: the task is stalled, its card says so; a start with a registry records the review (#226 entry 184)
+		return nil, reconcile.Stalled{Cause: reconcile.StallNoReviewer}
 	}
 	req, err := r.requirement(g.Task, g.Project, roster, 1)
 	if err != nil {
@@ -292,6 +296,13 @@ func (r reviews) Unheld(tx *eventstore.Tx, node types.NodeID, hold types.HoldID,
 	v, err := graph.ViewOf(tx, node)
 	if err != nil || v.State.State == types.NodeStateStateSuperseded {
 		return nil, err // superseded (a requirement retired) by an action of this pass: nothing to re-derive
+	}
+	if slices.ContainsFunc(v.State.Holds, func(h types.NodeHold) bool { return h.ID == hold && h.Hold == vocab.HoldReviewInactive }) {
+		// The loop offers it only once a start derived review active (#226
+		// entry 173): cleared, the review goes on; a roster the registry no
+		// longer derives is held reviewer_unavailable at its claim, and
+		// cleared or superseded here then.
+		return graph.Clear(tx, node, hold, signal)
 	}
 	review, roster := node, []types.RosterMember(nil)
 	switch v.Node.Kind {

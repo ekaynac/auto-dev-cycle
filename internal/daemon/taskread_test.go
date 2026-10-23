@@ -96,7 +96,13 @@ var (
 
 // taskReadAs is task's record as actor reads it, the zero record when it
 // reads none.
-func taskReadAs(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID) (rec types.TaskRead) {
+func taskReadAs(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID) types.TaskRead {
+	t.Helper()
+	return taskReadWith(t, w, actor, task, nil)
+}
+
+// taskReadWith is taskReadAs with the reads' stall (api.ReadAt.Stalled).
+func taskReadWith(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID, stalled func(types.TaskID) (string, bool)) (rec types.TaskRead) {
 	t.Helper()
 	w.view(func(tx *eventstore.Tx) error {
 		var a types.Actor
@@ -108,7 +114,7 @@ func taskReadAs(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID)
 		if err = errors.Join(err, serr); err != nil {
 			return err
 		}
-		recs, err := api.Registered()["tasks"].List(tx, api.ReadAt{Now: time.Now(), Scope: scope})
+		recs, err := api.Registered()["tasks"].List(tx, api.ReadAt{Now: time.Now(), Scope: scope, Stalled: stalled})
 		for _, r := range recs {
 			if r, ok := r.(types.TaskRead); ok && r.ID == task {
 				rec = r

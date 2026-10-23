@@ -54,6 +54,10 @@ type Resource struct {
 type ReadAt struct {
 	Now   time.Time
 	Scope authority.ReadScope
+	// Stalled is the admitted task's stall the controller's loop found at
+	// its last pass (its cause; reconcile.StallOf), which a card shows; nil
+	// shows none.
+	Stalled func(types.TaskID) (string, bool)
 }
 
 // Reads serves ReadPath over Resources and WhoamiPath, from Store.
@@ -62,6 +66,7 @@ type Reads struct {
 	Now       func() time.Time
 	Gate      *Slots // the listener's bearer verifications; nil admits no one
 	Resources map[string]Resource
+	Stalled   func(types.TaskID) (string, bool) // ReadAt's (nil: none)
 }
 
 var errNotGranted = errors.New("api: no grant in force grants reads")
@@ -173,7 +178,7 @@ func (h Reads) view(w http.ResponseWriter, r *http.Request,
 			if err != nil {
 				return err
 			}
-			out, err = read(tx, p, a, ReadAt{Now: now, Scope: scope})
+			out, err = read(tx, p, a, ReadAt{Now: now, Scope: scope, Stalled: h.Stalled})
 			return err
 		})
 	}()
