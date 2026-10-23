@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -468,5 +469,39 @@ func TestRestartMarked(t *testing.T) {
 	e.close()
 	if again := openEffectsAt(t, dir); again.s.RestartMarked() {
 		t.Error("a reopened store marked before the rule ran")
+	}
+}
+
+// LiveEffects are a kind's pending and uncertain effects, by id: never a
+// completed or failed one, nor another kind's (Opus #409 M1's driver reads
+// them).
+func TestLiveEffects(t *testing.T) {
+	ctx := context.Background()
+	e := openEffectsAt(t, stateDir(t))
+	ids := map[EffectState]string{}
+	for _, st := range []EffectState{EffectPending, EffectUncertain, EffectCompleted, EffectFailedConfirmed} {
+		id := newID(t, "eff")
+		if _, err := e.s.SubmitApplied(ctx, command(t, "k-"+id, `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
+			return nil, json.RawMessage(`{}`), tx.IntendEffect(id, "model_call", "target-"+id, json.RawMessage(`{"prompt": "x"}`))
+		})); err != nil {
+			t.Fatal(err)
+		}
+		tr := map[EffectState]Transition{EffectUncertain: {Kind: "uncertain"}, EffectCompleted: {Kind: "observed"}, EffectFailedConfirmed: {Kind: "failed"}}
+		if step, ok := tr[st]; ok {
+			if _, err := e.s.RecordEffect(ctx, sysActor, id, step); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ids[st] = id
+	}
+	other := intend(t, e, "notification")
+	var got []string
+	if err := e.s.View(ctx, func(tx *Tx) (err error) { got, err = tx.LiveEffects("model_call"); return err }); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ids[EffectPending], ids[EffectUncertain]}
+	slices.Sort(want)
+	if slices.Contains(got, other) || !slices.Equal(got, want) {
+		t.Errorf("live %v, want %v", got, want)
 	}
 }

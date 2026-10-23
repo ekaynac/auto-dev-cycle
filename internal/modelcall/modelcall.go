@@ -29,7 +29,8 @@
 //     source gateway_floor before the send, then gateway_count once the usage is read, which an adapter's final must
 //     not fall below to settle the call. A floor, which precedes its request's send, is refused once the call's
 //     effect has left pending; a count at a floored sequence is always accepted, late or not.
-//   - The reconciler (reconcile.go, P20) moves the effect out of pending at run end and settles it.
+//   - The reconciler (reconcile.go, P20) moves the effect out of pending at run end and settles it; a call whose effect
+//     is still live once its attempt ended (Unsettled) is settled by adcd's driver with the same rule (Opus #409 M1).
 //   - Inert (§1's gating table): nothing in adcd registers the kind, the event or the projector; P22a does.
 package modelcall
 
@@ -349,6 +350,43 @@ func OfLease(tx *eventstore.Tx, l types.LeaseID) ([]Bound, error) {
 		out = append(out, Bound{m, e})
 	}
 	return out, nil
+}
+
+// Live are the calls whose model_call effect is live (pending or
+// uncertain), in effect id order: the ids alone, so a caller loads only
+// those it will settle (Unsettled; Opus #411 M2).
+func Live(tx *eventstore.Tx) ([]types.CallID, error) {
+	ids, err := tx.LiveEffects(Kind)
+	out := make([]types.CallID, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, CallOf(id))
+	}
+	return out, err
+}
+
+// CallOf is the call whose effect id is effect (EffectOf's inverse).
+func CallOf(effect string) types.CallID {
+	return types.CallID("cal_" + strings.TrimPrefix(effect, "eff_"))
+}
+
+// Unsettled is call's effect, and whether it is to be settled once its
+// standing settles (Opus #409 M1): live, its attempt ended (sealed,
+// completed or superseded: its gateway token is unbound, so no request of
+// the call is sent after). A call that is not bound is an error.
+func Unsettled(tx *eventstore.Tx, call types.CallID) (eventstore.Effect, bool, error) {
+	m, ok, err := Of(tx, call)
+	if err == nil && !ok {
+		err = fmt.Errorf("modelcall: %s is not bound", call)
+	}
+	if err != nil {
+		return eventstore.Effect{}, false, err
+	}
+	e, err := tx.LoadEffect(EffectOf(call))
+	if err != nil || e.State != eventstore.EffectPending && e.State != eventstore.EffectUncertain {
+		return e, false, err
+	}
+	a, _, ok, err := lease.AttemptOf(tx, m.Attempt)
+	return e, err == nil && ok && lease.SealedStatus(a.Status), err
 }
 
 // Recorder records a call's intent as its own command (gateway.Intents). It

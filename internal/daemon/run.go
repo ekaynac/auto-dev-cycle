@@ -485,10 +485,14 @@ func (r *runner) otherCall(ctx context.Context, attempt types.AttemptID, cid typ
 }
 
 // guarded is f, a panic in it returned as an error.
-func guarded(f func() error) (err error) {
+func guarded(f func() error) error { return guardedAs("ending the run", f) }
+
+// guardedAs is f, a panic in it returned as an error naming what panicked:
+// a goroutine of adcd's that runs f never crashes it (Opus #411 M1).
+func guardedAs(what string, f func() error) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("ending the run panicked: %v", p)
+			err = fmt.Errorf("%s panicked: %v", what, p)
 		}
 	}()
 	return f()
@@ -765,9 +769,13 @@ func (r *runner) endLease(ctx context.Context, l types.LeaseID, node types.NodeI
 }
 
 // logf writes one line to the runner's log, if any.
-func (r *runner) logf(format string, args ...any) {
-	if r.log != nil {
-		fmt.Fprintf(r.log, format+"\n", args...)
+func (r *runner) logf(format string, args ...any) { logTo(r.log, format, args...) }
+
+// logTo writes one line to w, if any: never under a lock its writer may
+// block (Astra #411 H1).
+func logTo(w io.Writer, format string, args ...any) {
+	if w != nil {
+		fmt.Fprintf(w, format+"\n", args...)
 	}
 }
 

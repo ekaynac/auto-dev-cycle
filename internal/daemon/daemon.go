@@ -257,7 +257,11 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 			fmt.Fprintf(logw, "adcd: the start sweep left work for the next start: %v\n", err)
 		}
 	}
-	loop := reconciler(d, reg, images, eg.gw, run, cfg.reconcileEvery, logw)
+	eg.log = logw
+	settling, stopSettle := context.WithTimeout(ctx, settleBound) // after recovery and the sweep, which end the attempts a crash cut (Opus #409 M1); bounded, the rest the passes' (Opus #411 L1)
+	eg.settleEnded(settling)
+	stopSettle()
+	loop := reconciler(d, reg, images, eg, run, cfg.reconcileEvery, logw) // its passes settle too
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {
@@ -294,6 +298,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	stopPurge()
 	<-purged
 	<-reconciled
+	eg.wait() // a settlement the last pass started, its context ended
 	if run != nil {
 		run.Wait() // ctx ended each run's conversation; its completion records under a context of its own (WithoutCancel)
 	}

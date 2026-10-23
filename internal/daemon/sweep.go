@@ -190,15 +190,35 @@ var errNothingEnded = errors.New("daemon: what still runs was not ended")
 // and retried with backoff: start logs nothing more.
 var errEndRetried = errors.New("daemon: the ending is retried")
 
-// endRetry is a decided candidate's node End ends at runtime: when its next
-// try is due, its failed tries in a row, and the last cause it logged.
+// endRetry is a retried end: a node End ends at runtime, or a model call
+// the egress settles (settleEnded): when its next try is due, its failed
+// tries in a row, and the last cause it logged.
 type endRetry struct {
 	next  time.Time
 	tries int
 	cause string
 }
 
-// End ends what node of task, a decided candidate's, still runs (Opus #408
+// failed is r after one more failed try, at now, with err (nil: a try that
+// failed with no error, as a call left live): its next try due after
+// retryAfter (capped: never ending), and whether err's cause, its ids
+// redacted (a cause, not the ids each try mints), differs from the last
+// one, so is to be logged. The one retry rule of End and the settlement
+// driver (Astra #411 M1); its caller stores r under its lock and logs only
+// after releasing it (H1).
+func (r endRetry) failed(err error, now time.Time) (endRetry, bool) {
+	r.tries++
+	r.next = now.Add(retryAfter(r.tries))
+	if err == nil {
+		return r, false
+	}
+	msg := ids.Redact(err.Error(), "<id>")
+	changed := msg != r.cause
+	r.cause = msg
+	return r, changed
+}
+
+// End ends what node of task, a decided or revoked task's, still runs (Opus #408
 // H1; #226 entry 166), as the start sweep would (endOne), when its retry is
 // due: retryBase, doubling, capped at retryBase·2^(maxTries-1), with no
 // limit on the tries (a fault that clears needs no restart), kept in memory
@@ -284,22 +304,20 @@ func (r *runner) end(task types.TaskID, node types.NodeID) error {
 		}
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if err == nil {
 		delete(r.ending, node)
+		r.mu.Unlock()
 		return nil
 	}
 	if r.ending == nil {
 		r.ending = map[types.NodeID]endRetry{}
 	}
-	e := r.ending[node]
-	e.tries++
-	e.next = time.Now().Add(retryAfter(e.tries))                // capped: End never stops
-	if msg := ids.Redact(err.Error(), "<id>"); msg != e.cause { // a cause, not the ids each try mints
-		e.cause = msg
+	var log bool
+	r.ending[node], log = r.ending[node].failed(err, time.Now())
+	r.mu.Unlock()
+	if log { // never under r.mu (Astra #411 H1)
 		r.logf("adcd: what node %s still runs could not be ended (retried with backoff): %v", node, err)
 	}
-	r.ending[node] = e
 	return errEndRetried
 }
 
