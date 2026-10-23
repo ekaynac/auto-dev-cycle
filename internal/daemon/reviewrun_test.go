@@ -51,6 +51,10 @@ type reviewerSeen struct {
 // (a tool.request) before it submits. Prepared as a builder (a repair
 // round's build, P22a-6d), it runs as builder does: edit, when given, over
 // its workspace, then empty and clean.
+// reviewerRuns, when set, is called as a reviewer's run starts (its
+// attempt running): true ends the session there, no result returned.
+var reviewerRuns func() bool
+
 func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen, edit ...func(string)) *inproc.Peer {
 	return inproc.New(func(in io.Reader, out io.Writer) {
 		r, w := wire.NewReader(in), wire.NewWriter(out)
@@ -87,6 +91,9 @@ func reviewer(decision string, requestTool bool, seen chan<- reviewerSeen, edit 
 						return
 					}
 					break
+				}
+				if reviewerRuns != nil && reviewerRuns() {
+					return
 				}
 				if os.WriteFile(filepath.Join(prep.Exchange.Out, "decision.json"), []byte(decision), 0o600) != nil {
 					return

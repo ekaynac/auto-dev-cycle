@@ -161,8 +161,10 @@ func done(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs, reason *typ
 		return nil, fmt.Errorf("authority: task %s is not %s: %w", task, as, err)
 	}
 	if as == types.TaskDoneAsCandidate {
-		if go_, err := decided(tx, t.ID); err != nil || !go_ {
-			return nil, errors.Join(err, fmt.Errorf("authority: task %s is not %s: %w: no review of its last build round completed go", task, as, ErrNotEndable))
+		if go_, err := decided(tx, t.ID); err != nil { // a read fault, never a refusal (Mythos #408 L5)
+			return nil, err
+		} else if !go_ {
+			return nil, errors.Join(fmt.Errorf("authority: task %s is not %s: %w: no review of its last build round completed go", task, as, ErrNotEndable))
 		}
 	}
 	return event(TaskDoneEvent, t.ID, &t.Project, types.TaskDone{Task: t.ID, Project: t.Project, As: as, Reason: reason,

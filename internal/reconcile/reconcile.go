@@ -584,13 +584,13 @@ func Observe(tx *eventstore.Tx, g Gates) (Snapshot, error) {
 		// re-check M2).
 		var ending authority.ErrEnding
 		switch as, ok, eerr := authority.EndingOf(tx, admitted); {
+		case eerr != nil && !errors.Is(eerr, authority.ErrNotEndable) && !errors.As(eerr, &ending):
+			err = eerr // a read fault, whatever ok says (Mythos #408 L5)
 		case !ok:
 		case eerr == nil:
 			s.Candidate = as == types.TaskDoneAsCandidate
 		case errors.As(eerr, &ending):
 			s.Ending = &Ending{Task: admitted, Node: ending.Node}
-		case !errors.Is(eerr, authority.ErrNotEndable):
-			err = eerr
 		}
 	}
 	return s, err

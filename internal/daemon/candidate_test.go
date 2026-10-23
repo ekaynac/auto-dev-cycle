@@ -654,8 +654,9 @@ func TestADecidedCandidateEndsAtRuntime(t *testing.T) {
 }
 
 // Opus #408 re-check M1: an open-index entry End cannot act on (here the
-// build's own completed attempt, its lease settled, standing for a lost
-// attempt or a lease left with no attempt) is a failed try: one try, one
+// build's own completed attempt, its lease settled, re-planted in the open
+// index: a shape adcd never writes, which stands for any entry endEntry
+// does not cover; Mythos #408 L7) is a failed try: one try, one
 // log line and no nudge over 10 passes, the task still admitted, its card
 // ending_blocked. Never a hot loop.
 func TestAnEntryEndCannotEndBacksOff(t *testing.T) {
@@ -832,6 +833,297 @@ func TestALeaseEntryIsEnded(t *testing.T) {
 		rw.passesFor(t, 4, 0)
 		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
 			t.Fatalf("the revoked task with a granted lease: %s %s", st, as)
+		}
+	})
+}
+
+// sealOnceFails fails sealWith's first call, as H1's own fixture fails it
+// (the blob publish), and lets every later one through.
+func sealOnceFails(t *testing.T) {
+	t.Helper()
+	var n atomic.Int64
+	sealWith = func(tx *eventstore.Tx, a types.AttemptID, rev int64, u lease.Units, p lease.Publisher, d *types.Digest, ig []string, by types.ActorID) ([]eventstore.Event, error) {
+		if n.Add(1) == 1 {
+			return nil, errors.New("the seal's blob could not be published under /var/lib/adc/blobs")
+		}
+		return lease.SealWith(tx, a, rev, u, p, d, ig, by)
+	}
+	t.Cleanup(func() { sealWith = lease.SealWith })
+}
+
+// lostBuild is a run world whose build's agent disconnected (no result
+// submitted) and whose seal then failed once: record's other steps landed,
+// so the attempt is lost and unsealed, its lease revoked and settled, its
+// node's could_not_run recorded with no attempt. The task's approval is
+// then revoked, with adcd's runner as the loop's acceptor.
+func lostBuild(t *testing.T) (*runWorld, types.AttemptID) {
+	t.Helper()
+	sealOnceFails(t)
+	rw := newRunWorld(t, true, builder(nil, true, nil))
+	rw.untilRun(t)
+	a, l := rw.attemptOf(t)
+	if a.Status != types.AttemptStatusLost || l.State != types.LeaseStateSettled {
+		t.Fatalf("the build after a disconnect and a failed seal: attempt %s, lease %s", a.Status, l.State)
+	}
+	rw.x.Acceptor = rw.r // adcd's: its runner (wiring.go)
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeActor(tx, rw.w.op, time.Now())
+	})
+	return rw, a.ID
+}
+
+// attemptAt is attempt's record.
+func attemptAt(w *seeder, attempt types.AttemptID) types.Attempt {
+	var a types.Attempt
+	w.view(func(tx *eventstore.Tx) (err error) {
+		a, _, _, err = lease.AttemptAt(tx, attempt)
+		return err
+	})
+	return a
+}
+
+// rawAttempt is a run world whose build's lease was granted under a runner
+// that runs nothing, an attempt then started on it raw (no run of it goes
+// on), and the task's approval revoked after edit (nil: none) acts on it.
+func rawAttempt(t *testing.T, edit func(*runWorld, types.AttemptID)) (*runWorld, types.AttemptID) {
+	t.Helper()
+	rw := newRunWorld(t, true, builder(nil, false, nil))
+	rw.x.Runner, rw.x.Acceptor = noRuns{}, rw.r
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	for range 12 {
+		if rw.build = templateNodes(rw.w, rw.task)[types.NodeKindBuild]; rw.build != "" {
+			if _, live := leaseOn(rw.w, rw.build); live {
+				break
+			}
+		}
+		rw.passesFor(t, 1, 0)
+	}
+	l, live := leaseOn(rw.w, rw.build)
+	if !live || l.State != types.LeaseStateGranted {
+		t.Fatalf("the build's lease: %s (live %v)", l.State, live)
+	}
+	a := types.AttemptID(newID(t, "att"))
+	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		_, rev, _, err := lease.LeaseOf(tx, l.ID)
+		if err != nil {
+			return nil, err
+		}
+		return lease.StartAttempt(tx, l.ID, rev, a, emptyBase)
+	})
+	if edit != nil {
+		edit(rw, a)
+	}
+	rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeActor(tx, rw.w.op, time.Now())
+	})
+	return rw, a
+}
+
+// Mythos #408 H1′: an attempt left lost or stopping, unsealed (an agent
+// disconnect, or a review superseded while it runs, plus a failed seal),
+// its lease already settled, is ended: sealed by End at runtime (a lost
+// build whose seal failed once; a stopping review whose seal fails until
+// the fault clears, then at End's next due try), or by the start sweep
+// (endLeft) at a restart; the revoked task is then abandoned. A cut
+// attempt's end records no result (record's could_not_run is the one; as
+// recovery's Seal at a restart). A sealed attempt whose lease's revoke
+// failed has its lease revoked and settled. An attempt running with no run
+// (the host's finish and record's loss both failed; started raw here) is
+// lost and sealed, nothing recorded, its lease revoked and settled; one
+// finishing with no result recorded (record's CommitAttempt failed) is
+// sealed with could_not_run/ambiguous_state recorded over its claim.
+func TestALostOrStoppingAttemptIsEnded(t *testing.T) {
+	t.Run("a lost build, at runtime", func(t *testing.T) {
+		rw, a := lostBuild(t)
+		before := len(resultsOn(t, rw.w, rw.build))
+		rw.passesFor(t, 4, 0)
+		if n := len(resultsOn(t, rw.w, rw.build)); before != 1 || n != before {
+			t.Errorf("the build's results: %d, then %d after End (record's could_not_run is the one)", before, n)
+		}
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task with its build lost and unsealed: %s %s", st, as)
+		}
+		if got := attemptAt(rw.w, a); got.Status != types.AttemptStatusSealed || got.LostReason == nil {
+			t.Errorf("the lost attempt: %s (lost %v)", got.Status, got.LostReason)
+		}
+		rw.r.mu.Lock()
+		defer rw.r.mu.Unlock()
+		if len(rw.r.ending) != 0 {
+			t.Errorf("End failed a try: %+v", rw.r.ending)
+		}
+	})
+	t.Run("a lost build, at a restart", func(t *testing.T) {
+		rw, a := lostBuild(t)
+		removeStale = func(*runner, context.Context) ([]string, error) { return nil, nil }
+		t.Cleanup(func() {
+			removeStale = func(r *runner, ctx context.Context) ([]string, error) {
+				return r.box.RemoveStale(ctx, func(string) bool { return false })
+			}
+		})
+		before := len(resultsOn(t, rw.w, rw.build))
+		if err := rw.r.sweep(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := attemptAt(rw.w, a); got.Status != types.AttemptStatusSealed {
+			t.Fatalf("the lost attempt after the start sweep: %s", got.Status)
+		}
+		if n := len(resultsOn(t, rw.w, rw.build)); n != before {
+			t.Errorf("the sweep recorded over the lost attempt's claim: %d results, %d before", n, before)
+		}
+		rw.passesFor(t, 2, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task after the sweep: %s %s", st, as)
+		}
+		rw.r.mu.Lock()
+		defer rw.r.mu.Unlock()
+		if len(rw.r.ending) != 0 {
+			t.Errorf("End tried after the sweep ended it: %+v", rw.r.ending)
+		}
+	})
+	t.Run("a sealed build whose lease's revoke failed", func(t *testing.T) {
+		var n atomic.Int64
+		changeLease = func(tx *eventstore.Tx, id types.LeaseID, rev int64, e lease.LeaseEvent, h map[string]types.Hold) ([]eventstore.Event, error) {
+			if e.Kind == lease.Revoked && n.Add(1) == 1 {
+				return nil, errors.New("the store is busy")
+			}
+			return lease.ChangeLease(tx, id, rev, e, h)
+		}
+		t.Cleanup(func() { changeLease = lease.ChangeLease })
+		rw := newRunWorld(t, true, builder(nil, true, nil))
+		rw.untilRun(t)
+		if a, l := rw.attemptOf(t); a.Status != types.AttemptStatusSealed || l.State != types.LeaseStateActive {
+			t.Fatalf("the build after a disconnect and a failed revoke: attempt %s, lease %s", a.Status, l.State)
+		}
+		before := len(resultsOn(t, rw.w, rw.build))
+		rw.x.Acceptor = rw.r
+		rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+		rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return identity.RevokeActor(tx, rw.w.op, time.Now())
+		})
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task with its sealed build's lease active: %s %s", st, as)
+		}
+		if _, l := rw.attemptOf(t); l.State != types.LeaseStateSettled {
+			t.Errorf("the lease: %s", l.State)
+		}
+		if n := len(resultsOn(t, rw.w, rw.build)); n != before {
+			t.Errorf("End recorded over the cut attempt's claim: %d results, %d before", n, before)
+		}
+	})
+	t.Run("an attempt running with no run", func(t *testing.T) { // the host's finish and record's loss both failed: here started raw
+		rw, a := rawAttempt(t, nil)
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task with an attempt running and no run: %s %s", st, as)
+		}
+		if got := attemptAt(rw.w, a); got.Status != types.AttemptStatusSealed || got.LostReason == nil {
+			t.Errorf("the attempt: %s (lost %v)", got.Status, got.LostReason)
+		}
+		if l, _ := leaseOn(rw.w, rw.build); l.State == types.LeaseStateActive {
+			t.Errorf("its lease: %s", l.State)
+		}
+		if n := len(resultsOn(t, rw.w, rw.build)); n != 0 {
+			t.Errorf("a cut attempt's End recorded %d results; its claim is matched again", n)
+		}
+	})
+	t.Run("a finishing attempt with no result recorded", func(t *testing.T) { // record's CommitAttempt failed
+		rw, a := rawAttempt(t, func(rw *runWorld, a types.AttemptID) {
+			rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				at, _, _, err := lease.AttemptAt(tx, a)
+				if err != nil {
+					return nil, err
+				}
+				return lease.SubmitResult(tx, a, at.FencingToken, types.SubmittedResult{Call: types.CallID(newID(t, "cal")), Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
+			})
+		})
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task with an attempt finishing: %s %s", st, as)
+		}
+		res := resultsOn(t, rw.w, rw.build)
+		if got := attemptAt(rw.w, a); got.Status != types.AttemptStatusSealed || len(res) != 1 || res[0].Result.Outcome != types.OutcomeCouldNotRun || res[0].Result.Reason != vocab.ReasonAmbiguousState {
+			t.Errorf("the finishing attempt: %s, its node's results %+v", got.Status, res)
+		}
+	})
+	t.Run("a superseded review left stopping", func(t *testing.T) {
+		var stopped atomic.Pointer[types.NodeID]
+		var fails atomic.Bool
+		fails.Store(true)
+		rw := candidateRun(t, func(rw *runWorld) {
+			sealWith = func(tx *eventstore.Tx, a types.AttemptID, rev int64, u lease.Units, p lease.Publisher, d *types.Digest, ig []string, by types.ActorID) ([]eventstore.Event, error) {
+				if fails.Load() {
+					return nil, errors.New("the seal's blob could not be published under /var/lib/adc/blobs")
+				}
+				return lease.SealWith(tx, a, rev, u, p, d, ig, by)
+			}
+			t.Cleanup(func() { sealWith = lease.SealWith })
+			other := stubRegistry(t, nil, map[types.ExecutorID]types.Name{stubReviewer: "fam-b"})
+			roster, err := graph.Roster([]types.ExecutorID{stubReviewer}, other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := reviews{reg: other}.requirement(rw.task, graphProject, roster, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviewerRuns = func() bool { // preempted while it runs, then its session ends
+				if review := reviewNodes(rw)[types.NodeKindReview].Node.ID; stopped.CompareAndSwap(nil, &review) {
+					rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+						return graph.SupersedeOnto(tx, review, next, other)
+					})
+					rw.w.do(rw.w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+						return identity.RevokeActor(tx, rw.w.op, time.Now())
+					})
+				}
+				return true
+			}
+		})
+		t.Cleanup(func() { reviewerRuns = nil })
+		review := stopped.Load()
+		if review == nil {
+			t.Fatal("no review ran")
+		}
+		var a types.Attempt
+		var l types.Lease
+		rw.w.view(func(tx *eventstore.Tx) error {
+			first, _, err := lease.FirstOn(tx, graph.UnitOf(*review))
+			if err == nil {
+				a, _, _, err = lease.AttemptAt(tx, first)
+			}
+			if err == nil {
+				l, _, _, err = lease.LeaseOf(tx, a.Lease)
+			}
+			return err
+		})
+		if a.Status != types.AttemptStatusStopping || l.State != types.LeaseStateSettled {
+			t.Fatalf("the preempted review with its seal failing: attempt %s, lease %s", a.Status, l.State)
+		}
+		if st, _ := taskState(t, rw.w, rw.task); st == authority.TaskDoneState {
+			t.Fatal("the task is done with its stopping attempt unsealed")
+		}
+		before := len(resultsOn(t, rw.w, *review))
+		fails.Store(false) // the fault clears
+		rw.r.mu.Lock()
+		e := rw.r.ending[*review]
+		e.next = time.Now() // End's retry is due
+		rw.r.ending[*review] = e
+		rw.r.mu.Unlock()
+		rw.passesFor(t, 4, 0)
+		if st, as := taskState(t, rw.w, rw.task); st != authority.TaskDoneState || as != string(types.TaskDoneAsAbandoned) {
+			t.Fatalf("the revoked task with its superseded review left stopping: %s %s", st, as)
+		}
+		if got := attemptAt(rw.w, a.ID); got.Status != types.AttemptStatusSealed || got.StopReason == nil {
+			t.Errorf("the stopped review's attempt: %s (stop %v)", got.Status, got.StopReason)
+		}
+		if n := len(resultsOn(t, rw.w, *review)); n != before {
+			t.Errorf("End recorded over the superseded review: %d results, %d before", n, before)
+		}
+		rw.r.mu.Lock()
+		defer rw.r.mu.Unlock()
+		if e, failed := rw.r.ending[*review]; failed {
+			t.Errorf("End's try once the fault cleared failed: %+v", e)
 		}
 	})
 }

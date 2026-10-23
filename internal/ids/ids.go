@@ -129,7 +129,10 @@ var typeIDPattern = sync.OnceValues(func() (*regexp.Regexp, error) {
 
 // Redact is s with every TypeID in it (the schema's pattern) replaced by
 // with: a text compared across tries that each mint fresh ids. s as it is
-// if the pattern cannot be read.
+// if the pattern cannot be read: unreachable, the schema is embedded
+// (schemas.FS) and TestRedact compiles it; were it, a caller comparing
+// texts would only see each try's text as new, which End's backoff bounds
+// (Mythos #408 L6).
 func Redact(s, with string) string {
 	re, err := typeIDPattern()
 	if err != nil {
