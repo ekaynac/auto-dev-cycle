@@ -20,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/qualify"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -187,7 +188,8 @@ func TestAGoReviewCompletesTheReview(t *testing.T) {
 		t.Fatalf("its results: %+v", rs)
 	}
 	p := seen.prep
-	if p.Role != "reviewer" || p.Workspace.Writable || len(p.ToolPolicy.Allowed) != 0 || p.Limits.MaxTurns != 1 || p.Limits.MaxOutputTokens != 8000 {
+	// The reviewer's limits are qualify's, one value for adcd and the qualification.
+	if p.Role != "reviewer" || p.Workspace.Writable || len(p.ToolPolicy.Allowed) != 0 || p.Limits.MaxTurns != qualify.MaxTurns || p.Limits.MaxOutputTokens != qualify.MaxOutputTokens {
 		t.Errorf("the reviewer's prepare: %+v", p)
 	}
 	if seen.entries != 0 {

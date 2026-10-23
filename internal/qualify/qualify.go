@@ -96,10 +96,14 @@ import (
 const Dir = "fixtures/m1/review-qualification"
 
 // The reviewer's limits a qualified route runs with: Route.Review's, and
-// P22a's for a qualified route (P22a-6). AdapterDigest binds them.
+// P22a's for a qualified route (P22a-6), one value for both. AdapterDigest
+// binds them. A reasoning model's thinking counts in its output tokens, so
+// the one turn's budget leaves room for it: at 8000, a rehearsal reply
+// spent all of it reasoning and returned no decision (finish_reason length).
+// The qualification's lease reserves 200,000 tokens for the call.
 const (
 	MaxTurns        = 1
-	MaxOutputTokens = 8000
+	MaxOutputTokens = 32000
 )
 
 const (

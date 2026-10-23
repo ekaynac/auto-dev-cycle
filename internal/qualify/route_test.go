@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 const config = "../../fixtures/m1/config/"
@@ -174,6 +176,8 @@ func TestRoute(t *testing.T) {
 			up.mu.Unlock()
 			if rep, err := review.ReadReport(o.Report); err != nil || rep.Decision != o.Decision {
 				t.Errorf("%s: the report %s, %v", c.ID, o.Report, err)
+			} else if o.evidence == nil || !slices.Equal(rep.ChargeLinks, []types.CallID{o.evidence.Call}) {
+				t.Errorf("%s: the charge links %v, want the call the gateway counted", c.ID, rep.ChargeLinks)
 			}
 			// Astra #306 H1; Opus #306 r2 M1, L2: the evidence is the execution's.
 			if ev := o.evidence; ev == nil || ev.RunID != x.ID || ev.RanAt != types.Time(x.At.Format(time.RFC3339)) || ev.Seq != int64(seq) ||
@@ -307,6 +311,23 @@ func TestRoute(t *testing.T) {
 		if _, err := c.r.Review(ctx, c.x, c.c, c.prompt); err == nil || !strings.Contains(err.Error(), c.why) {
 			t.Errorf("%s: %v, want %q", name, err, c.why)
 		}
+	}
+	// The charge link names only a call the gateway counted: an adapter
+	// that exits before its first frame (its node fails to load, as
+	// without make ts-deps) made none, and its report links none.
+	dead := r
+	dead.Adapter.Env = append(slices.Clone(r.Adapter.Env), "NODE_OPTIONS=--require="+filepath.Join(t.TempDir(), "missing.cjs"))
+	crashed, err := s.Begin(t.TempDir(), "crashed", qr, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := s.Order(crashed.Seed)[0]
+	o0, err := dead.Review(ctx, crashed, first, prompts[first.ID])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := review.ReadReport(o0.Report); err != nil || rep.Reason != vocab.ReasonAdapterProtocolError.String() || len(rep.ChargeLinks) != 0 {
+		t.Errorf("an adapter that never started: the report %s, %v; want adapter_protocol_error and no charge link", o0.Report, err)
 	}
 	// Astra #306 H1: the evidence's route is the executor's the review ran
 	// on, never the run's claim; a run claimed for another model is

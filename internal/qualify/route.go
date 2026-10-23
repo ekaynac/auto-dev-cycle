@@ -190,10 +190,23 @@ func (r Route) Review(ctx context.Context, run *Run, c Case, prompt []byte) (o O
 	if err != nil {
 		return o, err
 	}
+	// The charge link: the call, only when the gateway counted a request of
+	// it (its floor or count, ledger.Measurements). An adapter that ended
+	// before any request (one that never started) made no call to link.
+	var calls []types.CallID
+	if err := s.View(ctx, func(tx *eventstore.Tx) error {
+		ms, err := ledger.Measurements(tx, call)
+		if len(ms) > 0 {
+			calls = []types.CallID{call}
+		}
+		return err
+	}); err != nil {
+		return o, err
+	}
 	// GateIDs: none. review.Prompt renders the gate's summary (its verdict
 	// and counts), never a gate report's ids, so the findings view a no_go
 	// gets (#361) has none to redact.
-	f := review.Facts{Exit: exitmap.Exit{Protocol: out.Session != nil, Hints: out.Hints}, CandidateRound: 1, Calls: []types.CallID{call},
+	f := review.Facts{Exit: exitmap.Exit{Protocol: out.Session != nil, Hints: out.Hints}, CandidateRound: 1, Calls: calls,
 		Roster: []types.RosterMember{{Executor: e.ID, Family: e.Family}}, Elapsed: time.Since(start), Project: types.ProjectID(idv["prj"]), GateIDs: []string{}}
 	if out.Submitted != nil && out.Submitted.Blob != nil {
 		f.Submitted, f.Decision = true, *out.Submitted.Blob

@@ -44,6 +44,12 @@ const system: Record<string, string> = {
   reviewer: "You review the change described in the prompt. Reply only with a JSON object that matches the response schema.",
 };
 
+/** reviewerSystem is the reviewer's system message: the schema it is held
+ *  to is in it, since a provider may ignore response_format (Ollama Cloud
+ *  does: the qualification rehearsal's models guessed one); response_format
+ *  stays for those that enforce it. */
+export const reviewerSystem = (schema: unknown) => `${system.reviewer}\nThe response schema (JSON Schema):\n${JSON.stringify(schema)}`;
+
 /** The bytes of an input file (prompt, response schema) the adapter reads. */
 const maxInputBytes = 1 << 20;
 const clean: AdapterOutcome = { outcome: "empty", reason: "completed_clean", detail: "" };
@@ -188,11 +194,12 @@ export class HttpChatAdapter extends Adapter {
     const messages: Message[] = [];
     let size = 0; // the bytes of messages, kept as they grow
     const push = (m: Message) => void (messages.push(m), (size += Buffer.byteLength(JSON.stringify(m)) + 1));
-    push({ role: "system", content: system[role] });
     try {
-      push({ role: "user", content: await this.input(r.prompt) });
+      const prompt = await this.input(r.prompt);
       if (role === "reviewer" && r.response_schema) schema = JSON.parse(await this.input(r.response_schema));
       check = new Ajv2020({ allErrors: false, strict: false }).compile(schema);
+      push({ role: "system", content: role === "reviewer" ? reviewerSystem(schema) : system[role] });
+      push({ role: "user", content: prompt });
     } catch (e) {
       return ended("executor_incomplete", `http-chat could not read its inputs: ${(e as Error).message}`);
     }
