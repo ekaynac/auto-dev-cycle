@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -163,6 +164,17 @@ func TestCycleCases(t *testing.T) {
 					t.Errorf("%s: the reviewer canary %q is in no file of its base overlay (nor its profile overlay's {canary}), or the scenario carries it", name, canary)
 				}
 			}
+		}
+		// Opus #435 H1: a case whose profile carries the run's {canary} (the
+		// gate writes it) names it a reviewer canary, so a run checks it.
+		if strings.Contains(string(c.ProfileOverlay), "{canary}") && (c.Expect.ReviewerCanaries == nil || !slices.Contains(*c.Expect.ReviewerCanaries, "{canary}")) {
+			t.Errorf("%s: its profile overlay carries {canary}, which its reviewer canaries do not name", name)
+		}
+		// Opus #435 M1: source_invalid_config is the hold of several signals
+		// (runner: failed, runner: profile, placement: ...), so a case ending
+		// on it names its signal: the kind alone passes the wrong refusal.
+		if slices.Contains(c.Expect.Holds, "source_invalid_config") && (c.Expect.HoldSignals == nil || len(*c.Expect.HoldSignals) == 0) {
+			t.Errorf("%s: it ends held source_invalid_config, but names no hold signal", name)
 		}
 		// P24c: what the builder must see comes from the run, never from the scenario.
 		if c.Expect.BuilderSees != nil {

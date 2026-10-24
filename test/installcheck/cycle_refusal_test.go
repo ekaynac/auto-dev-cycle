@@ -153,7 +153,9 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 // Opus #435 L2: removing a sandbox root follows its runs/ link only to a
 // directory sandbox_root makes (/dev/shm/adcrXXXXXX); a runs/ directory left
 // after its root is gone is swept once its owner is gone, never while it
-// lives.
+// lives (a root sandbox_root makes records its owner in both). M2: a canary
+// path under the root's runs/ is found (in the root's user namespace: a
+// stand-in podman whose unshare runs its command).
 func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if _, err := os.Stat("/dev/shm"); err != nil {
 		t.Skip("no /dev/shm")
@@ -197,5 +199,25 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 		if _, err := os.Stat(dir); (err == nil) == (name == "stale") {
 			t.Errorf("the %s runs/ directory %s: present %v after the sweep", name, dir, err == nil)
 		}
+	}
+
+	fake := filepath.Join(t.TempDir(), "podman")
+	write(t, fake, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\nexec \"$@\"\n", 0o755)
+	// The root's owner (this bash) is gone once it returns: it is compared,
+	// then rewritten to the test's own process, so no concurrent sweep takes
+	// the root during the rest.
+	made, same, _ := strings.Cut(sh("r=$(sandbox_root ''); s=no; cmp -s \"$r/.owner\" \"$r/runs/.owner\" && s=yes; owner_of $PPID | tee \"$r/.owner\" >\"$r/runs/.owner\"; echo \"$r $s\""), " ")
+	t.Cleanup(func() { sh("PODMAN=" + fake + "; sandbox_root_remove " + made) })
+	if same != "yes" {
+		t.Errorf("the runs/ of a root sandbox_root made does not record its root's owner (%s)", same)
+	}
+	name := "canary-root-" + strconv.Itoa(os.Getpid())
+	if out := sh("PODMAN=" + fake + "; root_canary_path " + made + " " + name + " && echo none"); out != "none" {
+		t.Errorf("no canary: %q", out)
+	}
+	write(t, filepath.Join(made, "runs/att_1/x", name), "", 0o600)
+	runsDir, _ := filepath.EvalSymlinks(filepath.Join(made, "runs"))
+	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.Contains(out, filepath.Join(runsDir, "att_1/x", name)) || !strings.HasSuffix(out, "rc=1") {
+		t.Errorf("a canary under the root's runs/: %q", out)
 	}
 }
