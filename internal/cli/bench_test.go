@@ -326,7 +326,8 @@ func TestBenchInputsLocalRoute(t *testing.T) {
 // P25 results[]: a node's recorded results agree with its selected
 // outcome: two selected, or a selected one of another outcome, is refused;
 // results none selected (a reused node's, or ones before a release) are
-// read as they are.
+// read as they are. Every node is checked, a stage or not: the gate, and
+// the plan and the review's requirement the mapper skips (Astra #436 H1).
 func TestBenchInputsResults(t *testing.T) {
 	reg := stubReg(t)
 	res := func(id string, selected bool, outcome types.Outcome) types.BenchResult {
@@ -341,13 +342,15 @@ func TestBenchInputsResults(t *testing.T) {
 		"two selected":              {[]types.BenchResult{res("res_a", true, types.OutcomeEmpty), res("res_b", true, types.OutcomeEmpty)}, "2 selected results"},
 		"selected, another outcome": {[]types.BenchResult{res("res_a", true, types.OutcomeFound)}, "another outcome than the node's"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			rec := candidateRead(t)
-			rec.Bench.Nodes[3].Results = c.results // the gate: empty/completed_clean
-			_, _, err := benchInputs(rec, reg, true)
-			if c.why == "" && err != nil || c.why != "" && (err == nil || !strings.Contains(err.Error(), c.why)) {
-				t.Errorf("want %q: %v", c.why, err)
-			}
-		})
+		for kind, at := range map[string]int{"the gate": 3, "the plan": 0, "the review's requirement": 4} { // each empty/completed_clean
+			t.Run(name+", "+kind, func(t *testing.T) {
+				rec := candidateRead(t)
+				rec.Bench.Nodes[at].Results = c.results
+				_, _, err := benchInputs(rec, reg, true)
+				if c.why == "" && err != nil || c.why != "" && (err == nil || !strings.Contains(err.Error(), c.why)) {
+					t.Errorf("want %q: %v", c.why, err)
+				}
+			})
+		}
 	}
 }

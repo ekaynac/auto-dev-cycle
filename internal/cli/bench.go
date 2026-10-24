@@ -262,6 +262,9 @@ func benchInputs(rec types.TaskRead, reg types.ExecutorRegistry, stub bool) (ben
 		executor[l.ID] = l.Executor
 	}
 	for _, n := range b.Nodes {
+		if err := selectedAgrees(n); err != nil { // every node, a stage or not (Astra #436 H1)
+			return m, t, err
+		}
 		s, ok := candidateStages[n.Kind]
 		switch {
 		case !ok && slices.Contains(noStage, n.Kind) && len(n.Attempts) == 0:
@@ -275,9 +278,6 @@ func benchInputs(rec types.TaskRead, reg types.ExecutorRegistry, stub bool) (ben
 			return m, t, fmt.Errorf("the task read gives node %s completed with no selected result or no selection time: a damaged record", n.ID)
 		case n.State == types.BenchNodeStateClaimed && n.ClaimedAt == nil:
 			return m, t, fmt.Errorf("the task read gives node %s claimed with no claim time: a damaged record", n.ID)
-		}
-		if err := selectedAgrees(n); err != nil {
-			return m, t, err
 		}
 		node := bench.Node{Stage: s, Round: int(n.Round)}
 		for _, f := range []struct {
