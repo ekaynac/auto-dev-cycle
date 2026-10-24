@@ -62,9 +62,22 @@ if (held.join(",") !== want.join(",")) fail(`the task's holds are [${held}], not
 const signals = nodes.flatMap((n) => (n.holds ?? []).map((h) => h.signal_instance));
 for (const s of e.hold_signals ?? []) if (!signals.includes(s)) fail(`no hold's signal is "${s}": [${signals.join("; ")}]`);
 
-// Each listed kind's results; no claim of an absent kind.
+// Each listed kind's results; no claim of an absent kind. A kind whose
+// results are never selected (selected: false) has no selected result on
+// any node; its outcome is read where the task read shows it: the first
+// attempt's own result, when the first attempt is such a node's.
 for (const [kind, r] of Object.entries(e.nodes)) {
-  const of = (bench ?? []).filter((n) => n.kind === kind && n.outcome !== null);
+  const all = (bench ?? []).filter((n) => n.kind === kind);
+  if (r.selected === false) {
+    if (all.length === 0) fail(`no ${kind} node`);
+    for (const n of all) if (n.outcome !== null) fail(`${kind} ${n.id} (round ${n.round}) has a selected result, ${n.outcome}/${n.reason}`);
+    const first = show.first_attempt;
+    if (first && all.some((n) => n.id === first.node) && (first.outcome !== r.outcome || first.reason !== r.reason)) {
+      fail(`the first attempt (${kind} ${first.node}) recorded ${first.outcome}/${first.reason}, not ${r.outcome}/${r.reason}`);
+    }
+    continue;
+  }
+  const of = all.filter((n) => n.outcome !== null);
   if (of.length === 0) fail(`no ${kind} node recorded a result`);
   for (const n of of) {
     if (n.outcome !== r.outcome || n.reason !== r.reason) fail(`${kind} ${n.id} (round ${n.round}) is ${n.outcome}/${n.reason}, not ${r.outcome}/${r.reason}`);
@@ -136,7 +149,7 @@ if (fails.length > 0) {
   for (const f of fails) console.log(`fail: ${f}`);
   process.exit(1);
 }
-const results = Object.keys(e.nodes).map((k) => `${k} ${e.nodes[k].outcome}/${e.nodes[k].reason}`).join("; ") || "no result";
+const results = Object.keys(e.nodes).map((k) => `${k} ${e.nodes[k].outcome}/${e.nodes[k].reason}${e.nodes[k].selected === false ? " (none selected)" : ""}`).join("; ") || "no result";
 const ended = e.until === "candidate" ? "gate completed, review held review_inactive" : `held: ${want.join(", ")}`;
 const reviewers = requests.filter((x) => roleOf(x) === "reviewer").length;
 console.log(`| ${name} | ${ended} | ${results} | ${served.in}/${served.out} | ${requests.length - reviewers}/${reviewers} |`);

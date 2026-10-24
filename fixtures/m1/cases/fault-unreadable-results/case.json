@@ -25,7 +25,8 @@
       },
       "gate": {
         "outcome": "could_not_run",
-        "reason": "runner_fault"
+        "reason": "runner_fault",
+        "selected": false
       }
     },
     "holds": [

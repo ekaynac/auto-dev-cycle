@@ -112,6 +112,37 @@ func TestCycleExpect(t *testing.T) {
 	if out, code := run(t, base()); code != 0 || !strings.HasPrefix(out, "| c | gate completed, review held review_inactive | build found/completed_with_findings; gate empty/completed_clean | 100/20 | 1/0 |") {
 		t.Fatalf("a run that shows its expect block: exit %d, %s", code, out)
 	}
+	// A kind whose results are never selected (selected: false): no node of
+	// it has a selected result, and the first attempt's own result, when the
+	// first attempt is such a node's, is the expected one.
+	unselected := func() map[string]any {
+		v := base()
+		set(v, map[string]any{"outcome": "could_not_run", "reason": "provider_request_refused", "selected": false}, "case", "expect", "nodes", "build")
+		set(v, map[string]any{"id": "n2", "kind": "build", "round": 1, "outcome": nil, "reason": nil, "claimed_at": "t"}, "show", "bench", "nodes", 0)
+		fa := v["show"].(map[string]any)["first_attempt"].(map[string]any)
+		fa["node"], fa["outcome"], fa["reason"] = "n2", "could_not_run", "provider_request_refused"
+		return v
+	}
+	if out, code := run(t, unselected()); code != 0 || !strings.Contains(out, "build could_not_run/provider_request_refused (none selected)") {
+		t.Errorf("a kind none of whose results is selected: exit %d, %s", code, out)
+	}
+	for name, c := range map[string]struct {
+		edit func(map[string]any)
+		want string
+	}{
+		"a selected result": {func(v map[string]any) {
+			set(v, map[string]any{"id": "n2", "kind": "build", "round": 1, "outcome": "found", "reason": "completed_with_findings", "claimed_at": "t"}, "show", "bench", "nodes", 0)
+		}, "build n2 (round 1) has a selected result"},
+		"the first attempt's other result": {func(v map[string]any) {
+			v["show"].(map[string]any)["first_attempt"].(map[string]any)["reason"] = "executor_incomplete"
+		}, "the first attempt (build n2) recorded could_not_run/executor_incomplete"},
+	} {
+		v := unselected()
+		c.edit(v)
+		if out, code := run(t, v); code != 1 || !strings.Contains(out, c.want) {
+			t.Errorf("unselected, %s: exit %d, %s", name, code, out)
+		}
+	}
 	for name, c := range map[string]struct {
 		edit func(map[string]any)
 		want string

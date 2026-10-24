@@ -8,7 +8,8 @@
     "nodes": {
       "build": {
         "outcome": "could_not_run",
-        "reason": "provider_request_refused"
+        "reason": "provider_request_refused",
+        "selected": false
       }
     },
     "absent": [

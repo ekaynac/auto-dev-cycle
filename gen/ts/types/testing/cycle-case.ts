@@ -56,6 +56,10 @@ export interface CycleCase {
       [k: string]: {
         outcome: string;
         reason: string;
+        /**
+         * false: no node of this kind has a selected result (its results are recorded, each retried or refused, and none selected); the task read shows the outcome and reason only as the first attempt's own result, which the driver checks when the first attempt is such a node's. True (the default): every node of the kind has this selected result.
+         */
+        selected?: boolean;
       };
     };
     /**
