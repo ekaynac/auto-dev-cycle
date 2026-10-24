@@ -42,7 +42,7 @@
     "BenchNode": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "round", "state", "outcome", "reason", "claimed_at", "selected_at", "attempts"],
+      "required": ["id", "kind", "round", "state", "outcome", "reason", "claimed_at", "selected_at", "attempts", "results"],
       "properties": {
         "id": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "kind": {"enum": ["plan", "build", "accept", "gate", "runtime_verify", "integration", "rebase", "evidence", "review", "review_requirement", "carry_over", "closure", "merge", "deploy", "record", "phase_gate"]},
@@ -52,7 +52,20 @@
         "reason": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReasonCode"}]},
         "claimed_at": {"description": "Its first node.claimed time; null when never claimed.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
         "selected_at": {"description": "Its latest result.selected time; null with none.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
-        "attempts": {"description": "Every attempt on the node's unit, first to last.", "type": "array", "items": {"$ref": "#/$defs/BenchAttempt"}}
+        "attempts": {"description": "Every attempt on the node's unit, first to last.", "type": "array", "items": {"$ref": "#/$defs/BenchAttempt"}},
+        "results": {"description": "Every result recorded on the node (result.recorded), selected or not, in result id order; a node completed by reuse records none (its outcome is its key holder's).", "type": "array", "items": {"$ref": "#/$defs/BenchResult"}}
+      }
+    },
+    "BenchResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "outcome", "reason", "selected", "attempt"],
+      "properties": {
+        "id": {"$ref": "../common/defs.json#/$defs/ResultID"},
+        "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+        "selected": {"description": "The node's selected result.", "type": "boolean"},
+        "attempt": {"description": "The attempt that recorded it; null for a result the controller recorded with no attempt.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
       }
     },
     "BenchAttempt": {

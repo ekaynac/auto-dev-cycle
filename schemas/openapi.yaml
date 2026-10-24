@@ -2218,6 +2218,7 @@ components:
             - claimed_at
             - selected_at
             - attempts
+            - results
           properties:
             id:
               $ref: ../common/defs.json#/$defs/NodeID
@@ -2276,6 +2277,35 @@ components:
               type: array
               items:
                 $ref: '#/$defs/BenchAttempt'
+            results:
+              description: Every result recorded on the node (result.recorded), selected or not, in result id order; a node completed by reuse records none (its outcome is its key holder's).
+              type: array
+              items:
+                $ref: '#/$defs/BenchResult'
+        BenchResult:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - outcome
+            - reason
+            - selected
+            - attempt
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/ResultID
+            outcome:
+              $ref: ../common/defs.json#/$defs/Outcome
+            reason:
+              $ref: ../common/defs.json#/$defs/ReasonCode
+            selected:
+              description: The node's selected result.
+              type: boolean
+            attempt:
+              description: The attempt that recorded it; null for a result the controller recorded with no attempt.
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/AttemptID
         BenchAttempt:
           type: object
           additionalProperties: false

@@ -8,7 +8,8 @@ package api
 //   - each node of the task (its kind, its candidate's round, its state
 //     and selected result, its first node.claimed and latest
 //     result.selected times: graph.TimesOf) with every attempt on its unit
-//     (lease.AttemptsOn);
+//     (lease.AttemptsOn) and every result recorded on it, selected or not
+//     (graph.ResultsOf);
 //   - the lease of each of those attempts, with its executor, role and
 //     placed price, every call the ledger binds to it (ledger.BoundTo)
 //     with its binding's attempt and every measurement the ledger holds of
@@ -62,6 +63,10 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 	}
 	ofTask := map[types.NodeID]bool{}
 	leases := map[types.LeaseID]types.Attempt{}
+	results, err := graph.ResultsOf(tx, t.ID)
+	if err != nil {
+		return nil, err
+	}
 	for _, n := range nodes {
 		ofTask[n.Node.ID] = true
 		times, err := graph.TimesOf(tx, n.Node.ID)
@@ -77,6 +82,9 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 		}
 		for _, a := range attempts {
 			bn.Attempts, leases[a.Lease] = append(bn.Attempts, types.BenchAttempt{ID: a.ID, Lease: a.Lease}), a
+		}
+		if bn.Results, err = benchResults(n, results[n.Node.ID], attempts); err != nil {
+			return nil, err
 		}
 		b.Nodes = append(b.Nodes, bn)
 		answered, err := authority.Answered(tx, n.Node.ID)
@@ -121,6 +129,22 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 		b.RailRaises = append(b.RailRaises, br)
 	}
 	return b, nil
+}
+
+// benchResults are the results recorded on node n, rs (graph.ResultsOf),
+// each with whether it is n's selected one and the attempt that recorded
+// it, checked against its source: that attempt is one on n's unit
+// (attempts, lease.AttemptsOn's checked chain); else the task's damage.
+func benchResults(n graph.NodeView, rs []types.ResultRecorded, attempts []types.Attempt) ([]types.BenchResult, error) {
+	out := make([]types.BenchResult, 0, len(rs))
+	for _, r := range rs {
+		if r.Attempt != nil && !slices.ContainsFunc(attempts, func(a types.Attempt) bool { return a.ID == *r.Attempt }) {
+			return nil, damagef("result %s of node %s names attempt %s, none on the node's unit", r.Result.ID, n.Node.ID, *r.Attempt)
+		}
+		selected := n.State.Result != nil && *n.State.Result == r.Result.ID
+		out = append(out, types.BenchResult{ID: r.Result.ID, Outcome: r.Result.Outcome, Reason: r.Result.Reason, Selected: selected, Attempt: r.Attempt})
+	}
+	return out, nil
 }
 
 // closer: a review selected at, with id, closes after c (the latest, then

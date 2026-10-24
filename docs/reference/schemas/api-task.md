@@ -64,6 +64,21 @@ No other fields are allowed.
 | `claimed_at` | yes | null or [Time](common-defs.md#time) | Its first node.claimed time; null when never claimed. |
 | `selected_at` | yes | null or [Time](common-defs.md#time) | Its latest result.selected time; null with none. |
 | `attempts` | yes | array of [BenchAttempt](#benchattempt) | Every attempt on the node's unit, first to last. |
+| `results` | yes | array of [BenchResult](#benchresult) | Every result recorded on the node (result.recorded), selected or not, in result id order; a node completed by reuse records none (its outcome is its key holder's). |
+
+No other fields are allowed.
+
+### BenchResult
+
+#### Fields of BenchResult
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | [ResultID](common-defs.md#resultid) |  |
+| `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
+| `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |
+| `selected` | yes | boolean | The node's selected result. |
+| `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) | The attempt that recorded it; null for a result the controller recorded with no attempt. |
 
 No other fields are allowed.
 

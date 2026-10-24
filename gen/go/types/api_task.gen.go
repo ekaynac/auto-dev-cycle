@@ -116,6 +116,36 @@ type BenchNode struct {
 	SelectedAt *Time `json:"selected_at"`
 	// Every attempt on the node's unit, first to last.
 	Attempts []BenchAttempt `json:"attempts"`
+	// Every result recorded on the node (result.recorded), selected or not, in result id order; a node completed by reuse records none (its outcome is its key holder's).
+	Results []BenchResult `json:"results"`
+}
+
+type BenchResult struct {
+	ID      ResultID   `json:"id"`
+	Outcome Outcome    `json:"outcome"`
+	Reason  ReasonCode `json:"reason"`
+	// The node's selected result.
+	Selected bool `json:"selected"`
+	// The attempt that recorded it; null for a result the controller recorded with no attempt.
+	Attempt *AttemptID `json:"attempt"`
+}
+
+// UnmarshalJSON decodes BenchResult and refuses an omitted reason code.
+
+func (x *BenchResult) UnmarshalJSON(b []byte) error {
+	type plain BenchResult
+	var p plain
+
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+
+	if p.Reason.code == "" {
+		return errors.New("BenchResult: a reason code is required (Reason)")
+	}
+
+	*x = BenchResult(p)
+	return nil
 }
 
 type BenchAttempt struct {

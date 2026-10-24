@@ -209,7 +209,8 @@ func TestTaskReadBench(t *testing.T) {
 	}
 	commitPlan(t, w, plan, &attempt)
 	for _, x := range read().Nodes {
-		if x.ID == plan && (x.SelectedAt == nil || x.State != types.BenchNodeStateCompleted || x.Outcome == nil || *x.Outcome != types.OutcomeEmpty) {
+		if x.ID == plan && (x.SelectedAt == nil || x.State != types.BenchNodeStateCompleted || x.Outcome == nil || *x.Outcome != types.OutcomeEmpty ||
+			len(x.Results) != 1 || !x.Results[0].Selected || x.Results[0].Attempt == nil || *x.Results[0].Attempt != attempt || x.Results[0].Outcome != types.OutcomeEmpty) {
 			t.Errorf("the completed plan: %+v", x)
 		}
 	}
@@ -682,6 +683,15 @@ func TestEveryHopIsChecked(t *testing.T) {
 			}
 			return false
 		}},
+		{"a node's result names an attempt not on its unit", "resulted", func(w hopWorld) types.TaskID { return w.done }, false, func(w hopWorld) []string {
+			res := newID(t, "res") // a second result of the plan, indexed, its attempt none of the unit's
+			return []string{`INSERT INTO proj_kv(projection, key, value) SELECT projection, '` + res + `', json_set(CAST(value AS TEXT), '$.result.id', '` + res + `', '$.attempt', '` + newID(t, "att") +
+				`') FROM proj_kv WHERE projection = '` + graph.ResultProjection + `' AND key = '` + string(w.result) + `'`,
+				put(graph.TaskResultProjection, string(w.done)+"/"+res, "'true'")}
+		}, "", false, false, nil},
+		{"the task's result index names another task's result", "resulted", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
+			return []string{put(graph.TaskResultProjection, string(w.running)+"/"+string(w.result), "'true'")}
+		}, "", false, false, nil},
 		{"a node's record is under another node's key (r3)", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{`UPDATE proj_kv SET value = (SELECT value FROM proj_kv WHERE projection = '` + graph.NodeProjection + `' AND key = '` + string(w.donePlan) +
 				`') WHERE projection = '` + graph.NodeProjection + `' AND key = '` + string(w.plan) + `'`}

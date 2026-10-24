@@ -322,3 +322,32 @@ func TestBenchInputsLocalRoute(t *testing.T) {
 		}
 	}
 }
+
+// P25 results[]: a node's recorded results agree with its selected
+// outcome: two selected, or a selected one of another outcome, is refused;
+// results none selected (a reused node's, or ones before a release) are
+// read as they are.
+func TestBenchInputsResults(t *testing.T) {
+	reg := stubReg(t)
+	res := func(id string, selected bool, outcome types.Outcome) types.BenchResult {
+		return types.BenchResult{ID: types.ResultID(id), Outcome: outcome, Reason: vocab.ReasonCompletedClean, Selected: selected}
+	}
+	for name, c := range map[string]struct {
+		results []types.BenchResult
+		why     string
+	}{
+		"one selected, one not":     {[]types.BenchResult{res("res_a", false, types.OutcomeCouldNotRun), res("res_b", true, types.OutcomeEmpty)}, ""},
+		"none selected":             {[]types.BenchResult{res("res_a", false, types.OutcomeCouldNotRun)}, ""},
+		"two selected":              {[]types.BenchResult{res("res_a", true, types.OutcomeEmpty), res("res_b", true, types.OutcomeEmpty)}, "2 selected results"},
+		"selected, another outcome": {[]types.BenchResult{res("res_a", true, types.OutcomeFound)}, "another outcome than the node's"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := candidateRead(t)
+			rec.Bench.Nodes[3].Results = c.results // the gate: empty/completed_clean
+			_, _, err := benchInputs(rec, reg, true)
+			if c.why == "" && err != nil || c.why != "" && (err == nil || !strings.Contains(err.Error(), c.why)) {
+				t.Errorf("want %q: %v", c.why, err)
+			}
+		})
+	}
+}
