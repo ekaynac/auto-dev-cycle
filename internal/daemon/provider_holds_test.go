@@ -214,3 +214,107 @@ func TestAHungImageResolveAtCheckoutIsRetried(t *testing.T) {
 		t.Fatalf("accept after a hung resolve: %s, holds %+v", v.State.State, v.State.Holds)
 	}
 }
+
+// Opus #433 r2 H1: the launch's readiness resolves the image through
+// resolveImage, so a podman stuck there is the host's: the lease ends
+// before any attempt, refused and released, and the build is held on the
+// runner's bounded retry ("retry n until t"), launched again each time its
+// wait has come, and held "runner: failed" at the maxTries-th, never left
+// claimed with no hold, never wrong_owner (a hang is not a missing image).
+func TestAHungImageResolveAtLaunchIsRetriedAndBounded(t *testing.T) {
+	oldResolve, oldBase := resolveTimeout, retryBase
+	resolveTimeout, retryBase = 50*time.Millisecond, 100*time.Millisecond
+	t.Cleanup(func() { resolveTimeout, retryBase = oldResolve, oldBase })
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.images.hang.Store(true)
+	rw.untilRun(t)
+	st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
+	if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
+		t.Fatalf("the build after a hung launch: %s, holds %+v", st.State, st.Holds)
+	}
+	if _, ok, err := firstAttempt(rw); err != nil || ok {
+		t.Fatalf("an attempt started: %v %v", ok, err)
+	}
+	if _, live := leaseOn(rw.w, rw.build); live {
+		t.Fatal("the lease is still live")
+	}
+	for range 40 {
+		if st = nodesOf(rw.w, rw.task)[types.NodeKindBuild].State; len(st.Holds) == 1 && st.Holds[0].SignalInstance == runnerFailed {
+			break
+		}
+		rw.passesFor(t, 1, 100*time.Millisecond)
+	}
+	if len(st.Holds) != 1 || st.Holds[0].SignalInstance != runnerFailed || rw.runs.count() != maxTries {
+		t.Fatalf("the hung launch's retries: %d runs, holds %+v", rw.runs.count(), st.Holds)
+	}
+	rw.passesFor(t, 3, 100*time.Millisecond)
+	if rw.runs.count() != maxTries {
+		t.Fatalf("a run after runner: failed: %d", rw.runs.count())
+	}
+}
+
+// Opus #433 r2 H1, for a review: its launch's hung resolve holds the
+// review on the runner's bounded retry, its lease ended, no attempt.
+func TestAHungImageResolveAtAReviewsLaunchIsRetried(t *testing.T) {
+	oldResolve := resolveTimeout
+	resolveTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { resolveTimeout = oldResolve })
+	rw := gateWorld(t, goEvents("TestA=pass"), map[string]string{"README.md": "hello\n"}, nil)
+	if v := rw.gating(t); v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("the gate: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	rw.reviewRunning(stubRegistry(t, nil, nil), reviewer(goDecision, false, nil))
+	hung := &switchImages{}
+	hung.hang.Store(true)
+	rw.r.place.d.Images = hung
+	var review graph.NodeView
+	for range 12 {
+		rw.passesFor(t, 1, 0)
+		if review = reviewNodes(rw)[types.NodeKindReview]; len(review.State.Holds) > 0 {
+			break
+		}
+	}
+	st := review.State
+	if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
+		t.Fatalf("the review after a hung launch: %s, holds %+v", st.State, st.Holds)
+	}
+	if _, live := leaseOn(rw.w, review.Node.ID); live || len(reviewResults(rw, review.Node.ID)) != 0 {
+		t.Fatalf("the review's lease live %v, results %+v", live, reviewResults(rw, review.Node.ID))
+	}
+}
+
+// Opus #433 r2 L1: the hold's clear (imageReady) resolves under the one
+// bound of every image resolve (resolveImage): a hung podman reads as not
+// ready within resolveTimeout, never blocking the writer's command; one
+// that answers clears it.
+func TestImageReadyIsBoundAsEveryResolve(t *testing.T) {
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	oldResolve := resolveTimeout
+	resolveTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { resolveTimeout = oldResolve })
+	pl := rw.x.Placer.(placer)
+	ready := func() (bool, error) {
+		var ok bool
+		var err error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			rw.w.view(func(tx *eventstore.Tx) error { ok, err = pl.imageReady(tx, rw.build); return nil })
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("imageReady is not bounded by resolveTimeout")
+		}
+		return ok, err
+	}
+	rw.images.hang.Store(true)
+	if ok, err := ready(); ok || err != nil {
+		t.Fatalf("a hung resolve: ready %v, %v", ok, err)
+	}
+	rw.images.hang.Store(false)
+	if ok, err := ready(); !ok || err != nil {
+		t.Fatalf("a resolving image: ready %v, %v", ok, err)
+	}
+}

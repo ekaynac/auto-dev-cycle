@@ -12,6 +12,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
@@ -65,9 +66,13 @@ type AdapterSession struct {
 const imageLib = "/opt/adc/lib"
 
 // resolveTimeout bounds every resolution of a pinned image (podman image
-// inspect: resolveImage): a client stuck on its storage's lock is the
-// host's fault.
-var resolveTimeout = 30 * time.Second
+// inspect: resolveImage): the launch's readiness, the adapter's start,
+// checkout's (accept and the gate) and the hold's clear (imageReady), so a
+// podman that answers within it passes each and clears each, and one that
+// does not is the host's fault everywhere (Opus #433 r2 L1). It is
+// dispatch.ReadinessBound, the bound of a readiness check in the writer's
+// command, since imageReady runs in one (Opus #400 M2).
+var resolveTimeout = dispatch.ReadinessBound
 
 // imageStore resolves a pinned image (sandbox.Host, dispatch.Images).
 type imageStore interface {
@@ -76,8 +81,9 @@ type imageStore interface {
 
 // resolveImage resolves ref in images within resolveTimeout: one past it,
 // ctx itself not done, is the host's podman hung (errHost: retried), never
-// the image missing (Mythos chunk 2 L1). The one rule for the adapter's
-// start and checkout's (accept and the gate; Opus #433 L2).
+// the image missing (Mythos chunk 2 L1). The one rule of every image
+// resolve: the launch's readiness (placer.launch), the adapter's start,
+// checkout's (accept and the gate; Opus #433 L2) and imageReady.
 func resolveImage(ctx context.Context, images imageStore, ref string) (sandbox.Image, error) {
 	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
