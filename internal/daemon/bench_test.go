@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -599,6 +600,8 @@ type hopWorld struct {
 	running, done, chained, mine     types.TaskID
 	plan, donePlan, chainNode, mineP types.NodeID
 	attempt, first, second, theirs   types.AttemptID
+	build                            types.NodeID
+	result                           types.ResultID
 	lease                            types.LeaseID
 	call                             types.CallID
 	msr                              types.MeasurementID
@@ -631,62 +634,112 @@ func TestEveryHopIsChecked(t *testing.T) {
 		damaged func(w hopWorld) types.TaskID
 		first   bool // a first-attempt hop: the list shows the card damaged_record
 		damage  func(w hopWorld) []string
-		reason  types.BoardUnplacedCardReason // the read stops at an unplaced card, no error
+		reason  types.BoardUnplacedCardReason // the read gives an unplaced card, no error
+		stops   bool                          // with reason: no first attempt and no facts are read
+		listErr bool                          // the list fails: the node table's own damage (a scan)
+		check   func(w hopWorld, rec types.TaskRead) bool
 	}{
 		{"the unit's index names another task's attempt (probe A)", "started", func(w hopWorld) types.TaskID { return w.done }, false, func(w hopWorld) []string {
 			return []string{put(lease.UnitProjection, string(graph.UnitOf(w.donePlan)), str(string(w.attempt)))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the unit's first index names another task's attempt", "started", func(w hopWorld) types.TaskID { return w.done }, true, func(w hopWorld) []string {
 			return []string{put(lease.FirstProjection, string(graph.UnitOf(w.donePlan)), str(string(w.attempt)))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the superseded attempt names another successor", "chained", func(w hopWorld) types.TaskID { return w.chained }, false, func(w hopWorld) []string {
 			return []string{set(lease.AttemptProjection, string(w.first), "$.record.superseded_by", newID(t, "att"))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the current attempt is another unit's", "chained", func(w hopWorld) types.TaskID { return w.chained }, false, func(w hopWorld) []string {
 			return []string{set(lease.AttemptProjection, string(w.second), "$.record.unit", strangerUnit)}
-		}, ""},
+		}, "", false, false, nil},
 		{"the attempt's lease is another unit's", "started", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
 			return []string{set(lease.LeaseProjection, string(w.lease), "$.record.unit", strangerUnit)}
-		}, ""},
+		}, "", false, false, nil},
 		{"the attempt's result index names no result of it", "started", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
 			return []string{put(graph.AttemptResultProjection, string(w.attempt), str(newID(t, "res")))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the lease's call is bound to another lease", "started", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
 			return []string{set(ledger.BindingProjection, string(w.call), "$.lease", newID(t, "lea"))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the call's index names another call's measurement", "started", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
 			m := newID(t, "msr")
 			return []string{`INSERT INTO proj_kv(projection, key, value) SELECT projection, '` + string(w.call) + `/` + m + `', json_set(CAST(value AS TEXT), '$.id', '` + m + `', '$.call', '` + newID(t, "cal") + `') FROM proj_kv WHERE projection = '` +
 				ledger.UsageProjection + `' AND key = '` + string(w.call) + `/` + string(w.msr) + `'`}
-		}, ""},
+		}, "", false, false, nil},
+		{"a measurement of the call names another lease", "started", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
+			return []string{set(ledger.UsageProjection, string(w.call)+"/"+string(w.msr), "$.lease", newID(t, "lea"))}
+		}, "", false, false, nil},
+		{"the call's index holds a measurement under another id's key (r3)", "started", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
+			return []string{`INSERT INTO proj_kv(projection, key, value) SELECT projection, '` + string(w.call) + `/` + newID(t, "msr") + `', value FROM proj_kv WHERE projection = '` +
+				ledger.UsageProjection + `' AND key = '` + string(w.call) + `/` + string(w.msr) + `'`}
+		}, "", false, false, nil},
+		{"a node's selected result is another task's node's (r3 H1″)", "resulted", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
+			return []string{set(graph.NodeProjection, string(w.plan), "$.state.result", string(w.result))}
+		}, types.BoardUnplacedCardReasonDamagedRecord, false, false, func(w hopWorld, rec types.TaskRead) bool {
+			for _, n := range rec.Bench.Nodes {
+				if n.ID == w.plan {
+					return n.Outcome == nil && n.Reason == nil
+				}
+			}
+			return false
+		}},
+		{"a node's record is under another node's key (r3)", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
+			return []string{`UPDATE proj_kv SET value = (SELECT value FROM proj_kv WHERE projection = '` + graph.NodeProjection + `' AND key = '` + string(w.donePlan) +
+				`') WHERE projection = '` + graph.NodeProjection + `' AND key = '` + string(w.plan) + `'`}
+		}, types.BoardUnplacedCardReasonDamagedRecord, true, true, nil},
+		{"the unit's open index names another unit's attempt and lease (r3)", "abandoned", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
+			from, to := string(graph.UnitOf(w.plan))+"/", string(graph.UnitOf(w.build))+"/"
+			return []string{`UPDATE proj_kv SET key = '` + to + `' || substr(key, ` + fmt.Sprint(len(from)+1) + `) WHERE projection = '` + lease.OpenProjection +
+				`' AND substr(key, 1, ` + fmt.Sprint(len(from)) + `) = '` + from + `'`}
+		}, types.BoardUnplacedCardReasonDamagedRecord, false, false, func(w hopWorld, rec types.TaskRead) bool { return rec.Bench != nil }},
+		{"the unit's open index names another unit's lease (r3)", "abandoned", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
+			from := string(graph.UnitOf(w.plan)) + "/"
+			move := func(prefix, to string) string {
+				return `UPDATE proj_kv SET key = '` + to + `' || substr(key, ` + fmt.Sprint(len(from)+1) + `) WHERE projection = '` + lease.OpenProjection +
+					`' AND substr(key, 1, ` + fmt.Sprint(len(from+prefix)) + `) = '` + from + prefix + `'`
+			}
+			return []string{move("lea_", string(graph.UnitOf(w.build))+"/"), move("att_", strangerUnit+"/")}
+		}, types.BoardUnplacedCardReasonDamagedRecord, false, false, func(w hopWorld, rec types.TaskRead) bool { return rec.Bench != nil }},
 		{"the asker index names an input another node asked", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{put(authority.OwedProjection, "asker/"+string(w.plan)+"/"+string(w.owed), str(string(w.owed)))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the raise index holds another task's raise", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{put(authority.RaiseProjection, string(w.running)+"/99999999999999999999", `'{"task":"`+string(w.done)+`","rail":"rounds_per_task","command":null}'`)}
-		}, ""},
+		}, "", false, false, nil},
 		{"a raise's command cleared a hold of another rail", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{put(authority.RaiseProjection, string(w.running)+"/99999999999999999999", `'{"task":"`+string(w.running)+`","rail":"rounds_per_task","command":"cmd_hop"}'`),
 				put(graph.RailClearProjection, "cmd_hop/"+string(w.plan), str(graph.RailSignal("attempts_per_round")))}
-		}, ""},
+		}, "", false, false, nil},
 		{"a raise's command cleared a hold on another task's node", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{put(authority.RaiseProjection, string(w.running)+"/99999999999999999999", `'{"task":"`+string(w.running)+`","rail":"rounds_per_task","command":"cmd_hop"}'`),
 				put(graph.RailClearProjection, "cmd_hop/"+string(w.donePlan), str(graph.RailSignal("rounds_per_task")))}
-		}, ""},
+		}, "", false, false, nil},
 		{"across projects: the unit's index names another project's attempt", "crossed", func(w hopWorld) types.TaskID { return w.mine }, false, func(w hopWorld) []string {
 			return []string{put(lease.UnitProjection, string(graph.UnitOf(w.mineP)), str(string(w.theirs)))}
-		}, ""},
+		}, "", false, false, nil},
 		{"the task's node recorded in another project (L3)", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{set(graph.NodeProjection, string(w.plan), "$.recorded.project", string(other))}
-		}, types.BoardUnplacedCardReasonNodeInAnotherProject},
+		}, types.BoardUnplacedCardReasonNodeInAnotherProject, true, false, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := stateDir(t)
-			s := seed(t, dir, daemonProjection(t, tokens(10)))
+			s := seed(t, dir, daemonProjection(t, tokens(1<<40)))
 			w := hopWorld{op: fullHistory(t, s)}
 			w.sup = w.op
 			switch c.world {
-			case "started":
+			case "resulted":
+				w.running, w.done = measuredTask(t, s, 1, true), measuredTask(t, s, 1, true)
+				w.plan, w.donePlan = templateNodes(s, w.running)[types.NodeKindPlan], templateNodes(s, w.done)[types.NodeKindPlan]
+				s.view(func(tx *eventstore.Tx) error {
+					v, err := graph.ViewOf(tx, w.donePlan)
+					if err == nil && v.State.Result == nil {
+						err = errors.New("the other task's plan has no selected result")
+					}
+					if err == nil {
+						w.result = *v.State.Result
+					}
+					return err
+				})
+			case "started", "abandoned":
 				w.running, w.done, w.plan, w.attempt = startedTask(t, s, s.lease(4).Reservations, true)
 				w.donePlan = templateNodes(s, w.done)[types.NodeKindPlan]
 				w.owed = types.OwedInputID(newID(t, "own"))
@@ -707,6 +760,10 @@ func TestEveryHopIsChecked(t *testing.T) {
 					}
 					return err
 				})
+				w.build = templateNodes(s, w.running)[types.NodeKindBuild]
+				if c.world == "abandoned" { // the approver revoked: the task ends abandoned, its open units read (lease.Unended)
+					s.do(w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return identity.RevokeActor(tx, w.op, time.Now()) })
+				}
 			case "chained":
 				w.chainNode = plannedIn(t, s, graphProject)
 				w.chained = taskOf(s, w.chainNode)
@@ -749,13 +806,17 @@ func TestEveryHopIsChecked(t *testing.T) {
 			}
 			s.done()
 			execSQL(t, dir, c.damage(w)...)
-			s = seed(t, dir, daemonProjection(t, tokens(10)))
+			s = seed(t, dir, daemonProjection(t, tokens(1<<40)))
 			t.Cleanup(s.done)
 			rec, ok, err := opRead(t, s, w.sup, damaged)
 			raw, _ := json.Marshal(rec)
 			switch card, unplaced := rec.Card.Variant.(*types.BoardUnplacedCard); {
-			case c.reason != "" && (err != nil || !ok || !unplaced || card.Reason != c.reason || rec.FirstAttempt != nil || rec.Bench != nil):
-				t.Errorf("want the card unplaced %s, no facts: %v %v %s", c.reason, ok, err, raw)
+			case c.reason != "" && (err != nil || !ok || !unplaced || card.Reason != c.reason):
+				t.Errorf("want the card unplaced %s: %v %v %s", c.reason, ok, err, raw)
+			case c.reason != "" && c.stops && (rec.FirstAttempt != nil || rec.Bench != nil):
+				t.Errorf("want no facts read past the card: %s", raw)
+			case c.check != nil && !c.check(w, rec):
+				t.Errorf("the read's facts: %s", raw)
 			case c.reason == "" && err == nil:
 				t.Errorf("the damaged task's one-task read: %s", raw)
 			}
@@ -767,6 +828,17 @@ func TestEveryHopIsChecked(t *testing.T) {
 				if r, ok, err := opRead(t, s, w.op, intact); err != nil || !ok || r.Bench == nil {
 					t.Errorf("the other task's read: %v %v", ok, err)
 				}
+			}
+			if c.listErr {
+				var lerr error
+				s.view(func(tx *eventstore.Tx) error {
+					_, lerr = api.Registered()["tasks"].List(tx, api.ReadAt{Now: time.Now(), Scope: authority.ReadScope{}})
+					return nil
+				})
+				if !errors.Is(lerr, graph.ErrIndexDamaged) {
+					t.Errorf("the list over a damaged node table: %v", lerr)
+				}
+				return
 			}
 			l := taskReadAs(t, s, w.sup, damaged)
 			card, unplaced := l.Card.Variant.(*types.BoardUnplacedCard)

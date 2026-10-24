@@ -132,6 +132,9 @@ func ReadTask(tx *eventstore.Tx, at ReadAt, id types.TaskID, bench bool) (types.
 		return types.TaskRead{}, false, err
 	}
 	nodes, err := graph.TaskNodes(tx, id)
+	if errors.Is(err, graph.ErrIndexDamaged) { // a node not the task's: nothing is read through it (Astra #432 H1)
+		return types.TaskRead{ID: t.ID, Project: t.Project, Card: unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)}, true, nil
+	}
 	if err != nil {
 		return types.TaskRead{}, false, err
 	}
@@ -151,22 +154,18 @@ func authorizedTask(tx *eventstore.Tx, at ReadAt, id types.TaskID) (authority.Ta
 	return t, true, nil
 }
 
-// taskRead is the authorised task t's record over its nodes, with its
-// benchmark facts when bench. A node that is not t's own stops the read
-// there, its card unplaced: damaged_record for a node of another task (a
-// damaged index), node_in_another_project for t's node recorded in another
-// project, as the board says (Opus #432 r2 L3). No attempt or benchmark
-// fact is read through it, so no other task's records are reached (Astra
-// #432 H1). Every later hop is checked against its source (attemptLease,
-// benchOf); a mismatch is the task's damage (isDamage).
+// taskRead is the authorised task t's record over its nodes, every one of
+// them t's own (graph.TaskNodes checks the one task's index; the list
+// groups nodes by their own records' task). A node of t recorded in
+// another project stops the read there, its card unplaced
+// node_in_another_project, as the board says (Opus #432 r2 L3): no attempt
+// or benchmark fact is read through it (Astra #432 H1). Every later hop is
+// checked against its source (attemptLease, benchOf); a mismatch is the
+// task's damage (isDamage).
 func taskRead(tx *eventstore.Tx, at ReadAt, t authority.TaskRecord, nodes []graph.NodeView, bench bool) (types.TaskRead, error) {
 	read := types.TaskRead{ID: t.ID, Project: t.Project}
 	for _, n := range nodes {
-		switch {
-		case n.Task != t.ID:
-			read.Card = unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
-			return read, nil
-		case n.Project != t.Project:
+		if n.Project != t.Project {
 			read.Card = unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonNodeInAnotherProject)
 			return read, nil
 		}
@@ -280,7 +279,7 @@ func damagef(format string, args ...any) error {
 
 // isDamage: err is a task's damage, not a failure of the store.
 func isDamage(err error) bool {
-	return errors.Is(err, errTaskDamage) || errors.Is(err, graph.ErrIndexDamaged)
+	return errors.Is(err, errTaskDamage) || errors.Is(err, graph.ErrIndexDamaged) || errors.Is(err, ledger.ErrMeasurementIndex)
 }
 
 // boundCall is a call the ledger binds to a lease, with its attempt and
@@ -323,7 +322,7 @@ func attemptLease(tx *eventstore.Tx, a types.Attempt) (types.Lease, []boundCall,
 			return l, nil, err
 		}
 		for _, m := range ms {
-			if m.Call != c || m.Lease != l.ID || m.Attempt != a.ID {
+			if m.Lease != l.ID || m.Attempt != a.ID { // its call and id: ledger.Measurements
 				return l, nil, damagef("call %s's measurement index names %s, of call %s under %s", c, m.ID, m.Call, m.Lease)
 			}
 		}
