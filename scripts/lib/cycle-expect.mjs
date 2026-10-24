@@ -5,6 +5,15 @@
 // the installed Node once the run ended and adcd replayed its store:
 //
 //   node cycle-expect.mjs CASE_JSON OUT_DIR CASE [stub|live]
+//   node cycle-expect.mjs --canary-forms OUT_DIR
+//
+// --canary-forms writes OUT_DIR/canary-forms, one per line, every form
+// OUT_DIR/canary may take where it would leak (Opus #440 H2): as is, and
+// trimmed of its surrounding whitespace; each as JSON escapes it once (a
+// request body), twice (a JSON document inside a string), and as Go's
+// encoding/json escapes it (the task read and the event stream: <, >, &,
+// U+2028 and U+2029 as \u escapes). The driver's grep reads them as its
+// patterns, never as arguments; this checker uses the same forms.
 //
 // OUT_DIR holds the run's records: show.json (adc task show --json, its
 // bench read giving each node's outcome and reason), events.jsonl (adc
@@ -24,8 +33,21 @@
 // a candidate (done_candidate), and the canaries are the driver's to check
 // in the gateway's egress capture (there is no stub log).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+const canaryForms = (canary) => {
+  const esc = (s) => JSON.stringify(s).slice(1, -1);
+  const goEsc = (s) => esc(s).replace(/[<>&\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const forms = [];
+  for (const s of [canary, canary.trim()]) forms.push(s, esc(s), esc(esc(s)), goEsc(s), goEsc(goEsc(s)));
+  return [...new Set(forms)].filter((s) => s !== "");
+};
+const canaryOf = (dir) => readFileSync(join(dir, "canary"), "utf8").replace(/\n$/, "");
+if (process.argv[2] === "--canary-forms") {
+  writeFileSync(join(process.argv[3], "canary-forms"), canaryForms(canaryOf(process.argv[3])).join("\n") + "\n", { mode: 0o600 });
+  process.exit(0);
+}
 
 const [caseFile, out, name, mode = "stub"] = process.argv.slice(2);
 const live = mode === "live";
@@ -48,7 +70,10 @@ if (!live) {
 }
 const log = read("adcd-1.log");
 const caps = JSON.parse(read("capabilities.json"));
-const canary = read("canary").trim();
+const canary = canaryOf(out);
+// Any form of it (raw, trimmed, JSON-escaped; Opus #440 H2) counts as it.
+const forms = canaryForms(canary);
+const holdsCanary = (text) => forms.some((f) => text.includes(f));
 
 const fails = fails0;
 const fail = (why) => fails.push(why);
@@ -59,10 +84,34 @@ if (!Array.isArray(bench)) fail("the task read carries no bench nodes (the opera
 const holdsOf = (n) => (n.holds ?? []).map((h) => h.hold);
 const reviews = nodes.filter((n) => n.kind === "review");
 
+// chain: in live mode, the closing review's round (bench.closure): its
+// build, accept, gate and review are the candidate's chain, and only they
+// are checked against the expect block; a candidate reached by a repair is
+// a reviewed candidate (#440 decision, Opus #440 M3).
+let chain = null;
 if (live) {
   // Review is active, so the release's records qualify every reviewer route, and the task closes a candidate after review.
   if (/^adcd: review stays inactive: /m.test(log)) fail("adcd's start says review stays inactive: the reviewer route is not qualified");
   if (card.column !== "done_candidate") fail(`the task is ${card.column}, not closed as a candidate (done_candidate)`);
+  const closure = show.bench?.closure;
+  const closing = (bench ?? []).find((n) => n.id === closure?.node && n.kind === "review");
+  if (!closure || !closing) fail(`the task read names no closing review (bench.closure: ${JSON.stringify(closure ?? null)})`);
+  else {
+    if (closure.outcome !== "empty" || closure.reason !== "completed_clean") fail(`the closing review ${closure.node} is ${closure.outcome}/${closure.reason}, not a go (empty/completed_clean)`);
+    chain = closing.round;
+    // The rounds before it: each a build, closed by its review's repair verdict (no_go, or the unreviewable candidate).
+    for (let r = 1; r <= chain; r++) if (!bench.some((n) => n.kind === "build" && n.round === r)) fail(`no build of round ${r}`);
+    for (let r = 1; r < chain; r++) {
+      if (!bench.some((n) => n.kind === "review" && n.round === r && (n.outcome === "found" || (n.outcome === "failed" && n.reason === "unsafe_output")))) {
+        fail(`round ${r} before the closing round ${chain} was not closed by a repair verdict (its review no_go, or unreviewable)`);
+      }
+    }
+  }
+  // Every reviewer call's body was captured (Opus #440 L3): the canary's absence from reviewer requests rests on it.
+  const reviewerCalls = (show.bench?.leases ?? []).filter((l) => l.role === "reviewer").flatMap((l) => (l.calls ?? []).map((x) => x.id));
+  const kept = new Set(events.filter((x) => x.kind === "blob.capture_kept/v1").map((x) => x.payload?.call));
+  if (reviewerCalls.length === 0) fail("the task read's bench shows no reviewer call");
+  for (const id of reviewerCalls) if (!kept.has(id)) fail(`reviewer call ${id} has no captured body (blob.capture_kept)`);
 } else {
   // The review stays inactive in stub mode, and adcd's start says why.
   if (!/^adcd: review stays inactive: P31's qualification on record: /m.test(log)) fail("adcd's start does not name why review is inactive");
@@ -85,7 +134,7 @@ for (const s of e.hold_signals ?? []) if (!signals.includes(s)) fail(`no hold's 
 // any node; its outcome is read where the task read shows it: the first
 // attempt's own result, when the first attempt is such a node's.
 for (const [kind, r] of Object.entries(e.nodes)) {
-  const all = (bench ?? []).filter((n) => n.kind === kind);
+  const all = (bench ?? []).filter((n) => n.kind === kind && (chain === null || n.round === chain));
   if (r.selected === false) {
     if (all.length === 0) fail(`no ${kind} node`);
     for (const n of all) {
@@ -150,10 +199,10 @@ for (const x of requests) {
   if (roleOf(x) === "reviewer") for (const k of (e.reviewer_canaries ?? []).map(sub)) if (body.includes(k)) fail(`reviewer canary ${k} in a reviewer request (${x.request_id})`);
   if (roleOf(x) === "other") fail(`a request for model ${x.model}`);
   // The canary minted for this run (§2.7 hostile-gate-output's gate writes it into its results mount) reaches no request at all.
-  if (body.includes(canary)) fail(`the run's minted canary in a ${roleOf(x)} request (${x.request_id})`);
+  if (holdsCanary(body)) fail(`the run's minted canary in a ${roleOf(x)} request (${x.request_id})`);
 }
-// Nor either saved operator read (Opus #435 H1); in live mode, out/canary is the acceptance's canary.
-for (const f of ["show.json", "events.jsonl"]) if (read(f).includes(canary)) fail(`the run's minted canary in the operator's ${f}`);
+// Nor either saved operator read (Opus #435 H1), in any of its forms; in live mode, out/canary is the acceptance's canary.
+for (const f of ["show.json", "events.jsonl"]) if (holdsCanary(read(f))) fail(`the run's minted canary in the operator's ${f}`);
 // An attempt that started made at least one builder request the stub logged (Opus #435 M3).
 if (!live && events.some((x) => x.kind === "attempt.started/v1") && !requests.some((x) => roleOf(x) === "builder")) fail("an attempt started, and the stub logged no builder request");
 for (const s of e.builder_sees ?? []) {

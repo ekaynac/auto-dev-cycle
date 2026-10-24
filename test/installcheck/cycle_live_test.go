@@ -36,8 +36,21 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(lib, "node/bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(node, filepath.Join(lib, "node/bin/node")); err != nil {
-		t.Fatal(err)
+	// Every child the driver runs through PATH, and its node, log their
+	// arguments (Opus #440 H1, M2): no run may name the canary or an
+	// acceptance file to any of them.
+	argv := filepath.Join(root, "argv.log")
+	wrap := filepath.Join(root, "wrap")
+	logs := func(real string) string {
+		return "#!/bin/sh\nprintf '%s %s\\n' \"$0\" \"$*\" >>" + argv + "\nexec " + real + " \"$@\"\n"
+	}
+	write(t, filepath.Join(lib, "node/bin/node"), logs(node), 0o755)
+	for _, c := range []string{"grep", "env", "cat", "sha256sum", "stat", "head", "tr", "sed", "cut", "sort", "git", "timeout", "realpath", "mktemp", "find"} {
+		real, err := exec.LookPath(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(wrap, c), logs(real), 0o755)
 	}
 	for _, s := range []string{"installed-cycle.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh", "lib/cycle-live.sh"} {
 		b, err := os.ReadFile("../../scripts/" + s)
@@ -78,7 +91,7 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 			"--issue", "170", "--until", "candidate", "--bench", filepath.Join(root, "bench.json"), "--registry", filepath.Join(root, "registry.json"),
 			"--groups", filepath.Join(root, "groups.json")}, args...)...)
 		cmd.Dir = root
-		cmd.Env = append(append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+t.TempDir()), env...)
+		cmd.Env = append(append(testguard.HomeEnv(t), "PATH="+wrap+":/usr/bin:/bin", "TMPDIR="+t.TempDir()), env...)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {
@@ -101,21 +114,48 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 	other := filepath.Join(root, "other.go")
 	write(t, other, "package cli\n", 0o644)
 	held := []string{"ADC_CREDENTIAL_API_REVIEWER=" + secret}
+	// The canary from a file of the caller's, mode 0600 (Opus #440 M2).
+	canaryFile := func(name, content string, mode os.FileMode) string {
+		f := filepath.Join(root, name)
+		write(t, f, content, mode)
+		if err := os.Chmod(f, mode); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	own := canaryFile("canary", canary+"\n", 0o600)
 	for name, c := range map[string]struct {
 		env  []string
 		args []string
 		want string
 	}{
-		"another file":       {held, []string{"--acceptance", "internal/cli/accept_hidden_test.go=" + other, "--canary", canary}, "its file is not the recorded sha256:"},
-		"another name":       {held, []string{"--acceptance", "internal/cli/x_test.go=" + acceptance, "--canary", canary}, "names no such attachment"},
-		"a canary not in it": {held, []string{"--acceptance", given, "--canary", "// ADC-CANARY-somewhere-else-0123"}, "--canary is no line of the acceptance files"},
-		"no credential":      {nil, []string{"--acceptance", given, "--canary", canary}, "the registry's credential api-reviewer is not in this environment (ADC_CREDENTIAL_API_REVIEWER)"},
-		"no canary":          {held, []string{"--acceptance", given}, "usage: installed-cycle.sh"},
-		"--canary no value":  {held, []string{"--acceptance", given, "--canary"}, "usage: installed-cycle.sh"},
+		"another file":               {held, []string{"--acceptance", "internal/cli/accept_hidden_test.go=" + other, "--canary-file", own}, "its file is not the recorded sha256:"},
+		"another name":               {held, []string{"--acceptance", "internal/cli/x_test.go=" + acceptance, "--canary-file", own}, "names no such attachment"},
+		"a canary not in it":         {held, []string{"--acceptance", given, "--canary-file", canaryFile("elsewhere", "// ADC-CANARY-somewhere-else-0123\n", 0o600)}, "the canary is no line of the acceptance files"},
+		"no credential":              {nil, []string{"--acceptance", given, "--canary-file", own}, "the registry's credential api-reviewer is not in this environment (ADC_CREDENTIAL_API_REVIEWER)"},
+		"no canary":                  {held, []string{"--acceptance", given}, "usage: installed-cycle.sh"},
+		"--canary-file no value":     {held, []string{"--acceptance", given, "--canary-file"}, "usage: installed-cycle.sh"},
+		"a canary file others read":  {held, []string{"--acceptance", given, "--canary-file", canaryFile("loose", canary+"\n", 0o644)}, "a file of yours, mode 0600"},
+		"a canary file of two lines": {held, []string{"--acceptance", given, "--canary-file", canaryFile("two", canary+"\nmore\n", 0o600)}, "must hold the canary line alone"},
+		"a canary of whitespace":     {held, []string{"--acceptance", given, "--canary-file", canaryFile("blank", "\t\t   \n", 0o600)}, "at least 16 characters past its whitespace"},
 	} {
 		out, code := run(c.env, c.args...)
 		if code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: ") || !strings.Contains(out, c.want) {
 			t.Errorf("%s: exit %d, %s", name, code, out)
+		}
+	}
+	// Opus #440 L1: a kept live run says what its directory holds.
+	if out, code := run(nil, "--acceptance", given, "--canary-file", own, "--keep"); code != 2 ||
+		!strings.Contains(out, "holds the acceptance canary, the acceptance files and every captured request: never share it") {
+		t.Errorf("a kept live run: exit %d, %s", code, out)
+	}
+	logged, err := os.ReadFile(argv)
+	if err != nil || !strings.Contains(string(logged), "/sha256sum ") {
+		t.Fatalf("the wrappers logged nothing of the runs (%v): %q", err, logged)
+	}
+	for _, s := range []string{canary, "ADC-CANARY-live-test", acceptance, other, secret} {
+		if strings.Contains(string(logged), s) {
+			t.Errorf("a child process's arguments hold %q", s)
 		}
 	}
 }
@@ -174,5 +214,43 @@ func TestLiveBenchOnlyAfterTheRestart(t *testing.T) {
 	}
 	if n := strings.Count(string(lib), "dev bench record --task"); n != 1 || !strings.Contains(string(lib), "live_bench() {") {
 		t.Errorf("cycle-live.sh records the benchmark %d times, or outside live_bench", n)
+	}
+	// Opus #440 M1: --bench is written last, after the real ~/.config/adc
+	// is found unchanged, right before "ok"; nothing else writes it.
+	checked := at(`[[ "$after" == "$before" ]] || die`, bench)
+	write := at("live_write_bench", checked)
+	if ok := at(`step "ok"`, write); strings.Contains(s[write+len("live_write_bench"):ok], "die") || strings.Count(s, "live_write_bench") != 1 {
+		t.Error("live_write_bench is not the last check before ok, or is called more than once")
+	}
+	if strings.Count(string(lib), `"$bench"`) != 1 || strings.Contains(string(lib), "install ") {
+		t.Error("cycle-live.sh writes --bench other than in live_write_bench")
+	}
+}
+
+// Opus #440 L2: live_write_bench never writes over a file, even one made
+// since the run's start; it writes the record when none is there.
+func TestLiveBenchNeverClobbers(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "out/bench.json"), `{"record":1}`, 0o600)
+	bench := filepath.Join(dir, "bench.json")
+	run := func() (string, error) {
+		cmd := exec.Command("bash", "-c", `set -euo pipefail; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/cycle-live.sh; step() { echo "$*"; }; work="$1" bench="$2"; live_write_bench`, "x", dir, bench)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	write(t, bench, "someone else's\n", 0o644)
+	if out, err := run(); err == nil || !strings.Contains(out, "the benchmark cannot be written") {
+		t.Errorf("over an existing file: %v %s", err, out)
+	}
+	if b, _ := os.ReadFile(bench); string(b) != "someone else's\n" {
+		t.Errorf("the existing file was overwritten: %q", b)
+	}
+	os.Remove(bench)
+	if out, err := run(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if b, _ := os.ReadFile(bench); string(b) != `{"record":1}` {
+		t.Errorf("the record written: %q", b)
 	}
 }

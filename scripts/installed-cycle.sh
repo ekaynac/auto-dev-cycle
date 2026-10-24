@@ -70,17 +70,17 @@ cannot() {
 }
 usage() {
   cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]
-   or: installed-cycle.sh PREFIX --routes live --project repo --issue N --until candidate --bench FILE --registry FILE --groups FILE --acceptance REPO_PATH=FILE... --canary TEXT [--sandbox-root DIR] [--podman PATH] [--keep]"
+   or: installed-cycle.sh PREFIX --routes live --project repo --issue N --until candidate --bench FILE --registry FILE --groups FILE --acceptance REPO_PATH=FILE... --canary-file FILE [--sandbox-root DIR] [--podman PATH] [--keep]"
 }
 
 [[ $# -ge 1 ]] || usage
 prefix="$1"
 shift
 routes="" project="" case="" keep=0 expect="" shared="" setup_only=0 PODMAN=/usr/bin/podman
-issue="" until_="" bench="" registry="" groups="" acceptance=() live_canary=""
+issue="" until_="" bench="" registry="" groups="" acceptance=() live_canary="" canary_file=""
 while [[ $# -gt 0 ]]; do
   # A value flag given last, with no value, is a usage refusal (exit 2), never a failed shift (Opus #435 L1).
-  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman | --issue | --until | --bench | --registry | --groups | --acceptance | --canary) [[ $# -ge 2 ]] || usage ;; esac
+  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman | --issue | --until | --bench | --registry | --groups | --acceptance | --canary-file) [[ $# -ge 2 ]] || usage ;; esac
   case "$1" in
     --routes) routes="$2" && shift 2 ;;
     --project) project="$2" && shift 2 ;;
@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
     --registry) registry="$2" && shift 2 ;;
     --groups) groups="$2" && shift 2 ;;
     --acceptance) acceptance+=("$2") && shift 2 ;;
-    --canary) live_canary="$2" && shift 2 ;;
+    --canary-file) canary_file="$2" && shift 2 ;;
     --keep) keep=1 && shift ;;
     *) usage ;;
   esac
@@ -104,7 +104,7 @@ done
 live=0
 case "$routes" in
   stub)
-    [[ -n "$project" && -n "$case" && -z "$issue$until_$bench$registry$groups$live_canary" && ${#acceptance[@]} -eq 0 ]] || usage
+    [[ -n "$project" && -n "$case" && -z "$issue$until_$bench$registry$groups$canary_file" && ${#acceptance[@]} -eq 0 ]] || usage
     [[ "$project" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && "$case" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || usage
     [[ "$project" == go-mini ]] || cannot "--project $project: only go-mini has cycle cases"
     ;;
@@ -112,8 +112,14 @@ case "$routes" in
     # §2.3's live route (P25, D2): this repository's issue N, until the candidate.
     live=1
     [[ "$project" == repo && "$issue" =~ ^[1-9][0-9]{0,6}$ && "$until_" == candidate && -z "$case$expect" && $setup_only == 0 ]] || usage
-    [[ -n "$bench" && -n "$registry" && -n "$groups" && -n "$live_canary" && ${#acceptance[@]} -gt 0 ]] || usage
-    [[ ${#live_canary} -ge 16 ]] || cannot "--canary must be the acceptance's unpublished canary line, at least 16 characters"
+    [[ -n "$bench" && -n "$registry" && -n "$groups" && -n "$canary_file" && ${#acceptance[@]} -gt 0 ]] || usage
+    # The canary from a file of the caller's own, mode 0600, never an argument (Opus #440 M2): one line, read by builtins.
+    [[ -f "$canary_file" && -O "$canary_file" && "$(stat -c %a -- "$canary_file")" == 600 ]] ||
+      cannot "--canary-file $canary_file: a file of yours, mode 0600"
+    IFS= read -r live_canary <"$canary_file" || [[ -n "$live_canary" ]] || cannot "--canary-file: no line"
+    [[ "$(<"$canary_file")" == "$live_canary" && "$live_canary" != *$'\r'* ]] || cannot "--canary-file must hold the canary line alone"
+    core="${live_canary#"${live_canary%%[![:space:]]*}"}" core="${core%"${core##*[![:space:]]}"}"
+    [[ ${#core} -ge 16 ]] || cannot "the canary must be the acceptance's unpublished canary line, at least 16 characters past its whitespace"
     case="live-issue-$issue"
     for f in "$registry" "$groups"; do [[ -f "$f" && -r "$f" ]] || cannot "$f is not a readable file"; done
     registry="$(realpath -e "$registry")" groups="$(realpath -e "$groups")"
@@ -211,6 +217,8 @@ cleanup() {
     rm -f "$work/.owner"
     if [[ -n "${root:-}" ]] && ((private)); then rm -f "$root/.owner" "$root/runs/.owner"; fi
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
+    # Opus #440 L1: what a kept live run holds.
+    if ((live)); then echo "installed-cycle: $work holds the acceptance canary, the acceptance files and every captured request: never share it, and remove it when done" >&2; fi
   elif [[ -n "${root:-}" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
   fi
@@ -226,8 +234,9 @@ fs_known "$work" || die "$work is not on ext2/ext3/ext4, xfs, btrfs or tmpfs"
 cd "$work"
 umask 077
 mkdir home state out
-run_env=(env -i PATH=/usr/bin:/bin HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" XDG_DATA_HOME="$work/home/.local/share"
+run_vars=(PATH=/usr/bin:/bin HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" XDG_DATA_HOME="$work/home/.local/share"
   XDG_STATE_HOME="$work/home/.local/state" XDG_CACHE_HOME="$work/home/.cache" XDG_RUNTIME_DIR="$work/home/run" TMPDIR="$work")
+run_env=(env -i "${run_vars[@]}")
 sock="$work/state/adcd.sock"
 step() { echo "installed-cycle: $case: $*"; }
 adc() { "${run_env[@]}" ADC_SOCKET="$sock" timeout 60 "$prefix/bin/adc" "$@"; }
@@ -346,11 +355,14 @@ elif [[ -n "$case_file" ]]; then
   known "$stub_cred"
   [[ "$(json "$case_file" 'd.credential_withheld === true')" == true ]] || cred=(ADC_CREDENTIAL_STUB="$stub_cred")
 fi
+# start_adcd: adcd with the run's variables and the credentials in its
+# environment only, exported by builtins (clean_exec): no process's argv
+# ever holds a credential (Opus #440 H1).
 start_adcd() {
   run=$((run + 1))
   log="$work/out/adcd-$run.log"
-  "${run_env[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$groups_file" \
-    --registry "$work/registry.json" "${sandbox[@]}" "${capture[@]}" >"$log" 2>&1 &
+  (clean_exec $((${#run_vars[@]} + ${#cred[@]})) "${run_vars[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" \
+    --resource-groups "$groups_file" --registry "$work/registry.json" "${sandbox[@]}" "${capture[@]}") >"$log" 2>&1 &
   adcd=$!
   record_pid "$work" "$adcd"
 }
@@ -460,6 +472,8 @@ fi
 if ((live)); then live_after; fi
 after="$(snapshot)" || die "$config cannot be read"
 [[ "$after" == "$before" ]] || die "the real ~/.config/adc changed"
+# The live route's benchmark is written last, once every check held (Opus #440 M1), and never over a file (L2).
+if ((live)); then live_write_bench; fi
 
 step "ok"
 if ((cycle)); then echo "installed-cycle: summary: $summary"; fi

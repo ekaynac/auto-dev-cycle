@@ -92,8 +92,12 @@ func TestCycleExpect(t *testing.T) {
 			}
 			return b.String()
 		}
+		canary := "ADC-CANARY-x\n"
+		if c, ok := v["canary"].(string); ok {
+			canary = c + "\n"
+		}
 		files := map[string]string{"case.json": js(v["case"]), "show.json": js(v["show"]), "events.jsonl": lines(v["events"].([]map[string]any)),
-			"stub.jsonl": lines(v["stub"].([]map[string]any)), "adcd-1.log": v["log"].(string), "capabilities.json": js(v["caps"]), "canary": "ADC-CANARY-x\n"}
+			"stub.jsonl": lines(v["stub"].([]map[string]any)), "adcd-1.log": v["log"].(string), "capabilities.json": js(v["caps"]), "canary": canary}
 		if _, ok := v["nostub"]; ok {
 			delete(files, "stub.jsonl")
 		}
@@ -198,7 +202,12 @@ func TestCycleExpect(t *testing.T) {
 	// D2, the live route: review is active, so the task closes a candidate
 	// after review, and adcd's start never says review stays inactive. It has
 	// no stub log (the driver checks the egress capture); out/canary is the
-	// acceptance's canary, in neither operator read.
+	// acceptance's canary, in neither operator read, in any of its forms.
+	// Only the closing review's chain (bench.closure's round) is checked
+	// against the expect block; earlier rounds must each be closed by a
+	// repair verdict (Opus #440 M3). Every reviewer call's body is captured
+	// (blob.capture_kept; L3).
+	benchOf := func(v map[string]any) map[string]any { return v["show"].(map[string]any)["bench"].(map[string]any) }
 	livebase := func() map[string]any {
 		v := base()
 		v["mode"] = "live"
@@ -206,22 +215,85 @@ func TestCycleExpect(t *testing.T) {
 		ex := v["case"].(map[string]any)["expect"].(map[string]any)
 		delete(ex, "builder_sees") // stub-only: the driver's live expect block names neither
 		delete(ex, "usage")
+		ex["nodes"].(map[string]any)["review"] = map[string]any{"outcome": "empty", "reason": "completed_clean"}
 		v["log"] = "adcd: started\n"
 		set(v, "done_candidate", "show", "card", "column")
 		set(v, map[string]any{"id": "n5", "kind": "review", "state": "completed", "holds": []map[string]any{}}, "show", "card", "nodes", 4)
+		set(v, map[string]any{"id": "n5", "kind": "review", "round": 1, "outcome": "empty", "reason": "completed_clean", "claimed_at": "t"}, "show", "bench", "nodes", 3)
+		b := benchOf(v)
+		b["closure"] = map[string]any{"node": "n5", "selected_at": "t", "outcome": "empty", "reason": "completed_clean"}
+		b["leases"] = []map[string]any{{"id": "lse_r", "role": "reviewer", "calls": []map[string]any{{"id": "cal_r1", "attempt": "att_r"}}}}
+		v["events"] = append(v["events"].([]map[string]any), map[string]any{"seq": 5, "kind": "blob.capture_kept/v1", "payload": map[string]any{"call": "cal_r1", "digest": "sha256:00"}})
 		return v
 	}
-	if out, code := run(t, livebase()); code != 0 || !strings.HasPrefix(out, "| c | closed a candidate after review |") {
-		t.Errorf("a live run that shows its expect block: exit %d, %s", code, out)
-	}
-	for name, edit := range map[string]func(map[string]any){
-		"review stays inactive":             func(v map[string]any) { v["log"] = "adcd: review stays inactive: P31's qualification on record: x\n" },
-		"not closed":                        func(v map[string]any) { set(v, "verifying", "show", "card", "column") },
-		"the acceptance canary in the read": func(v map[string]any) { set(v, "ADC-CANARY-x", "show", "card", "title") },
-	} {
+	// Round 1 reviewed no_go (its gate found), repaired; round 2 closes the candidate.
+	tworounds := func() map[string]any {
 		v := livebase()
-		edit(v)
-		if out, code := run(t, v); code != 1 || !strings.Contains(out, "fail: ") {
+		b := benchOf(v)
+		nodes := b["nodes"].([]map[string]any)
+		nodes[2]["outcome"], nodes[2]["reason"] = "found", "gate_test_failed"
+		nodes[3]["outcome"], nodes[3]["reason"] = "found", "completed_with_findings"
+		b["nodes"] = append(nodes,
+			map[string]any{"id": "n6", "kind": "build", "round": 2, "outcome": "found", "reason": "completed_with_findings", "claimed_at": "t"},
+			map[string]any{"id": "n7", "kind": "accept", "round": 2, "outcome": "empty", "reason": "completed_clean", "claimed_at": "t"},
+			map[string]any{"id": "n8", "kind": "gate", "round": 2, "outcome": "empty", "reason": "completed_clean", "claimed_at": "t"},
+			map[string]any{"id": "n9", "kind": "review", "round": 2, "outcome": "empty", "reason": "completed_clean", "claimed_at": "t"})
+		b["closure"].(map[string]any)["node"] = "n9"
+		return v
+	}
+	for name, base := range map[string]func() map[string]any{"one round": livebase, "a repaired candidate, two rounds": tworounds} {
+		if out, code := run(t, base()); code != 0 || !strings.HasPrefix(out, "| c | closed a candidate after review |") {
+			t.Errorf("live, %s: exit %d, %s", name, code, out)
+		}
+	}
+	quoted := "\tconst q7vCanary = \"ADC-q7v-0123456789abcdef\""
+	for name, c := range map[string]struct {
+		base func() map[string]any
+		edit func(map[string]any)
+		want string
+	}{
+		"review stays inactive": {livebase, func(v map[string]any) { v["log"] = "adcd: review stays inactive: P31's qualification on record: x\n" },
+			"adcd's start says review stays inactive"},
+		"not closed":                        {livebase, func(v map[string]any) { set(v, "verifying", "show", "card", "column") }, "not closed as a candidate"},
+		"the acceptance canary in the read": {livebase, func(v map[string]any) { set(v, "ADC-CANARY-x", "show", "card", "title") }, "in the operator's show.json"},
+		// Opus #440 H2: a tab-and-quote canary is read JSON-escaped; so is its trimmed core, and Go's \u003c of a <.
+		"a tab-and-quote canary in the read": {livebase, func(v map[string]any) { v["canary"] = quoted; set(v, quoted, "show", "card", "title") },
+			"in the operator's show.json"},
+		"its trimmed core in the stream": {livebase, func(v map[string]any) {
+			v["canary"] = quoted
+			set(v, strings.TrimSpace(quoted), "events", 0, "subject")
+		}, "in the operator's events.jsonl"},
+		"a canary with < in the read": {livebase, func(v map[string]any) {
+			v["canary"] = "// ADC <q7v> canary 0123456789"
+			set(v, "// ADC <q7v> canary 0123456789", "show", "card", "title")
+		}, "in the operator's show.json"},
+		"no closing review": {livebase, func(v map[string]any) { set(v, nil, "show", "bench", "closure") }, "names no closing review"},
+		"a closure naming no review": {livebase, func(v map[string]any) { benchOf(v)["closure"].(map[string]any)["node"] = "n2" },
+			"names no closing review"},
+		"a closure not a go": {livebase, func(v map[string]any) {
+			cl := benchOf(v)["closure"].(map[string]any)
+			cl["outcome"], cl["reason"] = "found", "completed_with_findings"
+		}, "the closing review n5 is found/completed_with_findings, not a go"},
+		"the closing round's gate failed": {tworounds, func(v map[string]any) {
+			benchOf(v)["nodes"].([]map[string]any)[6]["outcome"] = "found"
+		}, "gate n8 (round 2) is found/completed_clean"},
+		"round 1 not closed by a repair": {tworounds, func(v map[string]any) {
+			n := benchOf(v)["nodes"].([]map[string]any)[3]
+			n["outcome"], n["reason"] = "empty", "completed_clean"
+		}, "round 1 before the closing round 2 was not closed by a repair verdict"},
+		"a round without its build": {tworounds, func(v map[string]any) {
+			b := benchOf(v)
+			nodes := b["nodes"].([]map[string]any)
+			b["nodes"] = append(nodes[1:4:4], nodes[4:]...)
+		}, "no build of round 1"},
+		"a reviewer call not captured": {livebase, func(v map[string]any) {
+			set(v, map[string]any{"call": "cal_other", "digest": "sha256:00"}, "events", 4, "payload")
+		}, "reviewer call cal_r1 has no captured body"},
+		"no reviewer call": {livebase, func(v map[string]any) { benchOf(v)["leases"] = []map[string]any{} }, "shows no reviewer call"},
+	} {
+		v := c.base()
+		c.edit(v)
+		if out, code := run(t, v); code != 1 || !strings.Contains(out, c.want) {
 			t.Errorf("live, %s: exit %d, %s", name, code, out)
 		}
 	}
