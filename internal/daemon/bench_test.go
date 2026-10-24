@@ -699,6 +699,12 @@ func TestEveryHopIsChecked(t *testing.T) {
 			}
 			return []string{move("lea_", string(graph.UnitOf(w.build))+"/"), move("att_", strangerUnit+"/")}
 		}, types.BoardUnplacedCardReasonDamagedRecord, false, false, func(w hopWorld, rec types.TaskRead) bool { return rec.Bench != nil }},
+		{"the current index names an attempt that has a successor (Astra r2 H4)", "chained", func(w hopWorld) types.TaskID { return w.chained }, false, func(w hopWorld) []string {
+			return []string{set(lease.UnitProjection, string(graph.UnitOf(w.chainNode)), "$", string(w.first))}
+		}, "", false, false, nil},
+		{"a settled lease's call missing from its call index (Astra r2 H5)", "settled", func(w hopWorld) types.TaskID { return w.running }, true, func(w hopWorld) []string {
+			return []string{`DELETE FROM proj_kv WHERE projection = '` + ledger.LeaseBindingProjection + `' AND key = '` + string(w.lease) + `/` + string(w.call) + `'`}
+		}, "", false, false, nil},
 		{"the asker index names an input another node asked", "started", func(w hopWorld) types.TaskID { return w.running }, false, func(w hopWorld) []string {
 			return []string{put(authority.OwedProjection, "asker/"+string(w.plan)+"/"+string(w.owed), str(string(w.owed)))}
 		}, "", false, false, nil},
@@ -726,6 +732,20 @@ func TestEveryHopIsChecked(t *testing.T) {
 			w := hopWorld{op: fullHistory(t, s)}
 			w.sup = w.op
 			switch c.world {
+			case "settled":
+				w.running, w.done = measuredTask(t, s, 1, true), measuredTask(t, s, 1, true)
+				w.plan = templateNodes(s, w.running)[types.NodeKindPlan]
+				s.view(func(tx *eventstore.Tx) error {
+					a, _, err := lease.CurrentAttempt(tx, graph.UnitOf(w.plan))
+					at, _, _, aerr := lease.AttemptAt(tx, a)
+					l, _, _, lerr := lease.LeaseOf(tx, at.Lease)
+					calls, cerr := ledger.BoundTo(tx, at.Lease)
+					if err = errors.Join(err, aerr, lerr, cerr); err != nil || l.Settlement == nil || len(calls) != 1 {
+						return errors.Join(err, fmt.Errorf("the running task's settled lease and its one call: %+v %v", l.Settlement, calls))
+					}
+					w.attempt, w.lease, w.call = a, at.Lease, calls[0]
+					return nil
+				})
 			case "resulted":
 				w.running, w.done = measuredTask(t, s, 1, true), measuredTask(t, s, 1, true)
 				w.plan, w.donePlan = templateNodes(s, w.running)[types.NodeKindPlan], templateNodes(s, w.done)[types.NodeKindPlan]
@@ -846,5 +866,39 @@ func TestEveryHopIsChecked(t *testing.T) {
 				t.Errorf("the list's record of the damaged task: %+v", l)
 			}
 		})
+	}
+}
+
+// Astra #432 r2 M3: a unit's first attempt is lease.first's: the earliest
+// start, then the smallest id. A successor A2 that started at A1's time
+// (the store clamps a backward clock step to the previous event's time)
+// with a smaller id is the first, though it supersedes A1: the one-task
+// read and the list read it as the task's first attempt. The test store
+// has no settable clock, so the row writes the two rows the folds write
+// for that clamped start: A2's start at A1's, and the unit's first index
+// naming A2.
+func TestAFirstAttemptMaySupersede(t *testing.T) {
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t, tokens(10)))
+	op := fullHistory(t, w)
+	node := plannedIn(t, w, graphProject)
+	task := taskOf(w, node)
+	a1, a2 := types.AttemptID(newID(t, "att")), types.AttemptID("att_01m3250v9xft08ssr4ygq6g2nb") // an earlier UUIDv7: a smaller id
+	attemptsWith(t, w, node, a1, a2)
+	if a2 >= a1 {
+		t.Fatalf("A2 %s does not sort before A1 %s", a2, a1)
+	}
+	w.done()
+	execSQL(t, dir, `UPDATE proj_kv SET value = (SELECT value FROM proj_kv WHERE projection = '`+lease.StartProjection+`' AND key = '`+string(a1)+
+		`') WHERE projection = '`+lease.StartProjection+`' AND key = '`+string(a2)+`'`,
+		`UPDATE proj_kv SET value = '"`+string(a2)+`"' WHERE projection = '`+lease.FirstProjection+`' AND key = '`+string(graph.UnitOf(node))+`'`)
+	w = seed(t, dir, daemonProjection(t, tokens(10)))
+	t.Cleanup(w.done)
+	rec, ok, err := opRead(t, w, op, task)
+	if _, placed := rec.Card.Variant.(*types.BoardPlacedCard); err != nil || !ok || !placed || rec.FirstAttempt == nil || rec.FirstAttempt.Attempt != a2 || rec.Bench == nil {
+		t.Fatalf("the one-task read: %v %v %+v", ok, err, rec)
+	}
+	if l := taskReadAs(t, w, op, task); l.FirstAttempt == nil || l.FirstAttempt.Attempt != a2 {
+		t.Errorf("the list: %+v", l)
 	}
 }

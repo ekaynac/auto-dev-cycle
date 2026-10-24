@@ -312,20 +312,29 @@ func TestTaskReadKinds(t *testing.T) {
 // each lost, sealed and superseded by the next, under a lease of its own.
 func attemptsOn(t *testing.T, w *seeder, node types.NodeID, k int) {
 	t.Helper()
+	ids := make([]types.AttemptID, k)
+	for i := range ids {
+		ids[i] = types.AttemptID(newID(t, "att"))
+	}
+	attemptsWith(t, w, node, ids...)
+}
+
+// attemptsWith is attemptsOn with the attempts' ids.
+func attemptsWith(t *testing.T, w *seeder, node types.NodeID, attempts ...types.AttemptID) {
+	t.Helper()
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Claim(tx, node, map[string]graph.Resolved{}, 1)
 	})
 	base := types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"}
 	units := graph.Units{Tasks: authority.Tasks{}}
 	var prev types.AttemptID
-	for i := range k {
+	for i, a := range attempts {
 		ls := w.lease(4)
 		ls.Unit, ls.Reservations = graph.UnitOf(node), []types.LeaseReservationsItem{}
 		w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
 		w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
 		})
-		a := types.AttemptID(newID(t, "att"))
 		if i == 0 {
 			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, ls.ID, 2, a, base) })
 		} else {

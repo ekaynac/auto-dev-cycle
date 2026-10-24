@@ -46,6 +46,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -236,8 +237,11 @@ type started struct {
 // firstAttempt is a task's first attempt: of its nodes (all in its project:
 // the node fold refuses another), each node's first (lease.FirstOn), the
 // earliest start, then the smallest id; false before one starts. The
-// attempt the unit's first index names is an attempt of that unit that
-// supersedes none, or the task's damage (Opus #432 r2 H1′).
+// attempt the unit's first index names is an attempt of that unit under
+// its own id, or the task's damage (Opus #432 r2 H1′). It may supersede
+// another: lease.first's rule is the earliest start, then the smallest id,
+// and a successor can start at its predecessor's clamped time with a
+// smaller id (Astra #432 r2 M3).
 func firstAttempt(tx *eventstore.Tx, nodes []graph.NodeView) (started, bool, error) {
 	var f started
 	seen := false
@@ -258,7 +262,7 @@ func firstAttempt(tx *eventstore.Tx, nodes []graph.NodeView) (started, bool, err
 		if !known || !began {
 			return f, false, fmt.Errorf("api: node %s's first attempt %s has no record or no start", n.Node.ID, id)
 		}
-		if a.ID != id || a.Unit != unit || a.Supersedes != nil {
+		if a.ID != id || a.Unit != unit {
 			return f, false, damagef("node %s's first attempt index names %s, of unit %s", n.Node.ID, id, a.Unit)
 		}
 		if !seen || at.Before(f.at) || at.Equal(f.at) && a.ID < f.attempt.ID {
@@ -292,7 +296,8 @@ type boundCall struct {
 
 // attemptLease is attempt a's lease and every call the ledger binds to it,
 // each hop checked against its source (Opus #432 r2 H1′): the lease is a's
-// (its id, unit and attempt); each call the lease's index lists has a
+// (its id, unit and attempt); a settled lease's calls are those its
+// settlement names (capacity.SettlesBound); each call the lease's index lists has a
 // binding naming that call, the lease and a; each measurement the call's
 // index lists names the call, the lease and a. A mismatch is the task's
 // damage.
@@ -307,6 +312,9 @@ func attemptLease(tx *eventstore.Tx, a types.Attempt) (types.Lease, []boundCall,
 	ids, err := ledger.BoundTo(tx, l.ID)
 	if err != nil {
 		return l, nil, err
+	}
+	if err := capacity.SettlesBound(l, ids); err != nil { // a settled lease's inventory (Astra #432 r2 H5)
+		return l, nil, damagef("%v", err)
 	}
 	calls := make([]boundCall, 0, len(ids))
 	for _, c := range ids {

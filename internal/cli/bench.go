@@ -59,6 +59,12 @@ package cli
 //     is never replaced. stdout is bench.Summary, or with --json the record.
 //   - Exit: 0 written; 1 refused; 2 could not run (a read, a fixture, the
 //     registry or the write); 64 usage.
+//   - Damage (#226 entry 199): the read checks each record it reaches
+//     against the one that named it, so no foreign pointer is followed
+//     and a healthy store reads; a row deleted or left stale after start
+//     is not something a read can see missing. Completeness comes from
+//     adcd's start replay, which refuses a store whose projections differ
+//     from its log: take the record from an adcd restarted after the run.
 
 import (
 	"context"
@@ -113,7 +119,7 @@ func (f *fixtureFlags) Set(v string) error { *f = append(*f, v); return nil }
 func benchRecord(ctx context.Context, args []string, stdout, stderr io.Writer, c Client) int {
 	const name = "adc dev bench record"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	task := fs.String("task", "", "the task (tsk_...) (required)")
+	task := fs.String("task", "", "the task (tsk_...), read from an adcd restarted after the run: its start replay refuses a store missing a row (#226 entry 199) (required)")
 	out := fs.String("out", "", "the records/benchmark-run file to write; refused when it exists (required)")
 	reg := fs.String("registry", "", "the executor registry adcd ran with (required)")
 	routes := fs.String("routes", "live", "stub: every route is the stub provider's; live: none is")
