@@ -439,33 +439,94 @@ func TestTheGateOverlaysTheAcceptance(t *testing.T) {
 	}
 }
 
-// #226 entry 190: an acceptance test the gate cannot overlay is the task's
-// input, no retry fixes it: the gate node is held "runner: failed" before
-// any run, its result never recorded: one at a path the profile protects,
-// one that would replace a file the base holds, one under such a file, and
-// one whose blob is not in the store.
+// baseFiles is a gateWorld profile edit that commits files to the base.
+func baseFiles(t *testing.T, files map[string]string, rm ...string) func(map[string]any) {
+	return func(p map[string]any) {
+		overlaid(p)
+		src := p["repo"].(map[string]any)["url"].(string)
+		for name, body := range files {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(src, name)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitIn(t, src, "", "add", name)
+		}
+		for _, name := range rm {
+			gitIn(t, src, "", "rm", "--quiet", name)
+		}
+		gitIn(t, src, "", "commit", "--quiet", "-m", "more of the base")
+	}
+}
+
+// #226 entry 190, Opus #429 H1, M1, L1: an acceptance test the gate cannot
+// overlay, or one go test ./... could never run, is the task's input, no
+// retry fixes it: the gate node is held "runner: failed" before any run,
+// its result never recorded: one at a path the profile protects, one that
+// would replace a file the base holds, one under such a file, one in a
+// module the base nests, one under testdata or a _ directory, one the gate
+// environment's platform excludes, one that does not parse, an acceptance
+// declaring no test, and a base with no root go.mod. No gate run starts,
+// the base's measure included.
 func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 	for name, c := range map[string]struct {
-		at   string
-		lost bool
+		files map[string]string
+		edit  func(map[string]any)
 	}{
-		"a protected path":         {at: "conftest.py"},
-		"a file of the base":       {at: "go.mod"},
-		"under a file of the base": {at: "go.mod/x_test.go"},
-		"a blob not in the store":  {at: "inv/inv_hidden_test.go", lost: true},
+		"a protected path":         {files: map[string]string{"conftest.py": hiddenInv}},
+		"a file of the base":       {files: map[string]string{"go.mod": hiddenInv}},
+		"under a file of the base": {files: map[string]string{"go.mod/x_test.go": hiddenInv}},
+		"in a module the base nests": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
+			edit: baseFiles(t, map[string]string{"inv/go.mod": "module example.com/inv\n", "inv/doc.go": "package inv\n"})},
+		"under testdata":        {files: map[string]string{"inv/testdata/inv_hidden_test.go": hiddenInv}},
+		"under a _ directory":   {files: map[string]string{"_inv/inv_hidden_test.go": hiddenInv}},
+		"another platform's":    {files: map[string]string{"inv/inv_hidden_test.go": "//go:build plan9\n\n" + hiddenInv}},
+		"not parsing":           {files: map[string]string{"inv/inv_hidden_test.go": "package inv\nfunc {\n"}},
+		"declaring no test":     {files: map[string]string{"inv/data.txt": "x\n"}},
+		"a base with no go.mod": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			withAcceptance(t, map[string]string{c.at: hiddenInv})
-			rw := gateWorldWith(t, goEvents("TestA=pass"), map[string]string{"inv-events.json": invEvents("pass")}, nil, overlaid)
-			if c.lost {
-				if err := rw.w.blobs.Remove(blobDigest([]byte(hiddenInv))); err != nil {
-					t.Fatal(err)
-				}
+			withAcceptance(t, c.files)
+			edit := c.edit
+			if edit == nil {
+				edit = overlaid
 			}
+			mark := filepath.Join(t.TempDir(), "ran") // each gate run, the base's included, appends to it
+			rw := gateWorldWith(t, goEvents("TestA=pass"), map[string]string{"inv-events.json": invEvents("pass")}, nil, func(p map[string]any) {
+				edit(p)
+				p["gate"].(map[string]any)["command"] = []string{"sh", "-c", "echo ran >> " + mark + "; cat gate-events.json"}
+			})
 			v := rw.gating(t)
 			if v.State.State != types.NodeStateStateHeld || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed || v.State.Result != nil {
 				t.Errorf("the gate node: %s, holds %+v, result %v", v.State.State, v.State.Holds, v.State.Result)
 			}
+			if _, err := os.Stat(mark); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the gate ran before the acceptance was refused: %v", err)
+			}
 		})
+	}
+}
+
+// Opus #429 M2: an acceptance blob the store cannot read (here gone) is the
+// host's, not the task's: the gate node is held on a bounded retry, "retry
+// 1 until …", and only once maxTries are spent "runner: failed"; no result
+// is recorded.
+func TestAnUnreadableAcceptanceIsRetried(t *testing.T) {
+	withAcceptance(t, map[string]string{"inv/inv_hidden_test.go": hiddenInv})
+	retryBase = time.Millisecond
+	t.Cleanup(func() { retryBase = time.Minute })
+	rw := gateWorldWith(t, goEvents("TestA=pass"), map[string]string{"inv-events.json": invEvents("pass")}, nil, overlaid)
+	if err := rw.w.blobs.Remove(blobDigest([]byte(hiddenInv))); err != nil {
+		t.Fatal(err)
+	}
+	v := rw.gating(t)
+	if len(v.State.Holds) != 1 || !strings.HasPrefix(v.State.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
+		t.Fatalf("the gate node after its acceptance could not be read: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+	rw.passesFor(t, 3*maxTries, 20*time.Millisecond)
+	v = nodesOf(rw.w, rw.task)[types.NodeKindGate]
+	if len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed || v.State.Result != nil {
+		t.Errorf("the gate node after its retries: %s, holds %+v, result %v", v.State.State, v.State.Holds, v.State.Result)
 	}
 }

@@ -199,7 +199,9 @@ It exits 0 only if every assertion holds. Each case runs these steps through ins
 2. bootstrap the operator;
 3. `adc project create --expect 0 --reason r --scope-file <profile>`;
 4. `adc task create --expect 0 --reason r --scope-file <spec> --attach <repo path>=<acceptance>…` (each hidden test named by the repository path the gate overlays it at; an operator's create records
-   the approval);
+   the approval). The gate refuses, as the task's, a hidden test `go test ./...` could never run (under `testdata`, `vendor` or a `_` directory, excluded on the gate's platform, in a nested module, or an acceptance declaring no test). Two residuals it cannot tell from the candidate's fault (Opus #429 M5), so a hidden test should avoid them:
+   - a hidden test in the package's own (internal) test package can collide with an identifier the candidate adds, and then fails to compile as the candidate's: **write hidden tests in the external `_test` package** (`package inventory_test`);
+   - a hidden test that needs what the gate environment lacks (the network, a module not in `go.sum`) fails as the candidate's;
 5. `adc task wait $T --until closed|held --timeout 60m --json`.
 
 **Afterwards, every case:**

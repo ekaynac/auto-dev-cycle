@@ -21,12 +21,16 @@ package daemon
 //     sandbox run in the profile's one pinned image, in the profile's one
 //     gate environment, under gateLimits; the changed files are the base's
 //     and the tree's diff. Each acceptance test is read from the blob
-//     store and must hash to its record's digest (readBlob), and its path,
-//     the record's repository path, must be no path the profile protects
+//     store and must hash to its record's digest (readBlob: a read that
+//     fails is the host's, a bounded retry), and its path, the record's
+//     repository path, must be no path the profile protects
 //     (accept.Policy) and none the base holds, nor under a file it holds:
-//     a hidden test never replaces a visible file. A path the candidate
-//     added is replaced (the hidden test is the task's). A refusal is the
-//     task's input, no retry fixes it (errContent, "runner: failed");
+//     a hidden test never replaces a visible file; nor one go test ./...
+//     never runs (overlayOf). A path the candidate added is replaced (the
+//     hidden test is the task's). A refusal is the task's input, no retry
+//     fixes it (errContent, "runner: failed"). A hidden test's result is
+//     only as sound as accept's forgery guard (Opus #429 L2): the gate
+//     reads the stream as written, and gates only the tree accept took;
 //  4. its result (gate.Result: the receipt, the report and the restricted
 //     results), recorded with no attempt (graph.Commit) by the command the
 //     receipt names, derived from the acceptance blobs it overlaid (their
@@ -153,7 +157,7 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 	if err != nil {
 		return notRun(err.Error(), err)
 	}
-	overlay, digests, err := r.overlayOf(ctx, repo, dir, g.accept.base, policy, g.acceptance)
+	overlay, digests, err := r.overlayOf(ctx, repo, dir, g.accept.base, policy, prof.Gate, g.acceptance)
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
 	}
@@ -179,6 +183,9 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 	in.Tree, in.Baseline, in.Overlay = g.tree, &base, overlay
 	v, err := gate.Run(ctx, in)
 	switch {
+	case errors.Is(err, gate.ErrAcceptance): // overlayOf refused it already: a backstop, the task's
+		err = fmt.Errorf("%w: %w", errContent, err)
+		return errors.Join(err, r.hold(node, err))
 	case errors.Is(err, gate.ErrSpec):
 		err = fmt.Errorf("%w: %w", errConfig, err)
 		return errors.Join(err, r.hold(node, err))
@@ -284,31 +291,64 @@ func (r *runner) gating(ctx context.Context, node types.NodeID) (gating, error) 
 // overlayOf is the gate run's acceptance overlay: each of the task's
 // acceptance tests at its record's repository path, its bytes the blob
 // store's checked against its digest (at most an upload's bound), and
-// their digests, the result's lineage. A path the profile protects, or
-// one the base tree holds or that is under a file it holds, is refused,
-// as is a blob missing or not its content: each errContent, the task's.
-func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base string, policy accept.Policy, acc []types.AcceptanceBlob) (map[string][]byte, []types.Digest, error) {
+// their digests, the result's lineage. Refused as the task's (errContent,
+// "runner: failed": no retry fixes it), before any run: a path the
+// profile protects; one the base tree holds, or under a file it holds; one
+// in a module the base nests (a go.mod in a directory between it and the
+// root: go test ./... never runs it); a base with no root go.mod; and an
+// acceptance go test ./... could never run on the gate environment's
+// platform (gate.AcceptanceTests: Opus #429 H1, M1, L1). These last are a
+// go_test_json gate's; a gate of another adapter is the profile's, which
+// gate.Measure refuses (gate.ErrSpec). A blob the store
+// cannot read, missing or not its content, is the host's (a plain error, a
+// bounded retry, as accept's own reads: Opus #429 M2): the upload was
+// digest-checked when it was published.
+func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base string, policy accept.Policy, g types.ProjectProfileGate,
+	acc []types.AcceptanceBlob) (map[string][]byte, []types.Digest, error) {
+	goTest := g.ResultAdapter == results.GoTestJSON
 	overlay, digests := map[string][]byte{}, make([]types.Digest, 0, len(acc))
-	var check strings.Builder
+	if len(acc) == 0 {
+		return nil, digests, nil
+	}
+	// What the base must hold, asked in one batch: a root go.mod (a blob);
+	// nothing at each path; at each of its directories nothing or a tree,
+	// and no go.mod in one below the root.
+	type ask struct {
+		at, of string
+		ok     func(kind string) bool
+	}
+	var asks []ask
+	if goTest {
+		asks = append(asks, ask{at: "go.mod", ok: func(k string) bool { return k == "blob" }})
+	}
 	for _, a := range acc {
 		p := a.Name
 		if policy.Protected(p) {
 			return nil, nil, fmt.Errorf("%w: the acceptance test %s is at a path the profile protects", errContent, p)
 		}
-		for q := p; q != "."; q = path.Dir(q) {
-			fmt.Fprintf(&check, "%s:%s\n", base, q)
+		asks = append(asks, ask{p, p, func(k string) bool { return k == "missing" }})
+		for d := path.Dir(p); d != "."; d = path.Dir(d) {
+			asks = append(asks, ask{d, p, func(k string) bool { return k == "missing" || k == "tree" }})
+			if goTest {
+				asks = append(asks, ask{d + "/go.mod", p, func(k string) bool { return k == "missing" }})
+			}
 		}
 		b, err := r.readBlob(a.Digest, blobstore.MaxUploadBytes)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w: the acceptance test %s: %w", errContent, p, err)
+			return nil, nil, fmt.Errorf("the acceptance test %s: %w", p, err)
 		}
 		overlay[p], digests = b, append(digests, a.Digest)
 	}
-	if len(acc) == 0 {
-		return nil, digests, nil
+	if goTest && len(g.Environments) == 1 {
+		rt := g.Environments[0].Facts.Runtime
+		if _, err := gate.AcceptanceTests(rt.Os, rt.Arch, overlay); err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", errContent, err)
+		}
 	}
-	// What the base holds at each path and each of its directories: none
-	// at the path, and no file above it.
+	var check strings.Builder
+	for _, q := range asks {
+		fmt.Fprintf(&check, "%s:%s\n", base, q.at)
+	}
 	cmd, err := repo.Git(ctx, dir, "cat-file", "--batch-check=%(objecttype)")
 	if err != nil {
 		return nil, nil, err
@@ -319,17 +359,22 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		return nil, nil, fmt.Errorf("git cat-file of the base's acceptance paths: %w", err)
 	}
 	kinds := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
-	i := 0
-	for _, a := range acc {
-		for q := a.Name; q != "."; q = path.Dir(q) {
-			if i >= len(kinds) {
-				return nil, nil, errors.New("git cat-file answered fewer paths than asked")
-			}
-			k := kinds[i]
-			i++
-			if missing := strings.HasSuffix(k, " missing"); !missing && (q == a.Name || k != "tree") {
-				return nil, nil, fmt.Errorf("%w: the acceptance test %s would replace %s, which the base holds", errContent, a.Name, q)
-			}
+	if len(kinds) != len(asks) {
+		return nil, nil, fmt.Errorf("git cat-file answered %d of %d paths", len(kinds), len(asks))
+	}
+	for i, q := range asks {
+		k := kinds[i]
+		if strings.HasSuffix(k, " missing") {
+			k = "missing"
+		}
+		switch {
+		case q.ok(k):
+		case q.of == "":
+			return nil, nil, fmt.Errorf("%w: the base has no root go.mod to place the acceptance tests in", errContent)
+		case strings.HasSuffix(q.at, "/go.mod"):
+			return nil, nil, fmt.Errorf("%w: the acceptance test %s is in %s's module, which go test ./... never runs", errContent, q.of, path.Dir(q.at))
+		default:
+			return nil, nil, fmt.Errorf("%w: the acceptance test %s would replace %s, which the base holds", errContent, q.of, q.at)
 		}
 	}
 	return overlay, digests, nil

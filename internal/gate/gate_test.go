@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -230,12 +231,12 @@ func TestGateVerdict(t *testing.T) {
 	// An expected (acceptance) test, overlaid on the workspace only, that
 	// never ran is the candidate's, wherever it is.
 	f := newFixture(t, files, "cat", "acc/stream.json")
-	f.in.Overlay = map[string][]byte{"acc/stream.json": []byte(stream["clean.json"])}
+	f.in.Overlay = map[string][]byte{"acc/stream.json": []byte(stream["clean.json"]), "c/c_hidden_test.go": []byte(hiddenTest)}
 	f.in.Expected = []results.Test{{Package: module + "/c", Name: "TestHidden"}}
 	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) {
 		t.Errorf("a missing acceptance test: %v", v)
 	}
-	f.in.Overlay = map[string][]byte{"../escape": nil}
+	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "../escape": nil}
 	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrSpec) {
 		t.Errorf("an overlay outside the workspace: %v", err)
 	}
@@ -265,36 +266,94 @@ func (s) TestMethod(t *testing.T) {}
 
 // TestGateOverlaidTestsAreExpected (#226 entry 190): the run overlays the
 // acceptance files at their repository paths, replacing what the candidate
-// put there (here a link to a/a.go, which stays as it was), and expects the
-// top-level tests their Go test files declare, in their directory's
-// package: reported and passing, the gate is clean; failing, or never
-// reported, it is the candidate's (found/gate_test_failed). A Go test file
-// that does not parse is refused.
+// put there, and expects the top-level tests their Go test files declare,
+// in their directory's package (the module read as the go command reads
+// it: a module line with a comment; Opus #429 H1): reported and passing,
+// the gate is clean; failing, or never reported, it is the candidate's
+// (found/gate_test_failed). The candidate's link at the path (a/a.go stays
+// as it was), its directory at the path, and its file where the path's
+// directory should be are each replaced (Opus #429 M3). A candidate tree
+// with no Go module is the candidate's (Opus #429 L1).
 func TestGateOverlaidTestsAreExpected(t *testing.T) {
-	if got, err := overlayTests(module, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte("package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) {}\n")}); err != nil ||
-		!slices.Equal(got, []results.Test{{Package: module + "/c", Name: "TestHidden"}, {Package: module + "/c", Name: "TestHiddenX"}, {Package: module, Name: "TestRoot"}}) {
-		t.Errorf("the overlay's tests: %v, %v", got, err)
-	}
-	files := map[string]string{"a/a.go": "package a\n", "b/b.go": "package b\n", "c/c_hidden_test.go": "symlink:../a/a.go", "clean.json": stream["clean.json"],
-		"passed.json": events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=pass"),
+	passed := events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=pass")
+	base := map[string]string{"a/a.go": "package a\n", "b/b.go": "package b\n", "clean.json": stream["clean.json"], "passed.json": passed,
 		"failed.json": events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=fail")}
-	for name, c := range map[string]struct{ reported, want string }{
-		"reported, passing": {"passed.json", "empty/completed_clean"},
-		"one failing":       {"failed.json", "found/gate_test_failed"},
-		"never reported":    {"clean.json", "found/gate_test_failed"},
+	with := func(extra map[string]string) map[string]string {
+		files := maps.Clone(base)
+		maps.Copy(files, extra)
+		return files
+	}
+	link := map[string]string{"c/c_hidden_test.go": "symlink:../a/a.go"}
+	for name, c := range map[string]struct {
+		files          map[string]string
+		reported, want string
+	}{
+		"reported, passing":             {link, "passed.json", "empty/completed_clean"},
+		"one failing":                   {link, "failed.json", "found/gate_test_failed"},
+		"never reported":                {link, "clean.json", "found/gate_test_failed"},
+		"a module line with a comment":  {map[string]string{"go.mod": "module " + module + " // the module\n\ngo 1.24\n"}, "passed.json", "empty/completed_clean"},
+		"a directory at the path":       {map[string]string{"c/c_hidden_test.go/x.go": "package x\n"}, "passed.json", "empty/completed_clean"},
+		"a file where its directory is": {map[string]string{"c": "a file\n"}, "passed.json", "empty/completed_clean"},
 	} {
 		// The stream is the reported one only when the hidden file is the
 		// overlay's, a regular file, and a/a.go is untouched.
-		f := newFixture(t, files, "sh", "-c", `if test -f c/c_hidden_test.go && ! test -L c/c_hidden_test.go && grep -q TestHiddenX c/c_hidden_test.go && test "$(cat a/a.go)" = "package a"; then cat `+c.reported+`; else cat clean.json; fi`)
+		f := newFixture(t, with(c.files), "sh", "-c", `if test -f c/c_hidden_test.go && ! test -L c/c_hidden_test.go && grep -q TestHiddenX c/c_hidden_test.go && test "$(cat a/a.go)" = "package a"; then cat `+c.reported+`; else cat clean.json; fi`)
 		f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
 		if v := gated(t, f.in); !strings.Contains(v.String(), c.want) {
 			t.Errorf("%s: %v, want %s", name, v, c.want)
 		}
 	}
-	f := newFixture(t, files, "cat", "clean.json")
+	f := newFixture(t, with(map[string]string{"go.mod": "go 1.24\n"}), "cat", "passed.json")
+	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
+	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) || v.Why != whyNoModule {
+		t.Errorf("a candidate with no module: %v", v)
+	}
+	f = newFixture(t, with(nil), "cat", "clean.json")
 	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte("package c\nfunc {\n")}
-	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrSpec) {
+	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) || errors.Is(err, ErrSpec) {
 		t.Errorf("an acceptance test that does not parse: %v", err)
+	}
+}
+
+// Opus #429 H1, M1, L1: AcceptanceTests are the top-level tests go test
+// ./... runs from an acceptance's Go test files, in each file's directory
+// (two in c: a lower-case suffix, a benchmark, a helper and a method are
+// none; one at the root); data files beside them stay. It refuses, as the
+// task's (ErrAcceptance), what go test ./... would never run: a Go test
+// file that does not parse, under testdata, vendor, a _ or a . directory,
+// excluded by its name's or its constraint's platform, a go.mod or go.work
+// among the files, and an acceptance declaring no such test (only data,
+// only examples, a dot-imported T).
+func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
+	root := "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) {}\n"
+	got, err := AcceptanceTests("linux", "arm64", map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte(root),
+		"c/linux_arm64_test.go": []byte("//go:build linux\n\n" + root)})
+	if want := []AcceptanceTest{{"c", "TestHidden"}, {"c", "TestHiddenX"}, {"c", "TestRoot"}, {".", "TestRoot"}}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("the acceptance's tests: %v, %v; want %v", got, err, want)
+	}
+	for name, files := range map[string]map[string]string{
+		"does not parse":             {"c/c_test.go": "package c\nfunc {\n"},
+		"under testdata":             {"c/testdata/c_test.go": root},
+		"under vendor":               {"vendor/x/x_test.go": root},
+		"under a _ directory":        {"_x/x_test.go": root},
+		"a _ file":                   {"c/_c_test.go": root},
+		"another OS by its name":     {"c/c_windows_test.go": root},
+		"another arch by its name":   {"c/c_amd64_test.go": root},
+		"another OS by a constraint": {"c/c_test.go": "//go:build windows\n\n" + root},
+		"an unmet tag":               {"c/c_test.go": "//go:build integration\n\n" + root},
+		"a module of its own":        {"c/go.mod": "module x\n", "c/c_test.go": root},
+		"a workspace":                {"go.work": "go 1.24\n", "c/c_test.go": root},
+		"only data":                  {"c/data.txt": "x"},
+		"only an example":            {"c/c_test.go": "package c\n\nfunc ExampleX() {}\n\nfunc FuzzX(f *testing.F) {}\n"},
+		"a dot-imported T":           {"c/c_test.go": "package c\n\nimport . \"testing\"\n\nfunc TestX(t *T) {}\n"},
+	} {
+		overlay := map[string][]byte{}
+		for p, b := range files {
+			overlay[p] = []byte(b)
+		}
+		if got, err := AcceptanceTests("linux", "arm64", overlay); !errors.Is(err, ErrAcceptance) {
+			t.Errorf("%s: %v, %v", name, got, err)
+		}
 	}
 }
 
@@ -782,7 +841,7 @@ func TestGateLineage(t *testing.T) {
 	}
 	// A run that applied an overlay is published only with the overlay's
 	// digests (Opus #321 M2): never with a lineage of nothing.
-	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n")}
+	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n"), "c/c_hidden_test.go": []byte(hiddenTest)}
 	overlaid := gated(t, f.in)
 	for name, acc := range map[string][]types.Digest{"none": nil, "empty": {}, "the overlay's": {dg("a")}} {
 		_, err := Result(types.ComputationKey{Key: dg("1")}, overlaid, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},

@@ -25,7 +25,7 @@ import (
 // taskAcceptance is the acceptance readyTaskIn records, repository path
 // → bytes, each published in the world's blob store first (the gate
 // overlays them: #226 entry 190); withAcceptance replaces it for a test.
-var taskAcceptance = map[string]string{"accept_test.py": acceptBody}
+var taskAcceptance = map[string]string{"accept_hidden_test.go": acceptBody}
 
 // withAcceptance makes files the acceptance of the tasks t records.
 func withAcceptance(t *testing.T, files map[string]string) {
