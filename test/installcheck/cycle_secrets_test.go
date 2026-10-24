@@ -105,6 +105,11 @@ func TestLiveAfterCapture(t *testing.T) {
 	if err != nil {
 		t.Skip("no node on PATH")
 	}
+	// The scripts by absolute path: the git calls run outside this repository.
+	scripts, err := filepath.Abs("../../scripts")
+	if err != nil {
+		t.Fatal(err)
+	}
 	const canary = "\tconst q7vCanary = \"ADC-q7v-0123456789abcdef\""
 	const requirement = "the requirement of issue 170, its first line"
 	setup := func(t *testing.T, body string, kept bool) string {
@@ -130,6 +135,7 @@ func TestLiveAfterCapture(t *testing.T) {
 		repo := filepath.Join(dir, "repo.git")
 		git := func(args ...string) string {
 			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
 			cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid",
 				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid", "GIT_CONFIG_NOSYSTEM=1")
 			out, err := cmd.CombinedOutput()
@@ -144,7 +150,7 @@ func TestLiveAfterCapture(t *testing.T) {
 	}
 	run := func(dir string) (string, error) {
 		script := `set -euo pipefail
-. ../../scripts/lib/secrets.sh; . ../../scripts/lib/cycle-live.sh
+. "$3/lib/secrets.sh"; . "$3/lib/cycle-live.sh"
 step() { :; }; root_scan() { :; }
 json() { "$node" -e 'const d = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]) ?? "")' "$1" "$2"; }
 node="$1" work="$2/work" issue_dir="$2/issue" repo_url="$2/repo.git" live_secret=()
@@ -152,7 +158,8 @@ IFS= read -r live_canary <"$work/out/canary"
 main_before="$(git ls-remote -- "$repo_url" refs/heads/main | cut -f1)"
 live_after
 echo ok`
-		cmd := exec.Command("bash", "-c", script, "x", node, dir)
+		cmd := exec.Command("bash", "-c", script, "x", node, dir, scripts)
+		cmd.Dir = dir
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		out, err := cmd.CombinedOutput()
 		return string(out), err
