@@ -263,6 +263,8 @@ if [[ -n "$case_file" ]]; then
 fi
 
 step "the stub provider with scenario $scenario"
+# The log exists from the start (the stub appends on its first request), so a missing one is a broken run, never "no requests".
+: >"$work/out/stub.jsonl"
 "${run_env[@]}" "$node" "$fixtures/m1/stub-provider/server.mjs" --scenario "$fixtures/m1/stub-provider/scenarios/$scenario.json" \
   --listen 127.0.0.1:0 --log "$work/out/stub.jsonl" --barriers "$work/out" >"$work/out/stub.out" 2>"$work/out/stub.err" &
 stub=$!
