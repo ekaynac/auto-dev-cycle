@@ -4,6 +4,8 @@ package gosel
 
 import (
 	"go/build"
+	"go/parser"
+	"go/token"
 	"slices"
 	"strings"
 	"testing"
@@ -64,6 +66,15 @@ func TestTheGoCommandsRules(t *testing.T) {
 	}
 	if exp != "" && (!Builds(arm, "p/a_test.go", []byte("//go:build "+exp+"\n\npackage p\n")) || Builds(arm, "p/a_test.go", []byte("//go:build !"+exp+"\n\npackage p\n"))) {
 		t.Errorf("the toolchain's experiment %s", exp)
+	}
+	for src, want := range map[string]bool{"package p\n\nimport \"C\"\n": true, "package p\n\nimport (\n\t\"os\"\n\t\"C\"\n)\n": true, "package p\n\nimport \"os\"\n": false} {
+		f, err := parser.ParseFile(token.NewFileSet(), "p.go", src, parser.ImportsOnly)
+		if err != nil || Cgo(f) != want {
+			t.Errorf("%q: cgo %t, %v", src, !want, err)
+		}
+	}
+	if !Walked("p/build/x.py", SkipDir) || Walked("p/build/x.py", func(d string) bool { return d == "build" }) {
+		t.Error("Walked's skip")
 	}
 	if !slices.Equal(ReleaseTags, build.Default.ReleaseTags) {
 		t.Error("the release tags")

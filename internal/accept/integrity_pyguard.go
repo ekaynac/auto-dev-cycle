@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
 
 // The Python guard's forgery blocks (P14c-2a; #226 entries 73, 75, 84):
@@ -67,7 +69,7 @@ func pySkipDir(d string) bool {
 // pyTested: p is a conftest.py or a test_*.py or *_test.py pytest walks.
 func pyTested(p string) bool {
 	b := path.Base(p)
-	return b == "conftest.py" || strings.HasSuffix(b, ".py") && (strings.HasPrefix(b, "test_") || strings.HasSuffix(b, "_test.py")) && walked(p, pySkipDir)
+	return b == "conftest.py" || strings.HasSuffix(b, ".py") && (strings.HasPrefix(b, "test_") || strings.HasSuffix(b, "_test.py")) && gosel.Walked(p, pySkipDir)
 }
 
 // python is the guard for a base holding Python.

@@ -517,6 +517,7 @@ func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 		"declaring no test":        {files: map[string]string{"inv/data.txt": "x\n"}},
 		"a base with no go.mod":    {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
 		"over the overlay's bound": {files: overBound()},
+		"a cgo test":               {files: map[string]string{"inv/inv_hidden_test.go": strings.Replace(hiddenInv, "import \"testing\"", "import \"C\"\nimport \"testing\"", 1)}},
 		"a helper in another package than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv, "lib/helper.go": "package other\n"},
 			edit: baseFiles(t, map[string]string{"lib/lib.go": "package lib\n"})},
 		"another package clause than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},

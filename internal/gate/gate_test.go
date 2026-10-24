@@ -254,11 +254,11 @@ func TestHidden(t *testing.T) {}
 
 func TestHiddenX(t *testing.T) {}
 
-func Testlower(t *testing.T) {}
+func Testing(n int) int { return n }
 
 func BenchmarkHidden(b *testing.B) {}
 
-func ExampleHidden() {}
+func Example_hidden() {}
 
 func helper(t *testing.T) {}
 
@@ -323,13 +323,15 @@ func TestGateOverlaidTestsAreExpected(t *testing.T) {
 // each file's directory: TestXxx and FuzzXxx (a dot-imported testing's
 // *T among them, TestMain(*testing.T) one; a lower-case suffix, a
 // benchmark, an example, TestMain(*testing.M), a helper and a method
-// none); data files, and Go files go never builds, beside them stay. It
+// none; Testing(int) no test); data files, Go files go never builds and
+// cgo files (cgo is off) beside them stay. It
 // refuses, as the task's (ErrAcceptance), with a fixed text naming none
 // of its paths or names, what go test ./... would never run: a Go file
 // that does not parse, a Go test file under testdata, vendor, a _ or a .
 // directory, excluded by its name's or its constraint's platform (the
 // pinned platform's default architecture level negated too), of package
-// documentation, a test with a signature go test refuses, a go.mod or
+// documentation or importing "C", a test with a signature go test
+// refuses or a name its vet refuses (Testfoo, Examplefoo), a go.mod or
 // go.work among the files, files over MaxOverlay, and no such test.
 func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 	pl := [2]string{"linux", "arm64"}
@@ -337,7 +339,7 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 	got, err := AcceptanceTests(pl, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte(root),
 		"c/linux_arm64_test.go": []byte("//go:build linux && arm64.v8.0\n\n" + root), "c/dot_test.go": []byte("package c\n\nimport . \"testing\"\n\nfunc TestDot(t *T) {}\n\nfunc FuzzDot(f *F) {}\n"),
 		"c/main_test.go": []byte("package c\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n"), "c/hook_test.go": []byte("package d\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n"),
-		"c/helper_windows.go": []byte("package c\n"), "c/testdata/x.go": []byte("not go")})
+		"c/helper_windows.go": []byte("package c\n"), "c/testdata/x.go": []byte("not go"), "c/cgo.go": []byte("package c\n\nimport \"C\"\n\nfunc TestHidden() {}\n")})
 	if want := []AcceptanceTest{{"c", "TestHidden"}, {"c", "TestHiddenX"}, {"c", "TestDot"}, {"c", "FuzzDot"}, {"c", "TestRoot"}, {"c", "TestMain"}, {".", "TestRoot"}}; err != nil || !slices.Equal(got, want) {
 		t.Errorf("the acceptance's tests: %v, %v; want %v", got, err, want)
 	}
@@ -362,6 +364,11 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 		"a test with a result":            {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) error { return nil }\n"},
 		"an example taking a parameter":   {"c/c_test.go": root + "\nfunc ExampleX(t *testing.T) {}\n"},
 		"over the overlay's bound":        {"c/c_test.go": root, "c/big.bin": strings.Repeat("x", MaxOverlay)},
+		"a cgo test":                      {"c/c_test.go": strings.Replace(root, "import \"testing\"", "import \"C\"\nimport \"testing\"", 1)},
+		"a malformed test name":           {"c/c_test.go": root + "\nfunc Testfoo(t *testing.T) {}\n"},
+		"a malformed benchmark name":      {"c/c_test.go": root + "\nfunc Benchmarkfoo(b *testing.B) {}\n"},
+		"a malformed fuzz target name":    {"c/c_test.go": root + "\nfunc Fuzzfoo(f *testing.F) {}\n"},
+		"a malformed example name":        {"c/c_test.go": root + "\nfunc Examplefoo() {}\n"},
 	} {
 		overlay := map[string][]byte{}
 		for p, b := range files {
@@ -387,12 +394,15 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 // same package declares too (a base test's name, a base file's function,
 // another acceptance file's, a helper's). The same name in the other test
 // package, a file the platform excludes, a new directory, a directory of
-// only tests, and a helper of its package fit.
+// only tests, and a helper of its package fit. Opus #429 r3 M1: a method
+// the base's type has already, and an import name a package-scope name
+// takes (either side the acceptance's), are refused too; a cgo helper is
+// data (go ignores it with cgo off).
 func TestAcceptanceFitsTheBase(t *testing.T) {
 	test := func(pkg, name string) string {
 		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
 	}
-	base := map[string]string{"c/c.go": "package c\n\nfunc Sum() int { return 0 }\n", "c/c_test.go": test("c", "TestSum"), "c/ext_test.go": test("c_test", "TestExt"),
+	base := map[string]string{"c/c.go": "package c\n\ntype S struct{}\n\nfunc (S) M() {}\n\nfunc Sum() int { return 0 }\n", "c/c_test.go": test("c", "TestSum"), "c/ext_test.go": test("c_test", "TestExt"),
 		"c/c_windows.go": "package c\n\nfunc TestHidden() {}\n", "t/t_test.go": test("t", "TestT")}
 	for name, c := range map[string]struct {
 		hidden map[string]string
@@ -414,6 +424,12 @@ func TestAcceptanceFitsTheBase(t *testing.T) {
 		"a helper redeclaring the test's name":  {map[string]string{"p/hidden_test.go": test("p", "TestHidden"), "p/helper.go": "package p\n\nfunc TestHidden() {}\n"}, false},
 		"a helper in another package":           {map[string]string{"p/hidden_test.go": test("p", "TestHidden"), "p/helper.go": "package q\n"}, false},
 		"a helper the _test form's package":     {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/helper.go": "package c_test\n"}, false},
+		"a cgo helper redeclaring a base name":  {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/cgo.go": "package c\n\nimport \"C\"\n\nfunc Sum() {}\n"}, true},
+		"a method on another type":              {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (S) N() {}\n"}, true},
+		"a method the base's type has":          {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (s *S) M() {}\n"}, false},
+		"a name a base file imports":            {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/v_test.go": "package c\n\nvar testing = 1\n"}, false},
+		"an import named as a base name":        {map[string]string{"c/h_test.go": "package c\n\nimport Sum \"testing\"\n\nfunc TestHidden(t *Sum.T) {}\n"}, false},
+		"an import named _":                     {map[string]string{"c/h_test.go": "package c\n\nimport (\n\t_ \"os\"\n\t\"testing\"\n)\n\nfunc TestHidden(t *testing.T) {}\n"}, true},
 	} {
 		overlay, files := map[string][]byte{}, map[string][]byte{}
 		for p, b := range c.hidden {

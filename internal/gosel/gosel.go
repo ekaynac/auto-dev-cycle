@@ -10,6 +10,7 @@ package gosel
 
 import (
 	"bytes"
+	"go/ast"
 	"go/build"
 	"io"
 	"path"
@@ -27,17 +28,25 @@ func SkipDir(d string) bool {
 	return d == "vendor" || d == "testdata" || strings.HasPrefix(d, "_") || strings.HasPrefix(d, ".")
 }
 
-// Walked: no directory of p is one SkipDir names.
-func Walked(p string) bool {
+// Walked: no directory of p is one skip names (the runner never walks it;
+// SkipDir go's, accept's Python guard its own: Opus #429 L1).
+func Walked(p string, skip func(dir string) bool) bool {
 	d := path.Dir(p)
-	return d == "." || !slices.ContainsFunc(strings.Split(d, "/"), SkipDir)
+	return d == "." || !slices.ContainsFunc(strings.Split(d, "/"), skip)
 }
 
 // Active: go may build the file at p, by its path alone: a .go file not
 // starting with _ or ., in a directory go test ./... walks.
 func Active(p string) bool {
 	b := path.Base(p)
-	return strings.HasSuffix(b, ".go") && b[0] != '_' && b[0] != '.' && Walked(p)
+	return strings.HasSuffix(b, ".go") && b[0] != '_' && b[0] != '.' && Walked(p, SkipDir)
+}
+
+// Cgo: f imports "C". The gate builds with cgo off (the image's
+// CGO_ENABLED=0): go ignores such a file, and fails the package of such a
+// test file ("use of cgo in test not supported"; Opus #429 r3 N1).
+func Cgo(f *ast.File) bool {
+	return slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` })
 }
 
 // TestFile: p may be a collected Go test file, by its name alone.

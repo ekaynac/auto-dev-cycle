@@ -19,7 +19,10 @@ import (
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
@@ -55,6 +58,14 @@ var (
 //     expects (the candidate's, then).
 // The platform's default architecture level is modelled (arm64.v8.0,
 // amd64.v1), in positive and negated constraints alike (Astra #429 H1).
+//
+// The boundary (Opus #429 r3 M2; #226 entry 197): the gate refuses an
+// acceptance that the shared rules (gosel) prove go test never runs. Any
+// other acceptance that does not compile or vet on its own (an unused
+// import, a type error, a printf vet error, an example naming an unknown
+// identifier, a dot-import's name its package declares) fails every
+// candidate (found/gate_test_failed), bounded by the rails; the acceptance
+// is immutable, so the recovery is a new task.
 
 // AcceptanceTest is a top-level test an acceptance's Go test file
 // declares: its directory (the repository path; "." the root) and name.
@@ -68,7 +79,8 @@ type goFile struct {
 }
 
 // active is overlay's file at p when go builds it on pl (its path, its
-// build constraints, its package not documentation). strict: a Go test
+// build constraints, its package not documentation, no import of "C":
+// cgo is off, gosel.Cgo). strict: a Go test
 // file it never runs, or a Go file that does not parse, is refused; a Go
 // file go never builds is data.
 func active(pl [2]string, p string, src []byte, strict bool) (goFile, bool, error) {
@@ -85,7 +97,7 @@ func active(pl [2]string, p string, src []byte, strict bool) (goFile, bool, erro
 		return goFile{}, false, errParse
 	case err != nil:
 		return goFile{}, false, nil
-	case !gosel.Builds(pl, p, src) || f.Name.Name == gosel.Documentation:
+	case !gosel.Builds(pl, p, src) || f.Name.Name == gosel.Documentation || gosel.Cgo(f):
 		if strict && test {
 			return goFile{}, false, errNeverRun
 		}
@@ -130,6 +142,9 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 			if !ok || fn.Recv != nil {
 				continue
 			}
+			if malformed(fn) {
+				return nil, errSignature // go test's vet refuses its name (Opus #429 r3 N1)
+			}
 			kind, ok := testKind(fn.Name.Name)
 			if !ok {
 				continue
@@ -149,6 +164,21 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 		return nil, errNoTest
 	}
 	return out, nil
+}
+
+// malformed: go test's vet (its tests analyzer) refuses fn, a top-level
+// function of a test file, and the package never runs: Test, Benchmark or
+// Fuzz then a lower-case letter, on that kind's signature; Example then a
+// lower-case letter (an unknown identifier, or a malformed name).
+func malformed(fn *ast.FuncDecl) bool {
+	for pre, kind := range map[string]string{"Test": "T", "Benchmark": "B", "Fuzz": "F", "Example": ""} {
+		rest, ok := strings.CutPrefix(fn.Name.Name, pre)
+		r, _ := utf8.DecodeRuneInString(rest)
+		if ok && rest != "" && unicode.IsLower(r) && (kind == "" || fn.Type.Params != nil && len(fn.Type.Params.List) == 1 && param(fn) == kind) {
+			return true
+		}
+	}
+	return false
 }
 
 // testKind is what go test makes of a top-level function named name in a
@@ -247,7 +277,7 @@ func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
 			}
 		}
 		own := func(p string) bool { return slices.ContainsFunc(ownOf[d], func(g goFile) bool { return g.path == p }) }
-		declared := map[string]map[string]string{} // package → name → its file
+		declared := map[string]map[string]string{} // package → name (a method T.M) → its file
 		for _, g := range all {
 			if own(g.path) && g.pkg != pkg && (!g.test || g.pkg != pkg+"_test") {
 				return errPackage
@@ -262,12 +292,50 @@ func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
 				declared[g.pkg][name] = g.path
 			}
 		}
+		// A file's import name is in its file block, which no package-scope
+		// name may share (Opus #429 r3 M1).
+		for _, g := range all {
+			for _, name := range importNames(g.f) {
+				if other, ok := declared[g.pkg][name]; ok && (own(g.path) || own(other)) {
+					return errRedeclared
+				}
+			}
+		}
 	}
 	return nil
 }
 
+// importNames are the names f's imports declare in its file block: each
+// one's explicit name (not _ or .), else its path's last element when that
+// is an identifier (a vN element is a version: the one before it). An
+// import whose package name is not its path's is not seen, nor is a
+// dot-import's names (stated residuals).
+func importNames(f *ast.File) []string {
+	var out []string
+	for _, is := range f.Imports {
+		if is.Name != nil { // _ and . match no package-scope name (topNames has no _)
+			out = append(out, is.Name.Name)
+			continue
+		}
+		p, err := strconv.Unquote(is.Path.Value)
+		if err != nil {
+			continue
+		}
+		elems := strings.Split(p, "/")
+		name := elems[len(elems)-1]
+		if len(elems) > 1 && len(name) > 1 && name[0] == 'v' && strings.Trim(name[1:], "0123456789") == "" {
+			name = elems[len(elems)-2]
+		}
+		if token.IsIdentifier(name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // topNames are the package-scope names f declares: its functions (no
-// method, no init, no _), types, variables and constants.
+// init, no _), types, variables and constants, and its methods as T.M
+// (their receiver's type: Opus #429 r3 M1).
 func topNames(f *ast.File) []string {
 	var out []string
 	add := func(id *ast.Ident) {
@@ -280,6 +348,8 @@ func topNames(f *ast.File) []string {
 		case *ast.FuncDecl:
 			if x.Recv == nil && x.Name.Name != "init" {
 				add(x.Name)
+			} else if t := recvType(x); x.Recv != nil && t != "" && x.Name.Name != "_" {
+				out = append(out, t+"."+x.Name.Name)
 			}
 		case *ast.GenDecl:
 			for _, sp := range x.Specs {
@@ -295,4 +365,29 @@ func topNames(f *ast.File) []string {
 		}
 	}
 	return out
+}
+
+// recvType is the name of fn's receiver's type (T of T, *T, T[P]), "" for
+// none.
+func recvType(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return ""
+	}
+	t := fn.Recv.List[0].Type
+	for {
+		switch x := t.(type) {
+		case *ast.StarExpr:
+			t = x.X
+		case *ast.ParenExpr:
+			t = x.X
+		case *ast.IndexExpr:
+			t = x.X
+		case *ast.IndexListExpr:
+			t = x.X
+		case *ast.Ident:
+			return x.Name
+		default:
+			return ""
+		}
+	}
 }

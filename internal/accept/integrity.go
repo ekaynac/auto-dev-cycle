@@ -460,9 +460,3 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		add(&r.warnings, dir, "converts 22 (0x16, test2json's marker) to a byte or rune: review it")
 	}
 }
-
-// walked: no directory of p is one skip names (the runner never walks it).
-func walked(p string, skip func(dir string) bool) bool {
-	d := path.Dir(p)
-	return d == "." || !slices.ContainsFunc(strings.Split(d, "/"), skip)
-}

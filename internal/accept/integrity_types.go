@@ -416,7 +416,7 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 		switch {
 		case err != nil:
 			why = err.Error()
-		case f.Name.Name == gosel.Documentation || slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` }):
+		case f.Name.Name == gosel.Documentation || gosel.Cgo(f):
 		case name != "" && name != f.Name.Name:
 			why = "files of packages " + name + " and " + f.Name.Name
 		default:
