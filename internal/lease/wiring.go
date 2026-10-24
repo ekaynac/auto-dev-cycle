@@ -119,13 +119,15 @@ func Unended(tx *eventstore.Tx, unit types.UnitID) (what, entry string, running 
 	id := strings.TrimPrefix(key, string(unit)+"/")
 	if strings.HasPrefix(id, "lea_") {
 		l, _, ok, err := load[types.Lease](tx, LeaseProjection, id)
-		if err == nil && (!ok || string(l.ID) != id || l.Unit != unit) { // the index's own record (Opus #432 r3)
+		// A recorded entry is the unit's own (Opus #432 r3); one with no record
+		// stays the loop's to end (TestATryThatEndsSomethingIsProgress).
+		if err == nil && ok && (string(l.ID) != id || l.Unit != unit) {
 			err = fmt.Errorf("lease: unit %s's open index names lease %s, of unit %q", unit, id, l.Unit)
 		}
 		return fmt.Sprintf("lease %s is %s", id, l.State), id, true, err
 	}
 	a, _, ok, err := load[types.Attempt](tx, AttemptProjection, id)
-	if err == nil && (!ok || string(a.ID) != id || a.Unit != unit) {
+	if err == nil && ok && (string(a.ID) != id || a.Unit != unit) {
 		err = fmt.Errorf("lease: unit %s's open index names attempt %s, of unit %q", unit, id, a.Unit)
 	}
 	return fmt.Sprintf("attempt %s is %s", id, a.Status), id, true, err
