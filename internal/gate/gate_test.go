@@ -454,6 +454,34 @@ func TestAcceptanceFitsTheBase(t *testing.T) {
 			t.Errorf("%s: the refusal names the acceptance: %v", name, err)
 		}
 	}
+	// Opus #429 r5 C1: the base's go.mod is read strictly, its replace
+	// lines included (a go 1.16 module's replace-only lib/sum is no std
+	// path), and when it cannot be read, no import's name is implicit:
+	// explicit names alone count, so a std-looking import that collides is
+	// unseen.
+	importing := func(imp, decl string) string {
+		return strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\""+imp+"\"\n)", 1) + "\nvar _ = x.X\n" + decl + "\n"
+	}
+	for name, c := range map[string]struct {
+		gomod, hidden string
+		fits          bool
+	}{
+		"a replace-only path, go 1.16":       {"module m\n\ngo 1.16\n\nreplace lib/sum => ./sum\n", importing("lib/sum", "var sum = 1"), true},
+		"a go.mod that does not parse":       {"module m\n\ngo 1.27\n\nnot a directive\n", importing("math/rand/v2", "var rand = 1"), true},
+		"a go.mod with no module line":       {"go 1.27\n", importing("math/rand/v2", "var rand = 1"), true},
+		"no go.mod":                          {"", importing("math/rand/v2", "var rand = 1"), true},
+		"an explicit name, an unread go.mod": {"not a go.mod\n", strings.Replace(importing("math/rand/v2", "var rand = 1"), "\t\"math/rand/v2\"", "\trand \"math/rand/v2\"", 1), false},
+		"a std path, a go.mod read":          {"module m\n\ngo 1.16\n\nreplace lib/sum => ./sum\n", importing("math/rand/v2", "var rand = 1"), false},
+	} {
+		files := map[string][]byte{"c/c.go": []byte("package c\n")}
+		if c.gomod != "" {
+			files["go.mod"] = []byte(c.gomod)
+		}
+		err := AcceptanceFits([2]string{"linux", "arm64"}, map[string][]byte{"c/h_test.go": []byte(c.hidden)}, files)
+		if (err == nil) != c.fits {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }
 
 // TestGateCut (Astra #286 H1): a candidate run cut by its timeout or a

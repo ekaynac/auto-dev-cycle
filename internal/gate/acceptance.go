@@ -403,10 +403,14 @@ func recvType(fn *ast.FuncDecl) string {
 }
 
 // goModules are the module paths the base's go.mod (gomod) names: its own,
-// its requirements' and its replacements'; nil for none or one that does
-// not parse, so no path reads as the standard library's.
+// its requirements' and its replacements', read strictly (modfile.Parse:
+// ParseLax drops replace; Opus #429 r5 C1). The failure direction is
+// explicit: nil for no go.mod, one that does not parse, or one with no
+// module line, and std then reads no path as the standard library's, so
+// importNames counts explicit names only. An empty list never makes every
+// dot-free path std.
 func goModules(gomod []byte) []string {
-	f, err := modfile.ParseLax("go.mod", gomod, nil)
+	f, err := modfile.Parse("go.mod", gomod, nil)
 	if gomod == nil || err != nil || f.Module == nil {
 		return nil
 	}
@@ -420,7 +424,8 @@ func goModules(gomod []byte) []string {
 	return out
 }
 
-// std: p is the standard library's by module metadata (importNames).
+// std: p is the standard library's by module metadata (importNames);
+// never when modules is nil (goModules failed).
 func std(p string, modules []string) bool {
 	if first, _, _ := strings.Cut(p, "/"); modules == nil || strings.Contains(first, ".") {
 		return false
