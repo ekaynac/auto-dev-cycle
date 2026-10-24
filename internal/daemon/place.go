@@ -203,15 +203,18 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 }
 
 // Unblocked clears node's placement hold (hold, on signal: the loop passes
-// only placement, runner and launch image holds, dispatch.ParsePlacement,
-// reconcile.ParseRunner and dispatch.IsImageSignal) once the
+// only placement, runner, launch image and quota reset holds,
+// dispatch.ParsePlacement, reconcile.ParseRunner, dispatch.IsImageSignal
+// and reconcile.ParseQuotaReset) once the
 // configuration admits node again: its card is made, and no placement
 // check, missing credential, footprint or missing USD rail refuses it
 // (Dispatcher.Configured); nothing otherwise (Mythos 22a-5c-1 M1). Match
 // then places it, or raises the rail it reaches. A runner's hold clears
 // once the runner's preconditions hold again (ready); a launch's image
-// hold once the project's pinned image resolves (imageReady; #226 entry
-// 156). Stated (Opus #400 L2): a credentialed executor's placement hold
+// hold, the launch's or the runner's (dispatch.ImageMiss), once the
+// project's pinned image resolves (imageReady; #226 entry 156); a quota
+// reset once the provider's reset time has come (§2.6 fault-provider-429).
+// Stated (Opus #400 L2): a credentialed executor's placement hold
 // stays, naming its own cause, while the gateway lacks the credential,
 // even once that cause is fixed: Configured asks for both, as the launch
 // would miss on the credential anyway.
@@ -219,14 +222,19 @@ func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldI
 	var ready func(*eventstore.Tx, types.NodeID, string) (bool, error)
 	_, runner := reconcile.ParseRunner(signal)
 	_, placement := dispatch.ParsePlacement(signal)
+	quota, reset := reconcile.ParseQuotaReset(signal)
 	switch {
 	case dispatch.IsImageSignal(signal): // a launch's wrong_owner hold
 		ready = func(tx *eventstore.Tx, node types.NodeID, _ string) (bool, error) { return p.imageReady(tx, node) }
+	case reset: // a provider's rate limit: its reset has come
+		ready = func(tx *eventstore.Tx, _ types.NodeID, _ string) (bool, error) {
+			return !tx.Now().Before(quota.Until), nil
+		}
 	case runner: // the runner's hold (Opus 22a-5c-2a H2)
 		if ready = p.ready; ready == nil {
 			return nil, nil
 		}
-	case !placement: // none of the placement's, the runner's or the launch's: never cleared here (5c-1: typed, not a text prefix)
+	case !placement: // none of the placement's, the runner's, the launch's or the provider's: never cleared here (5c-1: typed, not a text prefix)
 		return nil, nil
 	}
 	if ready != nil {

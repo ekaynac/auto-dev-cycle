@@ -139,20 +139,20 @@ func goTestWorld(t *testing.T) *runWorld {
 // and the node is held, so the next pass does not run it again:
 //   - a guard that does not end is cut at acceptBound, the candidate's
 //     integrity unverifiable: held for a retry;
-//   - the pinned image not present: the configuration's, held on the
-//     profile.
+//   - the pinned image not present: the launch's hold (dispatch.ImageMiss:
+//     wrong_owner naming the image; #226 entry 193), one rule with it.
 func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 	hang := func(ctx context.Context, _ string, _ [2]string, _, _ []byte, _ []string) (map[string]accept.Listed, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
 	for name, c := range map[string]struct {
-		noImage bool
-		detail  string
-		held    string
+		noImage    bool
+		detail     string
+		kind, held string // the hold's kind and its signal's start
 	}{
-		"a hanging guard":       {detail: "integrity is unverifiable", held: "retry 1 until "},
-		"the image not present": {noImage: true, detail: "accept could not run", held: "image"},
+		"a hanging guard":       {detail: "integrity is unverifiable", kind: vocab.HoldSourceInvalidConfig, held: runnerText("retry 1 until ")},
+		"the image not present": {noImage: true, detail: "accept could not run", kind: vocab.HoldWrongOwner, held: "image "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rw := goTestWorld(t)
@@ -163,14 +163,8 @@ func TestAFailedAcceptRunCouldNotRun(t *testing.T) {
 			acceptBound = 3 * time.Second
 			t.Cleanup(func() { acceptBound = bound })
 			v := rw.accepting(t, hang)
-			held := ""
-			for _, h := range v.State.Holds {
-				if isRunnerHold(h.SignalInstance) {
-					held = h.SignalInstance
-				}
-			}
-			if !strings.HasPrefix(held, runnerText(c.held)) {
-				t.Errorf("the accept node after its run failed: %s, held on %q", v.State.State, held)
+			if len(v.State.Holds) != 1 || v.State.Holds[0].Hold != c.kind || !strings.HasPrefix(v.State.Holds[0].SignalInstance, c.held) {
+				t.Errorf("the accept node after its run failed: %s, holds %+v, want %s on %q…", v.State.State, v.State.Holds, c.kind, c.held)
 			}
 			got := resultsOn(t, rw.w, v.Node.ID)
 			if len(got) != 1 || got[0].Attempt != nil || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != vocab.ReasonControllerRunFailed ||
@@ -330,20 +324,18 @@ func TestAnUnsealedInputIsNotAccepted(t *testing.T) {
 }
 
 // Opus 22a-5c-2b-3 M1: a node held because its pinned image was not present
-// ("runner: image") is released once the image resolves, and its next run
-// completes it.
+// (the launch's hold, wrong_owner naming the image: imageHeld; #226 entry
+// 193) is released once the image resolves, and its next run completes it.
 func TestAnImageHoldClearsOnceItResolves(t *testing.T) {
 	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
 	rw.untilRun(t)
-	rw.r.place.d.Images = fakeImages{false}
-	if v := rw.accepting(t, nil); len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerImage {
-		t.Fatalf("the accept node after its image missed: %s, holds %+v", v.State.State, v.State.Holds)
-	}
+	rw.images.present.Store(false)
+	imageHeld(t, rw, rw.accepting(t, nil).State)
 	rw.passesFor(t, 2, 0)
 	if v := nodesOf(rw.w, rw.task)[types.NodeKindAccept]; len(v.State.Holds) != 1 {
 		t.Fatalf("the image hold cleared while the image was absent: %+v", v.State.Holds)
 	}
-	rw.r.place.d.Images = fakeImages{true}
+	rw.images.present.Store(true)
 	var v graph.NodeView
 	for range 6 {
 		rw.passesFor(t, 1, 0)

@@ -95,10 +95,13 @@ type Attempts interface {
 }
 
 // Observed is what the gateway saw of an attempt's upstream requests: the
-// HTTP statuses received, and the route refusals (a redirect) it recorded.
+// HTTP statuses received, the route refusals (a redirect) it recorded, and
+// the wait the last rate limit (a 429) named for its reset (resetAfter; 0:
+// none named), which the attempt's quota_reset hold waits for.
 type Observed struct {
 	Statuses []int
 	Refusals []string
+	Reset    time.Duration
 }
 
 // Config is what a Gateway checks and injects with.
@@ -530,6 +533,9 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 	resp, err := g.client.Do(req)
 	if resp != nil {
 		g.observe(b.Attempt, resp.StatusCode, "")
+		if resp.StatusCode == http.StatusTooManyRequests {
+			g.observeReset(b.Attempt, resetAfter(resp.Header, time.Now()))
+		}
 	}
 	if op := (*net.OpError)(nil); errors.As(err, &op) && op.Op == "dial" || errors.Is(err, errOffOrigin) {
 		if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, Count{Observed: true}) != nil {
@@ -588,6 +594,47 @@ func (g *Gateway) observe(a types.AttemptID, status int, route string) {
 		o.Refusals = append(o.Refusals, route)
 	}
 	g.observed[a] = o
+}
+
+// observeReset records reset, the last 429's, while its attempt is bound.
+func (g *Gateway) observeReset(a types.AttemptID, reset time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !slices.ContainsFunc(slices.Collect(maps.Values(g.bound)), func(b Binding) bool { return b.Attempt == a }) {
+		return // unbound: Unbind has handed the attempt's observations over
+	}
+	o := g.observed[a]
+	o.Reset = reset
+	g.observed[a] = o
+}
+
+// maxReset bounds the reset a header may name, before the hold's own bound
+// (adcd's quotaWait): past it, a number is read as none.
+const maxReset = 7 * 24 * time.Hour
+
+// resetAfter is the wait a rate-limited response h names for its reset, at
+// now: its Retry-After, in seconds or an HTTP date (RFC 9110 §10.2.3), else
+// its RateLimit-Reset, in seconds (the IETF RateLimit header fields' draft);
+// 0 when it names none, or none this reads (a date past, a number not
+// whole, negative or past maxReset).
+func resetAfter(h http.Header, now time.Time) time.Duration {
+	seconds := func(v string) time.Duration {
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil || n <= 0 || n > int64(maxReset/time.Second) {
+			return 0
+		}
+		return time.Duration(n) * time.Second
+	}
+	if v := h.Get("Retry-After"); v != "" {
+		if d := seconds(v); d > 0 {
+			return d
+		}
+		if t, err := http.ParseTime(v); err == nil && t.After(now) && t.Sub(now) <= maxReset {
+			return t.Sub(now)
+		}
+		return 0
+	}
+	return seconds(h.Get("RateLimit-Reset"))
 }
 
 // RefusalHeader marks the gateway's own refusals: an upstream's headers

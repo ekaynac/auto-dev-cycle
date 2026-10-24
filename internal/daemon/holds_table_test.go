@@ -69,17 +69,22 @@ var holdRows = []holdRow{
 	// rosterMiss: raised by Launch's miss and by Match's refusal (placer.Place; Astra chunk 3 H1).
 	{"dispatch.rosterMiss", "reviewer_unavailable", "ni.SignalInstance()", "registry:exe_01m4tm99haemqt8es2qfbwj8pa", "daemon.reviews.Unheld", "a review node's roster is the registry's again, or re-derived"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `Placement{"executor", string(l.Executor)}.Signal()`, "placement: executor exe_01m4tm99haemqt8es2qfbwj8pa", "daemon.placer.Unblocked", "Configured re-derives the placement"},
-	{"dispatch.Dispatcher.miss", "wrong_owner", "imageSignal(card.Image)", "image ghcr.io/x/y@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "daemon.placer.Unblocked", "the project's pinned image resolves (placer.imageReady)"},
+	{"dispatch.ImageMiss", "wrong_owner", "imageSignal(image)", "image ghcr.io/x/y@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "daemon.placer.Unblocked",
+		"the project's pinned image resolves (placer.imageReady); raised by the launch's miss and the runner's own resolve (runner.holdOn, #226 entry 193)"},
 	{"dispatch.Dispatcher.miss", "source_invalid_config", `Placement{"destination", string(e.Destination.ID)}.Signal()`, "placement: destination stub", "daemon.placer.Unblocked", "Configured: the credential is held"},
 	{"dispatch.Dispatcher.attemptRail", "budget_rail", "graph.RailAttempts", "rail:attempts_per_round", "authority.TaskRaiseRailHandler.Logic", "task.raise_rail of attempts_per_round"},
 	// No sandbox root (#226 entry 171; Opus #414 H1): no runner, every node held before its match, and what a runner would run (a granted lease's, an accept, a gate).
 	{"daemon.raiseNoSandbox", "no_sandbox", "runnerSandbox", "runner: sandbox", "daemon.placer.Unblocked", "a start with --sandbox-root: its runner clears it (runner.cleared)"},
 	// The runner's holds (runner.holdOn): Unblocked asks runner.cleared.
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerDirs", "runner: dirs", "daemon.placer.Unblocked", "the runner's directories are directories (dirsReady)"},
-	{"daemon.runner.holdOn", "source_invalid_config", "runnerImage", "runner: image", "daemon.placer.Unblocked", "the pinned image resolves (placer.imageReady)"},
 	{"daemon.runner.holdOn", "source_invalid_config", "r.retrySignal(tx, node)", "runner: retry 1 until 2026-10-23T00:00:00Z", "daemon.placer.Unblocked", "\"retry n until t\": t has come; past maxTries, runnerFailed"},
 	{"daemon.runner.holdOn", "source_invalid_config", `reconcile.RunnerHold{What: "profile", Digest: string(d)}.Signal()`, "runner: profile sha256:abababababababababababababababababababababababababababababababab", "daemon.placer.Unblocked", "the project's profile changed"},
 	{"daemon.runner.holdOn", "source_invalid_config", "runnerFailed", "runner: failed", "", "terminal, stated (holdOn): nothing clears it; revoking the task's approval abandons it"},
+	// The provider's refusals for its account (runner.providerHold, §2.6; #226 entry 193): the result's retry wait, by graph.Retry.
+	{"daemon.runner.providerHold", "quota_reset", "reconcile.QuotaReset{Until: tx.Now().Add(quotaWait(reset))}.Signal()", "quota: reset 2026-10-23T00:00:00Z", "daemon.placer.Unblocked",
+		"the provider's reset time has come (reconcile.ParseQuotaReset)"},
+	{"daemon.runner.providerHold", "broker_credit_exhausted", "reconcile.CreditProbe{Destination: destination}.Signal()", "credit: stub", "",
+		"terminal, stated (providerHold): nothing clears it in M1, as no balance probe exists (the ledger: a balance probe and the affordability rule before any broker or credit-based provider); its escalation to the operator is recorded only, nothing pages until P29; recovery: revoke the task's approval, as runner failed"},
 	// Launch active, review not (#226 entry 173): the recorded review held, never a stop with no hold.
 	{"reconcile.Executor.Run", "review_inactive", "ReviewSignal", "capability: review", "daemon.reviews.Unheld", "a start that derives review active (ReviewUnblock offers it only then)"},
 	// The evaluator's and Operate's (graph; Opus #400 M1).

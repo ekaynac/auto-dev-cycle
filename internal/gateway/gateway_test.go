@@ -263,6 +263,69 @@ func TestForwardsThePinnedModelWithTheCredentialInjected(t *testing.T) {
 	}
 }
 
+// #226 entry 193 (§2.6 fault-provider-429): a rate-limited response's reset
+// is observed with its status, for the attempt's quota_reset hold: the
+// last 429's Retry-After, else its RateLimit-Reset; none on another status.
+func TestARateLimitsResetIsObserved(t *testing.T) {
+	for name, c := range map[string]struct {
+		status int
+		header map[string]string
+		want   time.Duration
+	}{
+		"a 429's Retry-After":          {429, map[string]string{"Retry-After": "90"}, 90 * time.Second},
+		"a 429's RateLimit-Reset":      {429, map[string]string{"RateLimit-Reset": "12"}, 12 * time.Second},
+		"a 429 naming none":            {429, nil, 0},
+		"a 503's Retry-After, ignored": {503, map[string]string{"Retry-After": "90"}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+				for k, v := range c.header {
+					w.Header().Set(k, v)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(c.status)
+				_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error"}}`)
+			})
+			g, token := rig(t, up, nil)
+			call(g, token, "/chat/completions", good, nil)
+			if o := g.Unbind(token); len(o.Statuses) != 1 || o.Statuses[0] != c.status || o.Reset != c.want {
+				t.Fatalf("observed %+v, want a reset of %s", o, c.want)
+			}
+		})
+	}
+}
+
+// resetAfter reads Retry-After in seconds or as an HTTP date, before
+// RateLimit-Reset in seconds; a value it does not read names no reset,
+// never another header's.
+func TestResetAfter(t *testing.T) {
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	for name, c := range map[string]struct {
+		header map[string]string
+		want   time.Duration
+	}{
+		"seconds":                      {map[string]string{"Retry-After": " 30 "}, 30 * time.Second},
+		"an HTTP date":                 {map[string]string{"Retry-After": now.Add(2 * time.Minute).Format(http.TimeFormat)}, 2 * time.Minute},
+		"Retry-After before RateLimit": {map[string]string{"Retry-After": "5", "RateLimit-Reset": "50"}, 5 * time.Second},
+		"RateLimit-Reset alone":        {map[string]string{"RateLimit-Reset": "50"}, 50 * time.Second},
+		"a date past":                  {map[string]string{"Retry-After": now.Add(-time.Minute).Format(http.TimeFormat)}, 0},
+		"zero":                         {map[string]string{"Retry-After": "0"}, 0},
+		"negative":                     {map[string]string{"RateLimit-Reset": "-5"}, 0},
+		"not whole":                    {map[string]string{"Retry-After": "1.5"}, 0},
+		"past a week":                  {map[string]string{"Retry-After": "604801"}, 0},
+		"an unreadable Retry-After":    {map[string]string{"Retry-After": "soon", "RateLimit-Reset": "50"}, 0},
+		"none":                         {nil, 0},
+	} {
+		h := http.Header{}
+		for k, v := range c.header {
+			h.Set(k, v)
+		}
+		if got := resetAfter(h, now); got != c.want {
+			t.Errorf("%s: %s, want %s", name, got, c.want)
+		}
+	}
+}
+
 // F: a model switch. The gateway never selects or changes a model: any
 // request naming another than the lease's pinned model, or none, is refused
 // with nothing sent.

@@ -78,6 +78,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/buildinfo"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -472,7 +473,7 @@ func (r *runner) completeReview(ctx context.Context, pl plan, node types.NodeID,
 	if err != nil {
 		return errors.Join(err, r.abandon(ctx, pl, node, attempt, vocab.ReasonAmbiguousState, "the review's facts could not be gathered"))
 	}
-	return r.record(ctx, pl.lease.ID, node, attempt, f.Submitted, nil, nil, func(key types.ComputationKey) (types.Result, error) {
+	return r.record(ctx, pl.lease.ID, node, attempt, f.Submitted, nil, nil, r.providerHold(pl.executor.Destination.ID, obs.Reset), func(key types.ComputationKey) (types.Result, error) {
 		return review.Result(key, f, r.blobs)
 	})
 }
@@ -871,8 +872,22 @@ func configFault(cause error) bool {
 		errors.Is(cause, sandbox.ErrManifest) || errors.Is(cause, sandbox.ErrUnqualified)
 }
 
+// imageMissing reports whether cause is the profile's pinned image not
+// present at its digest (sandbox.ErrImage: absent, another digest or
+// another platform's), which the image's named owner fixes: the launch's
+// readiness miss (dispatch.ImageMiss), whether the launch or the runner's
+// own resolve finds it (§2.3 launch-missing-image). A pin the profile got
+// wrong (sandbox.ErrUnqualified) is the configuration's (configFault), and
+// a host whose podman did not answer (errHost) is retried.
+func imageMissing(cause error) bool {
+	return errors.Is(cause, sandbox.ErrImage) && !errors.Is(cause, sandbox.ErrUnqualified) && !errors.Is(cause, errHost)
+}
+
 // holdOn raises the runner's hold on node for cause, while it is claimed:
 //   - on its directories, when one is missing (dirs false);
+//   - wrong_owner on the pinned image, for an image not present
+//     (imageMissing): the launch's hold (dispatch.ImageMiss), cleared
+//     once the image resolves (placer.imageReady);
 //   - on its project's profile as it is now, for a configuration fault
 //     (configFault): cleared by a profile change;
 //   - otherwise a bounded retry (r2 M1), "retry <n> until <time>": the
@@ -895,10 +910,23 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 	signal := runnerDirs
 	switch {
 	case !dirs:
-	case errors.Is(cause, errImageMissing):
-		signal = runnerImage
 	case errors.Is(cause, accept.ErrGuardRun): // a guard that did not run: a bounded retry, whatever it wraps (a sandbox.ErrSpec included; #226 entry 147)
 		n, signal = r.retrySignal(tx, node)
+	case imageMissing(cause):
+		prof, ok, err := authority.ProjectProfile(tx, v.Project)
+		if err != nil || !ok {
+			return nil, 0, errors.Join(err, fmt.Errorf("daemon: node %s's project %s has no profile", node, v.Project))
+		}
+		image, _, err := pinnedImage(*prof)
+		if err != nil {
+			return nil, 0, err
+		}
+		m, err := dispatch.ImageMiss(image)
+		if err != nil {
+			return nil, 0, err
+		}
+		evs, err = raise(tx, node, *m.Hold, nil)
+		return evs, 0, err
 	case configFault(cause):
 		d, _, err := authority.ProjectProfileDigest(tx, v.Project)
 		if err != nil {
@@ -921,10 +949,6 @@ func (r *runner) holdOn(tx *eventstore.Tx, node types.NodeID, dirs bool, cause e
 	}
 	return evs, n, nil
 }
-
-// runnerImage is the hold of a node whose run found its profile's pinned
-// image absent (errImageMissing).
-var runnerImage = reconcile.RunnerHold{What: "image"}.Signal()
 
 // retrySignal is node's next bounded retry: its count, and "retry <n>
 // until <time>", or "failed" once maxTries are spent.
@@ -966,8 +990,6 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 		return r.dirsReady(), nil
 	case hold.What == "failed":
 		return false, nil
-	case hold.What == "image":
-		return r.place.imageReady(tx, node)
 	case hold.What == "retry":
 		return !tx.Now().Before(hold.Until), nil
 	}
@@ -1027,7 +1049,7 @@ func (r *runner) complete(ctx context.Context, pl plan, node types.NodeID, attem
 		diff = &facts.Diff
 	}
 	facts.Ignored = ignored
-	return r.record(ctx, pl.lease.ID, node, attempt, facts.Submitted, diff, ignored, func(key types.ComputationKey) (types.Result, error) {
+	return r.record(ctx, pl.lease.ID, node, attempt, facts.Submitted, diff, ignored, r.providerHold(pl.executor.Destination.ID, obs.Reset), func(key types.ComputationKey) (types.Result, error) {
 		if unsafe != "" {
 			return resultOf(key, types.ResultKindPatch, types.OutcomeFailed, vocab.ReasonUnsafeOutput, unsafe)
 		}
@@ -1043,7 +1065,7 @@ func (r *runner) abandon(ctx context.Context, pl plan, node types.NodeID, attemp
 	if pl.view.Node.Kind == types.NodeKindReview {
 		kind = types.ResultKindReview
 	}
-	return r.record(context.WithoutCancel(ctx), pl.lease.ID, node, attempt, false, nil, nil, func(key types.ComputationKey) (types.Result, error) {
+	return r.record(context.WithoutCancel(ctx), pl.lease.ID, node, attempt, false, nil, nil, nil, func(key types.ComputationKey) (types.Result, error) {
 		return resultOf(key, kind, types.OutcomeCouldNotRun, reason, detail)
 	})
 }
@@ -1057,28 +1079,98 @@ func resultOf(key types.ComputationKey, kind types.ResultKind, outcome types.Out
 		Reason: reason, Detail: detail, Completed: outcome != types.OutcomeCouldNotRun}, err
 }
 
+// resultHold holds node on what its recorded result res calls for, in a
+// command after the result's (record); none: nothing.
+type resultHold func(tx *eventstore.Tx, node types.NodeID, res types.Result) ([]eventstore.Event, error)
+
+// quotaWaitUnknown is a quota_reset hold's wait when the provider named no
+// reset (holds.yaml: the probe schedule then applies; its first step), and
+// quotaWaitMax bounds one it named.
+const (
+	quotaWaitUnknown = time.Minute
+	quotaWaitMax     = time.Hour
+)
+
+// quotaWait is the wait of a quota_reset hold for the reset the provider
+// named (gateway.Observed.Reset; 0: none): within (0, quotaWaitMax], and
+// quotaWaitUnknown for none.
+func quotaWait(reset time.Duration) time.Duration {
+	if reset <= 0 {
+		return quotaWaitUnknown
+	}
+	return min(reset, quotaWaitMax)
+}
+
+// providerHold is the hold of an attempt the provider refused for its
+// account (§2.6 fault-provider-402, -429), raised on its could_not_run
+// result as that result's retry wait (graph.Retry), so no pass launches
+// the node again, and spends an attempt of its rail, until the hold
+// clears:
+//   - quota_exhausted (a 429): quota_reset until the provider's reset
+//     (reset, Retry-After or RateLimit-Reset; quotaWait bounds it), owned
+//     by the system; the loop clears it once that time has come
+//     (reconcile.QuotaReset, placer.Unblocked);
+//   - broker_credit_exhausted (a 402): broker_credit_exhausted on the
+//     destination's balance probe (reconcile.CreditProbe), owned by the
+//     operator. Nothing clears it in M1, as no balance probe exists
+//     (stated, #400's table): its escalation to the operator is recorded
+//     only, nothing pages until P29, and the recovery is revoking the
+//     task's approval.
+//
+// Any other result holds nothing.
+func (r *runner) providerHold(destination types.Slug, reset time.Duration) resultHold {
+	return func(tx *eventstore.Tx, node types.NodeID, res types.Result) ([]eventstore.Event, error) {
+		if res.Outcome != types.OutcomeCouldNotRun || res.Reason != vocab.ReasonQuotaExhausted && res.Reason != vocab.ReasonBrokerCreditExhausted {
+			return nil, nil
+		}
+		id, err := ids.New("hld")
+		if err != nil {
+			return nil, err
+		}
+		hold := types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldBrokerCreditExhausted, SignalInstance: reconcile.CreditProbe{Destination: destination}.Signal(),
+			Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}
+		if res.Reason == vocab.ReasonQuotaExhausted {
+			hold = types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldQuotaReset, SignalInstance: reconcile.QuotaReset{Until: tx.Now().Add(quotaWait(reset))}.Signal(),
+				Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}
+		}
+		return graph.Retry(tx, node, res.ID, hold, nil)
+	}
+}
+
 // record records node's result (result, over its claim's key) and ends
 // attempt and lease l, each step in its own command, every step tried
 // whatever an earlier one returned:
 //   - an attempt that submitted records it (graph.CommitAttempt) before its
 //     seal; one that did not is lost (agent_disconnect) if still running,
 //     sealed, and the result is recorded with no attempt (graph.Commit);
+//   - once recorded, held holds node on what the result calls for
+//     (providerHold; nil: nothing), in the next command: a retry wait
+//     names a result the store has folded (graph.Retry). The lease is
+//     still live then, so no pass places node in between; a hold that
+//     cannot be written is this run's error, and node is placed again,
+//     as a result that names no hold is;
 //   - a result selected (anything but could_not_run) completes the unit:
 //     the attempt is completed with its outcome and reason, and its lease
 //     completed; otherwise the unit continues (the sealed attempt is
 //     superseded by the next launch) and the lease is revoked with the
 //     result's reason. The lease then settles (capacity.Settlement).
 func (r *runner) record(ctx context.Context, l types.LeaseID, node types.NodeID, attempt types.AttemptID, submitted bool, diff *types.Digest, ignored []string,
-	result func(types.ComputationKey) (types.Result, error)) error {
+	held resultHold, result func(types.ComputationKey) (types.Result, error)) error {
 	var recorded *types.Result
 	seal := r.sealStep(attempt, diff, ignored)
+	hold := func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		if held == nil || recorded == nil {
+			return nil, nil
+		}
+		return held(tx, node, *recorded)
+	}
 	var steps []func(*eventstore.Tx) ([]eventstore.Event, error)
 	if submitted {
-		steps = append(steps, r.commitStep(node, &attempt, result, &recorded), seal)
+		steps = append(steps, r.commitStep(node, &attempt, result, &recorded), hold, seal)
 	} else {
 		steps = append(steps, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.LoseRunning(tx, attempt, types.AttemptLostReasonValueAgentDisconnect)
-		}, seal, r.commitStep(node, nil, result, &recorded))
+		}, seal, r.commitStep(node, nil, result, &recorded), hold)
 	}
 	var errs []error
 	for _, step := range steps {
