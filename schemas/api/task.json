@@ -65,7 +65,7 @@
         "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
         "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
         "selected": {"description": "The node's selected result.", "type": "boolean"},
-        "attempt": {"description": "The attempt that recorded it; null for a result the controller recorded with no attempt.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
+        "attempt": {"description": "The attempt that recorded it; null for a result recorded with no attempt: the controller's own (plan, accept, gate, abandon), or the result of a build or review attempt the host lost, its reason from the exit map. Null never means that no attempt ran.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
       }
     },
     "BenchAttempt": {

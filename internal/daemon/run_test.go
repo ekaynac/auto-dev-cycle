@@ -603,6 +603,17 @@ func TestAProviderRefusalHoldsTheBuild(t *testing.T) {
 			if len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != c.reason || got[0].Result.Kind != types.ResultKindPartialPatch {
 				t.Fatalf("the build's results: %+v", got)
 			}
+			// The benchmark facts carry it (bench.nodes[].results[]; Opus #436
+			// L1, L2): never selected; the attempt ended with no result, so the
+			// host recorded it with none (attempt null, its reason the exit
+			// map's), though the build's one attempt ran.
+			bn := taskOneAs(t, rw.w, rw.w.op, rw.task).Bench
+			for _, n := range bn.Nodes {
+				if n.ID == rw.build && (len(n.Results) != 1 || n.Results[0].ID != got[0].Result.ID || n.Results[0].Reason != c.reason || n.Results[0].Selected ||
+					n.Results[0].Attempt != nil || len(n.Attempts) != 1) {
+					t.Errorf("the build's benchmark results: %+v, attempts %+v", n.Results, n.Attempts)
+				}
+			}
 			st := v.State
 			if len(st.Holds) != 1 || st.Holds[0].Hold != c.hold || st.Holds[0].Owner != c.owner || st.Holds[0].Reason == nil || *st.Holds[0].Reason != c.reason {
 				t.Fatalf("the node: %+v, want %s owned by %s with the result's reason", st, c.hold, c.owner)

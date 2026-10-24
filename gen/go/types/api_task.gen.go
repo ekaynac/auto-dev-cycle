@@ -126,7 +126,7 @@ type BenchResult struct {
 	Reason  ReasonCode `json:"reason"`
 	// The node's selected result.
 	Selected bool `json:"selected"`
-	// The attempt that recorded it; null for a result the controller recorded with no attempt.
+	// The attempt that recorded it; null for a result recorded with no attempt: the controller's own (plan, accept, gate, abandon), or the result of a build or review attempt the host lost, its reason from the exit map. Null never means that no attempt ran.
 	Attempt *AttemptID `json:"attempt"`
 }
 

@@ -78,7 +78,7 @@ No other fields are allowed.
 | `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
 | `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |
 | `selected` | yes | boolean | The node's selected result. |
-| `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) | The attempt that recorded it; null for a result the controller recorded with no attempt. |
+| `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) | The attempt that recorded it; null for a result recorded with no attempt: the controller's own (plan, accept, gate, abandon), or the result of a build or review attempt the host lost, its reason from the exit map. Null never means that no attempt ran. |
 
 No other fields are allowed.
 

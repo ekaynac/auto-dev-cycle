@@ -295,7 +295,7 @@ func TestAnUnreadableStreamIsHeld(t *testing.T) {
 	// controller's could_not_run/runner_fault, recorded with no attempt.
 	for _, n := range taskOneAs(t, rw.w, rw.w.op, rw.task).Bench.Nodes {
 		if n.ID == v.Node.ID && (len(n.Results) != 1 || n.Results[0].ID != got[0].Result.ID || n.Results[0].Reason != vocab.ReasonRunnerFault ||
-			n.Results[0].Attempt != nil || n.Results[0].Selected != (v.State.Result != nil && *v.State.Result == got[0].Result.ID)) {
+			n.Results[0].Attempt != nil || n.Results[0].Selected) { // could_not_run is never selected (Opus #436 L2)
 			t.Errorf("the gate's benchmark results: %+v", n.Results)
 		}
 	}
