@@ -15,6 +15,7 @@ import (
 	"io"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -46,7 +47,10 @@ func Active(p string) bool {
 // CGO_ENABLED=0): go ignores such a file, and fails the package of such a
 // test file ("use of cgo in test not supported"; Opus #429 r3 N1).
 func Cgo(f *ast.File) bool {
-	return slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` })
+	return slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool {
+		p, err := strconv.Unquote(is.Path.Value) // "C" or `C` (Opus #429 r4 B1)
+		return err == nil && p == "C"
+	})
 }
 
 // TestFile: p may be a collected Go test file, by its name alone.

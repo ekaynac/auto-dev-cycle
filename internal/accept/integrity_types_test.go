@@ -684,3 +684,20 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		t.Errorf("past the export data bound: %q", whats(v.Blocks))
 	}
 }
+
+// Opus #429 r4 B1: the typer reads none of a package's files that imports
+// "C", however its path is spelled (gosel.Cgo): a raw-string `C` file of
+// another package beside the package's own is skipped, not a split.
+func TestTheTyperSkipsCgo(t *testing.T) {
+	for name, imp := range map[string]string{"quoted": `"C"`, "raw": "`C`"} {
+		blobs := map[string]string{"1": "module example.com/m\n\ngo 1.22\n", "2": "package p\n", "3": "package other\n\nimport " + imp + "\n"}
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
+			return []byte(blobs[blob]), true, nil
+		}}
+		tr := &tree{files: map[string]string{"go.mod": "1", "p/p.go": "2", "p/c.go": "3"}, dirs: map[string][]string{"p": {"p/c.go", "p/p.go"}}, typers: map[string]*typer{}}
+		r.trees = [2]*tree{tr, tr}
+		if fs, why := tr.typer(r, "p", platforms[1]).parse("p"); why != "" || len(fs) != 1 || fs[0].Name.Name != "p" {
+			t.Errorf("%s: %d files, %q", name, len(fs), why)
+		}
+	}
+}

@@ -422,10 +422,10 @@ var (
 // maxBasePackages bounds the base's Go files basePackages reads.
 const maxBasePackages = 16 << 20
 
-// basePackages are the base's Go files (repository path → bytes) in each
-// directory an active Go file of overlay is in that the base holds as
-// a tree (trees), read with cat-file: at most maxBasePackages bytes, more
-// the task's (errContent).
+// basePackages are the base's root go.mod and its Go files (repository
+// path → bytes) in each directory an active Go file of overlay is in that
+// the base holds as a tree (trees), read with cat-file: at most
+// maxBasePackages bytes, more the task's (errContent).
 func basePackages(ctx context.Context, repo sandbox.Repo, dir, base string, trees map[string]bool, overlay map[string][]byte) (map[string][]byte, error) {
 	git := func(stdin string, args ...string) ([]byte, error) {
 		cmd, err := repo.Git(ctx, dir, args...)
@@ -439,12 +439,13 @@ func basePackages(ctx context.Context, repo sandbox.Repo, dir, base string, tree
 		}
 		return out.Bytes(), nil
 	}
-	var paths, objects []string
+	paths, objects, listed := []string{"go.mod"}, []string{base + ":go.mod"}, map[string]bool{} // the root go.mod: its modules (gate.AcceptanceFits)
 	for _, p := range slices.Sorted(maps.Keys(overlay)) {
 		d := path.Dir(p)
-		if !gosel.Active(p) || !trees[d] || slices.ContainsFunc(paths, func(q string) bool { return path.Dir(q) == d }) {
+		if !gosel.Active(p) || !trees[d] || listed[d] {
 			continue
 		}
+		listed[d] = true
 		spec := base
 		if d != "." {
 			spec += ":" + d
@@ -460,9 +461,6 @@ func basePackages(ctx context.Context, repo sandbox.Repo, dir, base string, tree
 				paths, objects = append(paths, path.Join(d, name)), append(objects, f[2])
 			}
 		}
-	}
-	if len(objects) == 0 {
-		return nil, nil
 	}
 	sizes, err := git(strings.Join(objects, "\n")+"\n", "cat-file", "--batch-check=%(objectsize)")
 	if err != nil {

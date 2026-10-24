@@ -24,6 +24,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
 
@@ -63,9 +65,11 @@ var (
 // acceptance that the shared rules (gosel) prove go test never runs. Any
 // other acceptance that does not compile or vet on its own (an unused
 // import, a type error, a printf vet error, an example naming an unknown
-// identifier, a dot-import's name its package declares) fails every
-// candidate (found/gate_test_failed), bounded by the rails; the acceptance
-// is immutable, so the recovery is a new task.
+// identifier, a dot-import's name its package declares, an import name
+// the gate cannot be certain of, a method named like a field of its type)
+// fails every candidate (found/gate_test_failed), bounded by the rails;
+// the acceptance is immutable, so the recovery is a new task. A check that
+// guesses is worse than a stated residual (Opus #429 r4).
 
 // AcceptanceTest is a top-level test an acceptance's Go test file
 // declares: its directory (the repository path; "." the root) and name.
@@ -168,13 +172,14 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 
 // malformed: go test's vet (its tests analyzer) refuses fn, a top-level
 // function of a test file, and the package never runs: Test, Benchmark or
-// Fuzz then a lower-case letter, on that kind's signature; Example then a
-// lower-case letter (an unknown identifier, or a malformed name).
+// Fuzz then a lower-case letter, on that kind's signature. Example then a
+// lower-case letter is refused by vet only when the identifier is unknown:
+// the general class, not refused here (Opus #429 r4 B2).
 func malformed(fn *ast.FuncDecl) bool {
-	for pre, kind := range map[string]string{"Test": "T", "Benchmark": "B", "Fuzz": "F", "Example": ""} {
+	for pre, kind := range map[string]string{"Test": "T", "Benchmark": "B", "Fuzz": "F"} {
 		rest, ok := strings.CutPrefix(fn.Name.Name, pre)
 		r, _ := utf8.DecodeRuneInString(rest)
-		if ok && rest != "" && unicode.IsLower(r) && (kind == "" || fn.Type.Params != nil && len(fn.Type.Params.List) == 1 && param(fn) == kind) {
+		if ok && rest != "" && unicode.IsLower(r) && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 && param(fn) == kind {
 			return true
 		}
 	}
@@ -240,14 +245,14 @@ func param(fn *ast.FuncDecl) string {
 // file whose package clause is not its directory's (a Go test file: nor
 // that package's _test form), and a top-level name an acceptance file
 // declares that another file of the same package declares too, are
-// refused. base holds the base's Go files in those directories,
-// repository path → bytes; only the files go builds on pl count. A
+// refused. base holds the base's Go files in those directories and its
+// root go.mod, repository path → bytes; only the files go builds on pl count. A
 // directory's package is its non-test files', else its internal test
 // files', else its external test files' without _test. The internal test
 // package shares its scope with the package's files; the external one
 // with the other external test files.
 func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
-	baseOf, ownOf := map[string][]goFile{}, map[string][]goFile{}
+	baseOf, ownOf, modules := map[string][]goFile{}, map[string][]goFile{}, goModules(base["go.mod"])
 	for _, p := range slices.Sorted(maps.Keys(overlay)) {
 		g, ok, err := active(pl, p, overlay[p], true)
 		if err != nil {
@@ -293,9 +298,9 @@ func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
 			}
 		}
 		// A file's import name is in its file block, which no package-scope
-		// name may share (Opus #429 r3 M1).
+		// name may share (Opus #429 r3 M1); only a certain one counts (B3).
 		for _, g := range all {
-			for _, name := range importNames(g.f) {
+			for _, name := range importNames(g.f, modules) {
 				if other, ok := declared[g.pkg][name]; ok && (own(g.path) || own(other)) {
 					return errRedeclared
 				}
@@ -305,12 +310,17 @@ func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
 	return nil
 }
 
-// importNames are the names f's imports declare in its file block: each
-// one's explicit name (not _ or .), else its path's last element when that
-// is an identifier (a vN element is a version: the one before it). An
-// import whose package name is not its path's is not seen, nor is a
-// dot-import's names (stated residuals).
-func importNames(f *ast.File) []string {
+// importNames are the names f's imports certainly declare in its file
+// block (Opus #429 r4 B3: a check that guesses is worse than a stated
+// residual): each one's explicit name (not _ or .), and a standard-library
+// path's last element (a vN element is a version: the one before it,
+// math/rand/v2's rand), which is every importable std package's name. A
+// path is the standard library's by module metadata alone, accept's rule:
+// its first element has no dot and no module the base's go.mod names
+// (modules) is it or a prefix of it, so the go command resolves it from
+// its GOROOT only. Every other import is unseen, as is a dot-import's
+// names (stated residuals).
+func importNames(f *ast.File, modules []string) []string {
 	var out []string
 	for _, is := range f.Imports {
 		if is.Name != nil { // _ and . match no package-scope name (topNames has no _)
@@ -318,7 +328,7 @@ func importNames(f *ast.File) []string {
 			continue
 		}
 		p, err := strconv.Unquote(is.Path.Value)
-		if err != nil {
+		if err != nil || !std(p, modules) {
 			continue
 		}
 		elems := strings.Split(p, "/")
@@ -390,4 +400,30 @@ func recvType(fn *ast.FuncDecl) string {
 			return ""
 		}
 	}
+}
+
+// goModules are the module paths the base's go.mod (gomod) names: its own,
+// its requirements' and its replacements'; nil for none or one that does
+// not parse, so no path reads as the standard library's.
+func goModules(gomod []byte) []string {
+	f, err := modfile.ParseLax("go.mod", gomod, nil)
+	if gomod == nil || err != nil || f.Module == nil {
+		return nil
+	}
+	out := []string{f.Module.Mod.Path}
+	for _, r := range f.Require {
+		out = append(out, r.Mod.Path)
+	}
+	for _, r := range f.Replace {
+		out = append(out, r.Old.Path)
+	}
+	return out
+}
+
+// std: p is the standard library's by module metadata (importNames).
+func std(p string, modules []string) bool {
+	if first, _, _ := strings.Cut(p, "/"); modules == nil || strings.Contains(first, ".") {
+		return false
+	}
+	return !slices.ContainsFunc(modules, func(m string) bool { return p == m || strings.HasPrefix(p, m+"/") })
 }
