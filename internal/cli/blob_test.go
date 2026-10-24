@@ -33,10 +33,12 @@ func (u *uploading) Blob(_ context.Context, data []byte) ([]byte, error) {
 		`"uploaded_at":"2026-10-13T12:00:00Z","expires_at":"2026-10-13T13:00:00Z"}`), nil
 }
 
-// --scope-file is the scope; --attach uploads each file first and lists it
-// in the scope's attachments; an upload refused sends no command; and an
-// over-bound file is sent cut one byte past the bound, for the server to
-// refuse.
+// --scope-file is the scope; --attach REPO_PATH=FILE uploads each file
+// first and lists it in the scope's attachments, named by its repository
+// path (#226 entry 190), never by its file's base name; a bare FILE, a path
+// that is no clean repository path, and a path named twice are refused
+// before any upload; an upload refused sends no command; and an over-bound
+// file is sent cut one byte past the bound, for the server to refuse.
 func TestScopeFileAndAttach(t *testing.T) {
 	dir := t.TempDir()
 	scope, att, big := filepath.Join(dir, "spec.json"), filepath.Join(dir, "accept_test.go"), filepath.Join(dir, "big.bin")
@@ -50,26 +52,33 @@ func TestScopeFileAndAttach(t *testing.T) {
 		var out, errb bytes.Buffer
 		return Main(context.Background(), args, &out, &errb, f)
 	}
-	if code := run("task", "create", "--expect", "0", "--reason", "r", "--scope-file", scope, "--attach", att); code != entry.ExitOK {
+	if code := run("task", "create", "--expect", "0", "--reason", "r", "--scope-file", scope, "--attach", "inventory/accept_test.go="+att); code != entry.ExitOK {
 		t.Fatalf("exit %d", code)
 	}
 	var got map[string]any
 	_ = json.Unmarshal(f.req.Scope, &got)
-	want := map[string]any{"title": "t", "attachments": []any{map[string]any{"name": "accept_test.go", "digest": digest}}}
+	want := map[string]any{"title": "t", "attachments": []any{map[string]any{"name": "inventory/accept_test.go", "digest": digest}}}
 	if b, w := mustJSON(got), mustJSON(want); b != w || len(f.sent) != 1 || string(f.sent[0]) != "hello" {
 		t.Fatalf("scope %s, want %s; sent %d", b, w, len(f.sent))
 	}
 	if code := run("task", "create", "--expect", "0", "--reason", "r", "--scope", "{}", "--scope-file", scope); code != entry.ExitUsage {
 		t.Fatalf("--scope and --scope-file: exit %d", code)
 	}
-	if code := run("task", "create", "--expect", "0", "--reason", "r", "--attach", att, "--attach", att); code != entry.ExitUsage || len(f.sent) != 1 {
-		t.Fatalf("an attachment named twice: exit %d, %d uploads", code, len(f.sent))
+	for _, bad := range [][]string{
+		{"--attach", "a_test.go=" + att, "--attach", "a_test.go=" + big}, // a path named twice
+		{"--attach", att}, {"--attach", "accept_test.go"}, {"--attach", "a_test.go="}, {"--attach", "=" + att}, // no REPO_PATH=FILE
+		{"--attach", "/abs_test.go=" + att}, {"--attach", "../up_test.go=" + att}, {"--attach", "a/./b_test.go=" + att},
+		{"--attach", "a//b_test.go=" + att}, {"--attach", ".hidden/a_test.go=" + att}, {"--attach", "a b_test.go=" + att}, {"--attach", "a/_test.go/=" + att},
+	} {
+		if code := run(append([]string{"task", "create", "--expect", "0", "--reason", "r"}, bad...)...); code != entry.ExitUsage || len(f.sent) != 1 {
+			t.Fatalf("%q: exit %d, %d uploads", bad, code, len(f.sent))
+		}
 	}
-	if code := run("task", "create", "--expect", "0", "--reason", "r", "--scope", "[]", "--attach", att); code != entry.ExitUsage {
+	if code := run("task", "create", "--expect", "0", "--reason", "r", "--scope", "[]", "--attach", "a_test.go="+att); code != entry.ExitUsage {
 		t.Fatalf("--attach to a non-object: exit %d", code)
 	}
 	f.refuse, f.calls = &client.Refused{Result: vocab.Result{Outcome: vocab.Failed, Reason: vocab.ReasonUploadBoundExceeded, Detail: "d"}}, 0
-	if code := run("task", "create", "--expect", "0", "--reason", "r", "--attach", big); code != entry.ExitRefused || f.calls != 0 {
+	if code := run("task", "create", "--expect", "0", "--reason", "r", "--attach", "big_test.go="+big); code != entry.ExitRefused || f.calls != 0 {
 		t.Fatalf("a refused attachment: exit %d, %d commands sent", code, f.calls)
 	}
 	if code := run("blob", "put", "--file", big); code != entry.ExitRefused || len(f.sent[len(f.sent)-1]) != 1<<20+1 {

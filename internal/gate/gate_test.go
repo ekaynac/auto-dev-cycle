@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -233,14 +234,304 @@ func TestGateVerdict(t *testing.T) {
 	// An expected (acceptance) test, overlaid on the workspace only, that
 	// never ran is the candidate's, wherever it is.
 	f := newFixture(t, files, "cat", "acc/stream.json")
-	f.in.Overlay = map[string][]byte{"acc/stream.json": []byte(stream["clean.json"])}
+	f.in.Overlay = map[string][]byte{"acc/stream.json": []byte(stream["clean.json"]), "c/c_hidden_test.go": []byte(hiddenTest)}
 	f.in.Expected = []results.Test{{Package: module + "/c", Name: "TestHidden"}}
 	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) {
 		t.Errorf("a missing acceptance test: %v", v)
 	}
-	f.in.Overlay = map[string][]byte{"../escape": nil}
-	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrSpec) {
+	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "../escape": nil}
+	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) {
 		t.Errorf("an overlay outside the workspace: %v", err)
+	}
+}
+
+// hiddenTest is an acceptance test file of package c: two tests go test
+// runs (TestHidden, TestHiddenX), and four declarations it does not (a
+// lower-case suffix, a benchmark's parameter, a helper, a method).
+const hiddenTest = `package c
+
+import "testing"
+
+func TestHidden(t *testing.T) {}
+
+func TestHiddenX(t *testing.T) {}
+
+func Testing(n int) int { return n }
+
+func BenchmarkHidden(b *testing.B) {}
+
+func Example_hidden() {}
+
+func helper(t *testing.T) {}
+
+type s struct{}
+
+func (s) TestMethod(t *testing.T) {}
+`
+
+// TestGateOverlaidTestsAreExpected (#226 entry 190): the run overlays the
+// acceptance files at their repository paths, replacing what the candidate
+// put there, and expects the top-level tests their Go test files declare,
+// in their directory's package (the module read as the go command reads
+// it: a module line with a comment; Opus #429 H1): reported and passing,
+// the gate is clean; failing, or never reported, it is the candidate's
+// (found/gate_test_failed). The candidate's link at the path (a/a.go stays
+// as it was), its directory at the path, and its file where the path's
+// directory should be are each replaced (Opus #429 M3). A candidate tree
+// with no Go module is the candidate's (Opus #429 L1).
+func TestGateOverlaidTestsAreExpected(t *testing.T) {
+	passed := events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=pass")
+	base := map[string]string{"a/a.go": "package a\n", "b/b.go": "package b\n", "clean.json": stream["clean.json"], "passed.json": passed,
+		"failed.json": events("a.TestA=pass", "b.TestB=pass", "c.TestHidden=pass", "c.TestHiddenX=fail")}
+	with := func(extra map[string]string) map[string]string {
+		files := maps.Clone(base)
+		maps.Copy(files, extra)
+		return files
+	}
+	link := map[string]string{"c/c_hidden_test.go": "symlink:../a/a.go"}
+	for name, c := range map[string]struct {
+		files          map[string]string
+		reported, want string
+	}{
+		"reported, passing":             {link, "passed.json", "empty/completed_clean"},
+		"one failing":                   {link, "failed.json", "found/gate_test_failed"},
+		"never reported":                {link, "clean.json", "found/gate_test_failed"},
+		"a module line with a comment":  {map[string]string{"go.mod": "module " + module + " // the module\n\ngo 1.24\n"}, "passed.json", "empty/completed_clean"},
+		"a directory at the path":       {map[string]string{"c/c_hidden_test.go/x.go": "package x\n"}, "passed.json", "empty/completed_clean"},
+		"a file where its directory is": {map[string]string{"c": "a file\n"}, "passed.json", "empty/completed_clean"},
+	} {
+		// The stream is the reported one only when the hidden file is the
+		// overlay's, a regular file, and a/a.go is untouched.
+		f := newFixture(t, with(c.files), "sh", "-c", `if test -f c/c_hidden_test.go && ! test -L c/c_hidden_test.go && grep -q TestHiddenX c/c_hidden_test.go && test "$(cat a/a.go)" = "package a"; then cat `+c.reported+`; else cat clean.json; fi`)
+		f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
+		if v := gated(t, f.in); !strings.Contains(v.String(), c.want) {
+			t.Errorf("%s: %v, want %s", name, v, c.want)
+		}
+	}
+	f := newFixture(t, with(map[string]string{"go.mod": "go 1.24\n"}), "cat", "passed.json")
+	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
+	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) || v.Why != whyNoModule {
+		t.Errorf("a candidate with no module: %v", v)
+	}
+	// Astra #429 r2 H2: an executable example is expected by its name, as
+	// go test -json reports it: reported, the gate is clean; never
+	// reported, it is the candidate's.
+	example := "package c\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(\"ok\")\n\t// Output: ok\n}\n"
+	for stream, want := range map[string]string{"examples.json": "empty/completed_clean", "clean.json": "found/gate_test_failed"} {
+		f := newFixture(t, with(map[string]string{"examples.json": events("a.TestA=pass", "b.TestB=pass", "c.Example=pass")}), "cat", stream)
+		f.in.Overlay = map[string][]byte{"c/c_example_test.go": []byte(example)}
+		if v := gated(t, f.in); !strings.Contains(v.String(), want) {
+			t.Errorf("an example, %s: %v, want %s", stream, v, want)
+		}
+	}
+	f = newFixture(t, with(nil), "cat", "clean.json")
+	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte("package c\nfunc {\n")}
+	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) || errors.Is(err, ErrSpec) {
+		t.Errorf("an acceptance test that does not parse: %v", err)
+	}
+}
+
+// Opus #429 H1, M1, L1; Astra #429 H1, M4, M5: AcceptanceTests are the
+// top-level tests go test ./... runs from an acceptance's Go test files, in
+// each file's directory: TestXxx and FuzzXxx (a dot-imported testing's
+// *T among them, TestMain(*testing.T) one; a lower-case suffix, a
+// benchmark, an example with no output comment, TestMain(*testing.M), a
+// helper and a method none; Testing(int) no test); data files, Go files go
+// never builds and cgo files (cgo is off) beside them stay. It
+// refuses, as the task's (ErrAcceptance), with a fixed text naming none
+// of its paths or names, what go test ./... would never run: a Go file
+// that does not parse, a Go test file under testdata, vendor, a _ or a .
+// directory, excluded by its name's or its constraint's platform (the
+// pinned platform's default architecture level negated too), of package
+// documentation or importing "C", a test with a signature the go command
+// refuses, a go.mod among the files (a go.work is data: GOWORK=off),
+// files over MaxOverlay, and
+// no such test (an example with no output comment alone is none).
+func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
+	pl := [2]string{"linux", "arm64"}
+	root := "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) {}\n"
+	got, err := AcceptanceTests(pl, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte(root),
+		"c/linux_arm64_test.go": []byte("//go:build linux && arm64.v8.0\n\n" + root), "c/dot_test.go": []byte("package c\n\nimport . \"testing\"\n\nfunc TestDot(t *T) {}\n\nfunc FuzzDot(f *F) {}\n"),
+		"c/main_test.go": []byte("package c\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n"), "c/hook_test.go": []byte("package d\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n"),
+		"c/ex_test.go": []byte("package c\n\nfunc foo() {}\n\nfunc Examplefoo() {}\n"), "c/helper_windows.go": []byte("package c\n"), "c/testdata/x.go": []byte("not go"), "c/cgo.go": []byte("package c\n\nimport \"C\"\n\nfunc TestHidden() {}\n")})
+	if want := []AcceptanceTest{{"c", "TestHidden"}, {"c", "TestHiddenX"}, {"c", "TestDot"}, {"c", "FuzzDot"}, {"c", "TestRoot"}, {"c", "TestMain"}, {".", "TestRoot"}}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("the acceptance's tests: %v, %v; want %v", got, err, want)
+	}
+	for name, files := range map[string]map[string]string{
+		"does not parse":                  {"c/c_test.go": "package c\nfunc {\n"},
+		"a helper that does not parse":    {"c/c_test.go": root, "c/h.go": "package c\nfunc {\n"},
+		"under testdata":                  {"c/testdata/c_test.go": root},
+		"under vendor":                    {"vendor/x/x_test.go": root},
+		"under a _ directory":             {"_x/x_test.go": root},
+		"a _ file":                        {"c/_c_test.go": root},
+		"another OS by its name":          {"c/c_windows_test.go": root},
+		"another arch by its name":        {"c/c_amd64_test.go": root},
+		"another OS by a constraint":      {"c/c_test.go": "//go:build windows\n\n" + root},
+		"an unmet tag":                    {"c/c_test.go": "//go:build integration\n\n" + root},
+		"the default arm64 level negated": {"c/c_test.go": "//go:build !arm64.v8.0\n\n" + root},
+		"package documentation":           {"c/c_test.go": strings.Replace(root, "package m", "package documentation", 1)},
+		"a module of its own":             {"c/go.mod": "module x\n", "c/c_test.go": root},
+		"only data":                       {"c/data.txt": "x"},
+		"only an example with no output":  {"c/c_test.go": "package c\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(\"ok\")\n}\n"},
+		"only an example and a benchmark": {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc ExampleX() {}\n\nfunc BenchmarkX(b *testing.B) {}\n"},
+		"a test taking a *testing.B":      {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(b *testing.B) {}\n"},
+		"a test with a result":            {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) error { return nil }\n"},
+		"over the overlay's bound":        {"c/c_test.go": root, "c/big.bin": strings.Repeat("x", MaxOverlay)},
+		"a cgo test":                      {"c/c_test.go": strings.Replace(root, "import \"testing\"", "import \"C\"\nimport \"testing\"", 1)},
+		"a cgo test, a raw-string import": {"c/c_test.go": strings.Replace(root, "import \"testing\"", "import `C`\nimport \"testing\"", 1)},
+	} {
+		overlay := map[string][]byte{}
+		for p, b := range files {
+			overlay[p] = []byte(b)
+		}
+		got, err := AcceptanceTests(pl, overlay)
+		if !errors.Is(err, ErrAcceptance) {
+			t.Errorf("%s: %v, %v", name, got, err)
+			continue
+		}
+		for p := range files { // a fixed text (Astra #429 H3); go.mod is the rule's own word
+			if b := path.Base(p); b != "go.mod" && strings.Contains(err.Error(), b) || strings.Contains(err.Error(), "TestRoot") || strings.Contains(err.Error(), "TestX") {
+				t.Errorf("%s: the refusal names the acceptance: %v", name, err)
+			}
+		}
+	}
+	// Astra #429 r2: what go runs is expected, whatever a stricter reading
+	// would make of it. A function vet's tests analyzer does not check (a
+	// result, two parameter names) beside a test; an executable example (an
+	// output comment, empty included: go/doc's collection, the go
+	// command's); a helper the platform excludes, by its name or its
+	// constraint, whose body does not parse (go never opens it). A name vet
+	// refuses (Testfoo(*testing.T)) and an example with a parameter fail
+	// vet: the stated general class, expected too (#226 entry 197).
+	ex := "package c\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(\"ok\")\n\t// Output: ok\n}\n"
+	for name, c := range map[string]struct {
+		files map[string]string
+		want  []AcceptanceTest
+	}{
+		"Testfoo with a result":              {map[string]string{"c/c_test.go": root + "\nfunc Testfoo(t *testing.T) int { return 1 }\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"Testfoo with two parameter names":   {map[string]string{"c/c_test.go": root + "\nfunc Testfoo(a, b *testing.T) {}\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"Testfoo, vet's general class":       {map[string]string{"c/c_test.go": root + "\nfunc Testfoo(t *testing.T) {}\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"Benchmarkfoo, vet's general class":  {map[string]string{"c/c_test.go": root + "\nfunc Benchmarkfoo(b *testing.B) {}\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"an example with a parameter":        {map[string]string{"c/c_test.go": root + "\nfunc ExampleX(t *testing.T) {}\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"a lone executable example":          {map[string]string{"c/c_test.go": ex}, []AcceptanceTest{{"c", "Example"}}},
+		"a go.work (GOWORK=off)":             {map[string]string{"go.work": "go 1.27\n\nuse .\n", "c/c_test.go": root}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"an example with an empty output":    {map[string]string{"c/c_test.go": strings.Replace(strings.Replace(ex, "// Output: ok", "// Output:", 1), "fmt.Println(\"ok\")", "_ = fmt.Sprint()", 1)}, []AcceptanceTest{{"c", "Example"}}},
+		"a suffixed example":                 {map[string]string{"c/c_test.go": strings.Replace(ex, "func Example()", "func Example_second()", 1)}, []AcceptanceTest{{"c", "Example_second"}}},
+		"an excluded helper by its name":     {map[string]string{"c/c_test.go": root, "c/helper_windows.go": "package c\n\nfunc broken( {\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+		"an excluded helper by a constraint": {map[string]string{"c/c_test.go": root, "c/helper.go": "//go:build windows\n\npackage c\n\nfunc broken( {\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
+	} {
+		overlay := map[string][]byte{}
+		for p, b := range c.files {
+			overlay[p] = []byte(b)
+		}
+		got, err := AcceptanceTests(pl, overlay)
+		if err != nil || !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, %v; want %v", name, got, err, c.want)
+		}
+		if err := AcceptanceFits(pl, overlay, map[string][]byte{"go.mod": []byte("module m\n\ngo 1.27\n")}); err != nil {
+			t.Errorf("%s: does not fit: %v", name, err)
+		}
+	}
+
+}
+
+// Opus #429 N1, Astra #429 H2: an acceptance Go file, a test or a helper,
+// that can never compile against the base is refused (ErrAcceptance), by a
+// fixed text: its package clause neither its directory's package nor (a
+// test file) that package's _test form, or a top-level name a file of the
+// same package declares too (a base test's name, a base file's function,
+// another acceptance file's, a helper's). The same name in the other test
+// package, a file the platform excludes, a new directory, a directory of
+// only tests, and a helper of its package fit. Opus #429 r3 M1: a method
+// the base's type has already, and an import name a package-scope name
+// takes (either side the acceptance's), are refused too; a cgo helper is
+// data (go ignores it with cgo off). Opus #429 r4 B3: an import's name
+// counts only when certain, an explicit name or a standard-library path's
+// (math/rand/v2's rand); a path of the base's module or of a module its
+// go.mod requires is unseen (m/lib/foo may be package bar, m/api/core/v1
+// package v1). Opus #429 r7: an import of "/x" returns (no import path,
+// unseen), and a parenthesised (*S) receiver keys its method S.M.
+func TestAcceptanceFitsTheBase(t *testing.T) {
+	test := func(pkg, name string) string {
+		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
+	}
+	base := map[string]string{"go.mod": "module m\n\ngo 1.27\n\nrequire lib v1.0.0\n", "c/c.go": "package c\n\ntype S struct{}\n\nfunc (S) M() {}\n\nfunc Sum() int { return 0 }\n", "c/c_test.go": test("c", "TestSum"), "c/ext_test.go": test("c_test", "TestExt"),
+		"c/c_windows.go": "package c\n\nfunc TestHidden() {}\n", "t/t_test.go": test("t", "TestT")}
+	for name, c := range map[string]struct {
+		hidden map[string]string
+		fits   bool
+	}{
+		"its package":                           {map[string]string{"c/h_test.go": test("c", "TestHidden")}, true},
+		"its _test package":                     {map[string]string{"c/h_test.go": test("c_test", "TestHidden")}, true},
+		"a base test's name, the other package": {map[string]string{"c/h_test.go": test("c_test", "TestSum")}, true},
+		"a new directory":                       {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("n_test", "TestHidden")}, true},
+		"a directory of only tests":             {map[string]string{"t/h_test.go": test("t_test", "TestT")}, true},
+		"a helper of its package":               {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/helper.go": "package c\n\nfunc help() {}\n"}, true},
+		"another package clause":                {map[string]string{"c/h_test.go": test("d", "TestHidden")}, false},
+		"another _test package":                 {map[string]string{"c/h_test.go": test("d_test", "TestHidden")}, false},
+		"a base test's name":                    {map[string]string{"c/h_test.go": test("c", "TestSum")}, false},
+		"a base file's function":                {map[string]string{"c/h_test.go": test("c", "Sum")}, false},
+		"an external base test's name":          {map[string]string{"c/h_test.go": test("c_test", "TestExt")}, false},
+		"two hidden files, one name":            {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("n", "TestHidden")}, false},
+		"two hidden files, two packages":        {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("m", "TestOther")}, false},
+		"a helper redeclaring the test's name":  {map[string]string{"p/hidden_test.go": test("p", "TestHidden"), "p/helper.go": "package p\n\nfunc TestHidden() {}\n"}, false},
+		"a helper in another package":           {map[string]string{"p/hidden_test.go": test("p", "TestHidden"), "p/helper.go": "package q\n"}, false},
+		"a helper the _test form's package":     {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/helper.go": "package c_test\n"}, false},
+		"a cgo helper redeclaring a base name":  {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/cgo.go": "package c\n\nimport \"C\"\n\nfunc Sum() {}\n"}, true},
+		"a method on another type":              {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (S) N() {}\n"}, true},
+		"a method the base's type has":          {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (s *S) M() {}\n"}, false},
+		"a (*S) method the base's type has":     {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (s (*S)) M() {}\n"}, false},
+		"an import of \"/x\" (no import path)":  {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"/x\"\n)", 1) + "\nvar x = 1\n"}, true},
+		"a name a base file imports":            {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/v_test.go": "package c\n\nvar testing = 1\n"}, false},
+		"a module path's last element":          {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"m/lib/foo\"\n)", 1) + "\nvar _ = bar.X\nfunc foo() {}\n"}, true},
+		"a module path's version element":       {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"m/api/core/v1\"\n)", 1) + "\nvar _ = v1.X\nvar core = 1\n"}, true},
+		"a required module's path":              {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"lib/sum\"\n)", 1) + "\nvar _ = x.X\nvar sum = 1\n"}, true},
+		"a standard library path's name":        {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"math/rand/v2\"\n)", 1) + "\nvar rand = 1\n"}, false},
+		"an import named as a base name":        {map[string]string{"c/h_test.go": "package c\n\nimport Sum \"testing\"\n\nfunc TestHidden(t *Sum.T) {}\n"}, false},
+		"an import named _":                     {map[string]string{"c/h_test.go": "package c\n\nimport (\n\t_ \"os\"\n\t\"testing\"\n)\n\nfunc TestHidden(t *testing.T) {}\n"}, true},
+	} {
+		overlay, files := map[string][]byte{}, map[string][]byte{}
+		for p, b := range c.hidden {
+			overlay[p] = []byte(b)
+		}
+		for p, b := range base {
+			files[p] = []byte(b)
+		}
+		err := AcceptanceFits([2]string{"linux", "arm64"}, overlay, files)
+		if (err == nil) != c.fits || err != nil && !errors.Is(err, ErrAcceptance) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "Test") || strings.Contains(err.Error(), "_test.go") || strings.Contains(err.Error(), "helper")) {
+			t.Errorf("%s: the refusal names the acceptance: %v", name, err)
+		}
+	}
+	// Opus #429 r5 C1: the base's go.mod is read strictly, its replace
+	// lines included (a go 1.16 module's replace-only lib/sum is no std
+	// path), and when it cannot be read, no import's name is implicit:
+	// explicit names alone count, so a std-looking import that collides is
+	// unseen.
+	importing := func(imp, decl string) string {
+		return strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\""+imp+"\"\n)", 1) + "\nvar _ = x.X\n" + decl + "\n"
+	}
+	for name, c := range map[string]struct {
+		gomod, hidden string
+		fits          bool
+	}{
+		"a replace-only path, go 1.16":       {"module m\n\ngo 1.16\n\nreplace lib/sum => ./sum\n", importing("lib/sum", "var sum = 1"), true},
+		"a go.mod that does not parse":       {"module m\n\ngo 1.27\n\nnot a directive\n", importing("math/rand/v2", "var rand = 1"), true},
+		"a go.mod with no module line":       {"go 1.27\n", importing("math/rand/v2", "var rand = 1"), true},
+		"no go.mod":                          {"", importing("math/rand/v2", "var rand = 1"), true},
+		"an explicit name, an unread go.mod": {"not a go.mod\n", strings.Replace(importing("math/rand/v2", "var rand = 1"), "\t\"math/rand/v2\"", "\trand \"math/rand/v2\"", 1), false},
+		"a std path, a go.mod read":          {"module m\n\ngo 1.16\n\nreplace lib/sum => ./sum\n", importing("math/rand/v2", "var rand = 1"), false},
+	} {
+		files := map[string][]byte{"c/c.go": []byte("package c\n")}
+		if c.gomod != "" {
+			files["go.mod"] = []byte(c.gomod)
+		}
+		err := AcceptanceFits([2]string{"linux", "arm64"}, map[string][]byte{"c/h_test.go": []byte(c.hidden)}, files)
+		if (err == nil) != c.fits {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 
@@ -783,7 +1074,7 @@ func TestGateLineage(t *testing.T) {
 	}
 	// A run that applied an overlay is published only with the overlay's
 	// digests (Opus #321 M2): never with a lineage of nothing.
-	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n")}
+	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n"), "c/c_hidden_test.go": []byte(hiddenTest)}
 	overlaid := gated(t, f.in)
 	for name, acc := range map[string][]types.Digest{"none": nil, "empty": {}, "the overlay's": {dg("a")}} {
 		_, err := Result(types.ComputationKey{Key: dg("1")}, overlaid, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},

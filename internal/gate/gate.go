@@ -42,7 +42,30 @@
 //   - The cwd contract (#275) is P15b's, with the junit_xml (pytest)
 //     adapter: a Go gate runs no Python probe (go test runs each test
 //     binary in its package directory, Opus #286 M3).
-//   - Acceptance tests are overlaid on the gate workspace only.
+//   - Acceptance tests are overlaid on the gate workspace only, each at its
+//     repository path, replacing what the candidate put there (a file, a
+//     link or a directory at it, or a non-directory where one of its
+//     directories should be). The top-level tests their Go test files
+//     declare are expected (AcceptanceTests): one the run does not report
+//     is the candidate's missing test, never no result (#226 entry 190).
+//     An acceptance go test ./... could never run is the task's, refused
+//     before any run with a fixed text (ErrAcceptance, acceptance.go; Opus
+//     #429 H1, M1, L1; Astra #429 H1-H3, M4-M6), by the go command's
+//     selection rules, accept's own (gosel): a Go file that does not
+//     parse, a Go test file it never collects or that the gate's platform
+//     excludes (its name, its constraints positive and negated, the
+//     platform's default architecture level and the toolchain's
+//     experiments), a test signature go test refuses, a go.mod
+//     among it, files over MaxOverlay, no expected test at all, or (the
+//     daemon's, AcceptanceFits) a Go file, test or helper, that cannot
+//     compile in the base's package it joins. A candidate tree with no Go
+//     module is the candidate's (found/gate_test_failed): its hidden tests
+//     cannot run.
+//   - A hidden test's result is only as sound as accept's forgery guard
+//     (Opus #429 L2): the gate reads the stream as the run wrote it, so a
+//     candidate whose code printed a forged stream would pass it; accept
+//     blocks such code (an initialisation it cannot resolve, os.Exit,
+//     os.Stdout), and the gate runs only the tree accept accepted.
 package gate
 
 import (
@@ -53,6 +76,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -64,6 +88,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/results"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -74,7 +100,6 @@ const (
 	resultsFile = "go-test.json"    // the derived results file, in the results mount
 	placeholder = "{results_path}"  // the profile's name for the derived path
 	maxResults  = results.MaxStream // what a run's results may hold
-	maxOverlay  = 16 << 20          // acceptance files, in all
 	maxGoMod    = 1 << 20           // the root go.mod, read as its blob
 	ownership   = "default"         // the only ownership rules in v1
 )
@@ -184,6 +209,22 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if v.Tree != in.Tree {
 		return v, fmt.Errorf("%w: %s checks out tree %s, not a tree of its own", ErrSpec, in.Tree, v.Tree)
 	}
+	expected := in.Expected
+	if len(in.Overlay) > 0 {
+		hidden, err := AcceptanceTests([2]string{in.Image.OS, in.Image.Arch}, in.Overlay)
+		if err != nil {
+			return v, err
+		}
+		if module == "" { // the candidate removed the module its hidden tests are in (Opus #429 L1)
+			v.Stream = []byte{}
+			v.set(vocab.Found, vocab.ReasonGateTestFailed, whyNoModule)
+			return v, nil
+		}
+		expected = slices.Clone(expected)
+		for _, h := range hidden {
+			expected = append(expected, results.Test{Package: strings.TrimSuffix(module+"/"+h.Dir, "/."), Name: h.Name})
+		}
+	}
 	if err := writeFiles(a.Workspace(), in.Overlay); err != nil {
 		return v, err
 	}
@@ -221,7 +262,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if v.baseline != nil {
 		base = &v.baseline.Report
 	}
-	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
+	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), expected, base); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, whyNotStream)
 		return v, nil
 	}
@@ -375,9 +416,10 @@ const (
 	whyFailing        = "%d tests or packages fail against the baseline"
 	whyNonePassed     = "no test passed"
 	whyPassing        = "%d tests pass against the baseline"
+	whyNoModule       = "the tree has no Go module for its acceptance tests"
 )
 
-var whys = []string{whyCopyOut, whyUnfinished, whyNoResults, whyNotStream, whyBaseRed, whyBaseUnfinished, whyBaseGreen, whyTheirs, whyFailing, whyNonePassed, whyPassing}
+var whys = []string{whyCopyOut, whyUnfinished, whyNoResults, whyNotStream, whyBaseRed, whyBaseUnfinished, whyBaseGreen, whyTheirs, whyFailing, whyNonePassed, whyPassing, whyNoModule}
 
 // isWhy is whether s is one of the controller's phrases, each %d a count:
 // 1 to 19 decimal digits.
@@ -481,32 +523,57 @@ func checkout(ctx context.Context, repo sandbox.Repo, tree, ws string) (id, modu
 	if err != nil {
 		return "", "", err
 	}
-	for line := range strings.Lines(string(b)) {
-		if m, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return id, strings.Trim(strings.TrimSpace(m), `"`), nil
-		}
-	}
-	return id, "", nil
+	return id, modfile.ModulePath(b), nil // the go command's own reading: quoted, commented (Opus #429 H1)
 }
 
-// writeFiles overlays files on ws: each a clean relative path, inside it.
+// writeFiles overlays files on ws: each a clean relative path, inside it,
+// replacing what is there: a file, a link or a directory at it, and a
+// non-directory (a file, a link) where one of its directories should be
+// (Opus #429 M3). The daemon has checked the base holds nothing there, so
+// all of it is the candidate's. Its errors are fixed texts (Astra #429
+// H3): a path that is not clean, or files over MaxOverlay, the task's
+// (ErrAcceptance); a write that failed, the host's (errWrite), never
+// naming the file.
 func writeFiles(ws string, files map[string][]byte) error {
 	root, err := os.OpenRoot(ws)
 	if err != nil {
-		return err
+		return errWrite
 	}
 	defer root.Close()
 	total := 0
 	for p, b := range files {
-		if total += len(b); total > maxOverlay || !filepath.IsLocal(p) || path.Clean(p) != p {
-			return fmt.Errorf("%w: an acceptance file %q is not a clean path inside the workspace, or the files are too large", ErrSpec, p)
+		if total += len(b); total > MaxOverlay {
+			return errTooLarge
 		}
-		if err := root.MkdirAll(path.Dir(p), 0o700); err != nil {
-			return err
+		if !filepath.IsLocal(p) || path.Clean(p) != p {
+			return errPath
 		}
-		if err := root.WriteFile(p, b, 0o600); err != nil {
-			return err
+		for d := range parents(p) {
+			if fi, err := root.Lstat(d); err == nil && !fi.IsDir() {
+				if err := root.Remove(d); err != nil {
+					return errWrite
+				}
+			} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return errWrite
+			}
+		}
+		if root.MkdirAll(path.Dir(p), 0o700) != nil || root.RemoveAll(p) != nil || root.WriteFile(p, b, 0o600) != nil {
+			return errWrite
 		}
 	}
 	return nil
+}
+
+// errWrite: the overlay could not be written in the workspace (the host's).
+var errWrite = errors.New("gate: the acceptance overlay could not be written in the workspace")
+
+// parents are p's directories, from the top (a/b/c: a, a/b).
+func parents(p string) func(func(string) bool) {
+	return func(yield func(string) bool) {
+		for i := range len(p) {
+			if p[i] == '/' && !yield(p[:i]) {
+				return
+			}
+		}
+	}
 }

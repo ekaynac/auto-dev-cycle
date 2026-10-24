@@ -6,7 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
 	"go/build"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -682,5 +685,45 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	maxPkgs, maxExport = oldPkgs, 1<<10
 	if v := f.guarded(t, change); !finds(v.Blocks, "over the guard's export data bound") {
 		t.Errorf("past the export data bound: %q", whats(v.Blocks))
+	}
+}
+
+// Opus #429 r4 B1: the typer reads none of a package's files that imports
+// "C", however its path is spelled (gosel.Cgo): a raw-string `C` file of
+// another package beside the package's own is skipped, not a split.
+func TestTheTyperSkipsCgo(t *testing.T) {
+	for name, imp := range map[string]string{"quoted": `"C"`, "raw": "`C`"} {
+		blobs := map[string]string{"1": "module example.com/m\n\ngo 1.22\n", "2": "package p\n", "3": "package other\n\nimport " + imp + "\n"}
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
+			return []byte(blobs[blob]), true, nil
+		}}
+		tr := &tree{files: map[string]string{"go.mod": "1", "p/p.go": "2", "p/c.go": "3"}, dirs: map[string][]string{"p": {"p/c.go", "p/p.go"}}, typers: map[string]*typer{}}
+		r.trees = [2]*tree{tr, tr}
+		if fs, why := tr.typer(r, "p", platforms[1]).parse("p"); why != "" || len(fs) != 1 || fs[0].Name.Name != "p" {
+			t.Errorf("%s: %d files, %q", name, len(fs), why)
+		}
+	}
+}
+
+// Opus #429 r7 B1, M1: accept's std returns on a path that is no import
+// path ("/x", "/", "a//b": none, not std), and a method's key unwraps its
+// receiver's parentheses ((*S) and *(S): S.M).
+func TestStdAndTheMethodKey(t *testing.T) {
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
+		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
+			return []byte("module example.com/m\n\ngo 1.22\n"), true, nil
+		}}
+	tr := &tree{files: map[string]string{"go.mod": "1"}, dirs: map[string][]string{}, typers: map[string]*typer{}}
+	r.trees = [2]*tree{tr, tr}
+	for p, want := range map[string]bool{"/x": false, "/": false, "a//b": false, "": false, "fmt": true, "example.com/m/p": false} {
+		if r.std(".", p) != want {
+			t.Errorf("std(%q): %t", p, !want)
+		}
+	}
+	for src, want := range map[string]string{"func (s (*S)) M() {}": "S.M", "func (s *(S)) M() {}": "S.M", "func (s *S[P]) M() {}": "S.M", "func F() {}": "F"} {
+		f, err := parser.ParseFile(token.NewFileSet(), "p.go", "package p\n\n"+src+"\n", 0)
+		if err != nil || declKey(f.Decls[0].(*ast.FuncDecl)) != want {
+			t.Errorf("declKey(%s): %v", src, err)
+		}
 	}
 }

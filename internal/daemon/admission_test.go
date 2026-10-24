@@ -5,7 +5,9 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,18 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
+
+// taskAcceptance is the acceptance readyTaskIn records, repository path
+// → bytes, each published in the world's blob store first (the gate
+// overlays them: #226 entry 190); withAcceptance replaces it for a test.
+var taskAcceptance = map[string]string{"accept_hidden_test.go": acceptBody}
+
+// withAcceptance makes files the acceptance of the tasks t records.
+func withAcceptance(t *testing.T, files map[string]string) {
+	was := taskAcceptance
+	taskAcceptance = files
+	t.Cleanup(func() { taskAcceptance = was })
+}
 
 // readyTask is readyTaskIn graphProject.
 func readyTask(t *testing.T, w *seeder, sys types.ActorID) (types.ActorID, types.TaskID) {
@@ -53,8 +67,18 @@ func readyTaskIn(t *testing.T, w *seeder, sys types.ActorID, project types.Proje
 		payload, err := json.Marshal(doc)
 		return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.ProjectCreated, Subject: prj, Project: &prj, Payload: payload}}, err
 	})
-	const accept = "sha256:abababababababababababababababababababababababababababababababab"
-	spec := types.TaskCreateScope{Project: project, Title: "t", Requirement: "r", Attachments: []types.Attachment{{Name: "accept_test.py", Digest: accept}}}
+	var attachments []types.Attachment
+	var accepted []types.AcceptanceBlob
+	for _, name := range slices.Sorted(maps.Keys(taskAcceptance)) {
+		d, err := w.blobs.Put(strings.NewReader(taskAcceptance[name]), blobDigest([]byte(taskAcceptance[name])))
+		if err != nil {
+			t.Fatal(err)
+		}
+		attachments = append(attachments, types.Attachment{Name: name, Digest: types.Digest(d)})
+		accepted = append(accepted, types.AcceptanceBlob{Name: name, Digest: types.Digest(d), Class: types.AcceptanceBlobClassRestricted,
+			WithheldFrom: []types.AcceptanceBlobWithheldFromItem{types.AcceptanceBlobWithheldFromItemBuilder, types.AcceptanceBlobWithheldFromItemReviewer}})
+	}
+	spec := types.TaskCreateScope{Project: project, Title: "t", Requirement: "r", Attachments: attachments}
 	raw, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -66,9 +90,7 @@ func readyTaskIn(t *testing.T, w *seeder, sys types.ActorID, project types.Proje
 	task := types.TaskID(newID(t, "tsk"))
 	w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		x := types.Task{ID: task, Project: project, Spec: spec, SpecDigest: dg, CreatedBy: op,
-			CreatedAt: types.Time(tx.Now().Format(time.RFC3339Nano)), Acceptance: []types.AcceptanceBlob{{Name: "accept_test.py", Digest: accept,
-				Class: types.AcceptanceBlobClassRestricted, WithheldFrom: []types.AcceptanceBlobWithheldFromItem{
-					types.AcceptanceBlobWithheldFromItemBuilder, types.AcceptanceBlobWithheldFromItemReviewer}}}}
+			CreatedAt: types.Time(tx.Now().Format(time.RFC3339Nano)), Acceptance: accepted}
 		payload, err := json.Marshal(x)
 		evs := []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.TaskCreated, Subject: string(task), Project: &prj, Payload: payload}}
 		more, aerr := authority.ApprovalEvent(authority.TaskApprovalOf(x, raw, types.ApprovalID(newID(t, "apr")), x.CreatedAt))

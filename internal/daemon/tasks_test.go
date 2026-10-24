@@ -60,7 +60,7 @@ func TestIntake(t *testing.T) {
 		t.Fatal(err)
 	}
 	create := func() (types.CommandApplied, types.TaskID) {
-		code, out, errb := c.adc(op, "task", "create", "--expect", "0", "--reason", "smoke", "--json", "--scope-file", scope, "--attach", accept)
+		code, out, errb := c.adc(op, "task", "create", "--expect", "0", "--reason", "smoke", "--json", "--scope-file", scope, "--attach", "tests/accept_test.py="+accept)
 		created, tsk := appliedResult[struct {
 			Task  types.TaskID
 			State string

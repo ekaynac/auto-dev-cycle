@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -38,6 +37,9 @@ type Client interface {
 
 // ErrNoTransport: this build has no controller transport yet.
 var ErrNoTransport = errors.New("no controller transport in this build")
+
+// acceptancePath is task.create's AcceptancePath, read from the schema.
+var acceptancePath = contract.DefPattern("api/scope/task-create", "AcceptancePath")
 
 // Main runs adc's command line and returns the exit code.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client) int {
@@ -111,7 +113,7 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	tokenOut := fs.String("token-out", "", "a command that issues a token: the new file it is written to, 0600 (required; never an existing file)")
 	scopeFile := fs.String("scope-file", "", "read the scope from this JSON file instead of --scope")
 	var attach []string
-	fs.Func("attach", "upload this file (at most 1 MiB) first and list it in the scope's attachments, as {name, digest}; repeatable",
+	fs.Func("attach", "REPO_PATH=FILE: upload FILE (at most 1 MiB) first and list it in the scope's attachments as {name: REPO_PATH, digest}, the repository path the gate overlays it at; repeatable",
 		func(s string) error { attach = append(attach, s); return nil })
 	if code, ok := parse(fs, args, stderr); !ok {
 		return code
@@ -136,12 +138,22 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	if len(attach) > 0 && (json.Unmarshal([]byte(*scope), &obj) != nil || obj == nil || obj["attachments"] != nil) {
 		return usage("--attach needs a scope that is a JSON object without attachments")
 	}
+	// Each attachment is named by the repository path the gate overlays it
+	// at, never by its file's base name (#226 entry 190): the scope's
+	// AcceptancePath, read from the schema, once each.
 	names := map[string]bool{}
-	for _, f := range attach {
-		if names[filepath.Base(f)] {
-			return usage("--attach names %s twice", filepath.Base(f))
+	files := make([]string, len(attach))
+	for i, a := range attach {
+		at, f, ok := strings.Cut(a, "=")
+		switch {
+		case !ok || f == "":
+			return usage("--attach takes REPO_PATH=FILE, the repository path the gate overlays FILE at: %q", a)
+		case !acceptancePath.MatchString(at):
+			return usage("--attach: %q is no clean repository path (segments of letters, digits, _, . and -, none starting with a dot)", at)
+		case names[at]:
+			return usage("--attach names %s twice", at)
 		}
-		names[filepath.Base(f)] = true
+		names[at], attach[i], files[i] = true, at, f
 	}
 	if fs.NArg() > 0 {
 		return usage("unexpected argument %s", fs.Arg(0))
@@ -166,12 +178,12 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	}
 	if len(attach) > 0 {
 		list := make([]map[string]string, 0, len(attach))
-		for _, f := range attach {
+		for i, f := range files {
 			u, _, err := put(ctx, c, f)
 			if err != nil {
 				return failed(stderr, name+" --attach", err) // nothing was sent
 			}
-			list = append(list, map[string]string{"name": filepath.Base(f), "digest": string(u.Digest)})
+			list = append(list, map[string]string{"name": attach[i], "digest": string(u.Digest)})
 		}
 		b, err := json.Marshal(list)
 		if err == nil {

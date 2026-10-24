@@ -54,9 +54,15 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// acceptDigest is the acceptance attachment's digest readyTask records:
-// restricted, withheld from the builder and the reviewer.
-const acceptDigest = "sha256:abababababababababababababababababababababababababababababababab"
+// acceptBody is the acceptance attachment readyTask records at
+// accept_hidden_test.go, published in the world's blob store: a hidden Go
+// test of the root package (the base's a.go: package a), TestA, which
+// every gate world's stream reports
+// (a gate expects the acceptance's tests: Opus #429 M1); acceptDigest is
+// its digest: restricted, withheld from the builder and the reviewer.
+const acceptBody = "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"
+
+var acceptDigest = blobDigest([]byte(acceptBody))
 
 // canary is the hidden acceptance test's name, which only the gate's
 // stream (a restricted artifact) carries.

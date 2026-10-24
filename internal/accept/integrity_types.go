@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/build"
 	"go/constant"
 	"go/importer"
 	"go/parser"
@@ -35,6 +34,8 @@ import (
 	"unicode"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
 
 // The guard's real types (P14e, #226 entries 79, 82, 85), per gate platform:
@@ -408,14 +409,14 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 		if why = cmp.Or(unread, errText(err)); why != "" {
 			break
 		}
-		if !builds(ty.platform, p, b) {
+		if !gosel.Builds(ty.platform, p, b) {
 			continue
 		}
 		f, err := parser.ParseFile(ty.fset, p, b, parser.SkipObjectResolution)
 		switch {
 		case err != nil:
 			why = err.Error()
-		case f.Name.Name == "documentation" || slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` }):
+		case f.Name.Name == gosel.Documentation || gosel.Cgo(f):
 		case name != "" && name != f.Name.Name:
 			why = "files of packages " + name + " and " + f.Name.Name
 		default:
@@ -429,17 +430,6 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 		ty.failed["dir "+dir] = why
 	}
 	return ty.parsed[dir], why
-}
-
-// builds: the gate builds p (src) on pl, by go/build's rules (no tag the
-// guard does not model).
-func builds(pl [2]string, p string, src []byte) bool {
-	c := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release,
-		OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }}
-	c.ToolTags = append(slices.DeleteFunc(slices.Clone(build.Default.ToolTags), func(t string) bool { return !strings.HasPrefix(t, "goexperiment.") }),
-		map[string][]string{"amd64": {"amd64.v1"}, "arm64": {"arm64.v8.0"}}[pl[1]]...) // the toolchain's experiments, pl's default level
-	ok, err := c.MatchFile(path.Dir(p), path.Base(p))
-	return ok && err == nil
 }
 
 // need lists, once, what files import outside the module, through the own
@@ -658,7 +648,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		for _, d := range f.Decls {
 			where := "package level"
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
-				where = recv(fn) + "." + fn.Name.Name
+				where = gosel.Recv(fn) + "." + fn.Name.Name
 			} else if ok {
 				where = fn.Name.Name
 			}
@@ -694,7 +684,7 @@ func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string
 		methods := map[string][]string{} // a receiver type's methods declared in this file
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
-				methods[recv(fn)] = append(methods[recv(fn)], fn.Name.Name+" "+of(fields(fn.Recv, fn.Type.TypeParams, fn.Type.Params, fn.Type.Results)...))
+				methods[gosel.Recv(fn)] = append(methods[gosel.Recv(fn)], fn.Name.Name+" "+of(fields(fn.Recv, fn.Type.TypeParams, fn.Type.Params, fn.Type.Results)...))
 			}
 		}
 		for _, d := range f.Decls {
