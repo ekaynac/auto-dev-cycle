@@ -150,7 +150,13 @@ for d in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" /dev/shm; do
   tried+=" $d ($(stat -f -c %T -- "$d" 2>/dev/null || echo missing))"
 done
 [[ -n "$parent" ]] || cannot "no writable temporary directory on ext2/ext3/ext4, xfs, btrfs or tmpfs, which adcd's state needs; tried:$tried"
-work="$(mktemp -d -p "$parent")" || cannot "mktemp in $parent failed"
+# The runs killed before their own cleanup (SIGKILL runs no trap) left their
+# work directories and sandbox roots, each recording its owner: removed
+# first, what still runs on them stopped (a live owner's are never touched).
+work_dirs_stale "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-/nonexistent}" /dev/shm
+sandbox_roots_stale
+work="$(mktemp -d -p "$parent" adc-cycle.XXXXXXXX)" || cannot "mktemp in $parent failed"
+owner_of $$ >"$work/.owner" || cannot "$work/.owner cannot be written"
 cleanup() {
   local p i
   for p in "${stub:-}" "${adcd:-}" "${events:-}"; do
@@ -161,6 +167,8 @@ cleanup() {
     wait "$p" 2>/dev/null || true
   done
   if ((keep)); then
+    # Kept on purpose: no owner left to go stale, so no later run's sweep removes them.
+    rm -f "$work/.owner" ${root:+"$root/.owner"}
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
   elif [[ -n "${root:-}" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
@@ -168,6 +176,11 @@ cleanup() {
   ((keep)) || rm -rf "$work"
 }
 trap cleanup EXIT
+# A signal exits through the EXIT trap: the run's processes stopped, its
+# private sandbox root and work directory removed, as on any other exit.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 fs_known "$work" || die "$work is not on ext2/ext3/ext4, xfs, btrfs or tmpfs"
 cd "$work"
 umask 077

@@ -19,7 +19,11 @@
 #                               sandbox root, unless it is one: short
 #                               (Podman's runroot, <root>/r, is at most 50
 #                               characters), canonical, its runs/ a link to a
-#                               directory of /dev/shm; prints the root
+#                               directory of /dev/shm; prints the root. A root
+#                               it makes records its owner (.owner: the
+#                               calling shell's pid and start time), the
+#                               shell whose exit removes it (a given DIR is
+#                               its caller's, and records none)
 #   root_podman ROOT ARGS...    podman ($PODMAN, the caller's) over the root,
 #                               as the sandbox runs it
 #   root_image ROOT PIN ARCH    pulls PIN into the root unless it holds it,
@@ -28,6 +32,13 @@
 #   sandbox_root_remove ROOT    removes the root's containers, its storage,
 #                               its runs/ and itself
 #   sandbox_root_sweep ROOT     removes the root's containers only
+#   sandbox_roots_stale         removes every /tmp/adcXXXXXX root whose owner
+#                               is gone (a run killed before its own cleanup:
+#                               SIGKILL runs no trap); a root with no .owner,
+#                               or a live owner, is never touched
+#   work_dirs_stale PARENT...   the same for the drivers' work directories
+#                               (PARENT/adc-cycle.*), what still runs on one
+#                               stopped first
 
 host_arch() {
   case "$(uname -m)" in
@@ -41,10 +52,20 @@ rootless_podman() {
   [[ -x "$1" ]] && [[ "$("$1" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" == true ]]
 }
 
+# owner_of PID: PID's start time (field 22 of /proc/PID/stat), so a reused
+# pid is not taken for the owner; nothing when PID is gone.
+owner_of() {
+  local stat
+  stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  stat="${stat##*) }"
+  echo "$1 $(cut -d' ' -f20 <<<"$stat")"
+}
+
 sandbox_root() {
   local root="${1:-}" runs
   if [[ -z "$root" ]]; then
     root="$(mktemp -d /tmp/adcXXXXXX)" || return 1
+    owner_of $$ >"$root/.owner" || return 1
   else
     mkdir -p "$root" && chmod 700 "$root" || return 1
   fi
@@ -56,6 +77,38 @@ sandbox_root() {
   fi
   [[ -d "$root/runs/" ]] || { echo "sandbox_root: $root/runs is dangling" >&2; return 1; }
   echo "$root"
+}
+
+# stale DIR: DIR is ours and records an owner (.owner) that is gone.
+stale() {
+  local owner pid
+  [[ -d "$1" && ! -L "$1" && -O "$1" && -f "$1/.owner" ]] || return 1
+  owner="$(<"$1/.owner")" pid="${owner%% *}"
+  [[ "$pid" =~ ^[0-9]+$ && "$(owner_of "$pid")" != "$owner" ]]
+}
+
+sandbox_roots_stale() {
+  local r
+  for r in /tmp/adc??????; do
+    if stale "$r"; then sandbox_root_remove "$r"; fi
+  done
+}
+
+# work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory
+# whose owner is gone, after stopping what still runs on it (an adcd whose
+# state directory, or a stub provider whose log, lies under it: a killed
+# driver's children outlive it).
+work_dirs_stale() {
+  local p w c
+  for p in "$@"; do
+    for w in "$p"/adc-cycle.*; do
+      stale "$w" || continue
+      for c in /proc/[0-9]*/cmdline; do # each of our processes whose command line names a path under it
+        [[ -O "$c" ]] && tr '\0' ' ' <"$c" 2>/dev/null | grep -qF -- "$w/" && kill -9 "$(basename "$(dirname "$c")")" 2>/dev/null
+      done
+      rm -rf "$w" 2>/dev/null || "$PODMAN" unshare rm -rf "$w" 2>/dev/null || true
+    done
+  done
 }
 
 root_podman() {

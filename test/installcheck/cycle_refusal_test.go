@@ -3,11 +3,14 @@
 package installcheck
 
 import (
+	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
@@ -50,13 +53,14 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 			t.Fatalf("%s: %v %s", d, err, out)
 		}
 	}
+	tmpdir := ""
 	run := func(args ...string) (string, int) {
 		t.Helper()
 		os.Remove(marker)
 		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), append([]string{prefix, "--routes", "stub", "--project", "go-mini",
 			"--case", "candidate", "--expect", "candidate"}, args...)...)
 		cmd.Dir = root
-		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+t.TempDir())
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+cmp.Or(tmpdir, t.TempDir()))
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {
@@ -76,5 +80,44 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	if code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: rootless Podman (/nonexistent/podman) is required") ||
 		!strings.Contains(out, "installed-cycle: candidate: the case's profile") || started() {
 		t.Errorf("no Podman: exit %d, adcd started %v, %s", code, started(), out)
+	}
+
+	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
+	// directory, each recording its owner (pid and start time): the next run
+	// stops what still runs on it and removes it. A live owner's, and a kept
+	// one's (no owner), are never touched. The stale owner is a pid above
+	// the kernel's pid_max limit (4194304): never a live process.
+	tmpdir = t.TempDir()
+	stat, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		t.Skip("no /proc")
+	}
+	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+2:]))
+	dirs := map[string]string{"stale": "4194305 0\n", "live": strconv.Itoa(os.Getpid()) + " " + fields[19] + "\n", "kept": ""}
+	for name, owner := range dirs {
+		write(t, filepath.Join(tmpdir, "adc-cycle."+name, "state/x"), "", 0o600)
+		if owner != "" {
+			write(t, filepath.Join(tmpdir, "adc-cycle."+name, ".owner"), owner, 0o600)
+		}
+	}
+	orphan := exec.Command("sh", "-c", "sleep 300", filepath.Join(tmpdir, "adc-cycle.stale/state/adcd"))
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- orphan.Wait() }()
+	t.Cleanup(func() { _ = orphan.Process.Kill() })
+	if out, code := run("--setup-only"); code != 0 {
+		t.Fatalf("the sweeping run: exit %d, %s", code, out)
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Error("the stale run's orphan still runs")
+	}
+	for name := range dirs {
+		if _, err := os.Stat(filepath.Join(tmpdir, "adc-cycle."+name)); (err == nil) == (name == "stale") {
+			t.Errorf("adc-cycle.%s: present %v after the sweep", name, err == nil)
+		}
 	}
 }

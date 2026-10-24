@@ -28,15 +28,19 @@ driver="$prefix/lib/adc/scripts/installed-cycle.sh"
 [[ -x "$driver" ]] || die "$driver is not installed"
 cwd="$(mktemp -d)"
 root=""
+PODMAN=/usr/bin/podman
+# shellcheck source=scripts/lib/sandbox-root.sh
+. "$prefix/lib/adc/scripts/lib/sandbox-root.sh"
 # shellcheck disable=SC2317,SC2329  # invoked only by the EXIT trap
 cleanup() {
-  if [[ -n "$root" ]]; then
-    # shellcheck source=scripts/lib/sandbox-root.sh
-    PODMAN=/usr/bin/podman && . "$prefix/lib/adc/scripts/lib/sandbox-root.sh" && sandbox_root_remove "$root"
-  fi
+  if [[ -n "$root" ]]; then sandbox_root_remove "$root"; fi
   rm -rf "$cwd"
 }
 trap cleanup EXIT
+# A signal exits through the EXIT trap, so the set's root is removed then too.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 cycle() { (cd "$cwd" && "$driver" "$prefix" --routes stub --project go-mini "$@"); }
 
 cycle --case preflight >"$cwd/preflight.out" 2>&1 || { tail -n 5 "$cwd/preflight.out" >&2; die "preflight failed"; }
@@ -57,7 +61,10 @@ if [[ "$mode" == setup ]]; then
   exit 0
 fi
 
-root="$(mktemp -d /tmp/adcXXXXXX)"
+# The set's one sandbox root, owned by this shell; first, the roots of runs
+# killed before their own cleanup (SIGKILL runs no trap).
+sandbox_roots_stale
+root="$(sandbox_root)" || die "the sandbox root cannot be made"
 rows=() failed=0
 for c in "$@"; do
   rc=0
