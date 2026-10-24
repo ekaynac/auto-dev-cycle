@@ -98,7 +98,7 @@ func TestGoMiniPreparedManifest(t *testing.T) {
 	var pushed sandbox.Image
 	// The recipe's manifest is the label's lockfile part; the pushed label
 	// adds each built platform's adapter digest (P22a-5d). The pin is built
-	// for linux/arm64 alone (#226 entry 185): its label names that one
+	// for linux/arm64 alone (#226 entries 185 and 194): its label names that one
 	// platform's adapter, and no amd64 entry. An amd64 controller fails
 	// closed: the pinned list has no amd64 image to resolve, and an image's
 	// adapter is checked only against its own platform's entry
