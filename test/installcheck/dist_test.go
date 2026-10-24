@@ -345,7 +345,7 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 		"fixtures/m1/stub-provider/scenarios/s.json": "{}", "fixtures/m1/stub-provider/server.d.mts": "", "fixtures/m1/stub-provider/test/t.mjs": "",
 		"fixtures/m1/cases/c/case.json": "{}", "fixtures/m1/stub/go-mini/baseline.json": "{}", "fixtures/m1/issues/1/issue.json": "{}",
 		"scripts/installed-cycle.sh": "", "scripts/lib/secrets.sh": "", "scripts/lib/base-remote.sh": "",
-		"scripts/lib/sandbox-root.sh": "", "scripts/lib/cycle-case.sh": "", "scripts/lib/cycle-expect.mjs": "",
+		"scripts/lib/sandbox-root.sh": "", "scripts/lib/cycle-case.sh": "", "scripts/lib/cycle-expect.mjs": "", "scripts/lib/cycle-live.sh": "",
 		"fixtures/m1/review-qualification/suite.json": "{}", "adapters/package.json": "{}", "adapters/pnpm-workspace.yaml": "", "adapters/pnpm-lock.yaml": "",
 	} {
 		write(t, filepath.Join(root, name), content, 0o644)
@@ -493,7 +493,7 @@ func TestDistAdaptersRefusals(t *testing.T) {
 				"fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
 				"gen/ts/adapter-validators.cjs", "gen/ts/formats.cjs", "gen/ts/package.json", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
 				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json", "scripts/installed-cycle.sh", "scripts/lib/base-remote.sh", "scripts/lib/cycle-case.sh",
-				"scripts/lib/cycle-expect.mjs", "scripts/lib/sandbox-root.sh", "scripts/lib/secrets.sh"}
+				"scripts/lib/cycle-expect.mjs", "scripts/lib/cycle-live.sh", "scripts/lib/sandbox-root.sh", "scripts/lib/secrets.sh"}
 			if got := files(out); !slices.Equal(got, want) {
 				t.Fatalf("packaged %v", got)
 			}

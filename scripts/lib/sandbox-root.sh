@@ -40,6 +40,24 @@
 #                               (PARENT/adc-cycle.*), what still runs on one
 #                               stopped first: only the processes it recorded
 #                               (record_pid WORK PID)
+#   root_canary_path ROOT NAME  canary_path over the root and its runs/
+#   root_secret_scan ROOT SECRET
+#                               no form of SECRET (secrets.sh's forms) in any
+#                               file under the root or its runs/, searched in
+#                               the root's user namespace: a container's
+#                               config and environment (storage/
+#                               overlay-containers) and its run files
+#                               (runs/); prints each file that holds one and
+#                               fails 1; 2: the search could not run
+#
+# Ownership (the lead's ruling on Mythos #435 M1): a leftover's owner is a
+# pid with its start time (.owner, .pids; owner_of), not a locked manifest
+# like scripts/test-sandbox.sh's. Several drivers' runs share this host; a
+# lock held by no one cannot say whether its owner died or never took it,
+# and a bare pid may be reused. Only the pid with the start time it had
+# tells a dead owner from a live one, which is what a sweep must know
+# before it kills or removes anything (the restart failures of #435, lesson
+# 7). The two schemes stay apart on purpose.
 
 host_arch() {
   case "$(uname -m)" in
@@ -135,6 +153,17 @@ root_canary_path() {
     root_podman "$root" unshare bash -c "$(declare -f canary_path)"'; canary_path "$1" "$2"' canary_path "$d" "$name" || rc=$?
     ((rc == 0)) || return "$rc"
   done
+}
+
+# root_secret_scan ROOT SECRET (Opus #438 N1): see the header. Devices and
+# fifos are skipped (a container's run files may hold one).
+root_secret_scan() {
+  local root="$1" secret="$2" runs found rc=0
+  [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
+  runs="$(runs_of "$root")"
+  found="$(forms "$secret" | root_podman "$root" unshare grep -rlaF -D skip -f - -- "$root" ${runs:+"$runs"})" || rc=$?
+  ((rc <= 1)) || return 2
+  [[ -z "$found" ]] || { printf '%s\n' "$found"; return 1; }
 }
 
 # work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory
