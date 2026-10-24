@@ -63,7 +63,7 @@ kill "$probe"; wait "$probe" 2>/dev/null || true
 known "$secret"
 scan "" "$secret" "$D/work/tree"
 work="$D/work" prefix="$D/prefix" run=0 groups_file=/dev/null sandbox=() capture=()
-run_vars=(PATH="$D/bin:/usr/bin:/bin" HOME="$D/work")
+run_vars=(PATH="$D/bin:/usr/bin:/bin" RUN_DIR="$D/work")
 cred=(ADC_CREDENTIAL_PROBE="$secret")
 export CALLERS_OWN=leak
 start_adcd
@@ -91,7 +91,7 @@ echo ok`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := string(environ); !strings.Contains(e, "ADC_CREDENTIAL_PROBE="+secret+"\n") || !strings.Contains(e, "HOME="+work+"\n") || strings.Contains(e, "CALLERS_OWN") {
+	if e := string(environ); !strings.Contains(e, "ADC_CREDENTIAL_PROBE="+secret+"\n") || !strings.Contains(e, "RUN_DIR="+work+"\n") || strings.Contains(e, "CALLERS_OWN") {
 		t.Errorf("adcd's environment: %q", e)
 	}
 }
@@ -128,17 +128,18 @@ func TestLiveAfterCapture(t *testing.T) {
 		task, _ := json.Marshal(map[string]any{"requirement": requirement + "\nmore"})
 		write(t, filepath.Join(dir, "issue/task.json"), string(task), 0o600)
 		repo := filepath.Join(dir, "repo.git")
-		for _, args := range [][]string{{"init", "-q", "--bare", repo}, {"--git-dir", repo, "commit-tree", "-m", "m", "4b825dc642cb6eb9a060e54bf8d69288fbee4904"}} {
-			out, err := exec.Command("git", args...).CombinedOutput()
+		git := func(args ...string) string {
+			cmd := exec.Command("git", args...)
+			cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid", "GIT_CONFIG_NOSYSTEM=1")
+			out, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Fatalf("%v %s", err, out)
+				t.Fatalf("git %v: %v %s", args, err, out)
 			}
-			if args[0] == "--git-dir" {
-				if out, err := exec.Command("git", "--git-dir", repo, "update-ref", "refs/heads/main", strings.TrimSpace(string(out))).CombinedOutput(); err != nil {
-					t.Fatalf("%v %s", err, out)
-				}
-			}
+			return strings.TrimSpace(string(out))
 		}
+		git("init", "-q", "--bare", repo)
+		git("--git-dir", repo, "update-ref", "refs/heads/main", git("--git-dir", repo, "commit-tree", "-m", "m", "4b825dc642cb6eb9a060e54bf8d69288fbee4904"))
 		return dir
 	}
 	run := func(dir string) (string, error) {
