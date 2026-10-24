@@ -35,7 +35,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
-	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -43,7 +42,14 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
-// benchOf is task t's benchmark facts over its nodes.
+// benchOf is task t's benchmark facts over its nodes. Each hop from a node
+// to the last measurement is checked against its source, and a mismatch
+// fails the read (Opus #432 r2 H1′): each attempt is of the node's unit and
+// superseded by the one before it (lease.AttemptsOn); each lease, call and
+// measurement is the attempt's (attemptLease); each answer is of an owed
+// input the node asked (authority.Answered); each raise is t's
+// (authority.Raises), each hold its command cleared is of its rail
+// (graph.RailCleared) and on a node of t.
 func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) (*types.TaskBench, error) {
 	b := &types.TaskBench{Nodes: []types.BenchNode{}, Leases: []types.BenchLease{}, Answers: []types.NodeID{}, RailRaises: []types.BenchRailRaise{}}
 	if t.Approval != nil {
@@ -55,7 +61,7 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 		b.DoneAs = &as
 	}
 	ofTask := map[types.NodeID]bool{}
-	leases := map[types.LeaseID]bool{}
+	leases := map[types.LeaseID]types.Attempt{}
 	for _, n := range nodes {
 		ofTask[n.Node.ID] = true
 		times, err := graph.TimesOf(tx, n.Node.ID)
@@ -70,7 +76,7 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 			return nil, err
 		}
 		for _, a := range attempts {
-			bn.Attempts, leases[a.Lease] = append(bn.Attempts, types.BenchAttempt{ID: a.ID, Lease: a.Lease}), true
+			bn.Attempts, leases[a.Lease] = append(bn.Attempts, types.BenchAttempt{ID: a.ID, Lease: a.Lease}), a
 		}
 		b.Nodes = append(b.Nodes, bn)
 		answered, err := authority.Answered(tx, n.Node.ID)
@@ -88,7 +94,7 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(leases)) {
-		bl, err := benchLease(tx, id)
+		bl, err := benchLease(tx, leases[id])
 		if err != nil {
 			return nil, err
 		}
@@ -101,14 +107,15 @@ func benchOf(tx *eventstore.Tx, t authority.TaskRecord, nodes []graph.NodeView) 
 	for _, r := range raises {
 		br := types.BenchRailRaise{Rail: types.RaisableRail(r.Rail), Nodes: []types.NodeID{}}
 		if r.Command != nil {
-			cleared, err := graph.RailCleared(tx, *r.Command)
+			cleared, err := graph.RailCleared(tx, *r.Command, r.Rail)
 			if err != nil {
 				return nil, err
 			}
 			for _, n := range cleared {
-				if ofTask[n] {
-					br.Nodes = append(br.Nodes, n)
+				if !ofTask[n] { // a raise clears its own task's holds alone (ClearRail)
+					return nil, damagef("task %s's raise of %s names a hold cleared on %s, no node of the task", t.ID, r.Rail, n)
 				}
+				br.Nodes = append(br.Nodes, n)
 			}
 		}
 		b.RailRaises = append(b.RailRaises, br)
@@ -132,41 +139,27 @@ func stamped(t time.Time) *types.Time {
 	return &s
 }
 
-// benchLease is lease id's benchmark facts.
-func benchLease(tx *eventstore.Tx, id types.LeaseID) (types.BenchLease, error) {
-	l, _, ok, err := lease.LeaseOf(tx, id)
-	if err == nil && !ok {
-		err = fmt.Errorf("api: lease %s has no record", id)
-	}
+// benchLease is the benchmark facts of attempt a's lease, its every hop
+// checked (attemptLease). Its liability is read by the lease's own id from
+// its own reservations' groups; the row holds an amount alone, with no id
+// to check against.
+func benchLease(tx *eventstore.Tx, a types.Attempt) (types.BenchLease, error) {
+	l, calls, err := attemptLease(tx, a)
 	if err != nil {
 		return types.BenchLease{}, err
 	}
+	id := l.ID
 	bl := types.BenchLease{ID: id, Executor: l.Executor, Role: l.Role, Price: l.Price, Calls: []types.BenchCall{}}
 	if d, ok := dispatch.EntryDigestOf(l); ok {
 		entry := types.Digest(d)
 		bl.RegistryEntry = &entry
 	}
-	calls, err := ledger.BoundTo(tx, id)
-	if err != nil {
-		return bl, err
-	}
-	slices.Sort(calls)
 	for _, c := range calls {
-		binding, bound, err := ledger.Binding(tx, c)
-		if err == nil && !bound {
-			err = fmt.Errorf("api: call %s of lease %s has no binding", c, id)
-		}
-		var ms []types.UsageMeasurement
-		if err == nil {
-			ms, err = ledger.Measurements(tx, c)
-		}
-		if err != nil {
-			return bl, err
-		}
+		ms := c.ms
 		if ms == nil {
 			ms = []types.UsageMeasurement{}
 		}
-		bl.Calls = append(bl.Calls, types.BenchCall{ID: c, Attempt: binding.Attempt, Measurements: ms})
+		bl.Calls = append(bl.Calls, types.BenchCall{ID: c.id, Attempt: c.attempt, Measurements: ms})
 	}
 	var groups []types.ResourceGroupID
 	liability := int64(0)

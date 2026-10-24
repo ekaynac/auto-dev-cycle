@@ -212,8 +212,8 @@ func Answered(tx *eventstore.Tx, node types.NodeID) ([]types.OwedInputID, error)
 	out := []types.OwedInputID{}
 	for _, k := range keys {
 		o, ok, lerr := owedOf(tx, types.OwedInputID(k[len(prefix):]))
-		if err = errors.Join(err, lerr); err != nil || !ok {
-			return nil, errors.Join(err, fmt.Errorf("authority: the asker index names no owed input: %s", k))
+		if err = errors.Join(err, lerr); err != nil || !ok || o.RequestedBy != node || string(o.ID) != k[len(prefix):] {
+			return nil, errors.Join(err, fmt.Errorf("authority: the asker index names no owed input %s asked: %s", node, k)) // Opus #432 r2 H1′
 		}
 		if o.Kind != types.OwedInputKindReceipt && o.Answer != nil && o.Answer.Revision == o.Revision {
 			out = append(out, o.ID)

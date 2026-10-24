@@ -101,7 +101,10 @@ func CurrentAttempt(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool
 
 // AttemptsOn are every attempt started on unit, first to last: its
 // current attempt and each it supersedes (a unit's every later attempt
-// supersedes the current one), read by the unit, never by scanning.
+// supersedes the current one), read by the unit, never by scanning. Each
+// is checked against the hop that named it: an attempt of unit, and each
+// one superseded by the attempt that names it; otherwise the unit's index
+// is damaged (Opus #432 r2 H1′).
 func AttemptsOn(tx *eventstore.Tx, unit types.UnitID) ([]types.Attempt, error) {
 	id, ok, err := unitAttempt(tx, unit)
 	var out []types.Attempt
@@ -109,6 +112,12 @@ func AttemptsOn(tx *eventstore.Tx, unit types.UnitID) ([]types.Attempt, error) {
 		a, _, found, lerr := load[types.Attempt](tx, AttemptProjection, string(id))
 		if err = errors.Join(lerr, missing(found, id)); err == nil && seen[id] {
 			err = fmt.Errorf("lease: unit %s's attempts supersede in a cycle at %s", unit, id)
+		}
+		if err == nil && (a.ID != id || a.Unit != unit) {
+			err = fmt.Errorf("lease: unit %s's index names attempt %s, of unit %s", unit, id, a.Unit)
+		}
+		if next := len(out); err == nil && next > 0 && (a.SupersededBy == nil || *a.SupersededBy != out[next-1].ID) {
+			err = fmt.Errorf("lease: attempt %s supersedes %s, which names another successor", out[next-1].ID, id)
 		}
 		if err == nil {
 			seen[id], out = true, append(out, a)

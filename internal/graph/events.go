@@ -355,14 +355,17 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, rem
 		if err := claimed(tx, ev, p); err != nil {
 			return err
 		}
-		return stamp(tx, ev, p.Node, true, false)
+		return stamp(tx, ev, p.Node, true)
 	case *types.NodeReused:
 		if err := reused(tx, ev, p); err != nil {
 			return err
 		}
-		return stamp(tx, ev, p.Node, true, true)
+		return reuseTimes(tx, ev, p.Node, false)
 	case *types.NodeReuseReleased:
-		return reuseReleased(tx, ev, p)
+		if err := reuseReleased(tx, ev, p); err != nil {
+			return err
+		}
+		return reuseTimes(tx, ev, p.Node, true)
 	case *types.NodeRenewed:
 		return renewed(tx, ev, p)
 	case *types.NodeInvalidated:
@@ -382,7 +385,7 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, rem
 		if err := selected(tx, ev, p); err != nil {
 			return err
 		}
-		return stamp(tx, ev, p.Node, false, true)
+		return stamp(tx, ev, p.Node, false)
 	case *types.NodeOperated:
 		return operated(tx, ev, p)
 	case *types.QueueObserved:

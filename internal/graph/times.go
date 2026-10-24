@@ -15,8 +15,9 @@ import (
 // TimesProjection: node id → its node.claimed and result.selected event
 // times (the benchmark's stage wall time, §2.8; adc dev bench record, P25),
 // read by the node's id, never by scanning the log. A node completed by
-// reuse (node.reused) is stamped claimed and selected at its reuse's time:
-// it took no time of its own.
+// reuse (node.reused) is stamped claimed and selected at its reuse's time,
+// over any earlier row (it took no time of its own), and a released reuse
+// clears its row, as it clears its claim and result (Opus #432 r2 L1).
 const TimesProjection = "graph_node_times"
 
 // ErrTimesMissing: a node holds a claim or a selected result, its evidence
@@ -24,8 +25,8 @@ const TimesProjection = "graph_node_times"
 // damaged (Astra #432 H2). Never read as a node not yet claimed.
 var ErrTimesMissing = errors.New("graph: a node's claim or selection has no recorded time")
 
-// Times are a node's controller event times: its first node.claimed (or
-// node.reused), and its latest result.selected (or node.reused); zero
+// Times are a node's controller event times: its first node.claimed, and
+// its latest result.selected (both its latest node.reused's when reused); zero
 // while it has none.
 type Times struct {
 	Claimed  time.Time
@@ -69,19 +70,28 @@ func TimesOf(tx *eventstore.Tx, node types.NodeID) (Times, error) {
 }
 
 // stamp records ev's time on node: as its claim unless one is recorded
-// (the first claim), else as its selection (the latest); a reuse as both.
-func stamp(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, claim, selection bool) error {
+// (the first claim), else as its selection (the latest).
+func stamp(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, claim bool) error {
 	t, _, err := load[times](tx, TimesProjection, string(node))
 	if err != nil {
 		return err
 	}
 	if claim && t.Claimed == "" {
 		t.Claimed = ev.At
-	}
-	if selection {
+	} else if !claim {
 		t.Selected = ev.At
 	}
 	return put(tx, TimesProjection, string(node), t)
+}
+
+// reuseTimes records a reuse's times on node: claimed and selected at its
+// node.reused (it took no time of its own), over any earlier row; release
+// clears them, as it clears the reuse's claim and result (Opus #432 r2 L1).
+func reuseTimes(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, released bool) error {
+	if released {
+		return tx.Delete(TimesProjection, string(node))
+	}
+	return put(tx, TimesProjection, string(node), times{Claimed: ev.At, Selected: ev.At})
 }
 
 // RailClearProjection: "<command>/<node>" → the rail signal of each
@@ -90,16 +100,29 @@ func stamp(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, claim, sel
 // dev bench record, P25).
 const RailClearProjection = "graph_rail_clears"
 
-// RailCleared are the nodes whose budget_rail holds command cleared, in
-// node id order.
-func RailCleared(tx *eventstore.Tx, command string) ([]types.NodeID, error) {
+// RailCleared are the nodes whose budget_rail holds command, a raise of
+// rail, cleared, in node id order. A row whose signal is not rail's is
+// ErrIndexDamaged (Opus #432 r2 H1′).
+func RailCleared(tx *eventstore.Tx, command, rail string) ([]types.NodeID, error) {
 	keys, err := tx.Keys(RailClearProjection, command+"/")
 	out := make([]types.NodeID, 0, len(keys))
 	for _, k := range keys {
+		signal, _, lerr := load[string](tx, RailClearProjection, k)
+		if err = errors.Join(err, lerr); err != nil {
+			return nil, err
+		}
+		if signal != RailSignal(rail) {
+			return nil, fmt.Errorf("%w: %s cleared %s's hold, not %s's", ErrIndexDamaged, k, signal, RailSignal(rail))
+		}
 		out = append(out, types.NodeID(strings.TrimPrefix(k, command+"/")))
 	}
 	return out, err
 }
+
+// ErrIndexDamaged: an index names a record that is not the one it indexes
+// (another attempt's result, another rail's clear): the projection is
+// damaged, and the read through it fails (Opus #432 r2 H1′).
+var ErrIndexDamaged = errors.New("graph: an index names a record not its own")
 
 // railCleared records p, a hold cleared by its signal, when the signal is
 // a rail's and the event a command's.

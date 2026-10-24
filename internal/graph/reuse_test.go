@@ -272,9 +272,12 @@ func (g graphStore) timesOf(n types.NodeID) (Times, error) {
 // Astra #432 H2: a node's times are checked against its own evidence. A
 // node completed by reuse is stamped claimed and selected at its reuse (it
 // took no time of its own), and reads; the holder, claimed and selected,
-// reads both. With the holder's times row gone (damage), its claim and
-// selected result are evidence of times it lacks: ErrTimesMissing, never
-// read as a node never claimed.
+// reads both. Opus #432 r2 L1: the holder's invalidation releases the
+// reuse, which clears the reused node's times with its claim and result;
+// its reuse at the next generation is stamped at that reuse alone, after
+// the release, and a rebuild reaches the same rows. With the holder's
+// times row gone (damage), its claim and selected result are evidence of
+// times it lacks: ErrTimesMissing, never read as a node never claimed.
 func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
 	g := openStore(t)
 	holder, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
@@ -289,6 +292,27 @@ func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
 	}
 	if th, err := g.timesOf(holder); err != nil || th.Claimed.IsZero() || th.Selected.IsZero() {
 		t.Errorf("the holder's times: %+v %v", th, err)
+	}
+	first, _ := g.timesOf(b)
+	g.must(invalidate(holder))
+	if _, kept := view[times](g, TimesProjection, string(b)); kept {
+		t.Error("b keeps its released reuse's times")
+	}
+	if tb, err := g.timesOf(b); err != nil || !tb.Claimed.IsZero() || !tb.Selected.IsZero() {
+		t.Errorf("b's times once released: %+v %v", tb, err)
+	}
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+	}); !errors.As(err, &held) {
+		t.Fatalf("b's claim at generation 2: %v", err)
+	}
+	g.selectGate(holder)
+	g.must(reuseOf(b, g.planRes))
+	if tb, err := g.timesOf(b); err != nil || !tb.Claimed.Equal(tb.Selected) || !tb.Claimed.After(first.Selected) {
+		t.Errorf("b's second reuse's times: %+v, the first's %+v, %v", tb, first, err)
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
 	}
 	for _, half := range []string{`{"claimed":"","selected":"2026-10-24T00:00:00Z"}`, `{"claimed":"2026-10-24T00:00:00Z","selected":""}`, ""} {
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {

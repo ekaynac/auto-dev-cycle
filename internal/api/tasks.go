@@ -42,7 +42,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -85,6 +84,9 @@ var tasks = Resource{
 				continue
 			}
 			read, err := taskRead(tx, at, t, byTask[id], false)
+			if isDamage(err) { // a task's damage is its own: the list reads on (Opus #430 M1)
+				read, err = types.TaskRead{ID: t.ID, Project: t.Project, Card: unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)}, nil
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -150,15 +152,22 @@ func authorizedTask(tx *eventstore.Tx, at ReadAt, id types.TaskID) (authority.Ta
 }
 
 // taskRead is the authorised task t's record over its nodes, with its
-// benchmark facts when bench. A node that is not t's own, of another task
-// or project (a damaged index), makes the card unplaced damaged_record and
-// stops the read there: no attempt or benchmark fact is read through it,
-// so no other task's records are reached (Astra #432 H1).
+// benchmark facts when bench. A node that is not t's own stops the read
+// there, its card unplaced: damaged_record for a node of another task (a
+// damaged index), node_in_another_project for t's node recorded in another
+// project, as the board says (Opus #432 r2 L3). No attempt or benchmark
+// fact is read through it, so no other task's records are reached (Astra
+// #432 H1). Every later hop is checked against its source (attemptLease,
+// benchOf); a mismatch is the task's damage (isDamage).
 func taskRead(tx *eventstore.Tx, at ReadAt, t authority.TaskRecord, nodes []graph.NodeView, bench bool) (types.TaskRead, error) {
 	read := types.TaskRead{ID: t.ID, Project: t.Project}
 	for _, n := range nodes {
-		if n.Task != t.ID || n.Project != t.Project {
+		switch {
+		case n.Task != t.ID:
 			read.Card = unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
+			return read, nil
+		case n.Project != t.Project:
+			read.Card = unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonNodeInAnotherProject)
 			return read, nil
 		}
 	}
@@ -227,12 +236,15 @@ type started struct {
 
 // firstAttempt is a task's first attempt: of its nodes (all in its project:
 // the node fold refuses another), each node's first (lease.FirstOn), the
-// earliest start, then the smallest id; false before one starts.
+// earliest start, then the smallest id; false before one starts. The
+// attempt the unit's first index names is an attempt of that unit that
+// supersedes none, or the task's damage (Opus #432 r2 H1′).
 func firstAttempt(tx *eventstore.Tx, nodes []graph.NodeView) (started, bool, error) {
 	var f started
 	seen := false
 	for _, n := range nodes {
-		id, ok, err := lease.FirstOn(tx, graph.UnitOf(n.Node.ID))
+		unit := graph.UnitOf(n.Node.ID)
+		id, ok, err := lease.FirstOn(tx, unit)
 		if err != nil || !ok {
 			if err != nil {
 				return f, false, err
@@ -247,11 +259,77 @@ func firstAttempt(tx *eventstore.Tx, nodes []graph.NodeView) (started, bool, err
 		if !known || !began {
 			return f, false, fmt.Errorf("api: node %s's first attempt %s has no record or no start", n.Node.ID, id)
 		}
+		if a.ID != id || a.Unit != unit || a.Supersedes != nil {
+			return f, false, damagef("node %s's first attempt index names %s, of unit %s", n.Node.ID, id, a.Unit)
+		}
 		if !seen || at.Before(f.at) || at.Equal(f.at) && a.ID < f.attempt.ID {
 			f, seen = started{attempt: a, node: n.Node.ID, at: at}, true
 		}
 	}
 	return f, seen, nil
+}
+
+// errTaskDamage: a record the task read reached through an index is not
+// the one the index's source names (Opus #432 r2 H1′). It fails the task's
+// one-task read; the list shows that task's card damaged_record.
+var errTaskDamage = errors.New("api: a task's records do not agree")
+
+func damagef(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{errTaskDamage}, args...)...)
+}
+
+// isDamage: err is a task's damage, not a failure of the store.
+func isDamage(err error) bool {
+	return errors.Is(err, errTaskDamage) || errors.Is(err, graph.ErrIndexDamaged)
+}
+
+// boundCall is a call the ledger binds to a lease, with its attempt and
+// every measurement the ledger holds of it.
+type boundCall struct {
+	id      types.CallID
+	attempt types.AttemptID
+	ms      []types.UsageMeasurement
+}
+
+// attemptLease is attempt a's lease and every call the ledger binds to it,
+// each hop checked against its source (Opus #432 r2 H1′): the lease is a's
+// (its id, unit and attempt); each call the lease's index lists has a
+// binding naming that call, the lease and a; each measurement the call's
+// index lists names the call, the lease and a. A mismatch is the task's
+// damage.
+func attemptLease(tx *eventstore.Tx, a types.Attempt) (types.Lease, []boundCall, error) {
+	l, _, ok, err := lease.LeaseOf(tx, a.Lease)
+	switch {
+	case err != nil:
+		return l, nil, err
+	case !ok || l.ID != a.Lease || l.Unit != a.Unit || l.Attempt == nil || *l.Attempt != a.ID:
+		return l, nil, damagef("attempt %s's lease %s is not its own", a.ID, a.Lease)
+	}
+	ids, err := ledger.BoundTo(tx, l.ID)
+	if err != nil {
+		return l, nil, err
+	}
+	calls := make([]boundCall, 0, len(ids))
+	for _, c := range ids {
+		b, bound, err := ledger.Binding(tx, c)
+		if err != nil {
+			return l, nil, err
+		}
+		if !bound || b.Call != c || b.Lease != l.ID || b.Attempt != a.ID {
+			return l, nil, damagef("lease %s's call index names %s, whose binding is not the lease's", l.ID, c)
+		}
+		ms, err := ledger.Measurements(tx, c)
+		if err != nil {
+			return l, nil, err
+		}
+		for _, m := range ms {
+			if m.Call != c || m.Lease != l.ID || m.Attempt != a.ID {
+				return l, nil, damagef("call %s's measurement index names %s, of call %s under %s", c, m.ID, m.Call, m.Lease)
+			}
+		}
+		calls = append(calls, boundCall{id: c, attempt: b.Attempt, ms: ms})
+	}
+	return l, calls, nil
 }
 
 // metrics is task t's first-attempt metrics from f; tokens: with the
@@ -275,23 +353,14 @@ func metrics(tx *eventstore.Tx, t authority.TaskRecord, f started, tokens bool) 
 	if !tokens {
 		return m, nil
 	}
-	calls, err := ledger.BoundTo(tx, f.attempt.Lease)
+	l, calls, err := attemptLease(tx, f.attempt)
 	if err != nil {
 		return nil, err
 	}
-	l, _, _, err := lease.LeaseOf(tx, f.attempt.Lease)
-	if err != nil {
-		return nil, err
-	}
-	slices.Sort(calls)
 	var settled int64
 	settledKnown := l.Price != nil
 	for _, c := range calls {
-		ms, err := ledger.Measurements(tx, c)
-		if err != nil {
-			return nil, err
-		}
-		s := ledger.StandingOf(ms, c)
+		s := ledger.StandingOf(c.ms, c.id)
 		if m.Charge == nil {
 			m.Charge = &types.Charge{}
 		}
