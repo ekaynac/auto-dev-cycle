@@ -403,3 +403,67 @@ func (g graphStore) viewCloses(holder, reused types.NodeID) {
 		g.t.Fatal(err)
 	}
 }
+
+// resultsOf is task's ResultsOf, read in a view.
+func (g graphStore) resultsOf(task types.TaskID) (map[types.NodeID][]types.ResultRecorded, error) {
+	var out map[types.NodeID][]types.ResultRecorded
+	var rerr error
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error { out, rerr = ResultsOf(tx, task); return nil }); err != nil {
+		g.t.Fatal(err)
+	}
+	return out, rerr
+}
+
+// P25 results[]: ResultsOf gives each node's recorded results, read from
+// the task's result index: the holder's own result, and none for the node
+// reusing it. The index is checked against its source: a key naming a
+// result recorded under another id, or a result whose node is of another
+// task, is ErrIndexDamaged.
+func TestResultsOfTheTask(t *testing.T) {
+	g := openStore(t)
+	holder, r := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
+	b := g.record(g.nodeLikeGate(holder))
+	var held ErrKeyClaimed
+	if err := g.do(g.claimOf(b)); !errors.As(err, &held) {
+		t.Fatalf("b's claim: %v", err)
+	}
+	g.must(reuseOf(b, g.planRes))
+	task := g.recordOf(holder).Task
+	rs, err := g.resultsOf(task)
+	if err != nil || len(rs[holder]) != 1 || rs[holder][0].Result.ID != r.ID || len(rs[b]) != 0 {
+		t.Fatalf("the task's results: %+v %v", rs, err)
+	}
+	rr, _ := view[types.ResultRecorded](g, ResultProjection, string(r.ID))
+	hrec, _ := view[nodeRecord](g, NodeProjection, string(holder))
+	for name, damage := range map[string]func() (types.ResultID, []func(*eventstore.Tx) error){
+		"a key naming a result recorded under another id": func() (types.ResultID, []func(*eventstore.Tx) error) {
+			id := types.ResultID(must(ids.New("res")))
+			return id, []func(*eventstore.Tx) error{func(tx *eventstore.Tx) error { return put(tx, ResultProjection, string(id), rr) }}
+		},
+		"a result whose node is of another task": func() (types.ResultID, []func(*eventstore.Tx) error) {
+			id, other := types.ResultID(must(ids.New("res"))), hrec
+			other.Recorded.Node.ID, other.Recorded.Task = types.NodeID(must(ids.New("nod"))), types.TaskID(must(ids.New("tsk")))
+			foreign := rr
+			foreign.Node, foreign.Result.ID = other.Recorded.Node.ID, id
+			return id, []func(*eventstore.Tx) error{
+				func(tx *eventstore.Tx) error { return put(tx, NodeProjection, string(other.Recorded.Node.ID), other) },
+				func(tx *eventstore.Tx) error { return put(tx, ResultProjection, string(id), foreign) },
+			}
+		},
+	} {
+		id, puts := damage()
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			err := put(tx, TaskResultProjection, string(task)+"/"+string(id), true)
+			for _, p := range puts {
+				err = errors.Join(err, p(tx))
+			}
+			return nil, err
+		})
+		if _, err := g.resultsOf(task); !errors.Is(err, ErrIndexDamaged) {
+			t.Errorf("%s: %v", name, err)
+		}
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, tx.Delete(TaskResultProjection, string(task)+"/"+string(id))
+		})
+	}
+}

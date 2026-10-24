@@ -307,6 +307,14 @@ func TestAnUnreadableStreamIsHeld(t *testing.T) {
 		!strings.HasPrefix(held, runnerText("retry 1 until ")) {
 		t.Errorf("the gate of an unreadable stream: %s, held on %q, results %+v", v.State.State, held, got)
 	}
+	// The benchmark facts carry it (bench.nodes[].results[]): the
+	// controller's could_not_run/runner_fault, recorded with no attempt.
+	for _, n := range taskOneAs(t, rw.w, rw.w.op, rw.task).Bench.Nodes {
+		if n.ID == v.Node.ID && (len(n.Results) != 1 || n.Results[0].ID != got[0].Result.ID || n.Results[0].Reason != vocab.ReasonRunnerFault ||
+			n.Results[0].Attempt != nil || n.Results[0].Selected) { // could_not_run is never selected (Opus #436 L2)
+			t.Errorf("the gate's benchmark results: %+v", n.Results)
+		}
+	}
 }
 
 // forgedAccept is an acceptor whose accept records an accepted tree that

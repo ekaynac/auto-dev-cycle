@@ -116,7 +116,6 @@ var maxTaskResults = 100_000
 func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded, error) {
 	byID, ambiguous, reviewed := map[string][]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
 	n, lineage, idBytes := 0, 0, 0
-	var read int64
 	add := func(r types.Ref, producer types.NodeKind, sanitised, safe bool) error {
 		n, lineage, idBytes = n+1, lineage+len(r.Lineage), idBytes+len(r.ID)
 		for _, p := range r.Lineage {
@@ -148,48 +147,18 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		}
 		return nil
 	}
-	prefix := string(task) + "/"
-	keys, err := tx.KeysAtMost(TaskResultProjection, prefix, maxTaskResults+1)
-	switch {
-	case err != nil:
-		return Recorded{}, err
-	case len(keys) > maxTaskResults:
-		return Recorded{}, fmt.Errorf("graph: task %s holds over %d results", task, maxTaskResults)
-	}
-	for _, k := range keys {
-		id := strings.TrimPrefix(k, prefix)
-		size, ok, err := tx.Size(ResultProjection, id)
-		switch {
-		case err != nil:
-			return Recorded{}, err
-		case !ok:
-			return Recorded{}, fmt.Errorf("graph: task %s's result %s is not recorded", task, id)
-		}
-		if read += size; size > int64(maxResultBytes) || read > int64(maxResultsBytes) {
-			return Recorded{}, fmt.Errorf("graph: result %s is over %d bytes, or task %s's results over %d", id, maxResultBytes, task, maxResultsBytes)
-		}
-		rr, _, err := load[types.ResultRecorded](tx, ResultProjection, id)
-		if err != nil {
-			return Recorded{}, err
-		}
-		if size, ok, err := tx.Size(NodeProjection, string(rr.Node)); err != nil || !ok || size > int64(maxNodeBytes) {
-			return Recorded{}, errors.Join(err, fmt.Errorf("graph: result %s's node %s is not recorded, or is over %d bytes", id, rr.Node, maxNodeBytes))
-		}
-		node, _, err := load[nodeRecord](tx, NodeProjection, string(rr.Node))
-		if err != nil {
-			return Recorded{}, err
-		}
-		if node.Recorded.Task != task {
-			return Recorded{}, fmt.Errorf("graph: result %s is indexed under task %s, its node under %s", id, task, node.Recorded.Task)
-		}
+	if err := taskResults(tx, task, func(rr types.ResultRecorded, node nodeRecord) error {
 		kind := node.Recorded.Node.Kind
 		_, gate := GateShape(rr.Result.Value)
 		gate = gate && kind == types.NodeKindGate && rr.Result.Kind == types.ResultKindGateResult
 		for _, r := range rr.Result.Value {
 			if err := add(r, kind, gate, BuilderSafe(kind, rr, r)); err != nil {
-				return Recorded{}, err
+				return err
 			}
 		}
+		return nil
+	}); err != nil {
+		return Recorded{}, err
 	}
 	for _, r := range extra {
 		if err := add(r, "", false, false); err != nil {
@@ -248,4 +217,72 @@ func AttemptNode(tx *eventstore.Tx, attempt types.AttemptID) (types.NodeRecorded
 	}
 	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(n))
 	return rec.Recorded, ok, err
+}
+
+// taskResults calls fn with each result task's index lists, in result id
+// order, with its node's record: the task's index range alone, within
+// maxTaskResults, each result within maxResultBytes and all within
+// maxResultsBytes, each node within maxNodeBytes, all checked before a
+// record is decoded. Each is checked against the hop that named it: the
+// result is the one its key names, and its node, under its own id, is of
+// task (Records' check; Opus #432 r3's rule for every read).
+func taskResults(tx *eventstore.Tx, task types.TaskID, fn func(types.ResultRecorded, nodeRecord) error) error {
+	prefix := string(task) + "/"
+	keys, err := tx.KeysAtMost(TaskResultProjection, prefix, maxTaskResults+1)
+	switch {
+	case err != nil:
+		return err
+	case len(keys) > maxTaskResults:
+		return fmt.Errorf("graph: task %s holds over %d results", task, maxTaskResults)
+	}
+	var read int64
+	for _, k := range keys {
+		id := strings.TrimPrefix(k, prefix)
+		size, ok, err := tx.Size(ResultProjection, id)
+		switch {
+		case err != nil:
+			return err
+		case !ok:
+			return fmt.Errorf("graph: task %s's result %s is not recorded", task, id)
+		}
+		if read += size; size > int64(maxResultBytes) || read > int64(maxResultsBytes) {
+			return fmt.Errorf("graph: result %s is over %d bytes, or task %s's results over %d", id, maxResultBytes, task, maxResultsBytes)
+		}
+		rr, _, err := load[types.ResultRecorded](tx, ResultProjection, id)
+		if err != nil {
+			return err
+		}
+		if string(rr.Result.ID) != id {
+			return fmt.Errorf("%w: task %s's result index names %s, whose record is %s's", ErrIndexDamaged, task, id, rr.Result.ID)
+		}
+		if size, ok, err := tx.Size(NodeProjection, string(rr.Node)); err != nil || !ok || size > int64(maxNodeBytes) {
+			return errors.Join(err, fmt.Errorf("graph: result %s's node %s is not recorded, or is over %d bytes", id, rr.Node, maxNodeBytes))
+		}
+		node, _, err := load[nodeRecord](tx, NodeProjection, string(rr.Node))
+		if err != nil {
+			return err
+		}
+		if node.Recorded.Node.ID != rr.Node || node.Recorded.Task != task {
+			return fmt.Errorf("%w: result %s is indexed under task %s, its node %s under %s", ErrIndexDamaged, id, task, node.Recorded.Node.ID, node.Recorded.Task)
+		}
+		if err := fn(rr, node); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ResultsOf are every result recorded on task's nodes (result.recorded),
+// selected or not, by node, each in result id order (taskResults' reads
+// and checks): the benchmark's per-node results (adc dev bench record).
+func ResultsOf(tx *eventstore.Tx, task types.TaskID) (map[types.NodeID][]types.ResultRecorded, error) {
+	out := map[types.NodeID][]types.ResultRecorded{}
+	err := taskResults(tx, task, func(rr types.ResultRecorded, _ nodeRecord) error {
+		out[rr.Node] = append(out[rr.Node], rr)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

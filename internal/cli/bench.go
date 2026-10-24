@@ -262,6 +262,9 @@ func benchInputs(rec types.TaskRead, reg types.ExecutorRegistry, stub bool) (ben
 		executor[l.ID] = l.Executor
 	}
 	for _, n := range b.Nodes {
+		if err := selectedAgrees(n); err != nil { // every node, a stage or not (Astra #436 H1)
+			return m, t, err
+		}
 		s, ok := candidateStages[n.Kind]
 		switch {
 		case !ok && slices.Contains(noStage, n.Kind) && len(n.Attempts) == 0:
@@ -322,6 +325,27 @@ func benchInputs(rec types.TaskRead, reg types.ExecutorRegistry, stub bool) (ben
 	var err error
 	m.Routes, m.Prices, err = routesOf(b, reg, stub)
 	return m, t, err
+}
+
+// selectedAgrees: node n's recorded results (results[]) agree with its
+// selected outcome: at most one is selected, and that one carries n's
+// outcome and reason. None selected is no damage by itself: a reused node
+// records none (its outcome its holder's), and a node may hold results
+// recorded before a release or a renewal.
+func selectedAgrees(n types.BenchNode) error {
+	var sel []types.BenchResult
+	for _, r := range n.Results {
+		if r.Selected {
+			sel = append(sel, r)
+		}
+	}
+	switch {
+	case len(sel) > 1:
+		return fmt.Errorf("the task read gives node %s %d selected results: a damaged record", n.ID, len(sel))
+	case len(sel) == 1 && (n.Outcome == nil || n.Reason == nil || *n.Outcome != sel[0].Outcome || *n.Reason != sel[0].Reason):
+		return fmt.Errorf("the task read gives node %s's selected result %s another outcome than the node's: a damaged record", n.ID, sel[0].ID)
+	}
+	return nil
 }
 
 // ending sets t's closure, from rec's closing review, or its hold, from

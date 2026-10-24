@@ -113,7 +113,9 @@ var tasks = Resource{
 // 1 MiB response bound past about 850 calls in that one task. At (a) a
 // task's calls are bounded by its rounds and turns rails, far below that;
 // past it, adc task show and adc dev bench record fail, never truncate,
-// and adc task wait (without=bench) still reads.
+// and adc task wait (without=bench) still reads. Each recorded result
+// (bench.nodes[].results[]) adds about 150 bytes, one per attempt or
+// controller run, bounded by the same rails (Opus #436).
 const TaskPath = "/v1/tasks/{task}"
 
 // WithoutBench is TaskPath's query that leaves the benchmark facts out.

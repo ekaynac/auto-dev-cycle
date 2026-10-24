@@ -371,6 +371,10 @@ export interface BenchNode {
    * Every attempt on the node's unit, first to last.
    */
   attempts: BenchAttempt[];
+  /**
+   * Every result recorded on the node (result.recorded), selected or not, in result id order; a node completed by reuse records none (its outcome is its key holder's).
+   */
+  results: BenchResult[];
 }
 /**
  * This interface was referenced by `TaskRead`'s JSON-Schema
@@ -385,6 +389,32 @@ export interface BenchAttempt {
    * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
    */
   lease: string;
+}
+/**
+ * This interface was referenced by `TaskRead`'s JSON-Schema
+ * via the `definition` "BenchResult".
+ */
+export interface BenchResult {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  id: string;
+  /**
+   * The four outcomes. There is no boolean ok.
+   */
+  outcome: "found" | "empty" | "could_not_run" | "failed";
+  /**
+   * A registered reason code (schemas/vocab/reasons.yaml). adc-reason asks internal/vocab, which readers and writers share; a document with an unregistered code is invalid.
+   */
+  reason: string;
+  /**
+   * The node's selected result.
+   */
+  selected: boolean;
+  /**
+   * The attempt that recorded it; null for a result recorded with no attempt: the controller's own (plan, accept, gate, abandon), or the result of a build or review attempt the host lost, its reason from the exit map. Null never means that no attempt ran.
+   */
+  attempt: null | string;
 }
 /**
  * This interface was referenced by `TaskRead`'s JSON-Schema
