@@ -173,7 +173,7 @@ cleanup() {
     # removes them; a shared root's owner files are its owner's (the set's),
     # never this case's to remove (Mythos #435 L4).
     rm -f "$work/.owner"
-    if ((private)) && [[ -n "${root:-}" ]]; then rm -f "$root/.owner" "$root/runs/.owner"; fi
+    if [[ -n "${root:-}" ]] && ((private)); then rm -f "$root/.owner" "$root/runs/.owner"; fi
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
   elif [[ -n "${root:-}" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
