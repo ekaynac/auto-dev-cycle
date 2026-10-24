@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +37,9 @@ import (
 func TestInputAnswerActive(t *testing.T) {
 	var opOwed, supOwed types.OwedInputID
 	var sup identity.Secret
+	var node types.NodeID
 	c := runCommanded(t, func(w *seeder, op types.ActorID) {
-		node := heldNodeIn(t, w, op, graphProject)
+		node = heldNodeIn(t, w, op, graphProject)
 		now := time.Now().UTC()
 		s := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "answerer", CreatedBy: op}
 		g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: s.ID, Projects: types.ProjectScope{All: true},
@@ -95,6 +97,20 @@ func TestInputAnswerActive(t *testing.T) {
 	}
 	if code, out := answer(sup, supOwed, "1"); code != entry.ExitOK || !strings.Contains(out, "applied") || lastSeq(t, c.dir) == head {
 		t.Errorf("the owning supervisor's answer: %d %s", code, out)
+	}
+	// P25: the task read's benchmark facts list the node once per owed
+	// input answered (the seeded one, the operator's and the supervisor's).
+	var task types.TaskID
+	if err := c.d.store.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		task, err = graph.TaskOf(tx, node)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := c.adc(c.op.Reveal(), "task", "show", string(task), "--json")
+	var rec types.TaskRead
+	if code != entry.ExitOK || json.Unmarshal([]byte(out), &rec) != nil || rec.Bench == nil || !slices.Equal(rec.Bench.Answers, []types.NodeID{node, node, node}) {
+		t.Errorf("the answers' benchmark facts: %d %s %s", code, out, errb)
 	}
 }
 

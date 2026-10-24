@@ -266,14 +266,17 @@ func TestTaskReadKinds(t *testing.T) {
 		return sup.ID
 	}
 	board := taskReadAs(t, w, reader("board"), running)
-	if board.ID != running || board.FirstAttempt != nil {
+	if board.ID != running || board.FirstAttempt != nil || board.Bench != nil {
 		t.Errorf("a board reader: %+v", board)
 	}
-	if f := taskReadAs(t, w, reader("board", "attempt"), running).FirstAttempt; f == nil || f.Attempt != attempt || f.Tokens != nil {
-		t.Errorf("an attempt reader: %+v", f)
+	if rec := taskReadAs(t, w, reader("board", "attempt"), running); rec.FirstAttempt == nil || rec.FirstAttempt.Attempt != attempt || rec.FirstAttempt.Tokens != nil || rec.Bench != nil {
+		t.Errorf("an attempt reader: %+v", rec)
 	}
-	if f := taskReadAs(t, w, reader("board", "attempt", "model_call"), running).FirstAttempt; f == nil || f.Tokens == nil || f.Tokens.In != 300 {
-		t.Errorf("a model-call reader: %+v", f)
+	if rec := taskReadAs(t, w, reader("board", "model_call"), running); rec.Bench != nil {
+		t.Errorf("a model-call reader not reading attempts: %+v", rec)
+	}
+	if rec := taskReadAs(t, w, reader("board", "attempt", "model_call"), running); rec.FirstAttempt == nil || rec.FirstAttempt.Tokens == nil || rec.FirstAttempt.Tokens.In != 300 || rec.Bench == nil {
+		t.Errorf("a model-call reader: %+v", rec)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -96,6 +97,28 @@ func AttemptOf(tx *eventstore.Tx, id types.AttemptID) (a types.Attempt, stoppedB
 // that superseded the last one; false when none has started.
 func CurrentAttempt(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool, error) {
 	return unitAttempt(tx, unit)
+}
+
+// AttemptsOn are every attempt started on unit, first to last: its
+// current attempt and each it supersedes (a unit's every later attempt
+// supersedes the current one), read by the unit, never by scanning.
+func AttemptsOn(tx *eventstore.Tx, unit types.UnitID) ([]types.Attempt, error) {
+	id, ok, err := unitAttempt(tx, unit)
+	var out []types.Attempt
+	for seen := map[types.AttemptID]bool{}; ok && err == nil; {
+		a, _, found, lerr := load[types.Attempt](tx, AttemptProjection, string(id))
+		if err = errors.Join(lerr, missing(found, id)); err == nil && seen[id] {
+			err = fmt.Errorf("lease: unit %s's attempts supersede in a cycle at %s", unit, id)
+		}
+		if err == nil {
+			seen[id], out = true, append(out, a)
+			if ok = a.Supersedes != nil; ok {
+				id = *a.Supersedes
+			}
+		}
+	}
+	slices.Reverse(out)
+	return out, err
 }
 
 func missing(ok bool, id types.AttemptID) error {

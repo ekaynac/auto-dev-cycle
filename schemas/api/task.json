@@ -2,17 +2,100 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/task.json",
   "title": "TaskRead",
-  "description": "One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.",
+  "description": "One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec's requirement or acceptance.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "project", "card", "first_attempt"],
+  "required": ["id", "project", "card", "first_attempt", "bench"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/TaskID"},
     "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
     "card": {"$ref": "board.json"},
-    "first_attempt": {"description": "The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/FirstAttempt"}]}
+    "first_attempt": {"description": "The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/FirstAttempt"}]},
+    "bench": {"description": "The task's benchmark facts (M1 slice plan §2.8; P25, adc dev bench record): its approval and end, each of its nodes with its controller event times and attempts, those attempts' leases with their bound calls and each call's usage measurements as the call ledger holds them, and the operator's answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task's project.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/TaskBench"}]}
   },
   "$defs": {
+    "TaskBench": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved_at", "done_as", "closure", "nodes", "leases", "answers", "rail_raises"],
+      "properties": {
+        "approved_at": {"description": "The task's approval.recorded time; null with none recorded.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
+        "done_as": {"description": "What task.done ended the task as; null while it is not done.", "oneOf": [{"type": "null"}, {"enum": ["candidate", "abandoned"]}]},
+        "closure": {"description": "A candidate's closing review: the completed review of the last build round whose result is go (graph.CandidateGo; the board's done_candidate, before task.done records it too), the latest selected of them, with its result.selected time, outcome and reason; null while the task has none.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/BenchClosure"}]},
+        "nodes": {"description": "Every node of the task, in node id order.", "type": "array", "items": {"$ref": "#/$defs/BenchNode"}},
+        "leases": {"description": "The lease of every attempt of the task's nodes, in lease id order.", "type": "array", "items": {"$ref": "#/$defs/BenchLease"}},
+        "answers": {"description": "For each owed input a node of the task asked for that is answered at its current revision, the asking node, in node then owed input id order.", "type": "array", "items": {"$ref": "../common/defs.json#/$defs/NodeID"}},
+        "rail_raises": {"description": "Each raise of the task's rails (task.rail_raised), in log order.", "type": "array", "items": {"$ref": "#/$defs/BenchRailRaise"}}
+      }
+    },
+    "BenchClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "selected_at", "outcome", "reason"],
+      "properties": {
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "selected_at": {"$ref": "../common/defs.json#/$defs/Time"},
+        "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
+      }
+    },
+    "BenchNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "round", "state", "outcome", "reason", "claimed_at", "selected_at", "attempts"],
+      "properties": {
+        "id": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "kind": {"enum": ["plan", "build", "accept", "gate", "runtime_verify", "integration", "rebase", "evidence", "review", "review_requirement", "carry_over", "closure", "merge", "deploy", "record", "phase_gate"]},
+        "round": {"description": "The round of the candidate the node checks (graph.CandidateRound): a build's own; an accept's, gate's or review's, its candidate build's; 0 for a check of no build.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "state": {"enum": ["waiting", "runnable", "held", "claimed", "completed", "superseded"]},
+        "outcome": {"description": "Its selected result's outcome; null with none.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Outcome"}]},
+        "reason": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReasonCode"}]},
+        "claimed_at": {"description": "Its first node.claimed time; null when never claimed.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
+        "selected_at": {"description": "Its latest result.selected time; null with none.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
+        "attempts": {"description": "Every attempt on the node's unit, first to last.", "type": "array", "items": {"$ref": "#/$defs/BenchAttempt"}}
+      }
+    },
+    "BenchAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "lease"],
+      "properties": {
+        "id": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+        "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"}
+      }
+    },
+    "BenchLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "executor", "role", "price", "liability_usd_micros", "calls"],
+      "properties": {
+        "id": {"$ref": "../common/defs.json#/$defs/LeaseID"},
+        "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+        "role": {"$ref": "../records/receipt.json#/$defs/Name"},
+        "price": {"description": "The price the lease was placed at (Lease.Price); null for an executor with none.", "oneOf": [{"type": "null"}, {"$ref": "../config/executor-registry.json#/$defs/RegistryPrice"}]},
+        "liability_usd_micros": {"description": "What the lease is liable for in USD micros: once it has settled (its settlement recorded), its usd_micros group's liability (capacity.LiabilitiesOf); before, its usd_micros reservation; 0 with neither. Null when that liability is inconsistent_usage or saturated: no figure bounds it.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
+        "calls": {"description": "Every call the ledger binds to the lease (ledger.BoundTo), in call id order.", "type": "array", "items": {"$ref": "#/$defs/BenchCall"}}
+      }
+    },
+    "BenchCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "attempt", "measurements"],
+      "properties": {
+        "id": {"$ref": "../common/defs.json#/$defs/CallID"},
+        "attempt": {"description": "The attempt the call is bound to (its binding).", "$ref": "../common/defs.json#/$defs/AttemptID"},
+        "measurements": {"description": "Every usage measurement the ledger holds of the call (ledger.Measurements).", "type": "array", "items": {"$ref": "../records/usage-measurement.json"}}
+      }
+    },
+    "BenchRailRaise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rail", "nodes"],
+      "properties": {
+        "rail": {"$ref": "scope/task-raise-rail.json#/$defs/RaisableRail"},
+        "nodes": {"description": "The task's nodes whose budget_rail hold on the rail the raise's command cleared, in node id order.", "type": "array", "items": {"$ref": "../common/defs.json#/$defs/NodeID"}}
+      }
+    },
     "FirstAttempt": {
       "type": "object",
       "additionalProperties": false,
