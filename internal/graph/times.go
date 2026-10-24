@@ -3,6 +3,8 @@
 package graph
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,11 +14,19 @@ import (
 
 // TimesProjection: node id → its node.claimed and result.selected event
 // times (the benchmark's stage wall time, §2.8; adc dev bench record, P25),
-// read by the node's id, never by scanning the log.
+// read by the node's id, never by scanning the log. A node completed by
+// reuse (node.reused) is stamped claimed and selected at its reuse's time:
+// it took no time of its own.
 const TimesProjection = "graph_node_times"
 
-// Times are a node's controller event times: its first node.claimed, and
-// its latest result.selected; zero while it has none.
+// ErrTimesMissing: a node holds a claim or a selected result, its evidence
+// of having been claimed or selected, but no time of it: the projection is
+// damaged (Astra #432 H2). Never read as a node not yet claimed.
+var ErrTimesMissing = errors.New("graph: a node's claim or selection has no recorded time")
+
+// Times are a node's controller event times: its first node.claimed (or
+// node.reused), and its latest result.selected (or node.reused); zero
+// while it has none.
 type Times struct {
 	Claimed  time.Time
 	Selected time.Time
@@ -28,7 +38,9 @@ type times struct {
 	Selected string `json:"selected"`
 }
 
-// TimesOf is node's Times.
+// TimesOf is node's Times, checked against the node's own evidence: a
+// node holding a claim has a claim time, and one holding a selected result
+// a selection time; otherwise ErrTimesMissing (Astra #432 H2).
 func TimesOf(tx *eventstore.Tx, node types.NodeID) (Times, error) {
 	t, _, err := load[times](tx, TimesProjection, string(node))
 	var out Times
@@ -40,22 +52,33 @@ func TimesOf(tx *eventstore.Tx, node types.NodeID) (Times, error) {
 			*f.dst, err = time.Parse(time.RFC3339Nano, f.at)
 		}
 	}
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	rec, err := loadNode(tx, node)
+	_, claimed, cerr := load[claim](tx, ClaimProjection, string(node))
+	switch {
+	case err != nil || cerr != nil:
+		return out, errors.Join(err, cerr)
+	case claimed && out.Claimed.IsZero():
+		return out, fmt.Errorf("%w: %s is claimed", ErrTimesMissing, node)
+	case rec.State.Result != nil && out.Selected.IsZero():
+		return out, fmt.Errorf("%w: %s has a selected result", ErrTimesMissing, node)
+	}
+	return out, nil
 }
 
 // stamp records ev's time on node: as its claim unless one is recorded
-// (the first claim), else as its selection (the latest).
-func stamp(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, claim bool) error {
+// (the first claim), else as its selection (the latest); a reuse as both.
+func stamp(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, claim, selection bool) error {
 	t, _, err := load[times](tx, TimesProjection, string(node))
 	if err != nil {
 		return err
 	}
-	switch {
-	case claim && t.Claimed != "":
-		return nil
-	case claim:
+	if claim && t.Claimed == "" {
 		t.Claimed = ev.At
-	default:
+	}
+	if selection {
 		t.Selected = ev.At
 	}
 	return put(tx, TimesProjection, string(node), t)

@@ -264,6 +264,12 @@ func benchInputs(rec types.TaskRead, reg types.ExecutorRegistry, stub bool) (ben
 			return m, t, refusedf("node %s is a %s: no stage of --until candidate's (build, accept, gate, review)", n.ID, n.Kind)
 		}
 		stage[n.ID] = s
+		switch { // the read's integrity, kept through the mapper (Astra #432 H2, H3)
+		case n.State == types.BenchNodeStateCompleted && (n.Outcome == nil || n.SelectedAt == nil):
+			return m, t, fmt.Errorf("the task read gives node %s completed with no selected result or no selection time: a damaged record", n.ID)
+		case n.State == types.BenchNodeStateClaimed && n.ClaimedAt == nil:
+			return m, t, fmt.Errorf("the task read gives node %s claimed with no claim time: a damaged record", n.ID)
+		}
 		node := bench.Node{Stage: s, Round: int(n.Round)}
 		for _, f := range []struct {
 			at  *types.Time
@@ -313,22 +319,29 @@ func benchInputs(rec types.TaskRead, reg types.ExecutorRegistry, stub bool) (ben
 }
 
 // ending sets t's closure, from rec's closing review, or its hold, from
-// the earliest hold on rec's card.
+// the earliest hold on rec's card. An unplaced card (a damaged record
+// among them) is refused before either (Astra #432 H3), and the closure is
+// the completed review the node inventory holds with that outcome.
 func ending(rec types.TaskRead, t *bench.Task) error {
 	b := rec.Bench
+	placed, ok := rec.Card.Variant.(*types.BoardPlacedCard)
 	switch {
+	case !ok:
+		return refusedf("task %s's card is unplaced: its records determine no column", rec.ID)
 	case b.DoneAs != nil && *b.DoneAs == types.TaskBenchDoneAsValueAbandoned:
 		return refusedf("task %s was abandoned: it ended with no candidate", rec.ID)
 	case b.DoneAs != nil && b.Closure == nil:
 		return fmt.Errorf("the task read gives task %s, done as a candidate, no closing review", rec.ID)
 	case b.Closure != nil:
-		at, err := time.Parse(time.RFC3339Nano, string(b.Closure.SelectedAt))
-		t.Closed, t.Outcome, t.Reason = at, b.Closure.Outcome, b.Closure.Reason
+		c := b.Closure
+		i := slices.IndexFunc(b.Nodes, func(n types.BenchNode) bool { return n.ID == c.Node })
+		if i < 0 || b.Nodes[i].Kind != types.BenchNodeKindReview || b.Nodes[i].State != types.BenchNodeStateCompleted ||
+			b.Nodes[i].Outcome == nil || *b.Nodes[i].Outcome != c.Outcome || b.Nodes[i].SelectedAt == nil || *b.Nodes[i].SelectedAt != c.SelectedAt {
+			return fmt.Errorf("the task read's closing review %s is not a completed review of its nodes with that outcome and selection: a damaged record", c.Node)
+		}
+		at, err := time.Parse(time.RFC3339Nano, string(c.SelectedAt))
+		t.Closed, t.Outcome, t.Reason = at, c.Outcome, c.Reason
 		return err
-	}
-	placed, ok := rec.Card.Variant.(*types.BoardPlacedCard)
-	if !ok {
-		return refusedf("task %s's card is unplaced: its records determine no column", rec.ID)
 	}
 	var first *types.BoardHoldBadge
 	var since time.Time
@@ -375,8 +388,10 @@ func ledgerOf(b *types.TaskBench, t *bench.Task) error {
 
 // routesOf are the routes of b's leases, with their registry role, family
 // and price: every lease's executor is a registry executor of its role,
-// its placed price the registry's, and its destination the stub's exactly
-// when stub.
+// placed on that very entry, its placed price the registry's, and its
+// destination the stub's exactly when stub. A local or free route has no
+// price (the registry requires it) and is recorded at an explicit zero
+// price; a cash or subscription route with none is refused (Astra #432 M1).
 func routesOf(b *types.TaskBench, reg types.ExecutorRegistry, stub bool) ([]types.BenchmarkRoute, map[types.ExecutorID]types.RegistryPrice, error) {
 	byID := map[types.ExecutorID]types.RegistryExecutor{}
 	for _, e := range reg.Executors {
@@ -385,23 +400,30 @@ func routesOf(b *types.TaskBench, reg types.ExecutorRegistry, stub bool) ([]type
 	routes, prices := []types.BenchmarkRoute{}, map[types.ExecutorID]types.RegistryPrice{}
 	for _, l := range b.Leases {
 		e, ok := byID[l.Executor]
+		unpriced := e.CostBasis == types.RegistryExecutorCostBasisLocal || e.CostBasis == types.RegistryExecutorCostBasisFree
 		switch {
 		case !ok:
 			return nil, nil, refusedf("lease %s ran on executor %s, which the registry does not hold", l.ID, l.Executor)
 		case string(l.Role) != string(e.Role):
 			return nil, nil, refusedf("lease %s is a %s's, its executor %s the registry's %s", l.ID, l.Role, e.ID, e.Role)
+		case l.RegistryEntry == nil || string(*l.RegistryEntry) != dispatch.EntryDigest(e):
+			return nil, nil, refusedf("lease %s was placed on another registry entry than executor %s's in --registry (its family, destination or another field differs)", l.ID, e.ID)
+		case unpriced && e.Price == nil && l.Price == nil: // recorded at zero below
 		case e.Price == nil:
 			return nil, nil, refusedf("executor %s has no registry price", e.ID)
 		case l.Price == nil || *l.Price != *e.Price:
 			return nil, nil, refusedf("lease %s was placed at another price than executor %s's in the registry", l.ID, e.ID)
-		case l.RegistryEntry == nil || string(*l.RegistryEntry) != dispatch.EntryDigest(e):
-			return nil, nil, refusedf("lease %s was placed on another registry entry than executor %s's in --registry (its family, destination or another field differs)", l.ID, e.ID)
-		case (e.Destination.ID == stubDestination) != stub:
+		}
+		if (e.Destination.ID == stubDestination) != stub {
 			return nil, nil, refusedf("executor %s's destination is %s, against --routes %s", e.ID, e.Destination.ID, map[bool]string{true: "stub", false: "live"}[stub])
 		}
 		if _, ok := prices[e.ID]; !ok {
+			price := types.RegistryPrice{} // a local or free route's explicit zero
+			if e.Price != nil {
+				price = *e.Price
+			}
 			routes = append(routes, types.BenchmarkRoute{Executor: e.ID, Role: types.BenchmarkRouteRole(e.Role), Family: types.Name(e.Family)})
-			prices[e.ID] = *e.Price
+			prices[e.ID] = price
 		}
 	}
 	return routes, prices, nil

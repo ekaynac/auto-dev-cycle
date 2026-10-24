@@ -77,13 +77,18 @@ var tasks = Resource{
 		}
 		out := []any{}
 		for _, id := range ids {
-			read, ok, err := taskRead(tx, at, id, byTask[id], false)
+			t, ok, err := authorizedTask(tx, at, id)
 			if err != nil {
 				return nil, err
 			}
-			if ok {
-				out = append(out, read)
+			if !ok {
+				continue
 			}
+			read, err := taskRead(tx, at, t, byTask[id], false)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, read)
 		}
 		return out, nil
 	},
@@ -114,34 +119,51 @@ const WithoutBench = "without=bench"
 // ReadTask is task id's record as the one task's read gives it, read at
 // at: its card, its first attempt and, with bench, its benchmark facts
 // (under both the attempt and model_call read kinds); false when the
-// caller reads no such task. The task's board scope is checked first, so
-// nothing of a task the caller does not read is read, nor its damage
+// caller reads no such task. The task is authorised first (authorizedTask),
+// so nothing of a task the caller does not read is read, nor its damage
 // shown (Opus #432 L2). Only that task's nodes, leases and calls are
 // read, and a record of it that cannot be read fails this read alone
 // (Opus #430 M1).
 func ReadTask(tx *eventstore.Tx, at ReadAt, id types.TaskID, bench bool) (types.TaskRead, bool, error) {
-	t, recorded, _, err := boardTask(tx, id)
-	if err != nil || !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) {
+	t, ok, err := authorizedTask(tx, at, id)
+	if err != nil || !ok {
 		return types.TaskRead{}, false, err
 	}
 	nodes, err := graph.TaskNodes(tx, id)
 	if err != nil {
 		return types.TaskRead{}, false, err
 	}
-	return taskRead(tx, at, id, nodes, bench)
+	read, err := taskRead(tx, at, t, nodes, bench)
+	return read, err == nil, err
 }
 
-// taskRead is task id's record over its nodes, with its benchmark facts
-// when bench; false for a task not recorded or whose board the caller does
-// not read.
-func taskRead(tx *eventstore.Tx, at ReadAt, id types.TaskID, nodes []graph.NodeView, bench bool) (types.TaskRead, bool, error) {
+// authorizedTask is the one rule of who reads a task, for the list and the
+// one task's read alike (Astra #432 M2): task id's record, true when it is
+// recorded and the caller reads its project's board. A damaged record is
+// the board's to show. Nothing of the task's nodes is read before it.
+func authorizedTask(tx *eventstore.Tx, at ReadAt, id types.TaskID) (authority.TaskRecord, bool, error) {
 	t, recorded, _, err := boardTask(tx, id)
-	if err != nil || !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) { // a damaged record is the board's to show
-		return types.TaskRead{}, false, err
+	if err != nil || !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) {
+		return authority.TaskRecord{}, false, err
 	}
-	read := types.TaskRead{ID: id, Project: t.Project}
+	return t, true, nil
+}
+
+// taskRead is the authorised task t's record over its nodes, with its
+// benchmark facts when bench. A node that is not t's own, of another task
+// or project (a damaged index), makes the card unplaced damaged_record and
+// stops the read there: no attempt or benchmark fact is read through it,
+// so no other task's records are reached (Astra #432 H1).
+func taskRead(tx *eventstore.Tx, at ReadAt, t authority.TaskRecord, nodes []graph.NodeView, bench bool) (types.TaskRead, error) {
+	read := types.TaskRead{ID: t.ID, Project: t.Project}
+	for _, n := range nodes {
+		if n.Task != t.ID || n.Project != t.Project {
+			read.Card = unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
+			return read, nil
+		}
+	}
 	if ending, err := endingOf(tx, t); err != nil { // one task's unreadable record (Mythos chunk 5a L4)
-		read.Card = unplaced(id, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
+		read.Card = unplaced(t.ID, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
 	} else {
 		read.Card = boardCard(t, nodes, at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project), ending, stalledOf(at, t))
 	}
@@ -154,10 +176,10 @@ func taskRead(tx *eventstore.Tx, at ReadAt, id types.TaskID, nodes []graph.NodeV
 			read.Bench, err = benchOf(tx, t, nodes)
 		}
 		if err != nil {
-			return types.TaskRead{}, false, err
+			return types.TaskRead{}, err
 		}
 	}
-	return read, true, nil
+	return read, nil
 }
 
 // Task serves TaskPath: the tasks list holding task's record, or none when

@@ -495,3 +495,95 @@ func TestTheOneTaskReadScopesFirst(t *testing.T) {
 		t.Error("the operator's read of the damaged task")
 	}
 }
+
+// opRead is api.ReadTask of task for actor, with its benchmark facts.
+func opRead(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID) (rec types.TaskRead, ok bool, rerr error) {
+	t.Helper()
+	w.view(func(tx *eventstore.Tx) error {
+		var a types.Actor
+		raw, _, err := tx.Get(identity.ActorProjection, string(actor))
+		if err == nil {
+			err = json.Unmarshal(raw, &a)
+		}
+		scope, serr := authority.ReadScopeOf(tx, a, time.Now())
+		if err = errors.Join(err, serr); err != nil {
+			return err
+		}
+		rec, ok, rerr = api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, task, true)
+		return nil
+	})
+	return rec, ok, rerr
+}
+
+// Astra #432 H1: task A's node index names task B's node, of another
+// project, which has an attempt under a lease. A supervisor reading A's
+// project alone, with the board, attempt and model_call read kinds, reads
+// A's card unplaced damaged_record, with no first attempt and no benchmark
+// facts: nothing of B's node, attempt or lease is in the read.
+func TestATaskIndexNamingAnotherProjectsNode(t *testing.T) {
+	const other = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sb2")
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t, tokens(10)))
+	op := fullHistory(t, w)
+	a := taskOf(w, plannedIn(t, w, graphProject))
+	nodeB := plannedIn(t, w, other)
+	attemptsOn(t, w, nodeB, 1)
+	var attemptB types.AttemptID
+	var leaseB types.LeaseID
+	w.view(func(tx *eventstore.Tx) error {
+		var err, aerr error
+		attemptB, _, err = lease.CurrentAttempt(tx, graph.UnitOf(nodeB))
+		at, _, _, aerr := lease.AttemptAt(tx, attemptB)
+		leaseB = at.Lease
+		return errors.Join(err, aerr)
+	})
+	now := time.Now().UTC()
+	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op}
+	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{graphProject}},
+		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{"board", "attempt", "model_call"}},
+		ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op}
+	w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		ac, err := identity.CreateActor(sup)
+		if err != nil {
+			return nil, err
+		}
+		gr, err := authority.CreateGrant(tx, g)
+		return append(ac, gr...), err
+	})
+	w.done()
+	execSQL(t, dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('`+graph.TaskNodeProjection+`', '`+string(a)+`/`+string(nodeB)+`', 'true')`)
+	w = seed(t, dir, daemonProjection(t, tokens(10)))
+	t.Cleanup(w.done)
+	rec, ok, err := opRead(t, w, sup.ID, a)
+	raw, _ := json.Marshal(rec)
+	card, unplaced := rec.Card.Variant.(*types.BoardUnplacedCard)
+	if err != nil || !ok || !unplaced || card.Reason != types.BoardUnplacedCardReasonDamagedRecord || rec.FirstAttempt != nil || rec.Bench != nil ||
+		strings.Contains(string(raw), string(nodeB)) || strings.Contains(string(raw), string(attemptB)) || strings.Contains(string(raw), string(leaseB)) {
+		t.Errorf("A's read through B's node: %v %v %s", ok, err, raw)
+	}
+	if l := taskReadAs(t, w, sup.ID, a); l.FirstAttempt != nil || l.Bench != nil {
+		t.Errorf("A in the list: %+v", l)
+	}
+}
+
+// Astra #432 H2: a claimed node's times row gone (damage after start): the
+// claim is evidence of a time the row lacks, so the task's one-task read
+// with its benchmark facts fails (graph.ErrTimesMissing), never reading
+// the node as unclaimed.
+func TestAClaimWithNoTimeIsDamage(t *testing.T) {
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t, tokens(10)))
+	op := fullHistory(t, w)
+	running, _, plan, _ := startedTask(t, w, w.lease(4).Reservations, true)
+	if rec, ok, err := opRead(t, w, op, running); err != nil || !ok || rec.Bench == nil {
+		t.Fatalf("the intact read: %v %v", ok, err)
+	}
+	w.done()
+	execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+graph.TimesProjection+`' AND key = '`+string(plan)+`'`)
+	w = seed(t, dir, daemonProjection(t, tokens(10)))
+	t.Cleanup(w.done)
+	if _, _, err := opRead(t, w, op, running); !errors.Is(err, graph.ErrTimesMissing) {
+		t.Errorf("the read of a claim with no time: %v", err)
+	}
+}

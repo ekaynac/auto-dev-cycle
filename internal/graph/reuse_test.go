@@ -4,6 +4,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -256,4 +257,48 @@ func TestReuseReleaseRefusals(t *testing.T) {
 func (g graphStore) recordOf(n types.NodeID) types.NodeRecorded {
 	rec, _ := view[nodeRecord](g, NodeProjection, string(n))
 	return rec.Recorded
+}
+
+// timesOf is n's TimesOf, read in a view.
+func (g graphStore) timesOf(n types.NodeID) (Times, error) {
+	var t Times
+	var terr error
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error { t, terr = TimesOf(tx, n); return nil }); err != nil {
+		g.t.Fatal(err)
+	}
+	return t, terr
+}
+
+// Astra #432 H2: a node's times are checked against its own evidence. A
+// node completed by reuse is stamped claimed and selected at its reuse (it
+// took no time of its own), and reads; the holder, claimed and selected,
+// reads both. With the holder's times row gone (damage), its claim and
+// selected result are evidence of times it lacks: ErrTimesMissing, never
+// read as a node never claimed.
+func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
+	g := openStore(t)
+	holder, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
+	b := g.record(g.nodeLikeGate(holder))
+	var held ErrKeyClaimed
+	if err := g.do(g.claimOf(b)); !errors.As(err, &held) {
+		t.Fatalf("b's claim: %v", err)
+	}
+	g.must(reuseOf(b, g.planRes))
+	if tb, err := g.timesOf(b); err != nil || tb.Claimed.IsZero() || !tb.Claimed.Equal(tb.Selected) {
+		t.Errorf("the reused node's times: %+v %v", tb, err)
+	}
+	if th, err := g.timesOf(holder); err != nil || th.Claimed.IsZero() || th.Selected.IsZero() {
+		t.Errorf("the holder's times: %+v %v", th, err)
+	}
+	for _, half := range []string{`{"claimed":"","selected":"2026-10-24T00:00:00Z"}`, `{"claimed":"2026-10-24T00:00:00Z","selected":""}`, ""} {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if half == "" {
+				return nil, tx.Delete(TimesProjection, string(holder))
+			}
+			return nil, tx.Put(TimesProjection, string(holder), json.RawMessage(half))
+		})
+		if _, err := g.timesOf(holder); !errors.Is(err, ErrTimesMissing) {
+			t.Errorf("the holder's times %q: %v", half, err)
+		}
+	}
 }

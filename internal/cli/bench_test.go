@@ -250,3 +250,75 @@ func TestBenchRecordUsage(t *testing.T) {
 		t.Errorf("temporary files left: %v", left)
 	}
 }
+
+// Astra #432 H2, H3: a damaged read is never recorded. The card is checked
+// before the closure: an accept's selected result missing (its card
+// unplaced damaged_record) with the closing review intact is refused. The
+// mapper keeps the read's integrity: a completed stage with no selected
+// result or selection time, a claimed one with no claim time, and a
+// closure that is not a completed review of the nodes with its outcome.
+func TestBenchInputsDamage(t *testing.T) {
+	reg := stubReg(t)
+	for name, c := range map[string]struct {
+		change func(*types.TaskRead)
+		why    string
+	}{
+		"an accept's selected result missing, the closing review intact (H3)": {func(r *types.TaskRead) {
+			r.Card = types.BoardCard{Variant: &types.BoardUnplacedCard{Type: "unplaced", Reason: types.BoardUnplacedCardReasonDamagedRecord}}
+			r.Bench.Nodes[2].Outcome, r.Bench.Nodes[2].Reason = nil, nil
+		}, "card is unplaced"},
+		"a completed stage with no selected result (H3)": {func(r *types.TaskRead) { r.Bench.Nodes[2].Outcome = nil }, "completed with no selected result"},
+		"a completed stage with no selection time (H2)":  {func(r *types.TaskRead) { r.Bench.Nodes[3].SelectedAt = nil }, "no selection time"},
+		"a claimed stage with no claim time (H2)": {func(r *types.TaskRead) {
+			r.Bench.Nodes[3].State, r.Bench.Nodes[3].Outcome, r.Bench.Nodes[3].SelectedAt, r.Bench.Nodes[3].ClaimedAt = types.BenchNodeStateClaimed, nil, nil, nil
+		}, "no claim time"},
+		"a closure of no node (H3)": {func(r *types.TaskRead) { r.Bench.Closure.Node = "nod_gone" }, "not a completed review"},
+		"a closure of another outcome (H3)": {func(r *types.TaskRead) {
+			r.Bench.Closure.Outcome = types.OutcomeFound
+		}, "not a completed review"},
+		"a closure of a gate (H3)": {func(r *types.TaskRead) {
+			r.Bench.Closure.Node, r.Bench.Closure.SelectedAt = "nod_gate", "2026-10-23T10:02:00Z"
+		}, "not a completed review"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := candidateRead(t)
+			c.change(&rec)
+			if _, _, err := benchInputs(rec, reg, true); err == nil || !strings.Contains(err.Error(), c.why) {
+				t.Errorf("want %q: %v", c.why, err)
+			}
+		})
+	}
+}
+
+// Astra #432 M1: registry-live.example.json's local builder has no price
+// (the registry requires none of a local route): placed on that entry
+// with no price, it records at an explicit zero price. A local lease placed
+// at a price, and the cash reviewer placed with none, are refused.
+func TestBenchInputsLocalRoute(t *testing.T) {
+	reg, err := registry.Load("../../fixtures/m1/config/registry-live.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const local, cash = types.ExecutorID("exe_01m4tm99haemrs8zjs56wjm467"), types.ExecutorID("exe_01m4tm99haemsbebz0rbxsgv6r")
+	live := func() types.TaskRead {
+		r := candidateRead(t)
+		l := r.Bench.Leases
+		l[0].Executor, l[0].Price, l[0].RegistryEntry = local, nil, entryOf(reg, local)
+		l[1].Executor, l[1].Price, l[1].RegistryEntry = cash, priceOf(reg, cash), entryOf(reg, cash)
+		return r
+	}
+	m, _, err := benchInputs(live(), reg, false)
+	if p, ok := m.Prices[local]; err != nil || !ok || p != (types.RegistryPrice{}) || m.Prices[cash] != *priceOf(reg, cash) || len(m.Routes) != 2 {
+		t.Fatalf("the local route: %+v %v", m, err)
+	}
+	priced := live()
+	priced.Bench.Leases[0].Price = &types.RegistryPrice{}
+	unpriced := live()
+	unpriced.Bench.Leases[1].Price = nil
+	for why, r := range map[string]types.TaskRead{"has no registry price": priced, "another price": unpriced} {
+		var refused errRefused
+		if _, _, err := benchInputs(r, reg, false); !errors.As(err, &refused) || !strings.Contains(err.Error(), why) {
+			t.Errorf("want %q: %v", why, err)
+		}
+	}
+}
