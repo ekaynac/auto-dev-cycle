@@ -4,7 +4,7 @@
 // §2.6, §2.7; P24b; #226 entries 188, 189), run by installed-cycle.sh with
 // the installed Node once the run ended and adcd replayed its store:
 //
-//   node cycle-expect.mjs CASE_JSON OUT_DIR CASE
+//   node cycle-expect.mjs CASE_JSON OUT_DIR CASE [stub|live]
 //
 // OUT_DIR holds the run's records: show.json (adc task show --json, its
 // bench read giving each node's outcome and reason), events.jsonl (adc
@@ -19,12 +19,16 @@
 // no release's records qualify the stub's reviewer route. So a case that
 // expects the candidate ends with its gate completed and its review node
 // held review_inactive, adcd's start naming why; "closed as a candidate
-// after review" is the live route's (D2).
+// after review" is the live route's (D2): in live mode (§2.3's live route,
+// its expect block the driver's own) review is active and the task closes
+// a candidate (done_candidate), and the canaries are the driver's to check
+// in the gateway's egress capture (there is no stub log).
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [caseFile, out, name] = process.argv.slice(2);
+const [caseFile, out, name, mode = "stub"] = process.argv.slice(2);
+const live = mode === "live";
 const read = (f) => readFileSync(join(out, f), "utf8");
 const lines = (f) => read(f).split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
 const c = JSON.parse(readFileSync(caseFile, "utf8"));
@@ -32,12 +36,15 @@ const e = c.expect;
 const show = JSON.parse(read("show.json"));
 const events = lines("events.jsonl");
 const fails0 = [];
-// The stub's log is required: a missing or unreadable one is a failure, never no requests (Opus #435 M3).
+// Stub mode: the stub's log is required, a missing or unreadable one a failure, never no requests (Opus #435 M3).
+// Live mode has no stub log: the driver checks the gateway's egress capture.
 let stub = [];
-try {
-  stub = lines("stub.jsonl");
-} catch (err) {
-  fails0.push(`the stub provider's log cannot be read: ${err.message}`);
+if (!live) {
+  try {
+    stub = lines("stub.jsonl");
+  } catch (err) {
+    fails0.push(`the stub provider's log cannot be read: ${err.message}`);
+  }
 }
 const log = read("adcd-1.log");
 const caps = JSON.parse(read("capabilities.json"));
@@ -52,12 +59,16 @@ if (!Array.isArray(bench)) fail("the task read carries no bench nodes (the opera
 const holdsOf = (n) => (n.holds ?? []).map((h) => h.hold);
 const reviews = nodes.filter((n) => n.kind === "review");
 
-// The review stays inactive in stub mode, and adcd's start says why.
-if (!/^adcd: review stays inactive: P31's qualification on record: /m.test(log)) fail("adcd's start does not name why review is inactive");
-for (const r of reviews) if (!holdsOf(r).includes("review_inactive")) fail(`review ${r.id} is ${r.state}, not held review_inactive`);
-
-// How the task ends.
-if (card.column === "done" || card.column === "done_candidate") fail(`the task closed (${card.column}): stub mode never reviews`);
+if (live) {
+  // Review is active, so the release's records qualify every reviewer route, and the task closes a candidate after review.
+  if (/^adcd: review stays inactive: /m.test(log)) fail("adcd's start says review stays inactive: the reviewer route is not qualified");
+  if (card.column !== "done_candidate") fail(`the task is ${card.column}, not closed as a candidate (done_candidate)`);
+} else {
+  // The review stays inactive in stub mode, and adcd's start says why.
+  if (!/^adcd: review stays inactive: P31's qualification on record: /m.test(log)) fail("adcd's start does not name why review is inactive");
+  for (const r of reviews) if (!holdsOf(r).includes("review_inactive")) fail(`review ${r.id} is ${r.state}, not held review_inactive`);
+  if (card.column === "done" || card.column === "done_candidate") fail(`the task closed (${card.column}): stub mode never reviews`);
+}
 if (e.until === "candidate") {
   const gates = nodes.filter((n) => n.kind === "gate");
   if (gates.length === 0 || !gates.every((g) => g.state === "completed")) fail(`the gate is not completed: ${gates.map((g) => g.state).join(",")}`);
@@ -141,10 +152,10 @@ for (const x of requests) {
   // The canary minted for this run (§2.7 hostile-gate-output's gate writes it into its results mount) reaches no request at all.
   if (body.includes(canary)) fail(`the run's minted canary in a ${roleOf(x)} request (${x.request_id})`);
 }
-// Nor either saved operator read (Opus #435 H1).
+// Nor either saved operator read (Opus #435 H1); in live mode, out/canary is the acceptance's canary.
 for (const f of ["show.json", "events.jsonl"]) if (read(f).includes(canary)) fail(`the run's minted canary in the operator's ${f}`);
 // An attempt that started made at least one builder request the stub logged (Opus #435 M3).
-if (events.some((x) => x.kind === "attempt.started/v1") && !requests.some((x) => roleOf(x) === "builder")) fail("an attempt started, and the stub logged no builder request");
+if (!live && events.some((x) => x.kind === "attempt.started/v1") && !requests.some((x) => roleOf(x) === "builder")) fail("an attempt started, and the stub logged no builder request");
 for (const s of e.builder_sees ?? []) {
   if (!requests.some((x) => roleOf(x) === "builder" && JSON.stringify(x.body).includes(JSON.stringify(s).slice(1, -1)))) fail(`no builder request carries ${s}`);
 }
@@ -153,7 +164,7 @@ for (const s of e.builder_sees ?? []) {
 const served = stub.filter((x) => x.kind === "usage" && x.usage).reduce((t, x) => ({ in: t.in + x.usage.prompt_tokens, out: t.out + x.usage.completion_tokens }), { in: 0, out: 0 });
 if (e.usage && (served.in !== e.usage.in || served.out !== e.usage.out)) fail(`the stub served ${served.in}/${served.out} tokens, not ${e.usage.in}/${e.usage.out}`);
 const first = show.first_attempt;
-if (requests.length > 0) {
+if (live || requests.length > 0) {
   if (first === null || first === undefined) fail("the task read has no first attempt");
   else {
     // An absent key is as missing as a null one (Mythos #435 L3).
@@ -184,6 +195,7 @@ if (fails.length > 0) {
   process.exit(1);
 }
 const results = Object.keys(e.nodes).map((k) => `${k} ${e.nodes[k].outcome}/${e.nodes[k].reason}${e.nodes[k].selected === false ? " (none selected)" : ""}`).join("; ") || "no result";
-const ended = e.until === "candidate" ? "gate completed, review held review_inactive" : `held: ${want.join(", ")}`;
+const ended = live ? "closed a candidate after review" : e.until === "candidate" ? "gate completed, review held review_inactive" : `held: ${want.join(", ")}`;
 const reviewers = requests.filter((x) => roleOf(x) === "reviewer").length;
-console.log(`| ${name} | ${ended} | ${results} | ${served.in}/${served.out} | ${requests.length - reviewers}/${reviewers} |`);
+const tokens = live ? `${first?.tokens?.in ?? "?"}/${first?.tokens?.out ?? "?"} (first attempt)` : `${served.in}/${served.out}`;
+console.log(`| ${name} | ${ended} | ${results} | ${tokens} | ${requests.length - reviewers}/${reviewers} |`);

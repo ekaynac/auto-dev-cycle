@@ -3,6 +3,7 @@
 package installcheck
 
 import (
+	"cmp"
 	"encoding/json"
 	"os/exec"
 	"path/filepath"
@@ -102,7 +103,8 @@ func TestCycleExpect(t *testing.T) {
 		for name, content := range files {
 			write(t, filepath.Join(dir, name), content, 0o644)
 		}
-		cmd := exec.Command(node, "../../scripts/lib/cycle-expect.mjs", filepath.Join(dir, "case.json"), dir, "c")
+		mode, _ := v["mode"].(string)
+		cmd := exec.Command(node, "../../scripts/lib/cycle-expect.mjs", filepath.Join(dir, "case.json"), dir, "c", cmp.Or(mode, "stub"))
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {
@@ -191,6 +193,36 @@ func TestCycleExpect(t *testing.T) {
 		c.edit(v)
 		if out, code := run(t, v); code != 1 || !strings.Contains(out, c.want) {
 			t.Errorf("unselected, %s: exit %d, %s", name, code, out)
+		}
+	}
+	// D2, the live route: review is active, so the task closes a candidate
+	// after review, and adcd's start never says review stays inactive. It has
+	// no stub log (the driver checks the egress capture); out/canary is the
+	// acceptance's canary, in neither operator read.
+	livebase := func() map[string]any {
+		v := base()
+		v["mode"] = "live"
+		v["nostub"] = true
+		ex := v["case"].(map[string]any)["expect"].(map[string]any)
+		delete(ex, "builder_sees") // stub-only: the driver's live expect block names neither
+		delete(ex, "usage")
+		v["log"] = "adcd: started\n"
+		set(v, "done_candidate", "show", "card", "column")
+		set(v, map[string]any{"id": "n5", "kind": "review", "state": "completed", "holds": []map[string]any{}}, "show", "card", "nodes", 4)
+		return v
+	}
+	if out, code := run(t, livebase()); code != 0 || !strings.HasPrefix(out, "| c | closed a candidate after review |") {
+		t.Errorf("a live run that shows its expect block: exit %d, %s", code, out)
+	}
+	for name, edit := range map[string]func(map[string]any){
+		"review stays inactive":             func(v map[string]any) { v["log"] = "adcd: review stays inactive: P31's qualification on record: x\n" },
+		"not closed":                        func(v map[string]any) { set(v, "verifying", "show", "card", "column") },
+		"the acceptance canary in the read": func(v map[string]any) { set(v, "ADC-CANARY-x", "show", "card", "title") },
+	} {
+		v := livebase()
+		edit(v)
+		if out, code := run(t, v); code != 1 || !strings.Contains(out, "fail: ") {
+			t.Errorf("live, %s: exit %d, %s", name, code, out)
 		}
 	}
 	for name, c := range map[string]struct {

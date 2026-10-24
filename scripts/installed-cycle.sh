@@ -68,15 +68,19 @@ cannot() {
   echo "installed-cycle: could_not_run: $*" >&2
   exit 2
 }
-usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]"; }
+usage() {
+  cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]
+   or: installed-cycle.sh PREFIX --routes live --project repo --issue N --until candidate --bench FILE --registry FILE --groups FILE --acceptance REPO_PATH=FILE... --canary TEXT [--sandbox-root DIR] [--podman PATH] [--keep]"
+}
 
 [[ $# -ge 1 ]] || usage
 prefix="$1"
 shift
 routes="" project="" case="" keep=0 expect="" shared="" setup_only=0 PODMAN=/usr/bin/podman
+issue="" until_="" bench="" registry="" groups="" acceptance=() live_canary=""
 while [[ $# -gt 0 ]]; do
   # A value flag given last, with no value, is a usage refusal (exit 2), never a failed shift (Opus #435 L1).
-  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman) [[ $# -ge 2 ]] || usage ;; esac
+  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman | --issue | --until | --bench | --registry | --groups | --acceptance | --canary) [[ $# -ge 2 ]] || usage ;; esac
   case "$1" in
     --routes) routes="$2" && shift 2 ;;
     --project) project="$2" && shift 2 ;;
@@ -85,27 +89,59 @@ while [[ $# -gt 0 ]]; do
     --sandbox-root) shared="$2" && shift 2 ;;
     --podman) PODMAN="$2" && shift 2 ;;
     --setup-only) setup_only=1 && shift ;;
+    --issue) issue="$2" && shift 2 ;;
+    --until) until_="$2" && shift 2 ;;
+    --bench) bench="$2" && shift 2 ;;
+    --registry) registry="$2" && shift 2 ;;
+    --groups) groups="$2" && shift 2 ;;
+    --acceptance) acceptance+=("$2") && shift 2 ;;
+    --canary) live_canary="$2" && shift 2 ;;
     --keep) keep=1 && shift ;;
     *) usage ;;
   esac
 done
 [[ "$PODMAN" == /* ]] || usage
-[[ -n "$routes" && -n "$project" && -n "$case" ]] || usage
-[[ "$routes" == stub ]] || cannot "--routes $routes: live routes are P25's"
-[[ "$project" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && "$case" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || usage
-[[ "$project" == go-mini ]] || cannot "--project $project: only go-mini has cycle cases"
+live=0
+case "$routes" in
+  stub)
+    [[ -n "$project" && -n "$case" && -z "$issue$until_$bench$registry$groups$live_canary" && ${#acceptance[@]} -eq 0 ]] || usage
+    [[ "$project" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && "$case" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || usage
+    [[ "$project" == go-mini ]] || cannot "--project $project: only go-mini has cycle cases"
+    ;;
+  live)
+    # §2.3's live route (P25, D2): this repository's issue N, until the candidate.
+    live=1
+    [[ "$project" == repo && "$issue" =~ ^[1-9][0-9]{0,6}$ && "$until_" == candidate && -z "$case$expect" && $setup_only == 0 ]] || usage
+    [[ -n "$bench" && -n "$registry" && -n "$groups" && -n "$live_canary" && ${#acceptance[@]} -gt 0 ]] || usage
+    [[ ${#live_canary} -ge 16 ]] || cannot "--canary must be the acceptance's unpublished canary line, at least 16 characters"
+    case="live-issue-$issue"
+    for f in "$registry" "$groups"; do [[ -f "$f" && -r "$f" ]] || cannot "$f is not a readable file"; done
+    registry="$(realpath -e "$registry")" groups="$(realpath -e "$groups")"
+    [[ -d "$(dirname "$bench")" && ! -e "$bench" ]] || cannot "--bench $bench: its directory must exist and it must not"
+    bench="$(realpath -m "$bench")"
+    ;;
+  *) usage ;;
+esac
 prefix="$(cd "$prefix" && pwd)" || cannot "no prefix $1"
 lib="$prefix/lib/adc"
 node="$lib/node/bin/node"
 fixtures="$lib/fixtures"
 for f in "$prefix/bin/adcd" "$prefix/bin/adc" "$node"; do [[ -x "$f" ]] || cannot "$f is not installed"; done
-[[ -f "$fixtures/m1/profiles/$project.json" && -d "$fixtures/t0/$project/repo" ]] || cannot "no project $project in $fixtures"
-case_file=""
-if [[ "$case" != preflight ]]; then
-  case_file="$fixtures/m1/cases/$case/case.json"
-  [[ -f "$case_file" ]] || cannot "no case $case"
-  [[ "$expect" == candidate ]] || cannot "--expect candidate is required: checkpoint (a)'s cases run until the candidate (§2.3)"
+case_file="" profile_file="$fixtures/m1/profiles/$project.json" issue_dir=""
+if ((live)); then
+  profile_file="$fixtures/m1/profiles/auto-dev-cycle.json" issue_dir="$fixtures/m1/issues/$issue"
+  [[ -f "$profile_file" && -f "$issue_dir/task.json" ]] || cannot "no issue $issue in $fixtures/m1/issues, or no auto-dev-cycle profile"
+else
+  [[ -f "$profile_file" && -d "$fixtures/t0/$project/repo" ]] || cannot "no project $project in $fixtures"
+  if [[ "$case" != preflight ]]; then
+    case_file="$fixtures/m1/cases/$case/case.json"
+    [[ -f "$case_file" ]] || cannot "no case $case"
+    [[ "$expect" == candidate ]] || cannot "--expect candidate is required: checkpoint (a)'s cases run until the candidate (§2.3)"
+  fi
 fi
+# cycle: the run creates a task (a stub case, or the live route); not the preflight.
+cycle=0
+if [[ -n "$case_file" ]] || ((live)); then cycle=1; fi
 for t in git curl timeout; do command -v "$t" >/dev/null || cannot "$t is required"; done
 
 # json FILE EXPR: EXPR of the JSON document in FILE (d), by the installed Node.
@@ -196,7 +232,12 @@ sock="$work/state/adcd.sock"
 step() { echo "installed-cycle: $case: $*"; }
 adc() { "${run_env[@]}" ADC_SOCKET="$sock" timeout 60 "$prefix/bin/adc" "$@"; }
 
-task="go-mini-feature-1" scenario="go-mini-feature-1" overlay=""
+task="go-mini-feature-1" scenario="go-mini-feature-1" overlay="" tree=""
+if ((live)); then
+  # shellcheck source=scripts/lib/cycle-live.sh
+  . "$here/lib/cycle-live.sh"
+  live_setup
+fi
 if [[ -n "$case_file" ]]; then
   task="$(json "$case_file" d.task)" scenario="$(json "$case_file" d.scenario)" want="$(json "$case_file" d.project)"
   [[ "$want" == "$project" ]] || cannot "case $case is $want's, not $project's"
@@ -204,8 +245,10 @@ if [[ -n "$case_file" ]]; then
   if [[ -n "$o" ]]; then overlay="$(dirname "$case_file")/$o"; fi
 fi
 
-step "the base remote of $project's $task"
-tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "$overlay" "$work/remote.git")" || die "the base remote failed"
+if ((!live)); then
+  step "the base remote of $project's $task"
+  tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "$overlay" "$work/remote.git")" || die "the base remote failed"
+fi
 if [[ -n "$overlay" ]]; then
   while IFS= read -r -d '' f; do
     f="${f#"$overlay"/}" f="${f%.hostile}"
@@ -247,14 +290,14 @@ fi
 # own). Each missing one refuses the case (exit 2), named, before adcd
 # starts.
 root="" private=0
-if [[ -n "$case_file" ]]; then
+if ((cycle)); then
   arch="$(host_arch)" || cannot "this host's platform ($(uname -m)) has no prepared image"
   rootless_podman "$PODMAN" || cannot "rootless Podman ($PODMAN) is required: the product sandbox runs every build, accept and gate"
   [[ -d /dev/shm && "$(stat -c %d /dev/shm)" != "$(stat -c %d "$work")" ]] ||
     cannot "the sandbox's runs/ needs /dev/shm on a filesystem apart from the state directory's ($work)"
   [[ -n "$shared" ]] || private=1
   root="$(sandbox_root "$shared")" || cannot "the sandbox root ${shared:-under /tmp} cannot be made"
-  pin="$(json "$fixtures/m1/profiles/$project.json" d.toolchain.images.go)"
+  pin="$(json "$profile_file" d.toolchain.images.go)"
   step "the pinned image $pin for linux/$arch in the sandbox root $root"
   rc=0
   root_image "$root" "$pin" "$arch" >/dev/null 2>"$work/out/image.err" || rc=$?
@@ -265,30 +308,40 @@ if [[ -n "$case_file" ]]; then
   esac
 fi
 
-step "the stub provider with scenario $scenario"
-# The log exists from the start (the stub appends on its first request), so a missing one is a broken run, never "no requests".
-: >"$work/out/stub.jsonl"
-"${run_env[@]}" "$node" "$fixtures/m1/stub-provider/server.mjs" --scenario "$fixtures/m1/stub-provider/scenarios/$scenario.json" \
-  --listen 127.0.0.1:0 --log "$work/out/stub.jsonl" --barriers "$work/out" >"$work/out/stub.out" 2>"$work/out/stub.err" &
-stub=$!
-record_pid "$work" "$stub"
-listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(head -c 400 "$work/out/stub.err")"; grep -q '^listening ' "$work/out/stub.out"; }
-within 30 "the stub provider" listening
-base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
-# shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals, not shell expansions
-n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); let n = 0;
-  for (const e of d.executors) if (e.destination.id === "stub") { e.destination.endpoint = process.argv[2]; n++; }
-  fs.writeFileSync(process.argv[3], JSON.stringify(d)); console.log(`${n} ${d.executors.length}`)' "$fixtures/m1/config/registry-stub.json" "$base" "$work/registry.json")"
-[[ "$n" =~ ^([1-9][0-9]*)\ ([0-9]+)$ && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]] ||
-  die "the registry's executors are not all the stub's (rewritten, of all): $n"
+groups_file="$fixtures/m1/config/groups.json" capture=()
+if ((live)); then
+  cp "$registry" "$work/registry.json"
+  groups_file="$groups" capture=(--capture-egress)
+else
+  step "the stub provider with scenario $scenario"
+  # The log exists from the start (the stub appends on its first request), so a missing one is a broken run, never "no requests".
+  : >"$work/out/stub.jsonl"
+  "${run_env[@]}" "$node" "$fixtures/m1/stub-provider/server.mjs" --scenario "$fixtures/m1/stub-provider/scenarios/$scenario.json" \
+    --listen 127.0.0.1:0 --log "$work/out/stub.jsonl" --barriers "$work/out" >"$work/out/stub.out" 2>"$work/out/stub.err" &
+  stub=$!
+  record_pid "$work" "$stub"
+  listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(head -c 400 "$work/out/stub.err")"; grep -q '^listening ' "$work/out/stub.out"; }
+  within 30 "the stub provider" listening
+  base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
+  # shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals, not shell expansions
+  n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); let n = 0;
+    for (const e of d.executors) if (e.destination.id === "stub") { e.destination.endpoint = process.argv[2]; n++; }
+    fs.writeFileSync(process.argv[3], JSON.stringify(d)); console.log(`${n} ${d.executors.length}`)' "$fixtures/m1/config/registry-stub.json" "$base" "$work/registry.json")"
+  [[ "$n" =~ ^([1-9][0-9]*)\ ([0-9]+)$ && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]] ||
+    die "the registry's executors are not all the stub's (rewritten, of all): $n"
+fi
 
 # Each run of adcd writes its own log: out/adcd-1.log, out/adcd-2.log. A
 # case's adcd runs the product sandbox under its root, and holds the stub's
 # credential (ADC_CREDENTIAL_STUB, minted per run), unless the case
-# withholds it (§2.3 assertion 6).
+# withholds it (§2.3 assertion 6). The live route's holds the registry's
+# credentials from the caller's environment (live_setup: each named, never
+# printed), and captures what it sends (an exit run, §8 item 4).
 run=0 cred=() sandbox=()
-if [[ -n "$case_file" ]]; then
-  sandbox=(--sandbox-root "$root" --podman "$PODMAN")
+if ((cycle)); then sandbox=(--sandbox-root "$root" --podman "$PODMAN"); fi
+if ((live)); then
+  cred=("${live_cred[@]}")
+elif [[ -n "$case_file" ]]; then
   stub_cred="$(head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d =)"
   known "$stub_cred"
   [[ "$(json "$case_file" 'd.credential_withheld === true')" == true ]] || cred=(ADC_CREDENTIAL_STUB="$stub_cred")
@@ -296,8 +349,8 @@ fi
 start_adcd() {
   run=$((run + 1))
   log="$work/out/adcd-$run.log"
-  "${run_env[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
-    --registry "$work/registry.json" "${sandbox[@]}" >"$log" 2>&1 &
+  "${run_env[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$groups_file" \
+    --registry "$work/registry.json" "${sandbox[@]}" "${capture[@]}" >"$log" 2>&1 &
   adcd=$!
   record_pid "$work" "$adcd"
 }
@@ -325,7 +378,7 @@ adc admin bootstrap --state-dir "$work/state" >"$work/out/bootstrap.out" 2>&1 ||
 tok="$(<"$work/home/.config/adc/token")"
 known "$tok"
 
-if [[ -z "$case_file" ]]; then
+if ((!cycle)); then
   step "preflight: the stub answers its scenario and its usage query; the operator reads the controller"
   reply="$(curl -q -sS --noproxy '*' --max-time 30 -H 'content-type: application/json' \
     -d '{"model":"stub-reviewer-1","messages":[{"role":"user","content":"preflight"}],"stream":false}' "$base/chat/completions")" ||
@@ -338,7 +391,7 @@ if [[ -z "$case_file" ]]; then
 else
   # shellcheck source=scripts/lib/cycle-case.sh
   . "$here/lib/cycle-case.sh"
-  cycle_case
+  if ((live)); then live_case; else cycle_case; fi
 fi
 
 step "stopping adcd; its log verifies; a restart replays it"
@@ -360,7 +413,9 @@ fi
 secrets_before="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)"
 start_adcd
 within 60 "adcd to restart" started "; event log verified to seq $seq;"
-if [[ -n "$case_file" ]]; then cycle_check "$seq"; fi
+if ((cycle)); then cycle_check "$seq"; fi
+# The live route's benchmark only from the restarted adcd (#226 entry 199).
+if ((live)); then live_bench; fi
 stop
 [[ "$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" == "$secrets_before" ]] ||
   die "the restart wrote a new bootstrap secret: it did not replay the store"
@@ -386,10 +441,25 @@ fi
 step "no secret outside the operator's token file"
 scan "" "$boot" "$work"
 scan "$work/home/.config/adc/token" "$tok" "$work"
-# The stub's per-run credential: adcd reads it from its environment only, so it is nowhere under the work directory (Mythos #435 M2).
-if [[ -n "${stub_cred:-}" ]]; then scan "" "$stub_cred" "$work"; fi
+# The stub's per-run credential: adcd reads it from its environment only, so it is nowhere under the work directory (Mythos #435 M2),
+# nor in the sandbox root and its runs/, where a container's config, environment and run files are (Opus #438 N1).
+# root_scan SECRET: the latter, before the cleanup removes a private root.
+root_scan() {
+  local rc=0 found
+  found="$(root_secret_scan "$root" "$1")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "a secret appears in the sandbox root: $(tr '\n' ' ' <<<"$found")" ;;
+    *) die "the sandbox root $root could not be searched for a secret (exit $rc)" ;;
+  esac
+}
+if [[ -n "${stub_cred:-}" ]]; then
+  scan "" "$stub_cred" "$work"
+  root_scan "$stub_cred"
+fi
+if ((live)); then live_after; fi
 after="$(snapshot)" || die "$config cannot be read"
 [[ "$after" == "$before" ]] || die "the real ~/.config/adc changed"
 
 step "ok"
-if [[ -n "$case_file" ]]; then echo "installed-cycle: summary: $summary"; fi
+if ((cycle)); then echo "installed-cycle: summary: $summary"; fi

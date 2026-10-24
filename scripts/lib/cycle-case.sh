@@ -56,23 +56,25 @@ cycle_case() {
   fi
 }
 
-# ended waits for the task with adc task wait --until closed,held (its
-# one-task read without the bench ledger, every second, at most 5 s; read
-# again until the deadline) into out/show.json, and reports whether it
-# ended: closed; its gate completed and its review held review_inactive
-# (stub mode's end: nothing more runs); or a node of it but a review held,
-# on a hold that is not a runner's bounded retry ("runner: retry N until
-# ...", which clears itself). cycle_check reads the whole task, its bench
-# included, once. Each read first checks that adcd still runs: one that
-# exited fails the case at once (started: its exit status and its log's
-# excerpt), never at the deadline (Mythos #435 L1).
+# ended reads the task into out/poll.json and reports whether it ended:
+# closed; its gate completed and its review held review_inactive (stub
+# mode's end: nothing more runs); or a node of it but a review held, on a
+# hold that is not a runner's bounded retry ("runner: retry N until ...",
+# which clears itself). It polls with adc task wait (the one-task read
+# without its bench ledger, which grows with the task's calls); a wait that
+# sees neither state within its 5 s prints nothing and is read again.
+# cycle_check reads the whole task, its bench included, once. Each read
+# first checks that adcd still runs: one that exited fails the case at once
+# (started: its exit status and its log's excerpt), never at the deadline
+# (Mythos #435 L1).
 ended() {
   local rc=0
   kill -0 "$adcd" 2>/dev/null || started ""
-  adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/show.json" 2>"$work/out/show.err" || rc=$?
+  adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/poll.json" 2>"$work/out/poll.err" || rc=$?
   # 5: neither state within the 5 s, read again; 6, with closed,held asked: its card is unplaced (no column), which no wait ends.
-  if ((rc == 6)); then die "task $tsk's card is unplaced: $(head -c 300 "$work/out/show.err")"; fi
+  if ((rc == 6)); then die "task $tsk's card is unplaced: $(head -c 300 "$work/out/poll.err")"; fi
   ((rc == 0)) || return 1
+  cp "$work/out/poll.json" "$work/out/show.json"
   "$node" -e 'const fs = require("node:fs"); const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const nodes = s.card?.nodes ?? []; const holds = (n) => (n.holds ?? []).map((h) => h.hold);
     const closed = s.card?.column === "done_candidate" || s.card?.column === "done";
@@ -100,8 +102,9 @@ cycle_check() {
   wait "$events" 2>/dev/null || true
   events=""
   adc dev capabilities --json >"$work/out/capabilities.json" 2>&1 || die "adc dev capabilities failed: $(head -c 300 "$work/out/capabilities.json")"
-  step "the case's expect block"
-  local rc=0
-  summary="$("$node" "$here/lib/cycle-expect.mjs" "$case_file" "$work/out" "$case")" || rc=$?
-  if ((rc != 0)); then die "the case's expectations do not hold:"$'\n'"$summary"; fi
+  step "the expect block"
+  local rc=0 mode=stub expect_file="$case_file"
+  if ((live)); then mode=live expect_file="$work/live-expect.json"; fi
+  summary="$("$node" "$here/lib/cycle-expect.mjs" "$expect_file" "$work/out" "$case" "$mode")" || rc=$?
+  if ((rc != 0)); then die "the expectations do not hold:"$'\n'"$summary"; fi
 }

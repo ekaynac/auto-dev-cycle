@@ -204,7 +204,7 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	}
 	sh := func(script string) string {
 		t.Helper()
-		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -283,6 +283,30 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	runsDir, _ := filepath.EvalSymlinks(filepath.Join(made, "runs"))
 	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.Contains(out, filepath.Join(runsDir, "att_1/x", name)) || !strings.HasSuffix(out, "rc=1") {
 		t.Errorf("a canary under the root's runs/: %q", out)
+	}
+
+	// Opus #438 N1: a credential in a container's config under the root's
+	// storage, or in a run file under runs/, is found (in the root's user
+	// namespace: the stand-in podman's unshare runs its command); any form
+	// of it counts (secrets.sh's forms), and a root without one passes.
+	secret := "c2VjcmV0LWZvci10aGUtcm9vdC1zY2FuLTAxMjM0NTY3"
+	if out := sh("PODMAN=" + fake + "; root_secret_scan " + made + " " + secret + " && echo none"); out != "none" {
+		t.Errorf("no secret under the root: %q", out)
+	}
+	for where, file := range map[string]string{
+		"a container's config": filepath.Join(made, "storage/overlay-containers/c1/userdata/config.json"),
+		"a run file":           filepath.Join(runsDir, "att_2/env"),
+	} {
+		write(t, file, `{"env":["ADC_CREDENTIAL_STUB=`+secret+`"]}`, 0o600)
+		out := sh("PODMAN=" + fake + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc")
+		if !strings.Contains(out, file) || !strings.HasSuffix(out, "rc=1") {
+			t.Errorf("the secret in %s: %q", where, out)
+		}
+		os.Remove(file)
+	}
+	write(t, filepath.Join(made, "storage/x"), "tail "+secret[len(secret)-16:]+"\n", 0o600)
+	if out := sh("PODMAN=" + fake + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=1") {
+		t.Errorf("a form of the secret (its last 16 characters): %q", out)
 	}
 }
 

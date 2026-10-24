@@ -20,15 +20,16 @@ die() {
 }
 # forms SECRET: the forms a leak of SECRET (base64url, or a token
 # tok_ID.SECRET) may take: as is, its secret part, that in standard base64,
-# the hex of its bytes, its first and last 16 characters, and the base64
-# of the whole.
+# its first and last 16 characters, the base64 of the whole, and, when it
+# is base64 (a registry credential need not be), the hex of its bytes.
 forms() {
-  local s="${1#*.}" std pad
+  local s="${1#*.}" std pad hex
   std="$(tr -- '-_' '+/' <<<"$s")"
   pad="$std"
   while ((${#pad} % 4)); do pad+="="; done
-  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$(base64 -d <<<"$pad" | od -An -tx1 | tr -d ' \n')" \
-    "$(printf '%s' "$1" | base64 -w0)"
+  hex="$(base64 -d <<<"$pad" 2>/dev/null | od -An -tx1 | tr -d ' \n')" || hex=""
+  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$(printf '%s' "$1" | base64 -w0)"
+  if [[ -n "$hex" ]]; then printf '%s\n' "$hex"; fi
 }
 # known SECRET: every form of SECRET is redacted from now on.
 known() {
