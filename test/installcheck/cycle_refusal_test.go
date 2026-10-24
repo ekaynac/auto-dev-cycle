@@ -203,6 +203,28 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 
 	fake := filepath.Join(t.TempDir(), "podman")
 	write(t, fake, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\nexec \"$@\"\n", 0o755)
+
+	// Opus #435 r2 N1: the scratch root an orphaned runs/ is removed in
+	// records its owner while it exists (a sweep killed then leaves it to the
+	// next), and is gone afterwards.
+	seen := filepath.Join(t.TempDir(), "seen")
+	probe := filepath.Join(t.TempDir(), "podman")
+	write(t, probe, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != --root ]; do shift; done\nr=$(dirname \"$2\")\n[ -s \"$r/.owner\" ] && echo \"$r owned\" >>"+seen+"\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\nexec \"$@\"\n", 0o755)
+	orphan := sh("mktemp -d /dev/shm/adcrXXXXXX")
+	t.Cleanup(func() { os.RemoveAll(orphan) })
+	write(t, filepath.Join(orphan, ".owner"), "4194305 0\n", 0o600)
+	_ = sh("PODMAN=" + probe + "; sandbox_roots_stale")
+	got, _ := os.ReadFile(seen)
+	if _, err := os.Stat(orphan); err == nil || !strings.Contains(string(got), " owned") {
+		t.Errorf("the orphaned runs/ present %v; the scratch root's owner seen: %q", err == nil, got)
+	}
+	for _, line := range strings.Fields(string(got)) {
+		if strings.HasPrefix(line, "/tmp/adc") {
+			if _, err := os.Stat(line); err == nil {
+				t.Errorf("the scratch root %s is left", line)
+			}
+		}
+	}
 	// The root's owner (this bash) is gone once it returns: it is compared,
 	// then rewritten to the test's own process, so no concurrent sweep takes
 	// the root during the rest.

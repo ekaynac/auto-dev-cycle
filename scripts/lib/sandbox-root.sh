@@ -106,9 +106,12 @@ sandbox_roots_stale() {
   done
   # A runs/ directory whose root is already gone (Opus #435 L2): removed in
   # a scratch root's user namespace (a run's files may be a container's).
+  # The scratch root records its owner like any other, so a sweep killed
+  # here leaves it to the next one (Opus #435 r2 N1).
   for r in /dev/shm/adcr??????; do
     stale "$r" || continue
     tmp="$(mktemp -d /tmp/adcXXXXXX)" || continue
+    owner_of $$ >"$tmp/.owner" || { rm -rf "$tmp"; continue; }
     root_podman "$tmp" unshare rm -rf "$r" 2>/dev/null || rm -rf "$r" 2>/dev/null || true
     root_podman "$tmp" unshare rm -rf "$tmp/storage" "$tmp/r" 2>/dev/null || true
     rm -rf "$tmp"
