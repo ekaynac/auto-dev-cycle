@@ -64,7 +64,7 @@ fi
 # The set's one sandbox root, owned by this shell; first, the roots of runs
 # killed before their own cleanup (SIGKILL runs no trap).
 sandbox_roots_stale
-root="$(sandbox_root)" || die "the sandbox root cannot be made"
+root="$(sandbox_root "")" || die "the sandbox root cannot be made"
 rows=() failed=0
 for c in "$@"; do
   rc=0 t0=$SECONDS
