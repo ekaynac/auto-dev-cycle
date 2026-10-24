@@ -357,6 +357,48 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 	}
 }
 
+// Opus #429 N1: a hidden Go test file that can never compile against the
+// base is refused (ErrAcceptance): its package clause neither its
+// directory's package nor that package's _test form, or a top-level name a
+// file of the same package declares too (a base test's name, a hidden
+// file's). The same name in the other test package, a file the platform
+// excludes, a new directory, and a directory of only tests fit.
+func TestAcceptanceFitsTheBase(t *testing.T) {
+	test := func(pkg, name string) string {
+		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
+	}
+	base := map[string]string{"c/c.go": "package c\n\nfunc Sum() int { return 0 }\n", "c/c_test.go": test("c", "TestSum"), "c/ext_test.go": test("c_test", "TestExt"),
+		"c/c_windows.go": "package c\n\nfunc TestHidden() {}\n", "t/t_test.go": test("t", "TestT")}
+	for name, c := range map[string]struct {
+		hidden map[string]string
+		fits   bool
+	}{
+		"its package":                           {map[string]string{"c/h_test.go": test("c", "TestHidden")}, true},
+		"its _test package":                     {map[string]string{"c/h_test.go": test("c_test", "TestHidden")}, true},
+		"a base test's name, the other package": {map[string]string{"c/h_test.go": test("c_test", "TestSum")}, true},
+		"a new directory":                       {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("n_test", "TestHidden")}, true},
+		"a directory of only tests":             {map[string]string{"t/h_test.go": test("t_test", "TestT")}, true},
+		"another package clause":                {map[string]string{"c/h_test.go": test("d", "TestHidden")}, false},
+		"another _test package":                 {map[string]string{"c/h_test.go": test("d_test", "TestHidden")}, false},
+		"a base test's name":                    {map[string]string{"c/h_test.go": test("c", "TestSum")}, false},
+		"a base file's function":                {map[string]string{"c/h_test.go": test("c", "Sum")}, false},
+		"an external base test's name":          {map[string]string{"c/h_test.go": test("c_test", "TestExt")}, false},
+		"two hidden files, one name":            {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("n", "TestHidden")}, false},
+		"two hidden files, two packages":        {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("m", "TestOther")}, false},
+	} {
+		overlay, files := map[string][]byte{}, map[string][]byte{}
+		for p, b := range c.hidden {
+			overlay[p] = []byte(b)
+		}
+		for p, b := range base {
+			files[p] = []byte(b)
+		}
+		if err := AcceptanceFits("linux", "arm64", overlay, files); (err == nil) != c.fits || err != nil && !errors.Is(err, ErrAcceptance) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // TestGateCut (Astra #286 H1): a candidate run cut by its timeout or a
 // signal is could_not_run/runner_fault, whatever it wrote: here a complete
 // green stream, then the injected end. A cancelled caller gets no verdict.

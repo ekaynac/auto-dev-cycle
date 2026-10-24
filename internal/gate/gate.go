@@ -531,6 +531,19 @@ func checkout(ctx context.Context, repo sandbox.Repo, tree, ws string) (id, modu
 // tests (AcceptanceTests): the task's, no retry or profile change fixes it.
 var ErrAcceptance = errors.New("gate: the task's acceptance cannot be run")
 
+// The build context AcceptanceTests and AcceptanceFits read with drifts
+// from the go command's in three ways, each stated (Opus #429 N2):
+//   - it has no ToolTags, so a goexperiment.* or an architecture-feature
+//     constraint (arm64.v8.0) is refused though go test runs it: a visible
+//     hold on the task, never a candidate's result;
+//   - its release tags are adcd's own toolchain's (build.Default), not the
+//     pinned image's: they agree while both are the same Go release (go1.27
+//     today);
+//   - it assumes the profile's gate command is go test ./... with no -tags
+//     or -run: a profile adding -tags x has a //go:build x hidden test
+//     refused though it runs, and one with -run may never run what it
+//     expects (the candidate's, then).
+
 // AcceptanceTest is a top-level test an acceptance's Go test file
 // declares: its directory (the repository path; "." the root) and name.
 type AcceptanceTest struct{ Dir, Name string }
@@ -595,6 +608,124 @@ func goTest(fn *ast.FuncDecl) bool {
 	}
 	sel, ok := star.X.(*ast.SelectorExpr)
 	return ok && sel.Sel.Name == "T"
+}
+
+// AcceptanceFits refuses (ErrAcceptance) a hidden Go test file that can
+// never compile against the base, whatever the candidate does (Opus #429
+// N1): one whose package clause is neither its directory's package nor
+// that package's _test form, and one declaring a top-level name another
+// file of the same package declares (a redeclaration). base holds the
+// base's Go files in the hidden files' directories, repository path →
+// bytes. Only the files go/build takes on goos/goarch count, and none
+// starting with _ or .; a directory's package is its non-test files',
+// else its internal test files', else its external test files' without
+// _test, else the hidden files' own. The internal test package shares its
+// scope with the package's files; the external one with the other
+// external test files.
+func AcceptanceFits(goos, goarch string, overlay, base map[string][]byte) error {
+	type file struct {
+		path, pkg string
+		names     []string
+		test      bool
+	}
+	parse := func(p string, b []byte) (file, bool, error) {
+		if n := path.Base(p); !strings.HasSuffix(n, ".go") || strings.HasPrefix(n, "_") || strings.HasPrefix(n, ".") {
+			return file{}, false, nil
+		}
+		bc := build.Context{GOOS: goos, GOARCH: goarch, Compiler: "gc", ReleaseTags: build.Default.ReleaseTags,
+			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }}
+		if ok, err := bc.MatchFile(path.Dir(p), path.Base(p)); err != nil || !ok {
+			return file{}, false, nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, b, parser.SkipObjectResolution)
+		if err != nil {
+			return file{}, false, err
+		}
+		return file{p, f.Name.Name, topNames(f), strings.HasSuffix(p, "_test.go")}, true, nil
+	}
+	baseOf, hiddenOf := map[string][]file{}, map[string][]file{}
+	for _, p := range slices.Sorted(maps.Keys(base)) {
+		if f, ok, err := parse(p, base[p]); err == nil && ok { // a base file that does not parse is the base's own failure
+			baseOf[path.Dir(p)] = append(baseOf[path.Dir(p)], f)
+		}
+	}
+	for _, p := range slices.Sorted(maps.Keys(overlay)) {
+		if !strings.HasSuffix(p, "_test.go") {
+			continue
+		}
+		f, ok, err := parse(p, overlay[p])
+		if err != nil {
+			return fmt.Errorf("%w: the acceptance test %s does not parse", ErrAcceptance, p)
+		}
+		if ok {
+			hiddenOf[path.Dir(p)] = append(hiddenOf[path.Dir(p)], f)
+		}
+	}
+	for _, d := range slices.Sorted(maps.Keys(hiddenOf)) {
+		pkg := ""
+		for _, pick := range []func(file) (string, bool){
+			func(f file) (string, bool) { return f.pkg, !f.test },
+			func(f file) (string, bool) { return f.pkg, f.test && !strings.HasSuffix(f.pkg, "_test") },
+			func(f file) (string, bool) { return strings.TrimSuffix(f.pkg, "_test"), f.test },
+		} {
+			for _, f := range append(slices.Clone(baseOf[d]), hiddenOf[d]...) {
+				if name, ok := pick(f); ok && pkg == "" {
+					pkg = name
+				}
+			}
+			if pkg != "" {
+				break
+			}
+		}
+		declared := map[string]map[string]string{} // package → name → its file
+		for _, f := range append(slices.Clone(baseOf[d]), hiddenOf[d]...) {
+			if declared[f.pkg] == nil {
+				declared[f.pkg] = map[string]string{}
+			}
+			hidden := slices.ContainsFunc(hiddenOf[d], func(h file) bool { return h.path == f.path })
+			if hidden && f.pkg != pkg && f.pkg != pkg+"_test" {
+				return fmt.Errorf("%w: the acceptance test %s is package %s, its directory's is %s", ErrAcceptance, f.path, f.pkg, pkg)
+			}
+			for _, name := range f.names {
+				if other, ok := declared[f.pkg][name]; ok && (hidden || slices.ContainsFunc(hiddenOf[d], func(h file) bool { return h.path == other })) {
+					return fmt.Errorf("%w: the acceptance test %s declares %s, which %s declares too", ErrAcceptance, f.path, name, other)
+				}
+				declared[f.pkg][name] = f.path
+			}
+		}
+	}
+	return nil
+}
+
+// topNames are the package-scope names f declares: its functions (no
+// method, no init, no _), types, variables and constants.
+func topNames(f *ast.File) []string {
+	var out []string
+	add := func(id *ast.Ident) {
+		if id.Name != "_" {
+			out = append(out, id.Name)
+		}
+	}
+	for _, d := range f.Decls {
+		switch x := d.(type) {
+		case *ast.FuncDecl:
+			if x.Recv == nil && x.Name.Name != "init" {
+				add(x.Name)
+			}
+		case *ast.GenDecl:
+			for _, sp := range x.Specs {
+				switch y := sp.(type) {
+				case *ast.TypeSpec:
+					add(y.Name)
+				case *ast.ValueSpec:
+					for _, id := range y.Names {
+						add(id)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // writeFiles overlays files on ws: each a clean relative path, inside it,

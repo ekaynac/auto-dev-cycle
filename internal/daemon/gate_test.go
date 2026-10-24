@@ -467,7 +467,9 @@ func baseFiles(t *testing.T, files map[string]string, rm ...string) func(map[str
 // would replace a file the base holds, one under such a file, one in a
 // module the base nests, one under testdata or a _ directory, one the gate
 // environment's platform excludes, one that does not parse, an acceptance
-// declaring no test, and a base with no root go.mod. No gate run starts,
+// declaring no test, a base with no root go.mod, and one that can never
+// compile in the base's package (another package clause, a base test's
+// name: Opus #429 N1). No gate run starts,
 // the base's measure included.
 func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 	for name, c := range map[string]struct {
@@ -485,6 +487,10 @@ func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 		"not parsing":           {files: map[string]string{"inv/inv_hidden_test.go": "package inv\nfunc {\n"}},
 		"declaring no test":     {files: map[string]string{"inv/data.txt": "x\n"}},
 		"a base with no go.mod": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
+		"another package clause than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
+			edit: baseFiles(t, map[string]string{"inv/inv.go": "package inventory\n"})},
+		"a base test's name": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
+			edit: baseFiles(t, map[string]string{"inv/inv.go": "package inv\n", "inv/inv_test.go": hiddenInv})},
 	} {
 		t.Run(name, func(t *testing.T) {
 			withAcceptance(t, c.files)

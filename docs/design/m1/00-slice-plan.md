@@ -202,6 +202,8 @@ It exits 0 only if every assertion holds. Each case runs these steps through ins
    the approval). The gate refuses, as the task's, a hidden test `go test ./...` could never run (under `testdata`, `vendor` or a `_` directory, excluded on the gate's platform, in a nested module, or an acceptance declaring no test). Two residuals it cannot tell from the candidate's fault (Opus #429 M5), so a hidden test should avoid them:
    - a hidden test in the package's own (internal) test package can collide with an identifier the candidate adds, and then fails to compile as the candidate's: **write hidden tests in the external `_test` package** (`package inventory_test`);
    - a hidden test that needs what the gate environment lacks (the network, a module not in `go.sum`) fails as the candidate's;
+   - the gate's reading of what `go test ./...` runs drifts from the go command's in three ways (Opus #429 N2): it has no tool tags, so a `goexperiment.*` or an architecture-feature constraint (`arm64.v8.0`) is refused though it runs (a task hold, never a candidate's result); its release tags are adcd's toolchain's, not the image's (they agree while both are go1.27); and it assumes the gate command is `go test ./...` with no `-tags` or `-run`;
+   - the gate also refuses a hidden test whose package clause is neither its directory's package nor its `_test` form, or that redeclares a name of the base's package (Opus #429 N1);
 5. `adc task wait $T --until closed|held --timeout 60m --json`.
 
 **Afterwards, every case:**

@@ -65,6 +65,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,7 +298,9 @@ func (r *runner) gating(ctx context.Context, node types.NodeID) (gating, error) 
 // in a module the base nests (a go.mod in a directory between it and the
 // root: go test ./... never runs it); a base with no root go.mod; and an
 // acceptance go test ./... could never run on the gate environment's
-// platform (gate.AcceptanceTests: Opus #429 H1, M1, L1). These last are a
+// platform (gate.AcceptanceTests: Opus #429 H1, M1, L1), or that can never
+// compile in the base's package it joins (gate.AcceptanceFits: another
+// package clause, a name a file of that package declares; N1). These last are a
 // go_test_json gate's; a gate of another adapter is the profile's, which
 // gate.Measure refuses (gate.ErrSpec). A blob the store
 // cannot read, missing or not its content, is the host's (a plain error, a
@@ -377,7 +380,103 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 			return nil, nil, fmt.Errorf("%w: the acceptance test %s would replace %s, which the base holds", errContent, q.of, q.at)
 		}
 	}
+	if goTest && len(g.Environments) == 1 {
+		// The base's packages the hidden tests join: a hidden test that can
+		// never compile there is the task's (Opus #429 N1).
+		trees := map[string]bool{".": true}
+		for i, q := range asks {
+			trees[q.at] = trees[q.at] || kinds[i] == "tree"
+		}
+		files, err := basePackages(ctx, repo, dir, base, trees, overlay)
+		if err != nil {
+			return nil, nil, err
+		}
+		rt := g.Environments[0].Facts.Runtime
+		if err := gate.AcceptanceFits(rt.Os, rt.Arch, overlay, files); err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", errContent, err)
+		}
+	}
 	return overlay, digests, nil
+}
+
+// maxBasePackages bounds the base's Go files basePackages reads.
+const maxBasePackages = 16 << 20
+
+// basePackages are the base's Go files (repository path → bytes) in each
+// directory a hidden Go test file of overlay is in that the base holds as
+// a tree (trees), read with cat-file: at most maxBasePackages bytes, more
+// the task's (errContent).
+func basePackages(ctx context.Context, repo sandbox.Repo, dir, base string, trees map[string]bool, overlay map[string][]byte) (map[string][]byte, error) {
+	git := func(stdin string, args ...string) ([]byte, error) {
+		cmd, err := repo.Git(ctx, dir, args...)
+		if err != nil {
+			return nil, err
+		}
+		var out bytes.Buffer
+		cmd.Stdin, cmd.Stdout = strings.NewReader(stdin), &out
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("git %s of the base's packages: %w", args[0], err)
+		}
+		return out.Bytes(), nil
+	}
+	var paths, objects []string
+	for _, p := range slices.Sorted(maps.Keys(overlay)) {
+		d := path.Dir(p)
+		if !strings.HasSuffix(p, "_test.go") || !trees[d] || slices.ContainsFunc(paths, func(q string) bool { return path.Dir(q) == d }) {
+			continue
+		}
+		spec := base
+		if d != "." {
+			spec += ":" + d
+		}
+		list, err := git("", "cat-file", "-p", spec)
+		if err != nil {
+			return nil, err
+		}
+		for line := range strings.Lines(string(list)) {
+			meta, name, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
+			f := strings.Fields(meta) // mode, type, object
+			if ok && len(f) == 3 && (f[0] == "100644" || f[0] == "100755") && f[1] == "blob" && strings.HasSuffix(name, ".go") {
+				paths, objects = append(paths, path.Join(d, name)), append(objects, f[2])
+			}
+		}
+	}
+	if len(objects) == 0 {
+		return nil, nil
+	}
+	sizes, err := git(strings.Join(objects, "\n")+"\n", "cat-file", "--batch-check=%(objectsize)")
+	if err != nil {
+		return nil, err
+	}
+	total := 0
+	for line := range strings.Lines(string(sizes)) {
+		n, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil {
+			return nil, fmt.Errorf("git cat-file of the base's packages: %q", line)
+		}
+		total += n
+	}
+	if total > maxBasePackages {
+		return nil, fmt.Errorf("%w: the base's packages the acceptance tests join are over %d bytes", errContent, maxBasePackages)
+	}
+	out, err := git(strings.Join(objects, "\n")+"\n", "cat-file", "--batch")
+	if err != nil {
+		return nil, err
+	}
+	files := map[string][]byte{}
+	for _, p := range paths {
+		head, rest, ok := bytes.Cut(out, []byte("\n"))
+		f := strings.Fields(string(head)) // object, type, size
+		n := 0
+		if len(f) == 3 {
+			n, err = strconv.Atoi(f[2])
+		}
+		if !ok || len(f) != 3 || err != nil || n+1 > len(rest) {
+			return nil, errors.New("git cat-file --batch answered fewer objects than asked")
+		}
+		files[p], out = rest[:n], rest[n+1:]
+	}
+	return files, nil
 }
 
 // changedFiles are the paths that differ between the base tree and tree,

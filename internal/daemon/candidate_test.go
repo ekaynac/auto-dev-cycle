@@ -56,10 +56,11 @@ import (
 
 // acceptBody is the acceptance attachment readyTask records at
 // accept_hidden_test.go, published in the world's blob store: a hidden Go
-// test of the root package, TestA, which every gate world's stream reports
+// test of the root package (the base's a.go: package a), TestA, which
+// every gate world's stream reports
 // (a gate expects the acceptance's tests: Opus #429 M1); acceptDigest is
 // its digest: restricted, withheld from the builder and the reviewer.
-const acceptBody = "package accept\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"
+const acceptBody = "package a\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"
 
 var acceptDigest = blobDigest([]byte(acceptBody))
 
