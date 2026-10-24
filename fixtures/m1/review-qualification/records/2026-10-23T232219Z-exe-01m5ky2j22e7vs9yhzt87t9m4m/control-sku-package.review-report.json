@@ -1,0 +1,1 @@
+{"schema":"adc.review-report/v1","elapsed_ms":14019,"candidate_round":1,"roster":[{"executor":"exe_01m5ky2j22e7vs9yhzt87t9m4m","family":"deepseek"}],"outcome":"empty","reason":"completed_clean","decision":"go","findings":[],"repair_round":null,"charge_links":["cal_01m5nh523mf8h9n3042kt8py83"]}

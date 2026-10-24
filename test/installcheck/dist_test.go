@@ -337,7 +337,7 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 		"LICENSE": "apache", "NOTICE": "notice", "adapters/fake/package.json": "{}", "adapters/fake/src/main.ts": "",
 		"adapters/fake/test/fake.test.ts": "", "adapters/fake/src/.keep": "", "adapters/contract/package.json": "{}", "adapters/contract/src/index.ts": "",
 		"adapters/http-chat/package.json": "{}", "adapters/http-chat/src/main.ts": "", "adapters/http-chat/test/http-chat.test.ts": "",
-		"gen/ts/package.json": "{}", "gen/ts/validators.cjs": "", "gen/ts/formats.cjs": "", "gen/ts/types/x.ts": "",
+		"gen/ts/package.json": "{}", "gen/ts/validators.cjs": "", "gen/ts/adapter-validators.cjs": "", "gen/ts/formats.cjs": "", "gen/ts/types/x.ts": "",
 		"fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}", "fixtures/t0/py-mini/repo/m.py": "",
 		"fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json": "{}", "fixtures/t0/go-mini/repo/go.mod": "",
 		"fixtures/m1/stub-provider/server.mjs": "", "fixtures/m1/profiles/go-mini.json": "{}",
@@ -490,7 +490,7 @@ func TestDistAdaptersRefusals(t *testing.T) {
 				"fixtures/m1/stub/go-mini/baseline.json", "fixtures/m1/stub-provider/scenarios/s.json", "fixtures/m1/stub-provider/server.mjs",
 				"fixtures/t0/go-mini/repo/go.mod", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
 				"fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
-				"gen/ts/formats.cjs", "gen/ts/package.json", "gen/ts/validators.cjs", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
+				"gen/ts/adapter-validators.cjs", "gen/ts/formats.cjs", "gen/ts/package.json", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
 				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json", "scripts/installed-cycle.sh", "scripts/lib/base-remote.sh", "scripts/lib/secrets.sh"}
 			if got := files(out); !slices.Equal(got, want) {
 				t.Fatalf("packaged %v", got)
@@ -590,7 +590,7 @@ func TestDistAdapters(t *testing.T) {
 	if want := []string{"@adc", "ajv", "fast-deep-equal", "fast-uri", "json-schema-traverse", "require-from-string"}; !slices.Equal(names, want) {
 		t.Errorf("third-party packages %v, want %v", names, want)
 	}
-	for _, f := range []string{"LICENSE", "NOTICE", "adapters/fake/src/main.ts", "adapters/http-chat/src/main.ts", "adapters/contract/src/index.ts", "gen/ts/validators.cjs",
+	for _, f := range []string{"LICENSE", "NOTICE", "adapters/fake/src/main.ts", "adapters/http-chat/src/main.ts", "adapters/contract/src/index.ts", "gen/ts/adapter-validators.cjs",
 		"node_modules/require-from-string/license", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
 		"fixtures/m1/stub-provider/server.mjs", "fixtures/m1/cases/candidate/case.json", "scripts/installed-cycle.sh", "scripts/lib/secrets.sh",
 		"fixtures/m1/review-qualification/suite.json", "adapters/pnpm-lock.yaml"} {

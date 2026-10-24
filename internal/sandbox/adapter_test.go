@@ -245,3 +245,39 @@ func TestManifestAdapterLabel(t *testing.T) {
 		}
 	}
 }
+
+// #226 entry 191: ClosureDigest digests any closure under a root: two
+// copies of one file or directory digest alike, a changed byte changes it,
+// and a link out of the closure and a path not there are refused.
+func TestClosureDigest(t *testing.T) {
+	tree := func(b string) string {
+		root := t.TempDir()
+		for p, data := range map[string]string{"fixtures/m1/profile.json": b, "fixtures/t0/repo/a.go": "package a\n"} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(root, p)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, p), []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return root
+	}
+	a, b, c := tree("{}\n"), tree("{}\n"), tree("{} \n")
+	for _, closure := range [][]string{{"fixtures/m1/profile.json"}, {"fixtures/m1"}} {
+		da, err := ClosureDigest(a, closure)
+		db, berr := ClosureDigest(b, closure)
+		dc, cerr := ClosureDigest(c, closure)
+		if err != nil || berr != nil || cerr != nil || da != db || da == dc || !contract.IsDigest(da) {
+			t.Errorf("%v: %s %s %s (%v %v %v)", closure, da, db, dc, err, berr, cerr)
+		}
+	}
+	if err := os.Symlink("../t0/repo/a.go", filepath.Join(a, "fixtures/m1/out")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClosureDigest(a, []string{"fixtures/m1"}); err == nil {
+		t.Error("a link out of the closure is digested")
+	}
+	if _, err := ClosureDigest(a, []string{"fixtures/none"}); err == nil {
+		t.Error("a missing path is digested")
+	}
+}
