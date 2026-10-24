@@ -45,7 +45,11 @@ const (
 	// railsProfile is go-mini's profile, its per_task_usd $0.01 (10,000
 	// micros): an unconstrained lease reserves 2,000 tokens, 8,000 micros at
 	// the builder's $4; the 2,000 micros it leaves buy 500 tokens, less than
-	// a turn.
+	// a turn. It pins this repository's prepared image (adc-prepared-go)
+	// over go-mini's repository on purpose: the rails fixture places and
+	// prices leases, and never gates or runs in the image, so the pin only
+	// has to be a valid one. A re-pin updates it to the current
+	// adc-prepared-go pin; it must not "fix" it to go-mini's (Opus #434 L1).
 	railsProfile = `{"schema":"adc.project-profile/v1","id":"prj_01m3250vkwffc979nzjw0g2sf9","name":"rails-usd","repo":{"url":"/var/lib/adc/remotes/go-mini.git","base_ref":"refs/heads/main"},"forge":{"kind":"git","capabilities":{"change_requests":false,"protected_branches":false,"required_checks":false},"settings":{}},"source_tests":{"dev_dependencies":true,"vcs_metadata":false},"package":{"recipe":[["go","build","-trimpath","-o","bin/","./..."]],"outputs":["bin"]},"runtime_verification":{"command":null,"facts_from":null},"toolchain":{"images":{"go":"ghcr.io/ekaynac/adc-prepared-go@sha256:4e8cf51b55c9115963f1b9485f6261e66dbbd5aa631b0e5142d13eec04f320c7"},"dependency_recipe":{"lockfiles":["go.mod"],"command":["go","mod","download"],"registries":["goproxy"]}},"gate":{"command":["go","test","-count=1","-json","./..."],"result_adapter":"go_test_json","baseline":{"kind":"measured","relock_requires":"approval"},"environments":[{"name":"ci","facts":{"vcs_metadata":false,"network":"none","runtime":{"language_version":"go1.27.1","os":"linux","arch":"arm64"}},"owner":"operator"}],"ownership_rules":"default"},"integration":{"plugin":"none","topology":null,"receipts_required":[]},"plugins":{"deploy":"none","records":"json_ledger"},"protected_paths":["go.mod","go.sum","go.work","go.work.sum","vendor/**"],"protected_documents":[],"data_policy":{"floor":"contracted","routing":"verified","allowed_destinations":[]},"usage_profile_override":null,"priority":100,"budget":{"rails":{"per_task_usd":"0.01","per_day_usd":"20"}},"retention":{"attempt_continuity_post_closure_ttl":"P7D","supervisor_notes_ttl":null,"blob_payload_ttl":null},"vocabulary":{"task_id_pattern":null,"branch_prefix":"adc/","language":"en"}}`
 	railsBuilder = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa")
 	railsProject = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sf9")

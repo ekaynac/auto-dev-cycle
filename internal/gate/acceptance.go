@@ -39,7 +39,11 @@ const MaxOverlay = 16 << 20
 // #429 r8 L1, Astra r3 Low 1: minutes of one core for fifteen 1 MiB files,
 // with no deadline). A file over it is refused as the task's, though go
 // would run it: a stated policy, as MaxOverlay is, not a go rule. 1000 is
-// far above any hand-written acceptance file (go-mini's has four).
+// far above any hand-written acceptance file (go-mini's has four). Within
+// the bound, the measured worst case (Opus #437) is an external _test file
+// with 999 examples and about 1 MiB of other declarations or comments: 1 to
+// 1.7 s each, about 20 s for fifteen such files, once per gate run, with no
+// deadline.
 const MaxFuncs = 1000
 
 // The refusals, each a fixed text.
