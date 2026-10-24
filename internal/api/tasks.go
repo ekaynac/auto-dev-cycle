@@ -97,19 +97,38 @@ var tasks = Resource{
 
 // TaskPath is the one task's read: the tasks resource's list holding that
 // task's record alone, its benchmark facts included (P25; Opus #430 H1).
+// Its one query parameter, without=bench, leaves the facts out (null), so
+// a poll (adc task wait) never pays for the task's ledger (Opus #432 L1).
+//
+// The bound (stated, Opus #432 L1): the facts cost about 1.2 KB a model
+// call (its measurements and ids), so one task's read passes the client's
+// 1 MiB response bound past about 850 calls in that one task. At (a) a
+// task's calls are bounded by its rounds and turns rails, far below that;
+// past it, adc task show and adc dev bench record fail, never truncate,
+// and adc task wait (without=bench) still reads.
 const TaskPath = "/v1/tasks/{task}"
 
+// WithoutBench is TaskPath's query that leaves the benchmark facts out.
+const WithoutBench = "without=bench"
+
 // ReadTask is task id's record as the one task's read gives it, read at
-// at: its card, its first attempt and its benchmark facts (under both the
-// attempt and model_call read kinds); false when the caller reads no such
-// task. Only that task's nodes, leases and calls are read, and a record of
-// it that cannot be read fails this read alone (Opus #430 M1).
-func ReadTask(tx *eventstore.Tx, at ReadAt, id types.TaskID) (types.TaskRead, bool, error) {
+// at: its card, its first attempt and, with bench, its benchmark facts
+// (under both the attempt and model_call read kinds); false when the
+// caller reads no such task. The task's board scope is checked first, so
+// nothing of a task the caller does not read is read, nor its damage
+// shown (Opus #432 L2). Only that task's nodes, leases and calls are
+// read, and a record of it that cannot be read fails this read alone
+// (Opus #430 M1).
+func ReadTask(tx *eventstore.Tx, at ReadAt, id types.TaskID, bench bool) (types.TaskRead, bool, error) {
+	t, recorded, _, err := boardTask(tx, id)
+	if err != nil || !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) {
+		return types.TaskRead{}, false, err
+	}
 	nodes, err := graph.TaskNodes(tx, id)
 	if err != nil {
 		return types.TaskRead{}, false, err
 	}
-	return taskRead(tx, at, id, nodes, true)
+	return taskRead(tx, at, id, nodes, bench)
 }
 
 // taskRead is task id's record over its nodes, with its benchmark facts
@@ -149,12 +168,19 @@ func (h Reads) Task(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a task id", http.StatusBadRequest)
 		return
 	}
+	bench := r.URL.RawQuery == ""
+	if !bench && r.URL.RawQuery != WithoutBench {
+		http.Error(w, "the one task's read takes only "+WithoutBench, http.StatusBadRequest)
+		return
+	}
+	r = r.Clone(r.Context()) // view takes no query: the mask is read here
+	r.URL.RawQuery = ""
 	h.view(w, r, func(tx *eventstore.Tx, _ identity.Principal, _ types.Actor, at ReadAt) (any, error) {
 		if at.Scope.Empty() {
 			return nil, errNotGranted
 		}
 		out := types.ReadList{Resource: tasksName, Outcome: types.ReadListOutcomeEmpty, Items: []json.RawMessage{}}
-		rec, ok, err := ReadTask(tx, at, id)
+		rec, ok, err := ReadTask(tx, at, id, bench)
 		if err != nil || !ok {
 			return out, err
 		}

@@ -88,26 +88,33 @@ func (t Transport) Read(ctx context.Context, resource string) ([]byte, error) {
 // ReadTask gets one task's read (api.TaskPath): the tasks list holding
 // that task's record alone, or none; returned once it validates as Read's
 // tasks list does, with at most that one record (P25; Opus #430 H1).
-func (t Transport) ReadTask(ctx context.Context, task string) ([]byte, error) {
+// Without bench it asks for the record without its benchmark facts
+// (api.WithoutBench), and refuses one that carries them.
+func (t Transport) ReadTask(ctx context.Context, task string, bench bool) ([]byte, error) {
 	const resource = "tasks"
 	res, ok := api.Registered()[resource]
 	if !ok {
 		return nil, ErrNoResource
 	}
-	resp, err := t.do(ctx, http.MethodGet, "/v1/tasks/"+url.PathEscape(task), nil, false)
+	path := "/v1/tasks/" + url.PathEscape(task)
+	if !bench {
+		path += "?" + api.WithoutBench
+	}
+	resp, err := t.do(ctx, http.MethodGet, path, nil, false)
 	if err := refusal(resp, err); err != nil {
 		return nil, err
 	}
 	return answer(resp, nil, "a task read", func(raw []byte) error {
 		var list struct {
 			Items []struct {
-				ID string `json:"id"`
+				ID    string          `json:"id"`
+				Bench json.RawMessage `json:"bench"`
 			} `json:"items"`
 		}
 		if err := validList(raw, resource, strings.TrimSuffix(res.Schema, ".json")); err != nil {
 			return err
 		}
-		if json.Unmarshal(raw, &list) != nil || len(list.Items) > 1 || len(list.Items) == 1 && list.Items[0].ID != task {
+		if json.Unmarshal(raw, &list) != nil || len(list.Items) > 1 || len(list.Items) == 1 && (list.Items[0].ID != task || !bench && string(list.Items[0].Bench) != "null") {
 			return ErrInvalidRead
 		}
 		return nil

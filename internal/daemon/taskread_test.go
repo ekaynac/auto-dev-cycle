@@ -140,7 +140,7 @@ func taskOneAs(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID) 
 		if err = errors.Join(err, serr); err != nil {
 			return err
 		}
-		rec, _, err = api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, task)
+		rec, _, err = api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, task, true)
 		return err
 	})
 	return rec

@@ -75,18 +75,20 @@ type taskState struct {
 // TaskReader is a Client that reads one task (client.Transport.ReadTask:
 // GET /v1/tasks/{task}, the tasks list holding that task alone).
 type TaskReader interface {
-	ReadTask(ctx context.Context, task string) ([]byte, error)
+	ReadTask(ctx context.Context, task string, bench bool) ([]byte, error)
 }
 
 // readTask reads task's record over the one task's read, never the whole
-// list (Opus #430 H1): its raw JSON and state; refused when the read found
-// no task the caller reads.
-func readTask(ctx context.Context, task types.TaskID, c Client) (raw json.RawMessage, st taskState, refused bool, err error) {
+// list (Opus #430 H1), with its benchmark facts when bench (adc task show,
+// adc dev bench record; never adc task wait's polls: Opus #432 L1): its
+// raw JSON and state; refused when the read found no task the caller
+// reads.
+func readTask(ctx context.Context, task types.TaskID, bench bool, c Client) (raw json.RawMessage, st taskState, refused bool, err error) {
 	r, ok := c.(TaskReader)
 	if !ok {
 		return nil, st, false, ErrNoTransport
 	}
-	doc, err := r.ReadTask(ctx, string(task))
+	doc, err := r.ReadTask(ctx, string(task), bench)
 	if err != nil {
 		return nil, st, false, err
 	}
@@ -116,7 +118,7 @@ func readTask(ctx context.Context, task types.TaskID, c Client) (raw json.RawMes
 // taskRecord is readTask for show: the record, or the exit code of a read
 // that failed or found no task, its message said.
 func taskRecord(ctx context.Context, name string, task types.TaskID, stderr io.Writer, c Client) (json.RawMessage, int, bool) {
-	raw, _, refused, err := readTask(ctx, task, c)
+	raw, _, refused, err := readTask(ctx, task, true, c)
 	switch {
 	case err != nil:
 		return nil, failed(stderr, name, err), false
@@ -188,7 +190,7 @@ func taskWait(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 	defer cancel()
 	var last error // the last read the controller could not answer
 	for {
-		rec, st, refused, err := readTask(wctx, task, c)
+		rec, st, refused, err := readTask(wctx, task, false, c)
 		switch {
 		case ctx.Err() != nil:
 			say(stderr, "%s: could_not_run: %s\n", name, ctx.Err())

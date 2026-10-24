@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,9 +389,109 @@ func TestATasksDamagedFactsAreItsOwn(t *testing.T) {
 		if err = errors.Join(err, serr); err != nil {
 			return err
 		}
-		if _, _, err := api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, done); err == nil {
+		if _, _, err := api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, done, true); err == nil {
 			t.Error("the damaged task's one-task read")
 		}
 		return nil
 	})
+}
+
+// Opus #432 L1: adc task wait polls the one task's read without its
+// benchmark facts (without=bench). A held task whose facts alone pass the
+// client's 1 MiB bound (3,000 measurements): adc task show fails, could
+// not run, past the bound; adc task wait --until held reads it and prints
+// its record, bench null. Any other query on the one task's read is 400.
+func TestATaskWaitReadsNoLedger(t *testing.T) {
+	dir := shortDir(t)
+	gs := []types.ResourceGroup{tokens(1 << 40)}
+	w := seed(t, dir, daemonProjection(t, gs...))
+	fullHistory(t, w)
+	huge := measuredTask(t, w, 3000, false)
+	build := templateNodes(w, huge)[types.NodeKindBuild]
+	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		h, err := graph.RailHold(graph.RailRounds)
+		if err != nil {
+			return nil, err
+		}
+		return graph.Raise(tx, build, h, nil)
+	})
+	op := w.op
+	w.done()
+	r := startOn(t, dir, gs, op)
+	if code, _, errb := r.c.adc(r.tok, "task", "show", string(huge), "--json"); code != entry.ExitCouldNotRun || !strings.Contains(errb, "exceeds 1048576 bytes") {
+		t.Fatalf("task show of a task past the bound: %d %s", code, errb)
+	}
+	code, out, errb := r.c.adcWithin(10*time.Second, r.tok, "task", "wait", string(huge), "--until", "held", "--timeout", "5s", "--every", "100ms", "--json")
+	var rec types.TaskRead
+	if code != entry.ExitOK || json.Unmarshal([]byte(out), &rec) != nil || rec.ID != huge || rec.Bench != nil || len(out) > 64<<10 {
+		t.Fatalf("task wait of the same task: %d, %d bytes, %s", code, len(out), errb)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://adcd/v1/tasks/"+string(huge)+"?without=card", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+r.tok)
+	resp, err := unixClient(filepath.Join(r.c.dir, privateSocket)).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("another query on the one task's read: %d", resp.StatusCode)
+	}
+}
+
+// Opus #432 L2: the one task's read checks the task's board scope before
+// it reads the task's nodes. With the task's node index damaged (a node it
+// names is no node), a supervisor reading another project's board gets no
+// record and no error, as for any task it does not read; the operator,
+// who reads the task, gets the damage as the read's failure.
+func TestTheOneTaskReadScopesFirst(t *testing.T) {
+	const other = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sb2")
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t, tokens(10)))
+	op := fullHistory(t, w)
+	running, _, _, _ := startedTask(t, w, w.lease(4).Reservations, true)
+	now := time.Now().UTC()
+	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op}
+	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{other}},
+		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{"board", "attempt", "model_call"}},
+		ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op}
+	w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		a, err := identity.CreateActor(sup)
+		if err != nil {
+			return nil, err
+		}
+		gr, err := authority.CreateGrant(tx, g)
+		return append(a, gr...), err
+	})
+	w.done()
+	execSQL(t, dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('`+graph.TaskNodeProjection+`', '`+string(running)+`/`+newID(t, "nod")+`', 'true')`)
+	w = seed(t, dir, daemonProjection(t, tokens(10)))
+	t.Cleanup(w.done)
+	read := func(actor types.ActorID) (bool, error) {
+		var ok bool
+		var rerr error
+		w.view(func(tx *eventstore.Tx) error {
+			var a types.Actor
+			raw, _, err := tx.Get(identity.ActorProjection, string(actor))
+			if err == nil {
+				err = json.Unmarshal(raw, &a)
+			}
+			scope, serr := authority.ReadScopeOf(tx, a, time.Now())
+			if err = errors.Join(err, serr); err != nil {
+				return err
+			}
+			_, ok, rerr = api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, running, true)
+			return nil
+		})
+		return ok, rerr
+	}
+	if ok, err := read(sup.ID); ok || err != nil {
+		t.Errorf("a reader of another project: %v %v", ok, err)
+	}
+	if _, err := read(op); err == nil {
+		t.Error("the operator's read of the damaged task")
+	}
 }

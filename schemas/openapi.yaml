@@ -1032,6 +1032,12 @@ paths:
           description: A task id (tsk_...).
           schema:
             type: string
+        - name: without
+          in: query
+          description: 'bench: the record without its benchmark facts (null), as a poll reads it.'
+          schema:
+            enum:
+              - bench
       responses:
         "200":
           description: The task's record, if the caller reads it.
@@ -1040,7 +1046,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/api.read-list'
         "400":
-          description: Not a task id.
+          description: Not a task id, or another query.
         "401":
           description: No valid bearer token on this listener.
         "403":
