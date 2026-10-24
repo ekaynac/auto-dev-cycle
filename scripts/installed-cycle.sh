@@ -292,7 +292,19 @@ start_adcd() {
     --registry "$work/registry.json" "${sandbox[@]}" >"$log" 2>&1 &
   adcd=$!
 }
-started() { kill -0 "$adcd" 2>/dev/null || die "adcd exited: $(head -c 400 "$log")"; grep -q "^adcd: started${1:-}" "$log"; }
+# how STATUS: an exit status as the shell gives it, a signal's named (128+N:
+# SIGTERM is "signal TERM"), so a process killed before it logs anything is
+# told from one that failed (an empty log says neither).
+how() { if (($1 > 128)); then echo "signal $(kill -l $(($1 - 128)) 2>/dev/null || echo $(($1 - 128)))"; else echo "exit $1"; fi; }
+started() {
+  local rc=0
+  if ! kill -0 "$adcd" 2>/dev/null; then
+    wait "$adcd" || rc=$?
+    adcd=""
+    die "adcd exited ($(how "$rc")): $(head -c 400 "$log")"
+  fi
+  grep -q "^adcd: started${1:-}" "$log"
+}
 step "the installed adcd"
 start_adcd
 within 60 "adcd to start" started
@@ -325,7 +337,9 @@ stop() {
   kill -TERM "$adcd"
   stopped() { ! kill -0 "$adcd" 2>/dev/null; }
   within 60 "adcd to stop" stopped
-  wait "$adcd" || die "adcd stopped with an error: $(tail -c 400 "$log")"
+  local rc=0
+  wait "$adcd" || rc=$?
+  ((rc == 0)) || die "adcd stopped with an error ($(how "$rc")): $(tail -c 400 "$log")"
   adcd=""
 }
 stop
