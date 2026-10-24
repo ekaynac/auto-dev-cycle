@@ -64,7 +64,7 @@ type CycleCaseExpect struct {
 	BuilderSees *[]string `json:"builder_sees,omitempty"`
 	// Requests, files of this case, the driver sends on the attempt's gateway socket with the attempt's token, each with the HTTP status the gateway answers and, for a refusal, the reason its body names.
 	GatewayRequests *[]CycleCaseExpectGatewayRequestsItem `json:"gateway_requests,omitempty"`
-	// File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
+	// File names that no path may have when the run ends: what a hostile setup would create if the controller, or a run escaping its attempt, ran it (§2.7: $W/canary-<case>). Searched: the run's work directory (the controller's state, its clones and exchanges) and its parent at depth 1; the sandbox root and its runs/ directory (/dev/shm/adcrXXXXXX), in the root's user namespace, and each one's parent at depth 1. Not searched: an attempt's own directory after its teardown removed it (a file written inside it goes with it; one written past it outlives it, and is found).
 	CanaryPaths *[]string `json:"canary_paths,omitempty"`
 	// No attempt starts and no model call is made: a launch refused before its start (§2.3 assertion 6), its lease released.
 	NoAttempt *bool `json:"no_attempt,omitempty"`

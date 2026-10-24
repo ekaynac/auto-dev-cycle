@@ -149,11 +149,13 @@ func TestCycleCases(t *testing.T) {
 		// P24c: a reviewer canary is in a file of the case's base overlay, or
 		// is the driver's {canary}, which the case's profile overlay carries;
 		// the scenario never carries it (the stub cannot leak it itself). Its
-		// case names its review node: a run with no reviewer request would
-		// hold it trivially.
+		// case records a review: it names its review node, or ends at the
+		// candidate (stub mode: the review recorded and held review_inactive,
+		// #226 entry 189; the live route reviews it), so a run with no review
+		// cannot hold it trivially where a reviewer runs.
 		if c.Expect.ReviewerCanaries != nil {
-			if _, ok := c.Expect.Nodes["review"]; !ok {
-				t.Errorf("%s: it has reviewer canaries, but names no review node", name)
+			if _, ok := c.Expect.Nodes["review"]; !ok && c.Expect.Until != "candidate" {
+				t.Errorf("%s: it has reviewer canaries, but records no review (no review node, and it does not end at the candidate)", name)
 			}
 			for _, canary := range *c.Expect.ReviewerCanaries {
 				found := canary == "{canary}" && strings.Contains(string(c.ProfileOverlay), "{canary}") || in(overlay, canary)

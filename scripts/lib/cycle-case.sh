@@ -7,12 +7,13 @@
 # case_file, run_env, sock, here):
 #   cycle_case       creates the case's project (its profile) and task (its
 #                    T0 task's title and requirement, its hidden/ files
-#                    attached as the acceptance), then reads the task
-#                    (adc task show) every 2 s, at most 25 minutes (a gate's bounded retries wait 1+2+4+8 minutes before its terminal hold), until it
-#                    ends: a node of it other than a review held, or, for a
-#                    case that expects the candidate, its gate completed and
-#                    its review held review_inactive (stub mode: #226 entry
-#                    189), or the task closed;
+#                    attached as the acceptance), then waits, at most 25
+#                    minutes (a gate's bounded retries wait 1+2+4+8 minutes
+#                    before its terminal hold), until the task ends (ended);
+#                    a hold that is not a runner's retry ends the wait at
+#                    once, so an intermediate one ends it early and the
+#                    case's exact holds then fail it: a flaky failure,
+#                    never a pass;
 #   cycle_check SEQ  once adcd replayed its store (its log's head SEQ): reads
 #                    the task again, the event stream from seq 1 to SEQ and
 #                    adc dev capabilities, and checks the case's expect
@@ -55,13 +56,20 @@ cycle_case() {
   fi
 }
 
-# ended reads the task into out/show.json and reports whether it ended:
-# closed; its gate completed and its review held review_inactive (stub
-# mode's end: nothing more runs); or a node of it but a review held, on a
-# hold that is not a runner's bounded retry ("runner: retry N until ...",
-# which clears itself).
+# ended waits for the task with adc task wait --until closed,held (its
+# one-task read without the bench ledger, every second, at most 5 s; read
+# again until the deadline) into out/show.json, and reports whether it
+# ended: closed; its gate completed and its review held review_inactive
+# (stub mode's end: nothing more runs); or a node of it but a review held,
+# on a hold that is not a runner's bounded retry ("runner: retry N until
+# ...", which clears itself). cycle_check reads the whole task, its bench
+# included, once.
 ended() {
-  adc task show "$tsk" --json >"$work/out/show.json" 2>"$work/out/show.err" || return 1
+  local rc=0
+  adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/show.json" 2>"$work/out/show.err" || rc=$?
+  # 5: neither state within the 5 s, read again; 6, with closed,held asked: its card is unplaced (no column), which no wait ends.
+  if ((rc == 6)); then die "task $tsk's card is unplaced: $(head -c 300 "$work/out/show.err")"; fi
+  ((rc == 0)) || return 1
   "$node" -e 'const fs = require("node:fs"); const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const nodes = s.card?.nodes ?? []; const holds = (n) => (n.holds ?? []).map((h) => h.hold);
     const closed = s.card?.column === "done_candidate" || s.card?.column === "done";

@@ -31,6 +31,9 @@
     ],
     "builder_sees": [
       "refused: \".git/config\" names .git"
+    ],
+    "hold_signals": [
+      "runner: failed"
     ]
   }
 }

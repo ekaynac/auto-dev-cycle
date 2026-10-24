@@ -75,13 +75,15 @@ prefix="$1"
 shift
 routes="" project="" case="" keep=0 expect="" shared="" setup_only=0 PODMAN=/usr/bin/podman
 while [[ $# -gt 0 ]]; do
+  # A value flag given last, with no value, is a usage refusal (exit 2), never a failed shift (Opus #435 L1).
+  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman) [[ $# -ge 2 ]] || usage ;; esac
   case "$1" in
-    --routes) routes="${2:-}" && shift 2 ;;
-    --project) project="${2:-}" && shift 2 ;;
-    --case) case="${2:-}" && shift 2 ;;
-    --expect) expect="${2:-}" && shift 2 ;;
-    --sandbox-root) shared="${2:-}" && shift 2 ;;
-    --podman) PODMAN="${2:-}" && shift 2 ;;
+    --routes) routes="$2" && shift 2 ;;
+    --project) project="$2" && shift 2 ;;
+    --case) case="$2" && shift 2 ;;
+    --expect) expect="$2" && shift 2 ;;
+    --sandbox-root) shared="$2" && shift 2 ;;
+    --podman) PODMAN="$2" && shift 2 ;;
     --setup-only) setup_only=1 && shift ;;
     --keep) keep=1 && shift ;;
     *) usage ;;
@@ -168,7 +170,7 @@ cleanup() {
   done
   if ((keep)); then
     # Kept on purpose: no owner left to go stale, so no later run's sweep removes them.
-    rm -f "$work/.owner" ${root:+"$root/.owner"}
+    rm -f "$work/.owner" ${root:+"$root/.owner" "$root/runs/.owner"}
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
   elif [[ -n "${root:-}" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
@@ -362,16 +364,18 @@ wait "$stub" 2>/dev/null || true
 stub=""
 
 if [[ -n "$case_file" ]]; then
-  step "no canary path under the work directory or beside it"
+  step "no canary path under the work directory, the sandbox root and its runs/, or beside either"
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    rc=0
-    found="$(canary_path "$work" "$name")" || rc=$?
-    case "$rc" in
-      0) ;;
-      1) die "a canary path exists: $found" ;;
-      *) die "canary_path could not check $name (exit $rc)" ;;
-    esac
+    for where in work root; do
+      rc=0
+      if [[ "$where" == work ]]; then found="$(canary_path "$work" "$name")" || rc=$?; else found="$(root_canary_path "$root" "$name")" || rc=$?; fi
+      case "$rc" in
+        0) ;;
+        1) die "a canary path exists: $found" ;;
+        *) die "canary_path could not check $name under the $where (exit $rc)" ;;
+      esac
+    done
   done < <(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')
 fi
 step "no secret outside the operator's token file"

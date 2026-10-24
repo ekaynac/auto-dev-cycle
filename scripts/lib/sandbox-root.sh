@@ -63,10 +63,11 @@ owner_of() {
 }
 
 sandbox_root() {
-  local root="${1:-}" runs
+  local root="${1:-}" runs owned=0
   if [[ -z "$root" ]]; then
     root="$(mktemp -d /tmp/adcXXXXXX)" || return 1
     owner_of $$ >"$root/.owner" || return 1
+    owned=1
   else
     mkdir -p "$root" && chmod 700 "$root" || return 1
   fi
@@ -74,10 +75,20 @@ sandbox_root() {
   ((${#root} + 2 <= 50)) || { echo "sandbox_root: $root is too long for Podman's runroot" >&2; return 1; }
   if [[ ! -L "$root/runs" ]]; then
     runs="$(mktemp -d /dev/shm/adcrXXXXXX)" || return 1
+    if ((owned)); then cp "$root/.owner" "$runs/.owner" || return 1; fi
     ln -s "$runs" "$root/runs" || return 1
   fi
-  [[ -d "$root/runs/" ]] || { echo "sandbox_root: $root/runs is dangling" >&2; return 1; }
+  [[ -n "$(runs_of "$root")" ]] || { echo "sandbox_root: $root/runs is not a directory /dev/shm/adcrXXXXXX" >&2; return 1; }
   echo "$root"
+}
+
+# runs_of ROOT: the directory ROOT/runs links to, only when it is one
+# sandbox_root makes (/dev/shm/adcrXXXXXX, a directory); else nothing, so
+# no removal ever follows the link elsewhere.
+runs_of() {
+  local runs
+  runs="$(readlink "$1/runs" 2>/dev/null)" || return 0
+  if [[ "$runs" =~ ^/dev/shm/adcr[A-Za-z0-9]{6}$ && -d "$runs" && ! -L "$runs" ]]; then echo "$runs"; fi
 }
 
 # stale DIR: DIR is ours and records an owner (.owner) that is gone.
@@ -89,10 +100,33 @@ stale() {
 }
 
 sandbox_roots_stale() {
-  local r
+  local r tmp
   for r in /tmp/adc??????; do
     if stale "$r"; then sandbox_root_remove "$r"; fi
   done
+  # A runs/ directory whose root is already gone (Opus #435 L2): removed in
+  # a scratch root's user namespace (a run's files may be a container's).
+  for r in /dev/shm/adcr??????; do
+    stale "$r" || continue
+    tmp="$(mktemp -d /tmp/adcXXXXXX)" || continue
+    root_podman "$tmp" unshare rm -rf "$r" 2>/dev/null || rm -rf "$r" 2>/dev/null || true
+    root_podman "$tmp" unshare rm -rf "$tmp/storage" "$tmp/r" 2>/dev/null || true
+    rm -rf "$tmp"
+  done
+}
+
+# root_canary_path ROOT NAME: prints the first path named NAME under ROOT or
+# its runs/ directory (searched in the root's user namespace: a run's files
+# may be a container's), or beside either (their parents, at depth 1), and
+# fails when there is one (§2.7's canary_paths: an escape past an attempt's
+# directory outlives its teardown; Opus #435 M2). 2: bad input.
+root_canary_path() {
+  local root="$1" name="$2" runs found
+  [[ -d "$root" && -n "$name" && "$name" != */* ]] || { echo "root_canary_path: ROOT must exist, NAME be a plain name" >&2; return 2; }
+  runs="$(runs_of "$root")"
+  found="$(root_podman "$root" unshare find "$root" ${runs:+"$runs"} -name "$name" -print -quit 2>/dev/null)" || return 2
+  found+="$(find "$(dirname "$root")" ${runs:+"$(dirname "$runs")"} -mindepth 1 -maxdepth 1 -name "$name" -print -quit 2>/dev/null)"
+  [[ -z "$found" ]] || { printf '%s\n' "$found"; return 1; }
 }
 
 # work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory
@@ -111,7 +145,7 @@ work_dirs_stale() {
           [[ "$pid" =~ ^[0-9]+$ && "$(owner_of "$pid")" == "$pid $start" ]] && kill -9 "$pid" 2>/dev/null
         done <"$w/.pids"
       fi
-      rm -rf "$w" 2>/dev/null || "$PODMAN" unshare rm -rf "$w" 2>/dev/null || true
+      rm -rf "$w" 2>/dev/null || true
     done
   done
 }
@@ -147,7 +181,7 @@ sandbox_root_sweep() {
 sandbox_root_remove() {
   local root="$1" runs
   [[ -d "$root" ]] || return 0
-  runs="$(readlink "$root/runs" 2>/dev/null)" || runs=""
+  runs="$(runs_of "$root")"
   if [[ -d "$root/storage" ]]; then
     sandbox_root_sweep "$root"
     root_podman "$root" system reset --force >/dev/null 2>&1 || true

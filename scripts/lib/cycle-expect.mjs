@@ -21,7 +21,7 @@
 // held review_inactive, adcd's start naming why; "closed as a candidate
 // after review" is the live route's (D2).
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [caseFile, out, name] = process.argv.slice(2);
@@ -31,12 +31,19 @@ const c = JSON.parse(readFileSync(caseFile, "utf8"));
 const e = c.expect;
 const show = JSON.parse(read("show.json"));
 const events = lines("events.jsonl");
-const stub = existsSync(join(out, "stub.jsonl")) ? lines("stub.jsonl") : [];
+const fails0 = [];
+// The stub's log is required: a missing or unreadable one is a failure, never no requests (Opus #435 M3).
+let stub = [];
+try {
+  stub = lines("stub.jsonl");
+} catch (err) {
+  fails0.push(`the stub provider's log cannot be read: ${err.message}`);
+}
 const log = read("adcd-1.log");
 const caps = JSON.parse(read("capabilities.json"));
 const canary = read("canary").trim();
 
-const fails = [];
+const fails = fails0;
 const fail = (why) => fails.push(why);
 const card = show.card ?? {};
 const nodes = card.nodes ?? [];
@@ -111,7 +118,13 @@ for (const x of requests) {
   for (const k of e.canaries) if (body.includes(k)) fail(`canary ${k} in a ${roleOf(x)} request (${x.request_id})`);
   if (roleOf(x) === "reviewer") for (const k of (e.reviewer_canaries ?? []).map(sub)) if (body.includes(k)) fail(`reviewer canary ${k} in a reviewer request (${x.request_id})`);
   if (roleOf(x) === "other") fail(`a request for model ${x.model}`);
+  // The canary minted for this run (§2.7 hostile-gate-output's gate writes it into its results mount) reaches no request at all.
+  if (body.includes(canary)) fail(`the run's minted canary in a ${roleOf(x)} request (${x.request_id})`);
 }
+// Nor either saved operator read (Opus #435 H1).
+for (const f of ["show.json", "events.jsonl"]) if (read(f).includes(canary)) fail(`the run's minted canary in the operator's ${f}`);
+// An attempt that started made at least one builder request the stub logged (Opus #435 M3).
+if (events.some((x) => x.kind === "attempt.started/v1") && !requests.some((x) => roleOf(x) === "builder")) fail("an attempt started, and the stub logged no builder request");
 for (const s of e.builder_sees ?? []) {
   if (!requests.some((x) => roleOf(x) === "builder" && JSON.stringify(x.body).includes(JSON.stringify(s).slice(1, -1)))) fail(`no builder request carries ${s}`);
 }

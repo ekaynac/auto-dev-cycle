@@ -82,6 +82,12 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		!strings.Contains(out, "installed-cycle: candidate: the case's profile") || started() {
 		t.Errorf("no Podman: exit %d, adcd started %v, %s", code, started(), out)
 	}
+	// Opus #435 L1: a value flag given last, with no value, is a usage refusal.
+	for _, flag := range []string{"--podman", "--sandbox-root", "--expect"} {
+		if out, code := run(flag); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: usage: ") || started() {
+			t.Errorf("%s with no value: exit %d, adcd started %v, %s", flag, code, started(), out)
+		}
+	}
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
 	// directory, each recording its owner (pid and start time): the next run
@@ -140,6 +146,56 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	for name := range dirs {
 		if _, err := os.Stat(filepath.Join(tmpdir, "adc-cycle."+name)); (err == nil) == (name == "stale") {
 			t.Errorf("adc-cycle.%s: present %v after the sweep", name, err == nil)
+		}
+	}
+}
+
+// Opus #435 L2: removing a sandbox root follows its runs/ link only to a
+// directory sandbox_root makes (/dev/shm/adcrXXXXXX); a runs/ directory left
+// after its root is gone is swept once its owner is gone, never while it
+// lives.
+func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
+	if _, err := os.Stat("/dev/shm"); err != nil {
+		t.Skip("no /dev/shm")
+	}
+	sh := func(script string) string {
+		t.Helper()
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/sandbox-root.sh; "+script)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v %s", script, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	elsewhere := t.TempDir()
+	write(t, filepath.Join(elsewhere, "keep"), "", 0o600)
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(root, "runs")); err != nil {
+		t.Fatal(err)
+	}
+	sh("sandbox_root_remove " + root)
+	if _, err := os.Stat(filepath.Join(elsewhere, "keep")); err != nil {
+		t.Errorf("a runs/ link to %s was followed: %v", elsewhere, err)
+	}
+	if _, err := os.Stat(root); err == nil {
+		t.Errorf("the root %s is still there", root)
+	}
+
+	runs := map[string]string{"stale": "4194305 0", "live": sh("owner_of $PPID")}
+	for name, owner := range runs {
+		dir := sh("mktemp -d /dev/shm/adcrXXXXXX")
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		write(t, filepath.Join(dir, ".owner"), owner+"\n", 0o600)
+		runs[name] = dir
+	}
+	_ = sh("sandbox_roots_stale")
+	for name, dir := range runs {
+		if _, err := os.Stat(dir); (err == nil) == (name == "stale") {
+			t.Errorf("the %s runs/ directory %s: present %v after the sweep", name, dir, err == nil)
 		}
 	}
 }

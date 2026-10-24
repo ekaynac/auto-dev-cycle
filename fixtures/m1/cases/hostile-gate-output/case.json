@@ -38,6 +38,9 @@
       "TestHiddenTransferFailureChangesNothing",
       "TestHiddenTransferAllDropsSourceItem",
       "TestHiddenTransferToSelfIsRejected"
+    ],
+    "reviewer_canaries": [
+      "{canary}"
     ]
   }
 }

@@ -93,6 +93,9 @@ func TestCycleExpect(t *testing.T) {
 		}
 		files := map[string]string{"case.json": js(v["case"]), "show.json": js(v["show"]), "events.jsonl": lines(v["events"].([]map[string]any)),
 			"stub.jsonl": lines(v["stub"].([]map[string]any)), "adcd-1.log": v["log"].(string), "capabilities.json": js(v["caps"]), "canary": "ADC-CANARY-x\n"}
+		if _, ok := v["nostub"]; ok {
+			delete(files, "stub.jsonl")
+		}
 		if s, ok := v["second"]; ok {
 			files["second.json"] = js(s)
 		}
@@ -200,6 +203,24 @@ func TestCycleExpect(t *testing.T) {
 		"gateway requests named": {func(v map[string]any) {
 			set(v, []map[string]any{{"file": "requests/a.json", "status": 403}}, "case", "expect", "gateway_requests")
 		}, "gateway_requests: this driver does not send requests"},
+		// Opus #435 H1: the run's minted canary (hostile-gate-output's gate
+		// writes it into its results mount) in a request, or in a saved
+		// operator read.
+		"the minted canary in a builder request": {func(v map[string]any) {
+			set(v, map[string]any{"messages": []map[string]any{{"content": "refused: a symlink ADC-CANARY-x"}}}, "stub", 0, "body")
+		}, "the run's minted canary in a builder request (r1)"},
+		"the minted canary in the task read": {func(v map[string]any) {
+			set(v, "ADC-CANARY-x", "show", "card", "title")
+		}, "the run's minted canary in the operator's show.json"},
+		"the minted canary in the event stream": {func(v map[string]any) {
+			set(v, "ADC-CANARY-x", "events", 0, "subject")
+		}, "the run's minted canary in the operator's events.jsonl"},
+		// Opus #435 M3: an unreadable stub log is a failure, never no requests;
+		// an attempt that started made a builder request.
+		"no stub log": {func(v map[string]any) { v["nostub"] = true }, "the stub provider's log cannot be read"},
+		"an attempt and no builder request": {func(v map[string]any) {
+			v["stub"] = []map[string]any{{"kind": "usage", "request_id": "r1", "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 20}}}
+		}, "an attempt started, and the stub logged no builder request"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			v := base()

@@ -524,9 +524,12 @@ Python profile.
 **The stub set in checkpoint (a)** (P24b; #226 entries 189, 193). `make installed-cycle-stub` runs `candidate`,
 `launch-missing-credential`, `admission-held`, `fault-protected-path`, `fault-test-deletion`, `-skip`,
 `fault-lying-runner`, `fault-unreadable-results`, `fault-provider-4xx` and the hostile cases bar `hostile-model-switch`.
-With review inactive, a refused accept ends the task held at the gate (`runner: failed`: K2a), and a gate that fails
-ends it at the gate: `fault-lying-runner`'s rounds to `budget_rail`, and `hostile-gate-output`'s, need a review's
-`no_go`, so they are the live route's.
+With review inactive, a refused accept ends the task held at the gate (`runner: failed`: K2a; each such case names
+the hold's signal), and a gate that fails ends it at the gate: `fault-lying-runner`'s rounds to `budget_rail`, and
+`hostile-gate-output`'s, need a review's `no_go`, so they are the live route's. `hostile-gate-output` in stub mode:
+the gate's positive control only (the canary reached the gate's failing output); its absence from reviewer requests
+is D2's. The driver asserts now that the run's minted canary is in no request the stub logged and in neither saved
+operator read (`adc task show`, the event stream; Opus #435 H1).
 - **Awaiting the product fix (Build307's PR; #226 entry 193), re-added when it lands:** `launch-missing-image` (an
   image not present at its digest is today a runner retry, `source_invalid_config`; it becomes an immediate
   `wrong_owner` hold naming the image, the lease released, no attempt), `fault-provider-402` and `-429` (the
@@ -594,8 +597,10 @@ ends it at the gate: `fault-lying-runner`'s rounds to `budget_rail`, and `hostil
   The case's `expect.gateway_requests` gives each request's status and reason.
 - **`hostile-gate-output`:** the gate command (the case's `profile_overlay`), not the driver, writes the per-run
   canary into the results mount, so the canary is also in the profile and the gate's argv; no reviewer-visible gate
-  provenance may carry them. The reviewer answers `no_go` each round, so every round is reviewed (the case names
-  its review node) until `budget_rail` holds.
+  provenance may carry them. The reviewer answers `no_go` each round, so every round is reviewed until `budget_rail`
+  holds: the live route's (D2), where `reviewer_canaries: ["{canary}"]` is checked against every reviewer request.
+  Stub mode: the gate's positive control only (the canary reached the gate's failing output); its absence from
+  reviewer requests is D2's.
 - **`hostile-test-escape`:** a Go test (`inventory/escape_probe_test.go`) fails naming each probe that succeeded;
   in the gate it must pass. Its control points it at decoys the control opens (`ADC_SOCKET`, `ADC_PROBE_GATEWAY`,
   `ADC_PROBE_NET`), never at the host's sockets or network.

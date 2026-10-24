@@ -95,7 +95,7 @@ export interface CycleCase {
       reason?: string;
     }[];
     /**
-     * File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
+     * File names that no path may have when the run ends: what a hostile setup would create if the controller, or a run escaping its attempt, ran it (§2.7: $W/canary-<case>). Searched: the run's work directory (the controller's state, its clones and exchanges) and its parent at depth 1; the sandbox root and its runs/ directory (/dev/shm/adcrXXXXXX), in the root's user namespace, and each one's parent at depth 1. Not searched: an attempt's own directory after its teardown removed it (a file written inside it goes with it; one written past it outlives it, and is found).
      */
     canary_paths?: string[];
     /**
