@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 // Documentation is the package name go/build ignores a file of.
@@ -114,25 +115,33 @@ func Modules(gomod []byte) (named map[string]bool, module string, ok bool) {
 // rule, Astra #276 r6): its first element has no dot, and no module path
 // named names is p or a prefix of it (named[""] names every path). The go
 // command resolves such a path from its GOROOT only: it is std or it does
-// not build.
+// not build. A path that is no valid import path (module.CheckImportPath:
+// "", "/x", "a//b", "a/") is none (Opus #429 r7 B1).
 func Std(p string, named map[string]bool) bool {
-	if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") || named[""] {
+	if first, _, _ := strings.Cut(p, "/"); module.CheckImportPath(p) != nil || strings.Contains(first, ".") || named[""] {
 		return false
 	}
-	for q := p; ; q = path.Dir(q) {
+	// Ends: each step drops p's last element, and a valid import path is
+	// relative and clean; "." and "/" end it too (belt and braces).
+	for q := p; q != "." && q != "/"; q = path.Dir(q) {
 		if named[q] {
 			return false
 		} else if !strings.Contains(q, "/") {
 			return true
 		}
 	}
+	return false
 }
 
-// Recv is a method's receiver type name, without * or type parameters;
-// "" for a function.
+// Recv is a method's receiver type name, without parentheses, * or type
+// parameters ((*S), *(S), S[P]: S; Opus #429 r7 M1); "" for a function.
 func Recv(fn *ast.FuncDecl) string {
 	if fn.Recv == nil || len(fn.Recv.List) == 0 {
 		return ""
 	}
-	return strings.TrimLeft(strings.SplitN(types.ExprString(fn.Recv.List[0].Type), "[", 2)[0], "*")
+	t := ast.Unparen(fn.Recv.List[0].Type)
+	if star, ok := t.(*ast.StarExpr); ok {
+		t = ast.Unparen(star.X)
+	}
+	return strings.TrimLeft(strings.SplitN(types.ExprString(t), "[", 2)[0], "*")
 }

@@ -447,7 +447,8 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 // counts only when certain, an explicit name or a standard-library path's
 // (math/rand/v2's rand); a path of the base's module or of a module its
 // go.mod requires is unseen (m/lib/foo may be package bar, m/api/core/v1
-// package v1).
+// package v1). Opus #429 r7: an import of "/x" returns (no import path,
+// unseen), and a parenthesised (*S) receiver keys its method S.M.
 func TestAcceptanceFitsTheBase(t *testing.T) {
 	test := func(pkg, name string) string {
 		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
@@ -477,6 +478,8 @@ func TestAcceptanceFitsTheBase(t *testing.T) {
 		"a cgo helper redeclaring a base name":  {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/cgo.go": "package c\n\nimport \"C\"\n\nfunc Sum() {}\n"}, true},
 		"a method on another type":              {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (S) N() {}\n"}, true},
 		"a method the base's type has":          {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (s *S) M() {}\n"}, false},
+		"a (*S) method the base's type has":     {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/m.go": "package c\n\nfunc (s (*S)) M() {}\n"}, false},
+		"an import of \"/x\" (no import path)":  {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"/x\"\n)", 1) + "\nvar x = 1\n"}, true},
 		"a name a base file imports":            {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/v_test.go": "package c\n\nvar testing = 1\n"}, false},
 		"a module path's last element":          {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"m/lib/foo\"\n)", 1) + "\nvar _ = bar.X\nfunc foo() {}\n"}, true},
 		"a module path's version element":       {map[string]string{"c/h_test.go": strings.Replace(test("c", "TestHidden"), "import \"testing\"", "import (\n\t\"testing\"\n\t\"m/api/core/v1\"\n)", 1) + "\nvar _ = v1.X\nvar core = 1\n"}, true},

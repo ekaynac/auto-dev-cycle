@@ -340,7 +340,9 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 			return nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceProtected)
 		}
 		asks = append(asks, ask{p, p, func(k string) bool { return k == "missing" }})
-		for d := path.Dir(p); d != "."; d = path.Dir(d) {
+		// Ends: p is the record's AcceptancePath (the schema's: relative and
+		// clean, so path.Dir reaches "."); "/" ends it too (belt and braces).
+		for d := path.Dir(p); d != "." && d != "/"; d = path.Dir(d) {
 			asks = append(asks, ask{d, p, func(k string) bool { return k == "missing" || k == "tree" }})
 			if goTest {
 				asks = append(asks, ask{d + "/go.mod", p, func(k string) bool { return k == "missing" }})

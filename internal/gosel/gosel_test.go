@@ -93,7 +93,13 @@ func TestTheGoCommandsRules(t *testing.T) {
 	if Std("fmt", map[string]bool{"": true}) || !Std("fmt", nil) || Std("a.b/c", nil) {
 		t.Error("Std's every-path and nil names")
 	}
-	for src, want := range map[string]string{"func (s *S[P]) M() {}": "S", "func (S) M() {}": "S", "func (s *S[K, V]) M() {}": "S", "func F() {}": ""} {
+	for _, p := range []string{"/x", "/", "", "a//b", "a/", "./x", "x/../y"} { // no import path: none, and each returns (Opus #429 r7 B1)
+		if Std(p, named) || Std(p, nil) {
+			t.Errorf("Std(%q)", p)
+		}
+	}
+	for src, want := range map[string]string{"func (s *S[P]) M() {}": "S", "func (S) M() {}": "S", "func (s *S[K, V]) M() {}": "S", "func F() {}": "",
+		"func (s (*S)) M() {}": "S", "func (s *(S)) M() {}": "S", "func (s ((S))) M() {}": "S", "func (s (*S[P])) M() {}": "S"} {
 		f, err := parser.ParseFile(token.NewFileSet(), "p.go", "package p\n\n"+src+"\n", 0)
 		if err != nil || Recv(f.Decls[0].(*ast.FuncDecl)) != want {
 			t.Errorf("Recv(%s): %v", src, err)
