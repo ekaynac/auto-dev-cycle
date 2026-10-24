@@ -55,14 +55,14 @@ func TestGoMiniProfile(t *testing.T) {
 	}
 }
 
-// goMiniImage is go-mini's own prepared image (#226 entries 97 and 185):
-// built from main f163833 by scripts/prepare-go-image.sh build go-mini,
+// goMiniImage is go-mini's own prepared image (#226 entries 97 and 194):
+// built from main 8adbed7a by scripts/prepare-go-image.sh build go-mini,
 // for linux/arm64 only, and goMiniLabel its dev.adc.prepared label as
 // pushed (podman image inspect): the recipe's lockfile part and the arm64
-// adapter digest, the release of f163833's.
+// adapter digest, the release of 8adbed7a's.
 const (
-	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:f5b0ddd7d54c12317df029a4d296976950208b382c84e06285174efc30cddb95"
-	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"},"adapter":{"linux/arm64":"sha256:427c3994e51eb5996bbc08f4c46452bf7c976655a5b758c652fc480c5afcda83"}}`
+	goMiniImage = "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:66b8cd3a5aaee0cc9d6007e226f37e07d258b82edc49d91891048ae242268a31"
+	goMiniLabel = `{"toolchain":"go","lockfiles":{"go.mod":"sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"},"adapter":{"linux/arm64":"sha256:f2143fea3a47fda98a327353f8c8f3e70b58ddc5d9cfaf45bbc40e41f4ac83aa"}}`
 )
 
 // go-mini's prepared image (#226 entry 97): the recipe's label for go-mini

@@ -1,5 +1,5 @@
 {
-  "note": "go-mini's measured baseline (checkpoint (a)'s stub project, #226 entry 94): gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in go-mini's own prepared image (ghcr.io/ekaynac/adc-prepared-go-mini@sha256:f5b0ddd7d54c12317df029a4d296976950208b382c84e06285174efc30cddb95, image 9c99adda7c99, linux/arm64), offline, in gate mode, on the tree of fixtures/t0/go-mini/repo (ab5dba4edb5fabdc80d94127565b60dde00ab3c4). The run ended on its own and is green: five tests, no skip. baseline-stream.json is the measured run's go test -json stream. The image is go-mini's own (#226 entry 97): scripts/prepare-go-image.sh build go-mini (main f163833, #226 entry 185; linux/arm64 only), labelled with go-mini's go.mod and the arm64 adapter digest.",
+  "note": "go-mini's measured baseline (checkpoint (a)'s stub project, #226 entry 94): gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in go-mini's own prepared image (ghcr.io/ekaynac/adc-prepared-go-mini@sha256:66b8cd3a5aaee0cc9d6007e226f37e07d258b82edc49d91891048ae242268a31, image 1053f9d45926, linux/arm64), offline, in gate mode, on the tree of fixtures/t0/go-mini/repo (ab5dba4edb5fabdc80d94127565b60dde00ab3c4). The run ended on its own and is green: five tests, no skip. baseline-stream.json is the measured run's go test -json stream. The image is go-mini's own (#226 entry 97): scripts/prepare-go-image.sh build go-mini (main 8adbed7a, #226 entry 194; linux/arm64 only), labelled with go-mini's go.mod and the arm64 adapter digest.",
   "command": [
     "go",
     "test",
@@ -7,8 +7,8 @@
     "-json",
     "./..."
   ],
-  "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:f5b0ddd7d54c12317df029a4d296976950208b382c84e06285174efc30cddb95",
-  "image_id": "9c99adda7c9920e664db6eaec57d17c3e07acd7431184549c0455624d398d910",
+  "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:66b8cd3a5aaee0cc9d6007e226f37e07d258b82edc49d91891048ae242268a31",
+  "image_id": "1053f9d45926bd7d2e51f54235b36bff4eb27532007fa71a28f8cb04ec15cbf5",
   "os": "linux",
   "arch": "arm64",
   "base_tree": "ab5dba4edb5fabdc80d94127565b60dde00ab3c4",
