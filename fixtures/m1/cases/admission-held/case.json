@@ -1,0 +1,30 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-protected-path",
+  "control": "The first task ends held (fault-protected-path); a second task created then stays unadmitted while it is held. Admitted alone, the second would claim its plan at once (the candidate case).",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "failed",
+        "reason": "protected_path"
+      }
+    },
+    "holds": [
+      "source_invalid_config"
+    ],
+    "second_task_admitted": false,
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}

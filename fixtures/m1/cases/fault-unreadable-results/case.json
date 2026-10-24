@@ -29,7 +29,7 @@
       }
     },
     "holds": [
-      "wrong_owner"
+      "source_invalid_config"
     ],
     "merge": false,
     "canaries": [
@@ -37,6 +37,9 @@
       "TestHiddenTransferFailureChangesNothing",
       "TestHiddenTransferAllDropsSourceItem",
       "TestHiddenTransferToSelfIsRejected"
+    ],
+    "hold_signals": [
+      "runner: failed"
     ]
   }
 }

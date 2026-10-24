@@ -1,0 +1,29 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "go-mini-feature-1",
+  "credential_withheld": true,
+  "control": "With the credential held (the candidate case) the same launch starts its attempt; here adcd holds no ADC_CREDENTIAL_STUB, so the launch is refused before any attempt or model call.",
+  "expect": {
+    "until": "held",
+    "nodes": {},
+    "absent": [
+      "accept",
+      "gate"
+    ],
+    "holds": [
+      "source_invalid_config"
+    ],
+    "no_attempt": true,
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ],
+    "hold_signals": [
+      "placement: destination stub"
+    ]
+  }
+}

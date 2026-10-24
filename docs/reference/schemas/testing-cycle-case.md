@@ -16,6 +16,7 @@ A case of the installed cycle harness (M1 slice plan §2.6, P24): fixtures/m1/ca
 | `profile_overlay` |  | object (open payload) | Fields merged over the project profile (an RFC 7396 merge patch). |
 | `base_overlay` |  | [CaseName](#casename) | A directory of this case, copied over the base before its first commit. |
 | `remote_hook` |  | [CaseName](#casename) | A hook installed in the base remote (pre-receive), a file of this case. |
+| `credential_withheld` |  | boolean | adcd runs without the stub's credential (no ADC_CREDENTIAL_STUB): §2.3 assertion 6's launch-missing-credential. In stub mode one credential reference serves both roles, and only builds launch (review stays inactive), so the build's launch is the one refused. |
 | `control` | yes | string (minLength `1`, maxLength `1024`) | The positive control: what, with this setup, would make the case fail if the controller misbehaved. |
 | `expect` | yes | object ([fields](#fields-of-expect)) |  |
 
@@ -25,7 +26,7 @@ No other fields are allowed.
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `until` | yes | one of `candidate`, `held` | How the task ends: closed as a candidate (after review), or held. |
+| `until` | yes | one of `candidate`, `held` | How the task ends. In stub mode review stays inactive (no release's records qualify the stub's reviewer route; #226 entry 189), so candidate is: the gate completed and the review node held review_inactive, adcd's start naming why; closed as a candidate after review is the live route's. held: the task holds exactly holds. |
 | `nodes` | yes | map of one of `plan`, `build`, `accept`, `gate`, `review` to object ([fields](#fields-of-expectnodes)) | The outcome and reason of the task's graph's nodes, by kind: every node of a listed kind, in every round, has this result. A kind listed neither here nor in absent is not asserted. |
 | `absent` |  | array of one of `plan`, `build`, `accept`, `gate`, `review` (unique items) | Node kinds of which no node is ever claimed for the task; none is also in nodes. |
 | `holds` | yes | array of string (minLength `1`) | The registered holds the task ends with. |
@@ -35,6 +36,9 @@ No other fields are allowed.
 | `builder_sees` |  | array of string (minLength `8`, maxLength `256`) (unique items) | Strings each of which appears in the content of a message of at least one builder request the stub provider logs: what the builder's tool calls returned, such as the workspace's refusal (refused: ...) of a hostile call. The scenario never carries one (the stub cannot produce it itself). |
 | `gateway_requests` |  | array of object ([fields](#fields-of-expectgateway_requests)) | Requests, files of this case, the driver sends on the attempt's gateway socket with the attempt's token, each with the HTTP status the gateway answers and, for a refusal, the reason its body names. |
 | `canary_paths` |  | array of string (pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) (unique items) | File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-&lt;case&gt;). |
+| `no_attempt` |  | boolean | No attempt starts and no model call is made: a launch refused before its start (§2.3 assertion 6), its lease released. |
+| `second_task_admitted` |  | boolean | Once the task ends held, a second task of the same project is created; false: it stays unadmitted while the first is held (I22, one admitted task, held included). |
+| `hold_signals` |  | array of string (minLength `1`, maxLength `256`) (unique items) | Each is the signal instance of a hold the task ends with (what clears it: the destination or the image the hold names, §2.3 assertion 6). |
 | `usage` |  | object ([fields](#fields-of-expectusage)) | The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts). |
 
 No other fields are allowed.

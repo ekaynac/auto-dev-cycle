@@ -15,7 +15,9 @@
         "reason": "test_integrity_violation"
       }
     },
-    "holds": [],
+    "holds": [
+      "source_invalid_config"
+    ],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",

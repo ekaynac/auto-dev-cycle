@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 )
 
-// CycleCaseExpectUntil: How the task ends: closed as a candidate (after review), or held.
+// CycleCaseExpectUntil: How the task ends. In stub mode review stays inactive (no release's records qualify the stub's reviewer route; #226 entry 189), so candidate is: the gate completed and the review node held review_inactive, adcd's start naming why; closed as a candidate after review is the live route's. held: the task holds exactly holds.
 type CycleCaseExpectUntil string
 
 const (
@@ -44,7 +44,7 @@ type CycleCaseExpectUsage struct {
 }
 
 type CycleCaseExpect struct {
-	// How the task ends: closed as a candidate (after review), or held.
+	// How the task ends. In stub mode review stays inactive (no release's records qualify the stub's reviewer route; #226 entry 189), so candidate is: the gate completed and the review node held review_inactive, adcd's start naming why; closed as a candidate after review is the live route's. held: the task holds exactly holds.
 	Until CycleCaseExpectUntil `json:"until"`
 	// The outcome and reason of the task's graph's nodes, by kind: every node of a listed kind, in every round, has this result. A kind listed neither here nor in absent is not asserted.
 	Nodes map[string]CycleCaseExpectNodesValue `json:"nodes"`
@@ -64,6 +64,12 @@ type CycleCaseExpect struct {
 	GatewayRequests *[]CycleCaseExpectGatewayRequestsItem `json:"gateway_requests,omitempty"`
 	// File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
 	CanaryPaths *[]string `json:"canary_paths,omitempty"`
+	// No attempt starts and no model call is made: a launch refused before its start (§2.3 assertion 6), its lease released.
+	NoAttempt *bool `json:"no_attempt,omitempty"`
+	// Once the task ends held, a second task of the same project is created; false: it stays unadmitted while the first is held (I22, one admitted task, held included).
+	SecondTaskAdmitted *bool `json:"second_task_admitted,omitempty"`
+	// Each is the signal instance of a hold the task ends with (what clears it: the destination or the image the hold names, §2.3 assertion 6).
+	HoldSignals *[]string `json:"hold_signals,omitempty"`
 	// The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
 	Usage *CycleCaseExpectUsage `json:"usage,omitempty"`
 }
@@ -82,6 +88,8 @@ type CycleCase struct {
 	BaseOverlay *CaseName `json:"base_overlay,omitempty"`
 	// A hook installed in the base remote (pre-receive), a file of this case.
 	RemoteHook *CaseName `json:"remote_hook,omitempty"`
+	// adcd runs without the stub's credential (no ADC_CREDENTIAL_STUB): §2.3 assertion 6's launch-missing-credential. In stub mode one credential reference serves both roles, and only builds launch (review stays inactive), so the build's launch is the one refused.
+	CredentialWithheld *bool `json:"credential_withheld,omitempty"`
 	// The positive control: what, with this setup, would make the case fail if the controller misbehaved.
 	Control string          `json:"control"`
 	Expect  CycleCaseExpect `json:"expect"`

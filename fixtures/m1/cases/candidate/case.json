@@ -6,14 +6,30 @@
   "expect": {
     "until": "candidate",
     "nodes": {
-      "build": {"outcome": "found", "reason": "completed_with_findings"},
-      "accept": {"outcome": "empty", "reason": "completed_clean"},
-      "gate": {"outcome": "empty", "reason": "completed_clean"},
-      "review": {"outcome": "empty", "reason": "completed_clean"}
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "empty",
+        "reason": "completed_clean"
+      },
+      "gate": {
+        "outcome": "empty",
+        "reason": "completed_clean"
+      }
     },
     "holds": [],
     "merge": false,
-    "canaries": ["TestHiddenTransferMovesStockAndPrice", "TestHiddenTransferFailureChangesNothing", "TestHiddenTransferAllDropsSourceItem", "TestHiddenTransferToSelfIsRejected"],
-    "usage": {"in": 4700, "out": 880}
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ],
+    "usage": {
+      "in": 2700,
+      "out": 820
+    }
   }
 }

@@ -3,7 +3,7 @@
   "task": "go-mini-feature-1",
   "scenario": "hostile-git-dir",
   "base_overlay": "testdata",
-  "control": "Plain git on a copy of the base with the builder's .git/config and .githooks/post-checkout creates exactly ../canary-hostile-git-dir through each mechanism alone: core.fsmonitor (git status), core.hooksPath (git checkout -b) and the evil filter the base's .gitattributes names (git checkout of a deleted file). Deviation from \u00a72.7: the workspace refuses .git/config (builder_sees), so in the product run no mechanism is ever configured and canary_paths fires only if the workspace and the controller's git both regress; the .gitmodules file:// URL is never fetchable, so 'no fetch' is not observed here. The controller half is proven by sandbox.TestCopyTreeAndTeardown (CopyTree drops every .git), TestGitIsHardened, TestPlainGitRunsHostileCommands, TestCloneRefusesRunWrittenRepositories and accept.TestDiffRefusesGitDirectories.",
+  "control": "Plain git on a copy of the base with the builder's .git/config and .githooks/post-checkout creates exactly ../canary-hostile-git-dir through each mechanism alone: core.fsmonitor (git status), core.hooksPath (git checkout -b) and the evil filter the base's .gitattributes names (git checkout of a deleted file). Deviation from §2.7: the workspace refuses .git/config (builder_sees), so in the product run no mechanism is ever configured and canary_paths fires only if the workspace and the controller's git both regress; the .gitmodules file:// URL is never fetchable, so 'no fetch' is not observed here. The controller half is proven by sandbox.TestCopyTreeAndTeardown (CopyTree drops every .git), TestGitIsHardened, TestPlainGitRunsHostileCommands, TestCloneRefusesRunWrittenRepositories and accept.TestDiffRefusesGitDirectories.",
   "expect": {
     "until": "held",
     "nodes": {
@@ -16,10 +16,9 @@
         "reason": "protected_path"
       }
     },
-    "absent": [
-      "gate"
+    "holds": [
+      "source_invalid_config"
     ],
-    "holds": [],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",

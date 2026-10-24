@@ -15,10 +15,9 @@
         "reason": "protected_path"
       }
     },
-    "absent": [
-      "gate"
+    "holds": [
+      "source_invalid_config"
     ],
-    "holds": [],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",

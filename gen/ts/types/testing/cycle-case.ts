@@ -37,12 +37,16 @@ export interface CycleCase {
    */
   remote_hook?: string;
   /**
+   * adcd runs without the stub's credential (no ADC_CREDENTIAL_STUB): §2.3 assertion 6's launch-missing-credential. In stub mode one credential reference serves both roles, and only builds launch (review stays inactive), so the build's launch is the one refused.
+   */
+  credential_withheld?: boolean;
+  /**
    * The positive control: what, with this setup, would make the case fail if the controller misbehaved.
    */
   control: string;
   expect: {
     /**
-     * How the task ends: closed as a candidate (after review), or held.
+     * How the task ends. In stub mode review stays inactive (no release's records qualify the stub's reviewer route; #226 entry 189), so candidate is: the gate completed and the review node held review_inactive, adcd's start naming why; closed as a candidate after review is the live route's. held: the task holds exactly holds.
      */
     until: "candidate" | "held";
     /**
@@ -90,6 +94,18 @@ export interface CycleCase {
      * File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
      */
     canary_paths?: string[];
+    /**
+     * No attempt starts and no model call is made: a launch refused before its start (§2.3 assertion 6), its lease released.
+     */
+    no_attempt?: boolean;
+    /**
+     * Once the task ends held, a second task of the same project is created; false: it stays unadmitted while the first is held (I22, one admitted task, held included).
+     */
+    second_task_admitted?: boolean;
+    /**
+     * Each is the signal instance of a hold the task ends with (what clears it: the destination or the image the hold names, §2.3 assertion 6).
+     */
+    hold_signals?: string[];
     /**
      * The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
      */

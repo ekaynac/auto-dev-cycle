@@ -35,7 +35,7 @@ func TestInstalledCycleWorkFilesystem(t *testing.T) {
 	} {
 		write(t, filepath.Join(prefix, name), content, 0o755)
 	}
-	for _, s := range []string{"installed-cycle.sh", "lib/secrets.sh", "lib/base-remote.sh"} {
+	for _, s := range []string{"installed-cycle.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh"} {
 		b, err := os.ReadFile("../../scripts/" + s)
 		if err != nil {
 			t.Fatal(err)

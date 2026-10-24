@@ -268,7 +268,7 @@ acceptance tests, baseline). The three (c) issues are chosen the same way, one a
 
 | | |
 |---|---|
-| **Commands** | Live (the exit record, controller host): `installed-cycle.sh $P --routes live --project repo --issue $N --until candidate --bench benchmarks/m1/<date>-<GOOS>-<GOARCH>-a.json`. <br>Stub (CI): `--routes stub --project go-mini --case candidate` (task `go-mini-feature-1`, #226 entry 94), the cases `launch-missing-credential`, `launch-missing-image`, `admission-held` and `owed-input` (X6, below), and §2.6's build, accept, gate, review, provider and usage faults, all with `--expect candidate`: each case's `expect.candidate` block applies (no `merge` node, the task closed as a candidate after review), and the benchmark records stages up to review only |
+| **Commands** | Live (the exit record, controller host): `installed-cycle.sh $P --routes live --project repo --issue $N --until candidate --bench benchmarks/m1/<date>-<GOOS>-<GOARCH>-a.json`. <br>Stub (`make installed-cycle-stub`, on a host with rootless Podman and the pinned go-mini image for its platform; #226 entries 188, 189): `--routes stub --project go-mini --case candidate --expect candidate` (task `go-mini-feature-1`, #226 entry 94), the cases `launch-missing-credential`, `launch-missing-image` and `admission-held` (X6, below), and §2.6's build, accept, gate, provider and usage faults that the product produces (§2.6 lists the set). Each case's `expect` block applies: no `merge` node, and the benchmark records stages up to review only. **In stub mode review stays inactive** (no release's records qualify the stub's reviewer route, and none may: P31's records qualify models; #226 entry 189), so a stub case that expects the candidate ends with its gate completed and its review node held `review_inactive`, adcd's start line naming why ("review stays inactive: P31's qualification on record: …"). "Closed as a candidate after review" is the live route's. `make ci` runs `make installed-cycle-setup` instead: the preflight, every case's setup (`--setup-only`) and a missing prerequisite's refusal (exit 2, named) |
 | **Fixtures** | `fixtures/m1/profiles/auto-dev-cycle.json` (P32: `forge.kind: github`, base `refs/heads/main`, the pinned Go image, gate `["go","test","-json","./<pkg>/..."]` with `result_adapter: go_test_json`, `protected_paths` covering criterion 2's paths); `fixtures/m1/issues/<N>/`; for CI, go-mini (#226 entry 94, #300): T0's `fixtures/t0/go-mini` with the task `go-mini-feature-1`, the profile `fixtures/m1/profiles/go-mini.json` (gate `["go","test","-count=1","-json","./..."]` with `result_adapter: go_test_json`), the measured records `fixtures/m1/stub/go-mini/`, and the stub provider. go-mini gets its own prepared Go image (the same base and toolchain, go-mini's manifest), pinned in its profile before 22a-5; its baseline is then measured again (#226 entry 97); `fixtures/m1/review-qualification/` (P31) |
 | **Prerequisites** | §2.1; Q1's runtime with both pinned images present (this repository's and go-mini's); Q2's two routes inside Q8, with credentials; read access to clone this repository at its base; P31's qualification recorded for the reviewer route |
 | **Assertions** | See below |
@@ -479,7 +479,7 @@ Added for the replan:
 
 #### Stub provider and live routes
 
-- **Stub mode** is deterministic and runs in CI (`make installed-cycle-stub`, part of `make ci`, P24).
+- **Stub mode** is deterministic. `make installed-cycle-stub` runs the stub set where rootless Podman and the pinned go-mini image for the host's platform are present, the image pulled by digest once into one sandbox root the cases share; otherwise it refuses, exit 2, naming what is missing (#226 entry 188). The pinned image is linux/arm64 only, so the set runs on the controller host, and the lead's run is (a)'s exit evidence; a native amd64 image and Podman on the CI runner are an operator item. `make ci` runs `make installed-cycle-setup` (P24b).
   - The builder and reviewer are the real `http-chat` adapter, through the real gateway. Only the upstream is
     scripted.
   - Usage is stub-reported and queryable, so every charge assertion is exact.
@@ -515,11 +515,44 @@ Python profile.
 | `fault-call-stop-402` | a 402, then a stop request | `broker_credit_exhausted`: the capacity cause outranks the stop (`exitmap.Reason`) |
 | `fault-usage-duplicate` | the stub reports equal deltas at two sequences, and one sequence twice with conflicting values | both equal deltas count; the conflict keeps the maxima and flags `found/inconsistent_usage` |
 | `fault-usage-no-delta` | the call is cut before any delta | its liability is the positive reservation, moved from reservation to liability once at settlement (P12b) |
-| `fault-unreadable-results` | `profile_overlay`: `gate.command` without `--junitxml` | gate `could_not_run/runner_fault`; hold `wrong_owner` on the environment owner; never `empty` |
+| `fault-unreadable-results` | `profile_overlay`: `gate.command` without `--junitxml` (Go form: the text stream, not `-json`) | gate `could_not_run/runner_fault`, never `empty`; the runner's bounded retries (1, 2, 4 and 8 minutes), then the gate held `source_invalid_config`, `runner: failed` (amended, #226 entry 193; was a `wrong_owner` hold on the environment owner) |
 | `fault-base-moved` | when the review result is selected, the driver pushes an unrelated commit to `main` from outside | Generation 1's merge is never intended, or is `failed_confirmed` (`Landed` false). Generation 2 rebases cleanly (recomputed, P19); a **fresh review** runs (no carry-over in M1, 01 §4.2); the gate refreshes; a new operator approval is given for generation 2; the merge lands with the external commit as parent. One landed push |
 | `fault-crash-at-push` | `post-receive` on the bare remote runs `kill -9` on `adcd` after accepting the push | after the restart, the merge effect is `uncertain`, then reconciled to `completed` (P20). One merge commit; the node result is recorded once |
 | `fault-crash-at-push-before` | `pre-receive` blocks until `adcd` is killed, then rejects | reconciled to `failed_confirmed` (`Landed` false). P17 invalidates the merge node and re-operates once, within the rail; one landed push |
 | `fault-non-english` | the task's `requirement` is translated to Turkish (`cases/fault-non-english/task.json`) | X1 holds; every reason is a registered English code; the builder's request carries the requirement verbatim |
+
+**The stub set in checkpoint (a)** (P24b; #226 entries 189, 193). `make installed-cycle-stub` runs `candidate`,
+`launch-missing-credential`, `admission-held`, `fault-protected-path`, `fault-test-deletion`, `-skip`,
+`fault-lying-runner`, `fault-unreadable-results`, `fault-provider-4xx` and the hostile cases bar `hostile-model-switch`.
+With review inactive, a refused accept ends the task held at the gate (`runner: failed`: K2a), and a gate that fails
+ends it at the gate: `fault-lying-runner`'s rounds to `budget_rail`, and `hostile-gate-output`'s, need a review's
+`no_go`, so they are the live route's.
+- **Awaiting the product fix (Build307's PR; #226 entry 193), re-added when it lands:** `launch-missing-image` (an
+  image not present at its digest is today a runner retry, `source_invalid_config`; it becomes an immediate
+  `wrong_owner` hold naming the image, the lease released, no attempt), `fault-provider-402` and `-429` (the
+  outcomes are right; the attempts rail is spent to `budget_rail` instead of a `broker_credit_exhausted` hold, or a
+  `quota_reset` hold until the reset).
+- **Not producible in this product**, each in the ledger: `fault-idle-cut` (no gateway idle bound, and the adapter
+  never reports `idle_cut`); `fault-call-stop` (a lease's deadline is an hour, and the stub's trickle is bounded by
+  the gateway's request deadline first); `fault-call-disconnect` (the driver kills no attempt's container mid-call);
+  `fault-call-stop-402` (both of those); `fault-usage-duplicate` and `fault-usage-no-delta` (the stub reports one
+  usage per reply: no per-sequence deltas, no cut before the first delta).
+- **The review faults, in-process in stub mode** (review is inactive there): a degenerate decision
+  (`daemon` `TestADegenerateDecisionIsNotSelected`); an unreviewable candidate (`TestAnUnreviewableCandidateIsTheReviewsVerdict`,
+  `TestAnUnreviewableVerdictOfADependentReviewerIsHeld`); a reviewer of the builder's family (`TestAReviewerOfTheBuildersFamilyIsRefusedAtCommit`);
+  a reviewer requesting a tool (`TestAReviewerRequestingAToolIsRefused`); an unverified review and one past its disk
+  bound (`TestAnUnverifiedReviewIsAbandoned`, `TestAReviewPastItsDiskBoundIsAbandoned`); a no_go's repair
+  (`TestANoGoRepairsTheBuild`, `TestANoGoReviewPublishesItsReport`); review's derivation at start
+  (`TestReviewDerivedActiveThroughAdcd`, `TestAnInactiveReviewIsHeld`); the reviewer's intent and prompt
+  (`TestTheReviewersIntentIsRecordedAtLaunch`; `qualify` `TestPromptWithholds`, the reviewer canaries of
+  `hostile-instructions` and `hostile-gate-output`).
+- **X6's `owed-input`:** no reviewer decision owes an input in this product (review has no ruling to owe), so the
+  round trip is not producible end to end; `input.answer` itself is covered in-process: `authority`
+  `TestInputAnswer`, `TestInputAnswerStaleRevision` (the `R=0` refusal), `TestOwedInputFold`; `daemon`
+  `TestInputAnswerActive`.
+- **`hostile-model-switch`** is out of the stub set: its requests are sent from inside the attempt's container on
+  the attempt's gateway socket (`expect.gateway_requests`), which the driver does not do; `gateway`
+  `TestHostileModelSwitch` covers the gateway's refusal in-process.
 
 **From 01 §3's T0 fault list:**
 - **stale attempt** is X3.
@@ -742,7 +775,7 @@ Rough sizes in lines; **H** marks high-risk contracts (external review by Astra)
 | P22b | activation of `merge-local` and `merge-github` per §1's table: registers `merge` and constructs the `git` and GitHub targets | P20, P22a, P27, P28 | b | 300 | merge reachable with an unenforced required row |
 | P29 | liveness check in the reconcile driver; the `stalled` hold registered (§2.5) | P22a | c | 300 | a frontierless task with no hold |
 | P30 | gate ledger read model over the gate, accept and review records that P14a-P16 keep from (a)'s first live attempt. False blocks and escapes are operator annotations (`note.add` on the node's subject), kept from (a) as well. The `adc.accept-report/v1` schema, bounded, with its inventory entry (#226 entry 67) | P22a | c | 300 | an unknown charge reported as zero |
-| P24b | the cases, the install wiring and the driver, split from P24: the case format `fixtures/m1/cases/<case>/case.json`, with its schema and a loader row that loads every case; `dist-adapters.sh` and `install-check.sh` install `lib/adc/fixtures/m1/` (T0's go-mini included), `lib/adc/scripts/lib/*.sh` and `installed-cycle.sh`, all in `lib/adc/SHA256SUMS`; the driver (§2.1), with `make installed-cycle-stub` in `make ci`. Until 22a-7, the driver runs only `--case preflight`, and a step that needs a later 22a PR refuses (exit 2). Then the `candidate` case and (a)'s stub cases on go-mini, with §2.6's Go forms | P24a; the cases follow 22a-2 to 22a-7 | a, b, c | about 220 before the driver's later steps (M) | — |
+| P24b | the cases, the install wiring and the driver, split from P24: the case format `fixtures/m1/cases/<case>/case.json`, with its schema and a loader row that loads every case; `dist-adapters.sh` and `install-check.sh` install `lib/adc/fixtures/m1/` (T0's go-mini included), `lib/adc/scripts/lib/*.sh` and `installed-cycle.sh`, all in `lib/adc/SHA256SUMS`; the driver (§2.1), with `make installed-cycle-stub` in `make ci`. Until 22a-7, the driver runs only `--case preflight`, and a step that needs a later 22a PR refuses (exit 2). Then the `candidate` case and (a)'s stub cases on go-mini, with §2.6's Go forms (D1: `make installed-cycle-stub` runs them where rootless Podman and the pinned image are present; `make ci` runs `make installed-cycle-setup`; #226 entries 188, 189, 193) | P24a; the cases follow 22a-2 to 22a-7 | a, b, c | about 220 before the driver's later steps (M) | — |
 | P25 | benchmark recorder, `records/benchmark-run`, and the per-checkpoint exit records. Done without P22a and P24b: the schema, `internal/bench` (`Record`, `Compare`, `Summary`, project-agnostic) and `exit-record-template.md`; `adc dev bench record` reads over the API once W18 (`adc task show`) lands. A stage's round is its candidate's (`graph.CandidateRound`: a repair's accept, gate and review are recorded in round 1; Opus #408 L1), never `Node.Round`, when it fills `bench.Node.Round` | P24b | a, b, c | 350 | — |
 | P23 | action owners per Q7; regenerate `action-matrix.md` | — | any | 60 | — |
 | P10 | the allowlisted registry proxy (phase 1 for changing dependencies) | P9 | backlog | 500 | an install script contacting another host |

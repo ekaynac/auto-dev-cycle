@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# The installed cycle harness (M1 slice plan §2.1, §2.6; P24), installed at
-# <prefix>/lib/adc/scripts/installed-cycle.sh and run from outside any
+# The installed cycle harness (M1 slice plan §2.1, §2.3, §2.6; P24b), installed
+# at <prefix>/lib/adc/scripts/installed-cycle.sh and run from outside any
 # checkout, with the prefix's files only:
 #
-#   installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--keep]
+#   installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE
+#     [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]
 #
 # Each case runs in a temporary directory, under env -i with a temporary
 # HOME, XDG_* and state directory; the real ~/.config/adc must be
@@ -15,21 +16,34 @@
 # temporary directory is a private one (0700) under the first of $TMPDIR
 # (else /tmp), $XDG_RUNTIME_DIR and /dev/shm on one of those; with none, the
 # case cannot run (exit 2) and adcd is never started. It builds the base remote from the
-# T0 project (scripts/lib/base-remote.sh), starts the stub provider with
-# the case's scenario on loopback, writes the registry with the stub's
-# address, starts the installed adcd and bootstraps the operator. Then:
-#   - CASE preflight (P24b) checks that much: the base remote's tree is the
-#     one go-mini's measured baseline binds, the stub answers its scenario
-#     and its usage query, and the operator's token reads the controller;
-#   - any other CASE (fixtures/m1/cases/CASE/case.json) builds its base
-#     remote with its base_overlay (every file and symlink of it in main, a
-#     NAME.hostile file as NAME) and writes its profile (the profile_overlay
-#     merged, a {canary} in it replaced by a canary minted for this run,
-#     recorded in out/canary: §2.7 hostile-gate-output's gate command, not
-#     the driver, writes it into its results mount); it then needs project and
-#     task create (P22a-2), admission (P22a-3), launch (P22a-5), review
-#     (P22a-6) and task wait and show (P22a-7): until they land it exits 2,
-#     naming them, and claims nothing.
+# T0 project (scripts/lib/base-remote.sh). CASE preflight (P24b) then starts
+# the stub provider with the case's scenario on loopback, writes the
+# registry with the stub's address, starts the installed adcd and
+# bootstraps the operator, and checks that much: the base remote's tree is
+# the one go-mini's measured baseline binds, the stub answers its scenario
+# and its usage query, and the operator's token reads the controller.
+#
+# Any other CASE (fixtures/m1/cases/CASE/case.json, --expect candidate:
+# checkpoint (a)'s) builds its base remote with its base_overlay (every
+# file and symlink of it in main, a NAME.hostile file as NAME) and writes
+# its profile (the profile_overlay merged, a {canary} in it replaced by a
+# canary minted for this run, recorded in out/canary: §2.7
+# hostile-gate-output's gate command, not the driver, writes it into its
+# results mount; then the run's base remote, and the stub as its one
+# destination); --setup-only stops there (make ci). It then needs rootless
+# Podman (--podman, default /usr/bin/podman), /dev/shm apart from the state
+# directory's filesystem, and the profile's pinned image for this host's
+# platform in the sandbox root (scripts/lib/sandbox-root.sh: --sandbox-root,
+# one root the cases of a set share, else the case's own; the image pulled
+# by digest into it once); a missing one refuses the case, exit 2, named
+# (#226 entry 188). Then adcd runs the product sandbox under that root,
+# holding a stub credential minted for the run unless the case withholds it,
+# and the case runs (scripts/lib/cycle-case.sh): project and task create,
+# the task read until it ends, and, once adcd replayed its store, the case's
+# expect block (scripts/lib/cycle-expect.mjs). In stub mode review stays
+# inactive (#226 entry 189): a case that expects the candidate ends with its
+# gate completed and its review held review_inactive. Its last line is its
+# summary row.
 # Afterwards, every case stops adcd, verifies its log (adc dev verify-log,
 # whose head is seq N > 0), restarts it (it must report its event log
 # verified to seq N, with no new bootstrap secret: it replayed the same
@@ -47,26 +61,33 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/lib/secrets.sh"
 # shellcheck source=scripts/lib/base-remote.sh
 . "$here/lib/base-remote.sh"
+# shellcheck source=scripts/lib/sandbox-root.sh
+. "$here/lib/sandbox-root.sh"
 
 cannot() {
   echo "installed-cycle: could_not_run: $*" >&2
   exit 2
 }
-usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--keep]"; }
+usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]"; }
 
 [[ $# -ge 1 ]] || usage
 prefix="$1"
 shift
-routes="" project="" case="" keep=0
+routes="" project="" case="" keep=0 expect="" shared="" setup_only=0 PODMAN=/usr/bin/podman
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --routes) routes="${2:-}" && shift 2 ;;
     --project) project="${2:-}" && shift 2 ;;
     --case) case="${2:-}" && shift 2 ;;
+    --expect) expect="${2:-}" && shift 2 ;;
+    --sandbox-root) shared="${2:-}" && shift 2 ;;
+    --podman) PODMAN="${2:-}" && shift 2 ;;
+    --setup-only) setup_only=1 && shift ;;
     --keep) keep=1 && shift ;;
     *) usage ;;
   esac
 done
+[[ "$PODMAN" == /* ]] || usage
 [[ -n "$routes" && -n "$project" && -n "$case" ]] || usage
 [[ "$routes" == stub ]] || cannot "--routes $routes: live routes are P25's"
 [[ "$project" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && "$case" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || usage
@@ -81,6 +102,7 @@ case_file=""
 if [[ "$case" != preflight ]]; then
   case_file="$fixtures/m1/cases/$case/case.json"
   [[ -f "$case_file" ]] || cannot "no case $case"
+  [[ "$expect" == candidate ]] || cannot "--expect candidate is required: checkpoint (a)'s cases run until the candidate (§2.3)"
 fi
 for t in git curl timeout; do command -v "$t" >/dev/null || cannot "$t is required"; done
 
@@ -131,14 +153,19 @@ done
 work="$(mktemp -d -p "$parent")" || cannot "mktemp in $parent failed"
 cleanup() {
   local p i
-  for p in "${stub:-}" "${adcd:-}"; do
+  for p in "${stub:-}" "${adcd:-}" "${events:-}"; do
     [[ -n "$p" ]] || continue
     kill "$p" 2>/dev/null || continue
     for ((i = 0; i < 100; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
     kill -9 "$p" 2>/dev/null || true
     wait "$p" 2>/dev/null || true
   done
-  if ((keep)); then echo "installed-cycle: kept $work" >&2; else rm -rf "$work"; fi
+  if ((keep)); then
+    echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
+  elif [[ -n "${root:-}" ]]; then
+    if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
+  fi
+  ((keep)) || rm -rf "$work"
 }
 trap cleanup EXIT
 fs_known "$work" || die "$work is not on ext2/ext3/ext4, xfs, btrfs or tmpfs"
@@ -171,21 +198,53 @@ if [[ -n "$case_file" ]]; then
   step "the case's profile, its canary minted for this run"
   canary="ADC-CANARY-$case-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
   printf '%s\n' "$canary" >"$work/out/canary"
-  # The profile_overlay merged over the profile (RFC 7396), {canary} replaced in every string.
-  "$node" -e 'const fs = require("node:fs"); const [profile, file, canary, out] = process.argv.slice(1);
+  # The profile_overlay merged over the profile (RFC 7396), {canary} replaced in every string; then the run's
+  # own: its base remote, and the stub as the one allowed destination.
+  "$node" -e 'const fs = require("node:fs"); const [profile, file, canary, remote, out] = process.argv.slice(1);
     const merge = (t, p) => { if (p === null || typeof p !== "object" || Array.isArray(p)) return p;
       const r = t !== null && typeof t === "object" && !Array.isArray(t) ? { ...t } : {};
       for (const [k, v] of Object.entries(p)) { if (v === null) delete r[k]; else r[k] = merge(r[k], v); } return r; };
     const sub = (v) => typeof v === "string" ? v.replaceAll("{canary}", canary) : Array.isArray(v) ? v.map(sub)
       : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sub(x)])) : v;
     const c = JSON.parse(fs.readFileSync(file, "utf8"));
-    fs.writeFileSync(out, JSON.stringify(sub(merge(JSON.parse(fs.readFileSync(profile, "utf8")), c.profile_overlay ?? {}))))' \
-    "$fixtures/m1/profiles/$project.json" "$case_file" "$canary" "$work/profile.json" || die "the case's profile failed"
+    const p = sub(merge(JSON.parse(fs.readFileSync(profile, "utf8")), c.profile_overlay ?? {}));
+    p.repo.url = remote; p.data_policy.allowed_destinations = ["stub"];
+    fs.writeFileSync(out, JSON.stringify(p))' \
+    "$fixtures/m1/profiles/$project.json" "$case_file" "$canary" "$work/remote.git" "$work/profile.json" || die "the case's profile failed"
   if grep -q '{canary}' "$case_file" && ! grep -qF "$canary" "$work/profile.json"; then die "the case's profile does not carry its canary"; fi
 fi
 if [[ "$project" == go-mini && -z "$case_file" ]]; then
   want="$(json "$fixtures/m1/stub/go-mini/baseline.json" d.base_tree)"
   [[ "$tree" == "$want" ]] || die "the base remote's tree is $tree, the measured baseline's $want"
+fi
+if ((setup_only)); then
+  step "setup checked (--setup-only): the base remote and the case's profile; the run is make installed-cycle-stub's"
+  exit 0
+fi
+
+# A case's prerequisites (§2.1; #226 entries 188, 189): rootless Podman,
+# a /dev/shm apart from the state directory's filesystem (the sandbox's
+# runs/), and the profile's pinned image for this host's platform in the
+# sandbox root's storage (the shared root, --sandbox-root, or the case's
+# own). Each missing one refuses the case (exit 2), named, before adcd
+# starts.
+root="" private=0
+if [[ -n "$case_file" ]]; then
+  arch="$(host_arch)" || cannot "this host's platform ($(uname -m)) has no prepared image"
+  rootless_podman "$PODMAN" || cannot "rootless Podman ($PODMAN) is required: the product sandbox runs every build, accept and gate"
+  [[ -d /dev/shm && "$(stat -c %d /dev/shm)" != "$(stat -c %d "$work")" ]] ||
+    cannot "the sandbox's runs/ needs /dev/shm on a filesystem apart from the state directory's ($work)"
+  [[ -n "$shared" ]] || private=1
+  root="$(sandbox_root "$shared")" || cannot "the sandbox root ${shared:-under /tmp} cannot be made"
+  pin="$(json "$fixtures/m1/profiles/$project.json" d.toolchain.images.go)"
+  step "the pinned image $pin for linux/$arch in the sandbox root $root"
+  rc=0
+  root_image "$root" "$pin" "$arch" >/dev/null 2>"$work/out/image.err" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) cannot "the pinned image $pin has no instance for linux/$arch" ;;
+    *) cannot "the pinned image $pin cannot be pulled for linux/$arch: $(tr '\n' ' ' <"$work/out/image.err" | head -c 300)" ;;
+  esac
 fi
 
 step "the stub provider with scenario $scenario"
@@ -202,13 +261,22 @@ n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFile
 [[ "$n" =~ ^([1-9][0-9]*)\ ([0-9]+)$ && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]] ||
   die "the registry's executors are not all the stub's (rewritten, of all): $n"
 
-# Each run of adcd writes its own log: out/adcd-1.log, out/adcd-2.log.
-run=0
+# Each run of adcd writes its own log: out/adcd-1.log, out/adcd-2.log. A
+# case's adcd runs the product sandbox under its root, and holds the stub's
+# credential (ADC_CREDENTIAL_STUB, minted per run), unless the case
+# withholds it (§2.3 assertion 6).
+run=0 cred=() sandbox=()
+if [[ -n "$case_file" ]]; then
+  sandbox=(--sandbox-root "$root" --podman "$PODMAN")
+  stub_cred="$(head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d =)"
+  known "$stub_cred"
+  [[ "$(json "$case_file" 'd.credential_withheld === true')" == true ]] || cred=(ADC_CREDENTIAL_STUB="$stub_cred")
+fi
 start_adcd() {
   run=$((run + 1))
   log="$work/out/adcd-$run.log"
-  "${run_env[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
-    --registry "$work/registry.json" >"$log" 2>&1 &
+  "${run_env[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
+    --registry "$work/registry.json" "${sandbox[@]}" >"$log" 2>&1 &
   adcd=$!
 }
 started() { kill -0 "$adcd" 2>/dev/null || die "adcd exited: $(head -c 400 "$log")"; grep -q "^adcd: started${1:-}" "$log"; }
@@ -234,8 +302,9 @@ if [[ -z "$case_file" ]]; then
   adc board --json >"$work/out/board.out" 2>&1 || die "adc board failed: $(head -c 400 "$work/out/board.out")"
   grep -q '"resource":"board"' "$work/out/board.out" || die "adc board: $(head -c 400 "$work/out/board.out")"
 else
-  status=2
-  why="needs project and task create (P22a-2), admission (P22a-3), launch (P22a-5), review (P22a-6) and task wait and show (P22a-7)"
+  # shellcheck source=scripts/lib/cycle-case.sh
+  . "$here/lib/cycle-case.sh"
+  cycle_case
 fi
 
 step "stopping adcd; its log verifies; a restart replays it"
@@ -255,6 +324,7 @@ fi
 secrets_before="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)"
 start_adcd
 within 60 "adcd to restart" started "; event log verified to seq $seq;"
+if [[ -n "$case_file" ]]; then cycle_check "$seq"; fi
 stop
 [[ "$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" == "$secrets_before" ]] ||
   die "the restart wrote a new bootstrap secret: it did not replay the store"
@@ -281,7 +351,5 @@ scan "$work/home/.config/adc/token" "$tok" "$work"
 after="$(snapshot)" || die "$config cannot be read"
 [[ "$after" == "$before" ]] || die "the real ~/.config/adc changed"
 
-if [[ -n "${status:-}" ]]; then
-  cannot "$case $why"
-fi
 step "ok"
+if [[ -n "$case_file" ]]; then echo "installed-cycle: summary: $summary"; fi

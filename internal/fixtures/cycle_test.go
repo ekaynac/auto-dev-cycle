@@ -175,6 +175,8 @@ func TestCycleCases(t *testing.T) {
 				exists("a gateway request", filepath.Join(filepath.Dir(file), r.File))
 			}
 		}
+		// The task's tokens are the builder's alone: in stub mode review stays
+		// inactive (#226 entry 189), so the reviewer's script is never called.
 		if c.Expect.Usage != nil {
 			var s struct {
 				Calls map[string]struct {
@@ -192,18 +194,17 @@ func TestCycleCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			var in, out int64
-			for call, script := range s.Calls {
-				if script.Turns != nil || script.Persistent != nil || script.Replies == nil {
-					t.Errorf("%s: usage is given, but the scenario's %s is not a replies script", name, call)
-				}
-				for _, r := range script.Replies {
-					if r.Usage != nil {
-						in, out = in+r.Usage.PromptTokens, out+r.Usage.CompletionTokens
-					}
+			script := s.Calls["stub-builder-1"]
+			if script.Turns != nil || script.Persistent != nil || script.Replies == nil {
+				t.Errorf("%s: usage is given, but the scenario's builder script is not a replies script", name)
+			}
+			for _, r := range script.Replies {
+				if r.Usage != nil {
+					in, out = in+r.Usage.PromptTokens, out+r.Usage.CompletionTokens
 				}
 			}
 			if in != c.Expect.Usage.In || out != c.Expect.Usage.Out {
-				t.Errorf("%s: usage %d in and %d out; the scenario's %d and %d", name, c.Expect.Usage.In, c.Expect.Usage.Out, in, out)
+				t.Errorf("%s: usage %d in and %d out; the scenario's builder's %d and %d", name, c.Expect.Usage.In, c.Expect.Usage.Out, in, out)
 			}
 		}
 	}
