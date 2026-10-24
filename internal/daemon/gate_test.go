@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +20,9 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -390,6 +394,27 @@ func invEvents(outcome string) string {
 		`{"Action":%q,"Package":%q,"Test":"TestHiddenInvCanary"}`+"\n"+`{"Action":%q,"Package":%q}`+"\n", pkg, pkg, outcome, pkg, outcome, pkg)
 }
 
+// logged tees rw's runner log (adcd's stderr) into a buffer the row reads.
+func logged(t *testing.T, rw *runWorld) *logBuffer {
+	b := &logBuffer{}
+	rw.r.log = io.MultiWriter(testLog{t}, b)
+	return b
+}
+
+// quiet requires that adcd's log holds none of secrets (Astra #429 H3):
+// no acceptance path, hidden test name, blob digest or store path.
+func quiet(t *testing.T, log *logBuffer, secrets ...string) {
+	t.Helper()
+	for _, s := range secrets {
+		if strings.Contains(log.String(), s) {
+			t.Errorf("adcd's log holds %q: %s", s, log.String())
+		}
+	}
+}
+
+// inSecrets are what the acceptance rows' log must not hold.
+var inSecrets = []string{"TestHiddenInvCanary", "inv_hidden_test", "inv/", strings.TrimPrefix(blobDigest([]byte(hiddenInv)), "sha256:"), "blobs/"}
+
 // overlaid is gateWorld's profile edit for the acceptance rows: its gate
 // prints the tree's gate-events.json, then, only when the acceptance test
 // is in the workspace at its repository path, the candidate's
@@ -420,6 +445,7 @@ func TestTheGateOverlaysTheAcceptance(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			withAcceptance(t, map[string]string{"inv/inv_hidden_test.go": hiddenInv})
 			rw := gateWorldWith(t, goEvents("TestA=pass"), c.files, nil, overlaid)
+			log := logged(t, rw)
 			v := rw.gating(t)
 			if v.State.State != types.NodeStateStateCompleted {
 				t.Fatalf("the gate node: %s, holds %+v", v.State.State, v.State.Holds)
@@ -434,6 +460,7 @@ func TestTheGateOverlaysTheAcceptance(t *testing.T) {
 					t.Errorf("the gate's %s derives from %v, not the acceptance blob", ref.Type, ref.Lineage)
 				}
 			}
+			quiet(t, log, inSecrets...)
 			restartOn(t, rw).noLeak(t, rw.task, d, strings.TrimPrefix(d, "sha256:"), "TestHiddenInvCanary", "inv_hidden_test")
 		})
 	}
@@ -469,7 +496,9 @@ func baseFiles(t *testing.T, files map[string]string, rm ...string) func(map[str
 // environment's platform excludes, one that does not parse, an acceptance
 // declaring no test, a base with no root go.mod, and one that can never
 // compile in the base's package (another package clause, a base test's
-// name: Opus #429 N1). No gate run starts,
+// name: Opus #429 N1; a helper in another package than the base's:
+// Astra #429 H2), and files over gate.MaxOverlay (Astra #429 M5). No
+// gate run starts,
 // the base's measure included.
 func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 	for name, c := range map[string]struct {
@@ -481,12 +510,15 @@ func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 		"under a file of the base": {files: map[string]string{"go.mod/x_test.go": hiddenInv}},
 		"in a module the base nests": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
 			edit: baseFiles(t, map[string]string{"inv/go.mod": "module example.com/inv\n", "inv/doc.go": "package inv\n"})},
-		"under testdata":        {files: map[string]string{"inv/testdata/inv_hidden_test.go": hiddenInv}},
-		"under a _ directory":   {files: map[string]string{"_inv/inv_hidden_test.go": hiddenInv}},
-		"another platform's":    {files: map[string]string{"inv/inv_hidden_test.go": "//go:build plan9\n\n" + hiddenInv}},
-		"not parsing":           {files: map[string]string{"inv/inv_hidden_test.go": "package inv\nfunc {\n"}},
-		"declaring no test":     {files: map[string]string{"inv/data.txt": "x\n"}},
-		"a base with no go.mod": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
+		"under testdata":           {files: map[string]string{"inv/testdata/inv_hidden_test.go": hiddenInv}},
+		"under a _ directory":      {files: map[string]string{"_inv/inv_hidden_test.go": hiddenInv}},
+		"another platform's":       {files: map[string]string{"inv/inv_hidden_test.go": "//go:build plan9\n\n" + hiddenInv}},
+		"not parsing":              {files: map[string]string{"inv/inv_hidden_test.go": "package inv\nfunc {\n"}},
+		"declaring no test":        {files: map[string]string{"inv/data.txt": "x\n"}},
+		"a base with no go.mod":    {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
+		"over the overlay's bound": {files: overBound()},
+		"a helper in another package than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv, "lib/helper.go": "package other\n"},
+			edit: baseFiles(t, map[string]string{"lib/lib.go": "package lib\n"})},
 		"another package clause than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
 			edit: baseFiles(t, map[string]string{"inv/inv.go": "package inventory\n"})},
 		"a base test's name": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
@@ -503,6 +535,7 @@ func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 				edit(p)
 				p["gate"].(map[string]any)["command"] = []string{"sh", "-c", "echo ran >> " + mark + "; cat gate-events.json"}
 			})
+			log := logged(t, rw)
 			v := rw.gating(t)
 			if v.State.State != types.NodeStateStateHeld || len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed || v.State.Result != nil {
 				t.Errorf("the gate node: %s, holds %+v, result %v", v.State.State, v.State.Holds, v.State.Result)
@@ -510,29 +543,70 @@ func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 			if _, err := os.Stat(mark); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("the gate ran before the acceptance was refused: %v", err)
 			}
+			if !strings.Contains(log.String(), "the build's input") {
+				t.Errorf("adcd's log holds no refusal: %s", log.String())
+			}
+			paths := slices.DeleteFunc(slices.Collect(maps.Keys(c.files)), func(p string) bool { return p == "go.mod" }) // the rule's own word
+			quiet(t, log, append(paths, inSecrets...)...)
 		})
 	}
 }
 
-// Opus #429 M2: an acceptance blob the store cannot read (here gone) is the
-// host's, not the task's: the gate node is held on a bounded retry, "retry
-// 1 until …", and only once maxTries are spent "runner: failed"; no result
-// is recorded.
+// overBound is an acceptance over gate.MaxOverlay in all, each file within
+// an upload's bound (Astra #429 M5): one hidden test and data files.
+func overBound() map[string]string {
+	files := map[string]string{"inv/inv_hidden_test.go": hiddenInv}
+	for i := 0; i*blobstore.MaxUploadBytes <= gate.MaxOverlay; i++ {
+		files[fmt.Sprintf("inv/data%02d.bin", i)] = strings.Repeat(string(rune('a'+i%26)), blobstore.MaxUploadBytes)
+	}
+	return files
+}
+
+// Opus #429 M2, Astra #429 H3: an acceptance blob the store cannot read
+// (gone, or its bytes no longer its digest's) is the host's, not the
+// task's: the gate node is held on a bounded retry, "retry 1 until …", and
+// only once maxTries are spent "runner: failed"; no result is recorded,
+// and adcd's log names neither the blob's digest nor its path.
 func TestAnUnreadableAcceptanceIsRetried(t *testing.T) {
-	withAcceptance(t, map[string]string{"inv/inv_hidden_test.go": hiddenInv})
-	retryBase = time.Millisecond
-	t.Cleanup(func() { retryBase = time.Minute })
-	rw := gateWorldWith(t, goEvents("TestA=pass"), map[string]string{"inv-events.json": invEvents("pass")}, nil, overlaid)
-	if err := rw.w.blobs.Remove(blobDigest([]byte(hiddenInv))); err != nil {
-		t.Fatal(err)
-	}
-	v := rw.gating(t)
-	if len(v.State.Holds) != 1 || !strings.HasPrefix(v.State.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
-		t.Fatalf("the gate node after its acceptance could not be read: %s, holds %+v", v.State.State, v.State.Holds)
-	}
-	rw.passesFor(t, 3*maxTries, 20*time.Millisecond)
-	v = nodesOf(rw.w, rw.task)[types.NodeKindGate]
-	if len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed || v.State.Result != nil {
-		t.Errorf("the gate node after its retries: %s, holds %+v, result %v", v.State.State, v.State.Holds, v.State.Result)
+	for name, spoil := range map[string]func(t *testing.T, rw *runWorld, d string){
+		"gone": func(t *testing.T, rw *runWorld, d string) {
+			if err := rw.w.blobs.Remove(d); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"not its digest's bytes": func(t *testing.T, rw *runWorld, d string) {
+			hex := strings.TrimPrefix(d, "sha256:")
+			err := filepath.WalkDir(rw.w.dir, func(p string, e fs.DirEntry, err error) error {
+				if err == nil && e.Name() == hex {
+					err = errors.Join(os.Chmod(p, 0o600), os.WriteFile(p, []byte("package inv\n"), 0o600))
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withAcceptance(t, map[string]string{"inv/inv_hidden_test.go": hiddenInv})
+			retryBase = time.Millisecond
+			t.Cleanup(func() { retryBase = time.Minute })
+			rw := gateWorldWith(t, goEvents("TestA=pass"), map[string]string{"inv-events.json": invEvents("pass")}, nil, overlaid)
+			log := logged(t, rw)
+			spoil(t, rw, blobDigest([]byte(hiddenInv)))
+			v := rw.gating(t)
+			if len(v.State.Holds) != 1 || !strings.HasPrefix(v.State.Holds[0].SignalInstance, runnerText("retry 1 until ")) {
+				t.Fatalf("the gate node after its acceptance could not be read: %s, holds %+v", v.State.State, v.State.Holds)
+			}
+			rw.passesFor(t, 3*maxTries, 20*time.Millisecond)
+			v = nodesOf(rw.w, rw.task)[types.NodeKindGate]
+			if len(v.State.Holds) != 1 || v.State.Holds[0].SignalInstance != runnerFailed || v.State.Result != nil {
+				t.Errorf("the gate node after its retries: %s, holds %+v, result %v", v.State.State, v.State.Holds, v.State.Result)
+			}
+			if !strings.Contains(log.String(), "acceptance blob could not be read") {
+				t.Errorf("adcd's log holds no read failure: %s", log.String())
+			}
+			quiet(t, log, inSecrets...)
+		})
 	}
 }

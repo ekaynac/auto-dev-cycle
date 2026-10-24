@@ -75,6 +75,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/results"
@@ -291,21 +292,24 @@ func (r *runner) gating(ctx context.Context, node types.NodeID) (gating, error) 
 
 // overlayOf is the gate run's acceptance overlay: each of the task's
 // acceptance tests at its record's repository path, its bytes the blob
-// store's checked against its digest (at most an upload's bound), and
+// store's checked against its digest (at most an upload's bound, and
+// gate.MaxOverlay in all, before the base's measure: Astra #429 M5), and
 // their digests, the result's lineage. Refused as the task's (errContent,
 // "runner: failed": no retry fixes it), before any run: a path the
 // profile protects; one the base tree holds, or under a file it holds; one
 // in a module the base nests (a go.mod in a directory between it and the
 // root: go test ./... never runs it); a base with no root go.mod; and an
 // acceptance go test ./... could never run on the gate environment's
-// platform (gate.AcceptanceTests: Opus #429 H1, M1, L1), or that can never
-// compile in the base's package it joins (gate.AcceptanceFits: another
-// package clause, a name a file of that package declares; N1). These last are a
+// platform (gate.AcceptanceTests: Opus #429 H1, M1, L1; Astra #429 H1, M4),
+// or with a Go file, test or helper, that can never compile in the base's
+// package it joins (gate.AcceptanceFits: another package clause, a name a
+// file of that package declares; N1, Astra H2). These last are a
 // go_test_json gate's; a gate of another adapter is the profile's, which
 // gate.Measure refuses (gate.ErrSpec). A blob the store
 // cannot read, missing or not its content, is the host's (a plain error, a
 // bounded retry, as accept's own reads: Opus #429 M2): the upload was
-// digest-checked when it was published.
+// digest-checked when it was published. Every error is a fixed text (Astra
+// #429 H3).
 func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base string, policy accept.Policy, g types.ProjectProfileGate,
 	acc []types.AcceptanceBlob) (map[string][]byte, []types.Digest, error) {
 	goTest := g.ResultAdapter == results.GoTestJSON
@@ -313,6 +317,11 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 	if len(acc) == 0 {
 		return nil, digests, nil
 	}
+	var pl [2]string
+	if len(g.Environments) == 1 {
+		pl = [2]string{g.Environments[0].Facts.Runtime.Os, g.Environments[0].Facts.Runtime.Arch}
+	}
+	goTest = goTest && len(g.Environments) == 1
 	// What the base must hold, asked in one batch: a root go.mod (a blob);
 	// nothing at each path; at each of its directories nothing or a tree,
 	// and no go.mod in one below the root.
@@ -321,13 +330,14 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		ok     func(kind string) bool
 	}
 	var asks []ask
+	total := 0
 	if goTest {
 		asks = append(asks, ask{at: "go.mod", ok: func(k string) bool { return k == "blob" }})
 	}
 	for _, a := range acc {
 		p := a.Name
 		if policy.Protected(p) {
-			return nil, nil, fmt.Errorf("%w: the acceptance test %s is at a path the profile protects", errContent, p)
+			return nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceProtected)
 		}
 		asks = append(asks, ask{p, p, func(k string) bool { return k == "missing" }})
 		for d := path.Dir(p); d != "."; d = path.Dir(d) {
@@ -338,13 +348,15 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		}
 		b, err := r.readBlob(a.Digest, blobstore.MaxUploadBytes)
 		if err != nil {
-			return nil, nil, fmt.Errorf("the acceptance test %s: %w", p, err)
+			return nil, nil, errAcceptanceRead // the host's: its cause names the blob (Astra #429 H3)
+		}
+		if total += len(b); total > gate.MaxOverlay { // before the base's measure (Astra #429 M5)
+			return nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceLarge)
 		}
 		overlay[p], digests = b, append(digests, a.Digest)
 	}
-	if goTest && len(g.Environments) == 1 {
-		rt := g.Environments[0].Facts.Runtime
-		if _, err := gate.AcceptanceTests(rt.Os, rt.Arch, overlay); err != nil {
+	if goTest {
+		if _, err := gate.AcceptanceTests(pl, overlay); err != nil {
 			return nil, nil, fmt.Errorf("%w: %w", errContent, err)
 		}
 	}
@@ -375,14 +387,14 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		case q.of == "":
 			return nil, nil, fmt.Errorf("%w: the base has no root go.mod to place the acceptance tests in", errContent)
 		case strings.HasSuffix(q.at, "/go.mod"):
-			return nil, nil, fmt.Errorf("%w: the acceptance test %s is in %s's module, which go test ./... never runs", errContent, q.of, path.Dir(q.at))
+			return nil, nil, fmt.Errorf("%w: an acceptance file is in a module the base nests, which go test ./... never runs", errContent)
 		default:
-			return nil, nil, fmt.Errorf("%w: the acceptance test %s would replace %s, which the base holds", errContent, q.of, q.at)
+			return nil, nil, fmt.Errorf("%w: an acceptance file would replace what the base holds", errContent)
 		}
 	}
-	if goTest && len(g.Environments) == 1 {
-		// The base's packages the hidden tests join: a hidden test that can
-		// never compile there is the task's (Opus #429 N1).
+	if goTest {
+		// The base's packages the acceptance's Go files join: one that can
+		// never compile there is the task's (Opus #429 N1, Astra H2).
 		trees := map[string]bool{".": true}
 		for i, q := range asks {
 			trees[q.at] = trees[q.at] || kinds[i] == "tree"
@@ -391,19 +403,27 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		if err != nil {
 			return nil, nil, err
 		}
-		rt := g.Environments[0].Facts.Runtime
-		if err := gate.AcceptanceFits(rt.Os, rt.Arch, overlay, files); err != nil {
+		if err := gate.AcceptanceFits(pl, overlay, files); err != nil {
 			return nil, nil, fmt.Errorf("%w: %w", errContent, err)
 		}
 	}
 	return overlay, digests, nil
 }
 
+// The acceptance's refusals and its read failure, each a fixed text: none
+// names an acceptance path, an identifier, a blob digest or a store path
+// (Astra #429 H3), so adcd's log carries none.
+var (
+	errAcceptanceProtected = errors.New("an acceptance file is at a path the profile protects")
+	errAcceptanceLarge     = errors.New("the acceptance's files are over the overlay's bound")
+	errAcceptanceRead      = errors.New("daemon: an acceptance blob could not be read from the blob store")
+)
+
 // maxBasePackages bounds the base's Go files basePackages reads.
 const maxBasePackages = 16 << 20
 
 // basePackages are the base's Go files (repository path → bytes) in each
-// directory a hidden Go test file of overlay is in that the base holds as
+// directory an active Go file of overlay is in that the base holds as
 // a tree (trees), read with cat-file: at most maxBasePackages bytes, more
 // the task's (errContent).
 func basePackages(ctx context.Context, repo sandbox.Repo, dir, base string, trees map[string]bool, overlay map[string][]byte) (map[string][]byte, error) {
@@ -422,7 +442,7 @@ func basePackages(ctx context.Context, repo sandbox.Repo, dir, base string, tree
 	var paths, objects []string
 	for _, p := range slices.Sorted(maps.Keys(overlay)) {
 		d := path.Dir(p)
-		if !strings.HasSuffix(p, "_test.go") || !trees[d] || slices.ContainsFunc(paths, func(q string) bool { return path.Dir(q) == d }) {
+		if !gosel.Active(p) || !trees[d] || slices.ContainsFunc(paths, func(q string) bool { return path.Dir(q) == d }) {
 			continue
 		}
 		spec := base

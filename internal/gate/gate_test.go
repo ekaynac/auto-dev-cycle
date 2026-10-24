@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -237,7 +238,7 @@ func TestGateVerdict(t *testing.T) {
 		t.Errorf("a missing acceptance test: %v", v)
 	}
 	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "../escape": nil}
-	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrSpec) {
+	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) {
 		t.Errorf("an overlay outside the workspace: %v", err)
 	}
 }
@@ -255,7 +256,9 @@ func TestHiddenX(t *testing.T) {}
 
 func Testlower(t *testing.T) {}
 
-func TestBench(b *testing.B) {}
+func BenchmarkHidden(b *testing.B) {}
+
+func ExampleHidden() {}
 
 func helper(t *testing.T) {}
 
@@ -315,54 +318,76 @@ func TestGateOverlaidTestsAreExpected(t *testing.T) {
 	}
 }
 
-// Opus #429 H1, M1, L1: AcceptanceTests are the top-level tests go test
-// ./... runs from an acceptance's Go test files, in each file's directory
-// (two in c: a lower-case suffix, a benchmark, a helper and a method are
-// none; one at the root); data files beside them stay. It refuses, as the
-// task's (ErrAcceptance), what go test ./... would never run: a Go test
-// file that does not parse, under testdata, vendor, a _ or a . directory,
-// excluded by its name's or its constraint's platform, a go.mod or go.work
-// among the files, and an acceptance declaring no such test (only data,
-// only examples, a dot-imported T).
+// Opus #429 H1, M1, L1; Astra #429 H1, M4, M5: AcceptanceTests are the
+// top-level tests go test ./... runs from an acceptance's Go test files, in
+// each file's directory: TestXxx and FuzzXxx (a dot-imported testing's
+// *T among them, TestMain(*testing.T) one; a lower-case suffix, a
+// benchmark, an example, TestMain(*testing.M), a helper and a method
+// none); data files, and Go files go never builds, beside them stay. It
+// refuses, as the task's (ErrAcceptance), with a fixed text naming none
+// of its paths or names, what go test ./... would never run: a Go file
+// that does not parse, a Go test file under testdata, vendor, a _ or a .
+// directory, excluded by its name's or its constraint's platform (the
+// pinned platform's default architecture level negated too), of package
+// documentation, a test with a signature go test refuses, a go.mod or
+// go.work among the files, files over MaxOverlay, and no such test.
 func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
+	pl := [2]string{"linux", "arm64"}
 	root := "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) {}\n"
-	got, err := AcceptanceTests("linux", "arm64", map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte(root),
-		"c/linux_arm64_test.go": []byte("//go:build linux\n\n" + root)})
-	if want := []AcceptanceTest{{"c", "TestHidden"}, {"c", "TestHiddenX"}, {"c", "TestRoot"}, {".", "TestRoot"}}; err != nil || !slices.Equal(got, want) {
+	got, err := AcceptanceTests(pl, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "c/notes.txt": []byte("x"), "root_test.go": []byte(root),
+		"c/linux_arm64_test.go": []byte("//go:build linux && arm64.v8.0\n\n" + root), "c/dot_test.go": []byte("package c\n\nimport . \"testing\"\n\nfunc TestDot(t *T) {}\n\nfunc FuzzDot(f *F) {}\n"),
+		"c/main_test.go": []byte("package c\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n"), "c/hook_test.go": []byte("package d\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n"),
+		"c/helper_windows.go": []byte("package c\n"), "c/testdata/x.go": []byte("not go")})
+	if want := []AcceptanceTest{{"c", "TestHidden"}, {"c", "TestHiddenX"}, {"c", "TestDot"}, {"c", "FuzzDot"}, {"c", "TestRoot"}, {"c", "TestMain"}, {".", "TestRoot"}}; err != nil || !slices.Equal(got, want) {
 		t.Errorf("the acceptance's tests: %v, %v; want %v", got, err, want)
 	}
 	for name, files := range map[string]map[string]string{
-		"does not parse":             {"c/c_test.go": "package c\nfunc {\n"},
-		"under testdata":             {"c/testdata/c_test.go": root},
-		"under vendor":               {"vendor/x/x_test.go": root},
-		"under a _ directory":        {"_x/x_test.go": root},
-		"a _ file":                   {"c/_c_test.go": root},
-		"another OS by its name":     {"c/c_windows_test.go": root},
-		"another arch by its name":   {"c/c_amd64_test.go": root},
-		"another OS by a constraint": {"c/c_test.go": "//go:build windows\n\n" + root},
-		"an unmet tag":               {"c/c_test.go": "//go:build integration\n\n" + root},
-		"a module of its own":        {"c/go.mod": "module x\n", "c/c_test.go": root},
-		"a workspace":                {"go.work": "go 1.24\n", "c/c_test.go": root},
-		"only data":                  {"c/data.txt": "x"},
-		"only an example":            {"c/c_test.go": "package c\n\nfunc ExampleX() {}\n\nfunc FuzzX(f *testing.F) {}\n"},
-		"a dot-imported T":           {"c/c_test.go": "package c\n\nimport . \"testing\"\n\nfunc TestX(t *T) {}\n"},
+		"does not parse":                  {"c/c_test.go": "package c\nfunc {\n"},
+		"a helper that does not parse":    {"c/c_test.go": root, "c/h.go": "package c\nfunc {\n"},
+		"under testdata":                  {"c/testdata/c_test.go": root},
+		"under vendor":                    {"vendor/x/x_test.go": root},
+		"under a _ directory":             {"_x/x_test.go": root},
+		"a _ file":                        {"c/_c_test.go": root},
+		"another OS by its name":          {"c/c_windows_test.go": root},
+		"another arch by its name":        {"c/c_amd64_test.go": root},
+		"another OS by a constraint":      {"c/c_test.go": "//go:build windows\n\n" + root},
+		"an unmet tag":                    {"c/c_test.go": "//go:build integration\n\n" + root},
+		"the default arm64 level negated": {"c/c_test.go": "//go:build !arm64.v8.0\n\n" + root},
+		"package documentation":           {"c/c_test.go": strings.Replace(root, "package m", "package documentation", 1)},
+		"a module of its own":             {"c/go.mod": "module x\n", "c/c_test.go": root},
+		"a workspace":                     {"go.work": "go 1.24\n", "c/c_test.go": root},
+		"only data":                       {"c/data.txt": "x"},
+		"only an example and a benchmark": {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc ExampleX() {}\n\nfunc BenchmarkX(b *testing.B) {}\n"},
+		"a test taking a *testing.B":      {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(b *testing.B) {}\n"},
+		"a test with a result":            {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) error { return nil }\n"},
+		"an example taking a parameter":   {"c/c_test.go": root + "\nfunc ExampleX(t *testing.T) {}\n"},
+		"over the overlay's bound":        {"c/c_test.go": root, "c/big.bin": strings.Repeat("x", MaxOverlay)},
 	} {
 		overlay := map[string][]byte{}
 		for p, b := range files {
 			overlay[p] = []byte(b)
 		}
-		if got, err := AcceptanceTests("linux", "arm64", overlay); !errors.Is(err, ErrAcceptance) {
+		got, err := AcceptanceTests(pl, overlay)
+		if !errors.Is(err, ErrAcceptance) {
 			t.Errorf("%s: %v, %v", name, got, err)
+			continue
+		}
+		for p := range files { // a fixed text (Astra #429 H3); go.mod and go.work are the rule's own words
+			if b := path.Base(p); b != "go.mod" && b != "go.work" && strings.Contains(err.Error(), b) || strings.Contains(err.Error(), "TestRoot") || strings.Contains(err.Error(), "TestX") {
+				t.Errorf("%s: the refusal names the acceptance: %v", name, err)
+			}
 		}
 	}
 }
 
-// Opus #429 N1: a hidden Go test file that can never compile against the
-// base is refused (ErrAcceptance): its package clause neither its
-// directory's package nor that package's _test form, or a top-level name a
-// file of the same package declares too (a base test's name, a hidden
-// file's). The same name in the other test package, a file the platform
-// excludes, a new directory, and a directory of only tests fit.
+// Opus #429 N1, Astra #429 H2: an acceptance Go file, a test or a helper,
+// that can never compile against the base is refused (ErrAcceptance), by a
+// fixed text: its package clause neither its directory's package nor (a
+// test file) that package's _test form, or a top-level name a file of the
+// same package declares too (a base test's name, a base file's function,
+// another acceptance file's, a helper's). The same name in the other test
+// package, a file the platform excludes, a new directory, a directory of
+// only tests, and a helper of its package fit.
 func TestAcceptanceFitsTheBase(t *testing.T) {
 	test := func(pkg, name string) string {
 		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
@@ -378,6 +403,7 @@ func TestAcceptanceFitsTheBase(t *testing.T) {
 		"a base test's name, the other package": {map[string]string{"c/h_test.go": test("c_test", "TestSum")}, true},
 		"a new directory":                       {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("n_test", "TestHidden")}, true},
 		"a directory of only tests":             {map[string]string{"t/h_test.go": test("t_test", "TestT")}, true},
+		"a helper of its package":               {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/helper.go": "package c\n\nfunc help() {}\n"}, true},
 		"another package clause":                {map[string]string{"c/h_test.go": test("d", "TestHidden")}, false},
 		"another _test package":                 {map[string]string{"c/h_test.go": test("d_test", "TestHidden")}, false},
 		"a base test's name":                    {map[string]string{"c/h_test.go": test("c", "TestSum")}, false},
@@ -385,6 +411,9 @@ func TestAcceptanceFitsTheBase(t *testing.T) {
 		"an external base test's name":          {map[string]string{"c/h_test.go": test("c_test", "TestExt")}, false},
 		"two hidden files, one name":            {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("n", "TestHidden")}, false},
 		"two hidden files, two packages":        {map[string]string{"n/h_test.go": test("n", "TestHidden"), "n/i_test.go": test("m", "TestOther")}, false},
+		"a helper redeclaring the test's name":  {map[string]string{"p/hidden_test.go": test("p", "TestHidden"), "p/helper.go": "package p\n\nfunc TestHidden() {}\n"}, false},
+		"a helper in another package":           {map[string]string{"p/hidden_test.go": test("p", "TestHidden"), "p/helper.go": "package q\n"}, false},
+		"a helper the _test form's package":     {map[string]string{"c/h_test.go": test("c", "TestHidden"), "c/helper.go": "package c_test\n"}, false},
 	} {
 		overlay, files := map[string][]byte{}, map[string][]byte{}
 		for p, b := range c.hidden {
@@ -393,8 +422,12 @@ func TestAcceptanceFitsTheBase(t *testing.T) {
 		for p, b := range base {
 			files[p] = []byte(b)
 		}
-		if err := AcceptanceFits("linux", "arm64", overlay, files); (err == nil) != c.fits || err != nil && !errors.Is(err, ErrAcceptance) {
+		err := AcceptanceFits([2]string{"linux", "arm64"}, overlay, files)
+		if (err == nil) != c.fits || err != nil && !errors.Is(err, ErrAcceptance) {
 			t.Errorf("%s: %v", name, err)
+		}
+		if err != nil && (strings.Contains(err.Error(), "Test") || strings.Contains(err.Error(), "_test.go") || strings.Contains(err.Error(), "helper")) {
+			t.Errorf("%s: the refusal names the acceptance: %v", name, err)
 		}
 	}
 }

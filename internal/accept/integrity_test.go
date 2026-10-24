@@ -583,12 +583,6 @@ func TestGoOn(t *testing.T) {
 			t.Errorf("%q: %v, want %v", c, got, want)
 		}
 	}
-	for p, want := range map[string]bool{"a_test.go": true, "p/a_test.go": true, "p/testdata/a_test.go": false, "vendor/x/a_test.go": false,
-		"_x/a_test.go": false, "p/a.go": false} {
-		if goByName(p) != want {
-			t.Errorf("%s: collected by name %t", p, !want)
-		}
-	}
 }
 
 // Operator decision A: each reference into S gives a block or a warning

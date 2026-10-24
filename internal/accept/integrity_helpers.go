@@ -5,6 +5,8 @@ package accept
 import (
 	"fmt"
 	"go/ast"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
 
 // P14d-w1b (#226 entries 122, 129, 134; supersedes #369 and #376):
@@ -118,7 +120,7 @@ func (s *pkgScan) helperFacts(fa *pkgFacts, plat, dir, name, path string, d ast.
 	stats, blank := map[string]fnStat{}, fnStat{plat: plat, short: "_"}
 	switch x := d.(type) {
 	case *ast.FuncDecl:
-		st := fnStat{plat: plat, short: x.Name.Name, test: x.Recv == nil && goTest(x.Name.Name)}
+		st := fnStat{plat: plat, short: x.Name.Name, test: x.Recv == nil && gosel.RunName(x.Name.Name)}
 		walk(x, false, &st)
 		if short := declKey(x); x.Body != nil && s.caseCharge(len(short)) {
 			stats[short] = st

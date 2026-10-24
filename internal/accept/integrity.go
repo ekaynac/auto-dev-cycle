@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -200,11 +201,11 @@ func (r *run) check(changes []Change) error {
 	r.baseDirs, r.candDirs = byDir(r.files), byDir(r.cand)
 	basePaths := keys(r.files) // each whole-tree scan once per run, never per module or directory (P14e-2b, Opus #317 L1)
 	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(basePaths)}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
-	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
+	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), gosel.TestFile)
 	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
-	r.baseTest, r.testUnder = slices.ContainsFunc(basePaths, goByName), map[string]bool{}
+	r.baseTest, r.testUnder = slices.ContainsFunc(basePaths, gosel.TestFile), map[string]bool{}
 	for _, q := range basePaths {
-		for d := path.Dir(q); goByName(q) && d != "." && !r.testUnder[d]; d = path.Dir(d) {
+		for d := path.Dir(q); gosel.TestFile(q) && d != "." && !r.testUnder[d]; d = path.Dir(d) {
 			r.testUnder[d] = true
 		}
 	}
@@ -291,7 +292,7 @@ func byDir(files map[string]string) map[string][]string {
 
 // tested: the package in dir has a test file, in the base or the candidate.
 func (r *run) tested(dir string) bool {
-	return slices.ContainsFunc(append(slices.Clone(r.baseDirs[dir]), r.candDirs[dir]...), goByName)
+	return slices.ContainsFunc(append(slices.Clone(r.baseDirs[dir]), r.candDirs[dir]...), gosel.TestFile)
 }
 
 // file reads a blob within the bounds, once: why says why not.

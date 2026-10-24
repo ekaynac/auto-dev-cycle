@@ -21,7 +21,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"unicode"
-	"unicode/utf8"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
 
 var (
@@ -107,17 +108,6 @@ func sensitive(q string) int {
 		return 1 + is("Main*", "Run*", "Init", "Benchmark*")
 	}
 	return b2i(sPkg(pkg))
-}
-
-// goSkipDir: go test ./... never walks dir.
-func goSkipDir(d string) bool {
-	return d == "vendor" || d == "testdata" || strings.HasPrefix(d, "_") || strings.HasPrefix(d, ".")
-}
-
-// goByName: p may be a collected Go test file, by its name alone.
-func goByName(p string) bool {
-	b := path.Base(p)
-	return strings.HasSuffix(b, "_test.go") && b[0] != '_' && b[0] != '.' && walked(p, goSkipDir)
 }
 
 // goOn is, per gate platform, whether go builds p: 2 surely, 1 by unmodelled
@@ -248,17 +238,6 @@ func (r *run) holds(exprs []constraint.Expr, pl [2]string, off ...string) (int, 
 	return b2i(some), nil
 }
 
-// goTest: name is a function go test runs (TestXxx, FuzzXxx, ExampleXxx).
-func goTest(name string) bool {
-	for _, pre := range []string{"Test", "Fuzz", "Example"} {
-		if rest, ok := strings.CutPrefix(name, pre); ok {
-			r, _ := utf8.DecodeRuneInString(rest)
-			return rest == "" || !unicode.IsLower(r)
-		}
-	}
-	return false
-}
-
 // analyse reads one version of dir: each package (pkg and pkg_test apart),
 // per gate platform, type-checked from the files that platform may build,
 // imports unresolved.
@@ -280,7 +259,7 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 			continue // no gate platform builds it, whatever the tags: it cannot shadow what one does
 		}
 		coll := on // collected as tests
-		if !goByName(p) || f.Name.Name == "documentation" {
+		if !gosel.TestFile(p) || f.Name.Name == gosel.Documentation {
 			coll = make([]int, len(platforms))
 		}
 		meta[f] = fileMeta{p, cons, coll, srcs[p], exprs, on}
@@ -702,13 +681,13 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			if test && m.on[pi] > 0 { // P14d-w1b: the test files' functions' own assertions, and the names they use
 				s.helperFacts(fa, plat, dir, name, m.path, d)
 			}
-			if test && !hook && goTest(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
+			if test && !hook && gosel.RunName(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
 				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn, fset.File(fn.Pos()), m.src)
 			}
 			switch {
 			case hook:
 				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
-			case test && goTest(fname):
+			case test && gosel.RunName(fname):
 				if m.on[pi] > 0 {
 					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons, c.uses}
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest

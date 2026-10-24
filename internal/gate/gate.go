@@ -49,12 +49,18 @@
 //     declare are expected (AcceptanceTests): one the run does not report
 //     is the candidate's missing test, never no result (#226 entry 190).
 //     An acceptance go test ./... could never run is the task's, refused
-//     before any run (ErrAcceptance; Opus #429 H1, M1, L1): a Go test file
-//     that does not parse, under a testdata, vendor, _ or . directory, or
-//     that the gate environment's platform excludes (go/build's rules: its
-//     name and its build constraints), a go.mod or go.work among it, or no
-//     expected test at all. A candidate tree with no Go module is the
-//     candidate's (found/gate_test_failed): its hidden tests cannot run.
+//     before any run with a fixed text (ErrAcceptance, acceptance.go; Opus
+//     #429 H1, M1, L1; Astra #429 H1-H3, M4-M6), by the go command's
+//     selection rules, accept's own (gosel): a Go file that does not
+//     parse, a Go test file it never collects or that the gate's platform
+//     excludes (its name, its constraints positive and negated, the
+//     platform's default architecture level and the toolchain's
+//     experiments), a test signature go test refuses, a go.mod or go.work
+//     among it, files over MaxOverlay, no expected test at all, or (the
+//     daemon's, AcceptanceFits) a Go file, test or helper, that cannot
+//     compile in the base's package it joins. A candidate tree with no Go
+//     module is the candidate's (found/gate_test_failed): its hidden tests
+//     cannot run.
 //   - A hidden test's result is only as sound as accept's forgery guard
 //     (Opus #429 L2): the gate reads the stream as the run wrote it, so a
 //     candidate whose code printed a forged stream would pass it; accept
@@ -70,11 +76,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/build"
-	"go/parser"
-	"go/token"
-	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -86,7 +87,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"golang.org/x/mod/modfile"
 
@@ -100,7 +100,6 @@ const (
 	resultsFile = "go-test.json"    // the derived results file, in the results mount
 	placeholder = "{results_path}"  // the profile's name for the derived path
 	maxResults  = results.MaxStream // what a run's results may hold
-	maxOverlay  = 16 << 20          // acceptance files, in all
 	maxGoMod    = 1 << 20           // the root go.mod, read as its blob
 	ownership   = "default"         // the only ownership rules in v1
 )
@@ -212,7 +211,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	}
 	expected := in.Expected
 	if len(in.Overlay) > 0 {
-		hidden, err := AcceptanceTests(in.Image.OS, in.Image.Arch, in.Overlay)
+		hidden, err := AcceptanceTests([2]string{in.Image.OS, in.Image.Arch}, in.Overlay)
 		if err != nil {
 			return v, err
 		}
@@ -527,244 +526,46 @@ func checkout(ctx context.Context, repo sandbox.Repo, tree, ws string) (id, modu
 	return id, modfile.ModulePath(b), nil // the go command's own reading: quoted, commented (Opus #429 H1)
 }
 
-// ErrAcceptance: a task's acceptance the gate cannot run as its hidden
-// tests (AcceptanceTests): the task's, no retry or profile change fixes it.
-var ErrAcceptance = errors.New("gate: the task's acceptance cannot be run")
-
-// The build context AcceptanceTests and AcceptanceFits read with drifts
-// from the go command's in three ways, each stated (Opus #429 N2):
-//   - it has no ToolTags, so a goexperiment.* or an architecture-feature
-//     constraint (arm64.v8.0) is refused though go test runs it: a visible
-//     hold on the task, never a candidate's result;
-//   - its release tags are adcd's own toolchain's (build.Default), not the
-//     pinned image's: they agree while both are the same Go release (go1.27
-//     today);
-//   - it assumes the profile's gate command is go test ./... with no -tags
-//     or -run: a profile adding -tags x has a //go:build x hidden test
-//     refused though it runs, and one with -run may never run what it
-//     expects (the candidate's, then).
-
-// AcceptanceTest is a top-level test an acceptance's Go test file
-// declares: its directory (the repository path; "." the root) and name.
-type AcceptanceTest struct{ Dir, Name string }
-
-// AcceptanceTests are the top-level tests (func TestXxx(*testing.T)) the Go
-// test files of overlay declare, sorted by file, which go test ./... runs
-// on goos/goarch. It refuses (ErrAcceptance) what go test ./... would never
-// run, so it is never expected: a Go test file that does not parse, in a
-// directory go ignores (testdata, vendor, or one starting with _ or .),
-// one go/build excludes on the platform (its name's _GOOS/_GOARCH, its
-// build constraints: accept's go/build context, with the file's own
-// bytes), a go.mod or go.work among overlay (a module of its own); and an
-// acceptance declaring no such test at all (Opus #429 M1). Files that are
-// not Go test files beside a test are data, and stay.
-func AcceptanceTests(goos, goarch string, overlay map[string][]byte) ([]AcceptanceTest, error) {
-	var out []AcceptanceTest
-	for _, p := range slices.Sorted(maps.Keys(overlay)) {
-		if b := path.Base(p); b == "go.mod" || b == "go.work" {
-			return nil, fmt.Errorf("%w: %s would make a module of its own", ErrAcceptance, p)
-		}
-		if !strings.HasSuffix(p, "_test.go") {
-			continue
-		}
-		segs := strings.Split(p, "/")
-		for i, seg := range segs {
-			if strings.HasPrefix(seg, "_") || strings.HasPrefix(seg, ".") || i < len(segs)-1 && (seg == "testdata" || seg == "vendor") {
-				return nil, fmt.Errorf("%w: the acceptance test %s is where go test ./... never looks", ErrAcceptance, p)
-			}
-		}
-		f, err := parser.ParseFile(token.NewFileSet(), p, overlay[p], parser.SkipObjectResolution)
-		if err != nil {
-			return nil, fmt.Errorf("%w: the acceptance test %s does not parse", ErrAcceptance, p)
-		}
-		src := overlay[p]
-		bc := build.Context{GOOS: goos, GOARCH: goarch, Compiler: "gc", ReleaseTags: build.Default.ReleaseTags,
-			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }}
-		if ok, err := bc.MatchFile(path.Dir(p), path.Base(p)); err != nil || !ok {
-			return nil, fmt.Errorf("%w: the acceptance test %s is not built on %s/%s", ErrAcceptance, p, goos, goarch)
-		}
-		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && goTest(fn) {
-				out = append(out, AcceptanceTest{Dir: path.Dir(p), Name: fn.Name.Name})
-			}
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: no Go test file of it declares a test go test runs", ErrAcceptance)
-	}
-	return out, nil
-}
-
-// goTest reports whether fn is a test go test runs: TestXxx, Xxx not
-// starting with a lower-case letter, taking one *testing.T.
-func goTest(fn *ast.FuncDecl) bool {
-	rest, ok := strings.CutPrefix(fn.Name.Name, "Test")
-	if !ok || rest != "" && unicode.IsLower([]rune(rest)[0]) || fn.Type.TypeParams != nil || len(fn.Type.Params.List) != 1 || len(fn.Type.Params.List[0].Names) > 1 {
-		return false
-	}
-	star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	return ok && sel.Sel.Name == "T"
-}
-
-// AcceptanceFits refuses (ErrAcceptance) a hidden Go test file that can
-// never compile against the base, whatever the candidate does (Opus #429
-// N1): one whose package clause is neither its directory's package nor
-// that package's _test form, and one declaring a top-level name another
-// file of the same package declares (a redeclaration). base holds the
-// base's Go files in the hidden files' directories, repository path →
-// bytes. Only the files go/build takes on goos/goarch count, and none
-// starting with _ or .; a directory's package is its non-test files',
-// else its internal test files', else its external test files' without
-// _test, else the hidden files' own. The internal test package shares its
-// scope with the package's files; the external one with the other
-// external test files.
-func AcceptanceFits(goos, goarch string, overlay, base map[string][]byte) error {
-	type file struct {
-		path, pkg string
-		names     []string
-		test      bool
-	}
-	parse := func(p string, b []byte) (file, bool, error) {
-		if n := path.Base(p); !strings.HasSuffix(n, ".go") || strings.HasPrefix(n, "_") || strings.HasPrefix(n, ".") {
-			return file{}, false, nil
-		}
-		bc := build.Context{GOOS: goos, GOARCH: goarch, Compiler: "gc", ReleaseTags: build.Default.ReleaseTags,
-			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }}
-		if ok, err := bc.MatchFile(path.Dir(p), path.Base(p)); err != nil || !ok {
-			return file{}, false, nil
-		}
-		f, err := parser.ParseFile(token.NewFileSet(), p, b, parser.SkipObjectResolution)
-		if err != nil {
-			return file{}, false, err
-		}
-		return file{p, f.Name.Name, topNames(f), strings.HasSuffix(p, "_test.go")}, true, nil
-	}
-	baseOf, hiddenOf := map[string][]file{}, map[string][]file{}
-	for _, p := range slices.Sorted(maps.Keys(base)) {
-		if f, ok, err := parse(p, base[p]); err == nil && ok { // a base file that does not parse is the base's own failure
-			baseOf[path.Dir(p)] = append(baseOf[path.Dir(p)], f)
-		}
-	}
-	for _, p := range slices.Sorted(maps.Keys(overlay)) {
-		if !strings.HasSuffix(p, "_test.go") {
-			continue
-		}
-		f, ok, err := parse(p, overlay[p])
-		if err != nil {
-			return fmt.Errorf("%w: the acceptance test %s does not parse", ErrAcceptance, p)
-		}
-		if ok {
-			hiddenOf[path.Dir(p)] = append(hiddenOf[path.Dir(p)], f)
-		}
-	}
-	for _, d := range slices.Sorted(maps.Keys(hiddenOf)) {
-		pkg := ""
-		for _, pick := range []func(file) (string, bool){
-			func(f file) (string, bool) { return f.pkg, !f.test },
-			func(f file) (string, bool) { return f.pkg, f.test && !strings.HasSuffix(f.pkg, "_test") },
-			func(f file) (string, bool) { return strings.TrimSuffix(f.pkg, "_test"), f.test },
-		} {
-			for _, f := range append(slices.Clone(baseOf[d]), hiddenOf[d]...) {
-				if name, ok := pick(f); ok && pkg == "" {
-					pkg = name
-				}
-			}
-			if pkg != "" {
-				break
-			}
-		}
-		declared := map[string]map[string]string{} // package → name → its file
-		for _, f := range append(slices.Clone(baseOf[d]), hiddenOf[d]...) {
-			if declared[f.pkg] == nil {
-				declared[f.pkg] = map[string]string{}
-			}
-			hidden := slices.ContainsFunc(hiddenOf[d], func(h file) bool { return h.path == f.path })
-			if hidden && f.pkg != pkg && f.pkg != pkg+"_test" {
-				return fmt.Errorf("%w: the acceptance test %s is package %s, its directory's is %s", ErrAcceptance, f.path, f.pkg, pkg)
-			}
-			for _, name := range f.names {
-				if other, ok := declared[f.pkg][name]; ok && (hidden || slices.ContainsFunc(hiddenOf[d], func(h file) bool { return h.path == other })) {
-					return fmt.Errorf("%w: the acceptance test %s declares %s, which %s declares too", ErrAcceptance, f.path, name, other)
-				}
-				declared[f.pkg][name] = f.path
-			}
-		}
-	}
-	return nil
-}
-
-// topNames are the package-scope names f declares: its functions (no
-// method, no init, no _), types, variables and constants.
-func topNames(f *ast.File) []string {
-	var out []string
-	add := func(id *ast.Ident) {
-		if id.Name != "_" {
-			out = append(out, id.Name)
-		}
-	}
-	for _, d := range f.Decls {
-		switch x := d.(type) {
-		case *ast.FuncDecl:
-			if x.Recv == nil && x.Name.Name != "init" {
-				add(x.Name)
-			}
-		case *ast.GenDecl:
-			for _, sp := range x.Specs {
-				switch y := sp.(type) {
-				case *ast.TypeSpec:
-					add(y.Name)
-				case *ast.ValueSpec:
-					for _, id := range y.Names {
-						add(id)
-					}
-				}
-			}
-		}
-	}
-	return out
-}
-
 // writeFiles overlays files on ws: each a clean relative path, inside it,
 // replacing what is there: a file, a link or a directory at it, and a
 // non-directory (a file, a link) where one of its directories should be
 // (Opus #429 M3). The daemon has checked the base holds nothing there, so
-// all of it is the candidate's.
+// all of it is the candidate's. Its errors are fixed texts (Astra #429
+// H3): a path that is not clean, or files over MaxOverlay, the task's
+// (ErrAcceptance); a write that failed, the host's (errWrite), never
+// naming the file.
 func writeFiles(ws string, files map[string][]byte) error {
 	root, err := os.OpenRoot(ws)
 	if err != nil {
-		return err
+		return errWrite
 	}
 	defer root.Close()
 	total := 0
 	for p, b := range files {
-		if total += len(b); total > maxOverlay || !filepath.IsLocal(p) || path.Clean(p) != p {
-			return fmt.Errorf("%w: an acceptance file %q is not a clean path inside the workspace, or the files are too large", ErrSpec, p)
+		if total += len(b); total > MaxOverlay {
+			return errTooLarge
+		}
+		if !filepath.IsLocal(p) || path.Clean(p) != p {
+			return errPath
 		}
 		for d := range parents(p) {
 			if fi, err := root.Lstat(d); err == nil && !fi.IsDir() {
 				if err := root.Remove(d); err != nil {
-					return err
+					return errWrite
 				}
 			} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
+				return errWrite
 			}
 		}
-		if err := root.MkdirAll(path.Dir(p), 0o700); err != nil {
-			return err
-		}
-		if err := root.RemoveAll(p); err != nil {
-			return err
-		}
-		if err := root.WriteFile(p, b, 0o600); err != nil {
-			return err
+		if root.MkdirAll(path.Dir(p), 0o700) != nil || root.RemoveAll(p) != nil || root.WriteFile(p, b, 0o600) != nil {
+			return errWrite
 		}
 	}
 	return nil
 }
+
+// errWrite: the overlay could not be written in the workspace (the host's).
+var errWrite = errors.New("gate: the acceptance overlay could not be written in the workspace")
 
 // parents are p's directories, from the top (a/b/c: a, a/b).
 func parents(p string) func(func(string) bool) {
