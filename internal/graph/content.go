@@ -95,14 +95,18 @@ func CommitAttempt(tx *eventstore.Tx, node types.NodeID, r types.Result, attempt
 }
 
 // AttemptResult is the result attempt itself recorded, if any: never one
-// another attempt, or no attempt, recorded on its node.
+// another attempt, or no attempt, recorded on its node. An index naming no
+// result, or another attempt's, is ErrIndexDamaged (Opus #432 r2 H1′).
 func AttemptResult(tx *eventstore.Tx, attempt types.AttemptID) (types.Result, bool, error) {
 	id, ok, err := load[types.ResultID](tx, AttemptResultProjection, string(attempt))
 	if err != nil || !ok {
 		return types.Result{}, false, err
 	}
 	r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(id))
-	return r.Result, ok, err
+	if err == nil && (!ok || r.Attempt == nil || *r.Attempt != attempt || r.Result.ID != id) {
+		err = fmt.Errorf("%w: attempt %s's result index names %s, not a result it recorded", ErrIndexDamaged, attempt, id)
+	}
+	return r.Result, err == nil, err
 }
 
 // isolated is the result.recorded fold's check of p's attempt and

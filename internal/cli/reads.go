@@ -30,6 +30,7 @@ var reads = map[command]string{
 	{"seat", "status"}:  "seat",
 	{"notes", "list"}:   "notes",
 	{"project", "list"}: "projects",
+	{"task", "list"}:    "tasks",
 	{"holds", "list"}:   "holds",
 	{"admin", "whoami"}: client.Whoami,
 }

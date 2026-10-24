@@ -174,5 +174,37 @@ func railRaised(tx *eventstore.Tx, ev eventstore.Event) error {
 	if cur, ok := caps.Of(string(r.Rail)); !ok || to <= cur {
 		return fmt.Errorf("a raise of %s is above the cap in force (%d)", r.Rail, cur)
 	}
-	return putJSON(tx, TaskProjection, railKey(r.Task, string(r.Rail)), to)
+	return errors.Join(putJSON(tx, TaskProjection, railKey(r.Task, string(r.Rail)), to),
+		putJSON(tx, RaiseProjection, fmt.Sprintf("%s/%020d", r.Task, ev.Seq), Raise{Task: r.Task, Rail: string(r.Rail), Command: ev.Command}))
+}
+
+// RaiseProjection: "<task>/<seq>" → each raise of a task's rails, in log
+// order, with the command that made it (the benchmark's rail raises, §2.8;
+// adc dev bench record, P25): a fold of the raise alone.
+const RaiseProjection = "task_rail_raises"
+
+// Raise is one raise of a task's rail and its command: the budget_rail
+// holds that command cleared are graph.RailCleared's.
+type Raise struct {
+	Task    types.TaskID `json:"task"`
+	Rail    string       `json:"rail"`
+	Command *string      `json:"command"`
+}
+
+// Raises are task's raises, in log order; a row of another task's raise
+// under task's key is damage (Opus #432 r2 H1′).
+func Raises(tx *eventstore.Tx, task types.TaskID) ([]Raise, error) {
+	keys, err := tx.Keys(RaiseProjection, string(task)+"/")
+	out := []Raise{}
+	for _, k := range keys {
+		r, _, lerr := loadJSON[Raise](tx, RaiseProjection, k)
+		if err = errors.Join(err, lerr); err != nil {
+			return nil, err
+		}
+		if r.Task != task {
+			return nil, fmt.Errorf("authority: task %s's raise index names a raise of %q: %s", task, r.Task, k)
+		}
+		out = append(out, r)
+	}
+	return out, err
 }

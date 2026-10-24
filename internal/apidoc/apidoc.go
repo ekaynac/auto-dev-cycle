@@ -137,6 +137,10 @@ func reads() map[string]map[string]operation {
 		api.ReadPath: op("resource", "The records of one resource the caller's read scope covers, each authorized in one snapshot.",
 			[]parameter{{Name: "resource", In: "path", Required: true, Description: "A registered resource.", Schema: str}},
 			readResponses(body{Description: "The readable records.", Content: jsonOf(readSchema)}, "403", notGranted, "404", "No such resource.")),
+		api.TaskPath: op("task", "One task's record, its benchmark facts included (P25): the tasks list holding it alone, or empty when the caller reads no such task.",
+			[]parameter{{Name: "task", In: "path", Required: true, Description: "A task id (tsk_...).", Schema: str},
+				{Name: "without", In: "query", Description: "bench: the record without its benchmark facts (null), as a poll reads it.", Schema: map[string]any{"enum": []string{"bench"}}}},
+			readResponses(body{Description: "The task's record, if the caller reads it.", Content: jsonOf(readSchema)}, "400", "Not a task id, or another query.", "403", notGranted)),
 	}
 	out[api.BlobsPath] = map[string]operation{
 		"post": {OperationID: "blob.upload", Tags: []string{"blob"}, Summary: "Store the body (at most 1 MiB) as the caller's upload, for a later command of the same caller to reference before it expires; an operator's or a supervisor's.",

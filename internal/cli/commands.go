@@ -68,9 +68,10 @@ func Commands() map[string]string {
 // ReadCommands maps every read the CLI carries to its command line, by
 // resource: those of reads.go, "adc <noun> <verb>", and the event stream
 // (events.go) and the board, which Main routes by their first word, and
-// the task read, which adc task show and adc task wait read (tasks.go).
+// the one task's read, which adc task show and adc task wait read
+// (tasks.go); the tasks list is adc task list's.
 func ReadCommands() map[string]string {
-	out := map[string]string{"events": "adc events --follow", "board": "adc board", tasksResource: "adc task show"}
+	out := map[string]string{"events": "adc events --follow", "board": "adc board", OneTask: "adc task show"}
 	for c, resource := range reads {
 		out[resource] = "adc " + c.noun + " " + c.verb
 	}

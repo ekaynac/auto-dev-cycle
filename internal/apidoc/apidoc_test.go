@@ -107,7 +107,7 @@ func TestReadPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := parse(t, b)
-	want := map[string]string{api.EventsPath: "", api.WhoamiPath: "api.whoami", api.ReadPath: "api.read-list"}
+	want := map[string]string{api.EventsPath: "", api.WhoamiPath: "api.whoami", api.ReadPath: "api.read-list", api.TaskPath: "api.read-list"}
 	for p, schema := range want {
 		op, ok := d.Paths[p]["get"]
 		if !ok || len(d.Paths[p]) != 1 || op.Action != "" || op.RequestBody != nil || op.Responses["401"].Description == "" {

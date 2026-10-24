@@ -95,11 +95,10 @@ func checkSettlement(tx *eventstore.Tx, l types.Lease) error {
 	if err != nil {
 		return err
 	}
-	named := slices.Sorted(slices.Values(append(slices.Clone(s.Calls), s.Liabilities...)))
-	if !slices.Equal(named, bound) {
-		return fmt.Errorf("lease %s settles calls %v, but its bound calls are %v", l.ID, named, bound)
+	if err := SettlesBound(l, bound); err != nil {
+		return err
 	}
-	for _, c := range named {
+	for _, c := range slices.Sorted(slices.Values(calls(l))) {
 		st, err := standing(tx, c, nil)
 		listed := slices.Contains(s.Calls, c)
 		switch {
@@ -110,6 +109,21 @@ func checkSettlement(tx *eventstore.Tx, l types.Lease) error {
 		case !st.Settled && listed:
 			return fmt.Errorf("lease %s settles call %s with no final usage: it stays an uncertain liability", l.ID, c)
 		}
+	}
+	return nil
+}
+
+// SettlesBound: l's settlement names exactly bound, its bound calls (sorted,
+// as ledger.BoundTo lists them), each once, settled or a liability; nil
+// for a lease not settled. The settlement fold's inventory check, which
+// the task read reuses (Astra #432 r2 H5): a bound call missing from the
+// ledger's index of a settled lease is damage, never a call dropped.
+func SettlesBound(l types.Lease, bound []types.CallID) error {
+	if l.Settlement == nil {
+		return nil
+	}
+	if named := slices.Sorted(slices.Values(calls(l))); !slices.Equal(named, bound) {
+		return fmt.Errorf("lease %s settles calls %v, but its bound calls are %v", l.ID, named, bound)
 	}
 	return nil
 }

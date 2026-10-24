@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -181,7 +182,8 @@ func Nodes(tx *eventstore.Tx) ([]NodeView, error) {
 }
 
 // TaskNodes are task's nodes, superseded ones included, in node id order,
-// read from the task's index alone (Astra #316 M3).
+// read from the task's index alone (Astra #316 M3). A node the index names
+// whose record is of another task is ErrIndexDamaged (Opus #432 r3).
 func TaskNodes(tx *eventstore.Tx, task types.TaskID) ([]NodeView, error) {
 	prefix := string(task) + "/"
 	keys, err := tx.Keys(TaskNodeProjection, prefix)
@@ -191,10 +193,24 @@ func TaskNodes(tx *eventstore.Tx, task types.TaskID) ([]NodeView, error) {
 	for i := range keys {
 		keys[i] = keys[i][len(prefix):]
 	}
-	return views(tx, keys)
+	vs, err := views(tx, keys)
+	for _, v := range vs {
+		if err == nil && v.Task != task {
+			err = fmt.Errorf("%w: task %s's node index names %s, a node of task %s", ErrIndexDamaged, task, v.Node.ID, v.Task)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return vs, nil
 }
 
 // views are the nodes keys name, with their selected results' outcomes.
+// A node's record under another node's key is ErrIndexDamaged; a selected
+// result that is not the node's own (another node's, or recorded under
+// another id) is missing, its outcome nil: the board's damaged_record, and
+// a stage bench record refuses (Opus #432 r3 H1″). A node completed by
+// reuse takes its key holder's result (takesByReuse).
 func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 	var out []NodeView
 	var err error
@@ -203,19 +219,51 @@ func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 		if err = errors.Join(err, lerr); err != nil {
 			return nil, err
 		}
+		if rec.Recorded.Node.ID != types.NodeID(k) {
+			return nil, fmt.Errorf("%w: the node record under %s is %s's", ErrIndexDamaged, k, rec.Recorded.Node.ID)
+		}
 		v := NodeView{Node: rec.Recorded.Node, Task: rec.Recorded.Task, Project: rec.Recorded.Project, State: rec.State}
 		if id := rec.State.Result; id != nil {
 			r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(*id))
 			if err != nil {
 				return nil, err
 			}
-			if ok {
+			own := ok && r.Result.ID == *id && r.Node == rec.Recorded.Node.ID
+			if ok && r.Result.ID == *id && !own {
+				if own, err = takesByReuse(tx, rec, r); err != nil {
+					return nil, err
+				}
+			}
+			if own {
 				v.Outcome, v.Reason = &r.Result.Outcome, &r.Result.Reason
 			}
 		}
 		out = append(out, v)
 	}
 	return out, err
+}
+
+// takesByReuse: rec, completed by reuse, takes r, its key holder's
+// result: the reuse index of rec's key in rec's task lists rec, the key
+// index names r's node as that key's holder (node.reused's own
+// projections; Opus #432 r4 M1), and the holder's own record is of rec's
+// task, holds the same key and has r selected (lead check of eb4a9ed).
+func takesByReuse(tx *eventstore.Tx, rec nodeRecord, r types.ResultRecorded) (bool, error) {
+	if rec.State.Key == nil {
+		return false, nil
+	}
+	index := keyIndex(rec.Recorded.Task, rec.State.Key.Key)
+	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, index)
+	h, held, herr := load[types.NodeID](tx, KeyProjection, index)
+	if err = errors.Join(err, herr); err != nil || !held || h != r.Node || !slices.Contains(reusers, rec.Recorded.Node.ID) {
+		return false, err
+	}
+	hrec, recorded, err := load[nodeRecord](tx, NodeProjection, string(h))
+	if err != nil || !recorded {
+		return false, err
+	}
+	return hrec.Recorded.Node.ID == h && hrec.Recorded.Task == rec.Recorded.Task && hrec.State.Key != nil && *hrec.State.Key == *rec.State.Key &&
+		hrec.State.Result != nil && *hrec.State.Result == r.Result.ID, nil
 }
 
 // ViewOf is node's view (an unrecorded node is an error).

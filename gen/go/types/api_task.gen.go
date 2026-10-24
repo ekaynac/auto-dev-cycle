@@ -4,13 +4,151 @@
 
 package types
 
-// TaskRead: One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+import (
+	"encoding/json"
+	"errors"
+)
+
+// TaskRead: One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both, in the one task's read only: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec's requirement or acceptance.
 type TaskRead struct {
 	ID      TaskID    `json:"id"`
 	Project ProjectID `json:"project"`
 	Card    BoardCard `json:"card"`
 	// The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project.
 	FirstAttempt *FirstAttempt `json:"first_attempt"`
+	// The task's benchmark facts (M1 slice plan §2.8; P25, adc dev bench record), only in the one task's read (GET /v1/tasks/{task}); null in the list (Opus #430 H1): its approval and end, each of its nodes with its controller event times and attempts, those attempts' leases with their bound calls and each call's usage measurements as the call ledger holds them, and the operator's answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task's project.
+	Bench *TaskBench `json:"bench"`
+}
+
+type TaskBenchDoneAsValue string
+
+const (
+	TaskBenchDoneAsValueCandidate TaskBenchDoneAsValue = "candidate"
+	TaskBenchDoneAsValueAbandoned TaskBenchDoneAsValue = "abandoned"
+)
+
+type TaskBench struct {
+	// The task's approval.recorded time; null with none recorded.
+	ApprovedAt *Time `json:"approved_at"`
+	// What task.done ended the task as; null while it is not done.
+	DoneAs *TaskBenchDoneAsValue `json:"done_as"`
+	// A candidate's closing review: the completed review of the last build round whose result is go (graph.CandidateGo; the board's done_candidate, before task.done records it too), the latest selected of them, with its result.selected time, outcome and reason; null while the task has none.
+	Closure *BenchClosure `json:"closure"`
+	// Every node of the task, in node id order.
+	Nodes []BenchNode `json:"nodes"`
+	// The lease of every attempt of the task's nodes, in lease id order.
+	Leases []BenchLease `json:"leases"`
+	// For each owed input a node of the task asked for that is answered at its current revision, the asking node, in node then owed input id order.
+	Answers []NodeID `json:"answers"`
+	// Each raise of the task's rails (task.rail_raised), in log order.
+	RailRaises []BenchRailRaise `json:"rail_raises"`
+}
+
+type BenchClosure struct {
+	Node       NodeID     `json:"node"`
+	SelectedAt Time       `json:"selected_at"`
+	Outcome    Outcome    `json:"outcome"`
+	Reason     ReasonCode `json:"reason"`
+}
+
+// UnmarshalJSON decodes BenchClosure and refuses an omitted reason code.
+
+func (x *BenchClosure) UnmarshalJSON(b []byte) error {
+	type plain BenchClosure
+	var p plain
+
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+
+	if p.Reason.code == "" {
+		return errors.New("BenchClosure: a reason code is required (Reason)")
+	}
+
+	*x = BenchClosure(p)
+	return nil
+}
+
+type BenchNodeKind string
+
+const (
+	BenchNodeKindPlan              BenchNodeKind = "plan"
+	BenchNodeKindBuild             BenchNodeKind = "build"
+	BenchNodeKindAccept            BenchNodeKind = "accept"
+	BenchNodeKindGate              BenchNodeKind = "gate"
+	BenchNodeKindRuntimeVerify     BenchNodeKind = "runtime_verify"
+	BenchNodeKindIntegration       BenchNodeKind = "integration"
+	BenchNodeKindRebase            BenchNodeKind = "rebase"
+	BenchNodeKindEvidence          BenchNodeKind = "evidence"
+	BenchNodeKindReview            BenchNodeKind = "review"
+	BenchNodeKindReviewRequirement BenchNodeKind = "review_requirement"
+	BenchNodeKindCarryOver         BenchNodeKind = "carry_over"
+	BenchNodeKindClosure           BenchNodeKind = "closure"
+	BenchNodeKindMerge             BenchNodeKind = "merge"
+	BenchNodeKindDeploy            BenchNodeKind = "deploy"
+	BenchNodeKindRecord            BenchNodeKind = "record"
+	BenchNodeKindPhaseGate         BenchNodeKind = "phase_gate"
+)
+
+type BenchNodeState string
+
+const (
+	BenchNodeStateWaiting    BenchNodeState = "waiting"
+	BenchNodeStateRunnable   BenchNodeState = "runnable"
+	BenchNodeStateHeld       BenchNodeState = "held"
+	BenchNodeStateClaimed    BenchNodeState = "claimed"
+	BenchNodeStateCompleted  BenchNodeState = "completed"
+	BenchNodeStateSuperseded BenchNodeState = "superseded"
+)
+
+type BenchNode struct {
+	ID   NodeID        `json:"id"`
+	Kind BenchNodeKind `json:"kind"`
+	// The round of the candidate the node checks (graph.CandidateRound): a build's own; an accept's, gate's or review's, its candidate build's; 0 for a check of no build.
+	Round int64          `json:"round"`
+	State BenchNodeState `json:"state"`
+	// Its selected result's outcome; null with none.
+	Outcome *Outcome    `json:"outcome"`
+	Reason  *ReasonCode `json:"reason"`
+	// Its first node.claimed time; null when never claimed.
+	ClaimedAt *Time `json:"claimed_at"`
+	// Its latest result.selected time; null with none.
+	SelectedAt *Time `json:"selected_at"`
+	// Every attempt on the node's unit, first to last.
+	Attempts []BenchAttempt `json:"attempts"`
+}
+
+type BenchAttempt struct {
+	ID    AttemptID `json:"id"`
+	Lease LeaseID   `json:"lease"`
+}
+
+type BenchLease struct {
+	ID       LeaseID    `json:"id"`
+	Executor ExecutorID `json:"executor"`
+	Role     Name       `json:"role"`
+	// The digest of the registry entry the lease was placed on, as its destinations placement check records it (dispatch.EntryDigestOf); null when the check records none. adc dev bench record refuses a registry file whose entry differs (Opus #430 M3).
+	RegistryEntry *Digest `json:"registry_entry"`
+	// The price the lease was placed at (Lease.Price); null for an executor with none.
+	Price *RegistryPrice `json:"price"`
+	// What the lease is liable for in USD micros: once it has settled (its settlement recorded), its usd_micros group's liability (capacity.LiabilitiesOf); before, its usd_micros reservation; 0 with neither. Null when that liability is inconsistent_usage or saturated: no figure bounds it.
+	LiabilityUsdMicros *int64 `json:"liability_usd_micros"`
+	// Every call the ledger binds to the lease (ledger.BoundTo), in call id order.
+	Calls []BenchCall `json:"calls"`
+}
+
+type BenchCall struct {
+	ID CallID `json:"id"`
+	// The attempt the call is bound to (its binding).
+	Attempt AttemptID `json:"attempt"`
+	// Every usage measurement the ledger holds of the call (ledger.Measurements).
+	Measurements []UsageMeasurement `json:"measurements"`
+}
+
+type BenchRailRaise struct {
+	Rail RaisableRail `json:"rail"`
+	// The task's nodes whose budget_rail hold on the rail the raise's command cleared, in node id order.
+	Nodes []NodeID `json:"nodes"`
 }
 
 type FirstAttempt struct {

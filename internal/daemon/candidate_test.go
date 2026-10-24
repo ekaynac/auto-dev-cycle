@@ -98,11 +98,17 @@ func restartOn(t *testing.T, rw *runWorld) restarted {
 	if err := os.Rename(rw.w.dir, dir); err != nil {
 		t.Fatal(err)
 	}
-	gs := stubGroups(t)
+	return startOn(t, dir, stubGroups(t), rw.w.op)
+}
+
+// startOn starts adcd on the store under dir with groups gs, its reader
+// op, as restartOn does.
+func startOn(t *testing.T, dir string, gs []types.ResourceGroup, op types.ActorID) restarted {
+	t.Helper()
 	w := seed(t, dir, daemonProjection(t, gs...))
 	var tok identity.Secret
-	w.do(rw.w.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		evs, s, err := identity.IssueToken(rw.w.op, rw.w.op, time.Now().UTC())
+	w.do(op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		evs, s, err := identity.IssueToken(op, op, time.Now().UTC())
 		tok = s
 		return evs, err
 	})
@@ -156,7 +162,7 @@ func (r restarted) noLeak(t *testing.T, task types.TaskID, canaries ...string) {
 	t.Helper()
 	for resource, line := range cli.ReadCommands() {
 		args := append(strings.Fields(strings.TrimPrefix(line, "adc ")), "--json")
-		if resource == "tasks" {
+		if resource == cli.OneTask {
 			args = []string{"task", "show", string(task), "--json"}
 		}
 		var code int
@@ -169,10 +175,17 @@ func (r restarted) noLeak(t *testing.T, task types.TaskID, canaries ...string) {
 		} else if code, out, errb = r.c.adc(r.tok, args...); code != entry.ExitOK {
 			t.Errorf("%s: %d %s", line, code, errb)
 		}
-		for _, secret := range append([]string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary}, canaries...) {
-			if strings.Contains(out, secret) {
-				t.Errorf("%s holds %q: %s", line, secret, out)
-			}
+		noAcceptance(t, line, out, canaries...)
+	}
+}
+
+// noAcceptance requires that out, what line printed or wrote, holds neither
+// the acceptance digest nor the canary, nor any of canaries.
+func noAcceptance(t *testing.T, line, out string, canaries ...string) {
+	t.Helper()
+	for _, secret := range append([]string{acceptDigest, strings.TrimPrefix(acceptDigest, "sha256:"), canary}, canaries...) {
+		if strings.Contains(out, secret) {
+			t.Errorf("%s holds %q: %s", line, secret, out)
 		}
 	}
 }

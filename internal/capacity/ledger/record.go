@@ -105,6 +105,10 @@ const (
 	LeaseBindingProjection = "model_call_leases" // lease/call → binding
 )
 
+// ErrMeasurementIndex: a call's measurement index holds a measurement that
+// is not the call's under its own id (a damaged projection; Opus #432 r3).
+var ErrMeasurementIndex = errors.New("ledger: a call's measurement index holds another record")
+
 // ErrBindingMismatch: a report on a bound call names another attempt or
 // lease than the binding's.
 var ErrBindingMismatch = errors.New("ledger: the report is not its call's binding")
@@ -131,6 +135,8 @@ func BoundTo(tx *eventstore.Tx, lease types.LeaseID) ([]types.CallID, error) {
 }
 
 // Measurements lists a call's recorded measurements, from every attempt.
+// Each is the call's, under its own id: a row under another key is
+// damage, never counted (Opus #432 r3).
 func Measurements(tx *eventstore.Tx, call types.CallID) ([]types.UsageMeasurement, error) {
 	keys, err := tx.Keys(UsageProjection, string(call)+"/")
 	if err != nil {
@@ -145,6 +151,9 @@ func Measurements(tx *eventstore.Tx, call types.CallID) ([]types.UsageMeasuremen
 		var m types.UsageMeasurement
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return nil, fmt.Errorf("ledger: measurement %s: %w", k, err)
+		}
+		if k != string(call)+"/"+string(m.ID) || m.Call != call {
+			return nil, fmt.Errorf("%w: call %s's index holds %s, of call %s, under %s", ErrMeasurementIndex, call, m.ID, m.Call, k)
 		}
 		out = append(out, m)
 	}

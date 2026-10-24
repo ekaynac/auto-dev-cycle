@@ -4,12 +4,14 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -256,4 +258,148 @@ func TestReuseReleaseRefusals(t *testing.T) {
 func (g graphStore) recordOf(n types.NodeID) types.NodeRecorded {
 	rec, _ := view[nodeRecord](g, NodeProjection, string(n))
 	return rec.Recorded
+}
+
+// timesOf is n's TimesOf, read in a view.
+func (g graphStore) timesOf(n types.NodeID) (Times, error) {
+	var t Times
+	var terr error
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error { t, terr = TimesOf(tx, n); return nil }); err != nil {
+		g.t.Fatal(err)
+	}
+	return t, terr
+}
+
+// Astra #432 H2: a node's times are checked against its own evidence. A
+// node completed by reuse is stamped claimed and selected at its reuse (it
+// took no time of its own), and reads; the holder, claimed and selected,
+// reads both. Opus #432 r2 L1: the holder's invalidation releases the
+// reuse, which clears the reused node's times with its claim and result;
+// its reuse at the next generation is stamped at that reuse alone, after
+// the release, and a rebuild reaches the same rows. With the holder's
+// times row gone (damage), its claim and selected result are evidence of
+// times it lacks: ErrTimesMissing, never read as a node never claimed.
+func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
+	g := openStore(t)
+	holder, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
+	b := g.record(g.nodeLikeGate(holder))
+	var held ErrKeyClaimed
+	if err := g.do(g.claimOf(b)); !errors.As(err, &held) {
+		t.Fatalf("b's claim: %v", err)
+	}
+	g.must(reuseOf(b, g.planRes))
+	if tb, err := g.timesOf(b); err != nil || tb.Claimed.IsZero() || !tb.Claimed.Equal(tb.Selected) {
+		t.Errorf("the reused node's times: %+v %v", tb, err)
+	}
+	g.viewCloses(holder, b)
+	// The reuse's own projections are its evidence: with b dropped from its
+	// key's reusers, or the key held by another node, b's result is not
+	// its own, its outcome nil (the board's damaged_record).
+	index := keyIndex(g.recordOf(b).Task, g.state(b).Key.Key)
+	for name, damage := range map[string][2]string{"the reusers": {ReuseProjection, `[]`}, "the holder": {KeyProjection, `"` + string(b) + `"`}} {
+		was, _ := view[json.RawMessage](g, damage[0], index)
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, tx.Put(damage[0], index, json.RawMessage(damage[1]))
+		})
+		var v NodeView
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { v, err = ViewOf(tx, b); return err }); err != nil || v.Outcome != nil {
+			t.Errorf("b's view with %s damaged: %+v %v", name, v, err)
+		}
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return nil, tx.Put(damage[0], index, was) })
+	}
+	g.viewCloses(holder, b)
+	// Lead check of eb4a9ed: the key index's holder is checked against its
+	// own record. Two rows damaged: b's selected result names a foreign
+	// node's result, and the key index names that node. The foreign node,
+	// recorded with that result, is of another task, or holds another key,
+	// or has another result selected: b's outcome is nil.
+	hrec, _ := view[nodeRecord](g, NodeProjection, string(holder))
+	hres, _ := view[types.ResultRecorded](g, ResultProjection, string(*hrec.State.Result))
+	bwas, _ := view[json.RawMessage](g, NodeProjection, string(b))
+	keywas, _ := view[json.RawMessage](g, KeyProjection, index)
+	for name, change := range map[string]func(*nodeRecord){
+		"of another task":       func(f *nodeRecord) { f.Recorded.Task = types.TaskID(must(ids.New("tsk"))) },
+		"holding another key":   func(f *nodeRecord) { k := *f.State.Key; k.Generation++; f.State.Key = &k },
+		"with another selected": func(f *nodeRecord) { other := types.ResultID(must(ids.New("res"))); f.State.Result = &other },
+	} {
+		foreign, res := hrec, hres
+		foreign.Recorded.Node.ID, res.Node = types.NodeID(must(ids.New("nod"))), ""
+		res.Node, res.Result.ID = foreign.Recorded.Node.ID, types.ResultID(must(ids.New("res")))
+		foreign.State.Result = &res.Result.ID
+		change(&foreign)
+		damaged, _ := view[nodeRecord](g, NodeProjection, string(b))
+		damaged.State.Result = &res.Result.ID
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, errors.Join(put(tx, NodeProjection, string(foreign.Recorded.Node.ID), foreign), put(tx, ResultProjection, string(res.Result.ID), res),
+				put(tx, NodeProjection, string(b), damaged), put(tx, KeyProjection, index, foreign.Recorded.Node.ID))
+		})
+		var v NodeView
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { v, err = ViewOf(tx, b); return err }); err != nil || v.Outcome != nil {
+			t.Errorf("b's view through a holder %s: %+v %v", name, v, err)
+		}
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, errors.Join(tx.Put(NodeProjection, string(b), bwas), tx.Put(KeyProjection, index, keywas),
+				tx.Delete(NodeProjection, string(foreign.Recorded.Node.ID)), tx.Delete(ResultProjection, string(res.Result.ID)))
+		})
+	}
+	g.viewCloses(holder, b)
+	if th, err := g.timesOf(holder); err != nil || th.Claimed.IsZero() || th.Selected.IsZero() {
+		t.Errorf("the holder's times: %+v %v", th, err)
+	}
+	first, _ := g.timesOf(b)
+	g.must(invalidate(holder))
+	if _, kept := view[times](g, TimesProjection, string(b)); kept {
+		t.Error("b keeps its released reuse's times")
+	}
+	if tb, err := g.timesOf(b); err != nil || !tb.Claimed.IsZero() || !tb.Selected.IsZero() {
+		t.Errorf("b's times once released: %+v %v", tb, err)
+	}
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+	}); !errors.As(err, &held) {
+		t.Fatalf("b's claim at generation 2: %v", err)
+	}
+	g.selectGate(holder)
+	g.must(reuseOf(b, g.planRes))
+	if tb, err := g.timesOf(b); err != nil || !tb.Claimed.Equal(tb.Selected) || !tb.Claimed.After(first.Selected) {
+		t.Errorf("b's second reuse's times: %+v, the first's %+v, %v", tb, first, err)
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
+	}
+	for _, half := range []string{`{"claimed":"","selected":"2026-10-24T00:00:00Z"}`, `{"claimed":"2026-10-24T00:00:00Z","selected":""}`, ""} {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if half == "" {
+				return nil, tx.Delete(TimesProjection, string(holder))
+			}
+			return nil, tx.Put(TimesProjection, string(holder), json.RawMessage(half))
+		})
+		if _, err := g.timesOf(holder); !errors.Is(err, ErrTimesMissing) {
+			t.Errorf("the holder's times %q: %v", half, err)
+		}
+	}
+}
+
+// viewCloses: reused, completed by reuse of holder's key, reads holder's
+// outcome and reason in its view (Opus #432 r4 M1), and ClosesCandidate
+// takes it exactly when it takes holder.
+func (g graphStore) viewCloses(holder, reused types.NodeID) {
+	g.t.Helper()
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		h, err := ViewOf(tx, holder)
+		r, rerr := ViewOf(tx, reused)
+		if err = errors.Join(err, rerr); err != nil {
+			return err
+		}
+		nodes, err := TaskNodes(tx, r.Task)
+		if err != nil {
+			return err
+		}
+		if h.Outcome == nil || r.Outcome == nil || *r.Outcome != *h.Outcome || *r.Reason != *h.Reason || ClosesCandidate(nodes, r) != ClosesCandidate(nodes, h) {
+			g.t.Errorf("the reused node's view %+v, its holder's %+v", r, h)
+		}
+		return nil
+	}); err != nil {
+		g.t.Fatal(err)
+	}
 }

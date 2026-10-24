@@ -4,7 +4,7 @@
 
 `schemas/api/task.json`
 
-One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both, in the one task's read only: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec's requirement or acceptance.
 
 ## Fields of the document
 
@@ -14,10 +14,108 @@ One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a re
 | `project` | yes | [ProjectID](common-defs.md#projectid) |  |
 | `card` | yes | [board](api-board.md) |  |
 | `first_attempt` | yes | null or [FirstAttempt](#firstattempt) | The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project. |
+| `bench` | yes | null or [TaskBench](#taskbench) | The task's benchmark facts (M1 slice plan §2.8; P25, adc dev bench record), only in the one task's read (GET /v1/tasks/{task}); null in the list (Opus #430 H1): its approval and end, each of its nodes with its controller event times and attempts, those attempts' leases with their bound calls and each call's usage measurements as the call ledger holds them, and the operator's answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task's project. |
 
 No other fields are allowed.
 
 ## Definitions
+
+### TaskBench
+
+#### Fields of TaskBench
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `approved_at` | yes | null or [Time](common-defs.md#time) | The task's approval.recorded time; null with none recorded. |
+| `done_as` | yes | null or one of `candidate`, `abandoned` | What task.done ended the task as; null while it is not done. |
+| `closure` | yes | null or [BenchClosure](#benchclosure) | A candidate's closing review: the completed review of the last build round whose result is go (graph.CandidateGo; the board's done_candidate, before task.done records it too), the latest selected of them, with its result.selected time, outcome and reason; null while the task has none. |
+| `nodes` | yes | array of [BenchNode](#benchnode) | Every node of the task, in node id order. |
+| `leases` | yes | array of [BenchLease](#benchlease) | The lease of every attempt of the task's nodes, in lease id order. |
+| `answers` | yes | array of [NodeID](common-defs.md#nodeid) | For each owed input a node of the task asked for that is answered at its current revision, the asking node, in node then owed input id order. |
+| `rail_raises` | yes | array of [BenchRailRaise](#benchrailraise) | Each raise of the task's rails (task.rail_raised), in log order. |
+
+No other fields are allowed.
+
+### BenchClosure
+
+#### Fields of BenchClosure
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `selected_at` | yes | [Time](common-defs.md#time) |  |
+| `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
+| `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |
+
+No other fields are allowed.
+
+### BenchNode
+
+#### Fields of BenchNode
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `runtime_verify`, `integration`, `rebase`, `evidence`, `review`, `review_requirement`, `carry_over`, `closure`, `merge`, `deploy`, `record`, `phase_gate` |  |
+| `round` | yes | integer (minimum `0`, maximum `9007199254740991`) | The round of the candidate the node checks (graph.CandidateRound): a build's own; an accept's, gate's or review's, its candidate build's; 0 for a check of no build. |
+| `state` | yes | one of `waiting`, `runnable`, `held`, `claimed`, `completed`, `superseded` |  |
+| `outcome` | yes | null or [Outcome](common-defs.md#outcome) | Its selected result's outcome; null with none. |
+| `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) |  |
+| `claimed_at` | yes | null or [Time](common-defs.md#time) | Its first node.claimed time; null when never claimed. |
+| `selected_at` | yes | null or [Time](common-defs.md#time) | Its latest result.selected time; null with none. |
+| `attempts` | yes | array of [BenchAttempt](#benchattempt) | Every attempt on the node's unit, first to last. |
+
+No other fields are allowed.
+
+### BenchAttempt
+
+#### Fields of BenchAttempt
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | [AttemptID](common-defs.md#attemptid) |  |
+| `lease` | yes | [LeaseID](common-defs.md#leaseid) |  |
+
+No other fields are allowed.
+
+### BenchLease
+
+#### Fields of BenchLease
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | [LeaseID](common-defs.md#leaseid) |  |
+| `executor` | yes | [ExecutorID](common-defs.md#executorid) |  |
+| `role` | yes | [Name](records-receipt.md#name) |  |
+| `registry_entry` | yes | null or [Digest](common-defs.md#digest) | The digest of the registry entry the lease was placed on, as its destinations placement check records it (dispatch.EntryDigestOf); null when the check records none. adc dev bench record refuses a registry file whose entry differs (Opus #430 M3). |
+| `price` | yes | null or [RegistryPrice](config-executor-registry.md#registryprice) | The price the lease was placed at (Lease.Price); null for an executor with none. |
+| `liability_usd_micros` | yes | null or integer (minimum `0`, maximum `9007199254740991`) | What the lease is liable for in USD micros: once it has settled (its settlement recorded), its usd_micros group's liability (capacity.LiabilitiesOf); before, its usd_micros reservation; 0 with neither. Null when that liability is inconsistent_usage or saturated: no figure bounds it. |
+| `calls` | yes | array of [BenchCall](#benchcall) | Every call the ledger binds to the lease (ledger.BoundTo), in call id order. |
+
+No other fields are allowed.
+
+### BenchCall
+
+#### Fields of BenchCall
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `id` | yes | [CallID](common-defs.md#callid) |  |
+| `attempt` | yes | [AttemptID](common-defs.md#attemptid) | The attempt the call is bound to (its binding). |
+| `measurements` | yes | array of [usage-measurement](records-usage-measurement.md) | Every usage measurement the ledger holds of the call (ledger.Measurements). |
+
+No other fields are allowed.
+
+### BenchRailRaise
+
+#### Fields of BenchRailRaise
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `rail` | yes | [RaisableRail](api-scope-task-raise-rail.md#raisablerail) |  |
+| `nodes` | yes | array of [NodeID](common-defs.md#nodeid) | The task's nodes whose budget_rail hold on the rail the raise's command cleared, in node id order. |
+
+No other fields are allowed.
 
 ### FirstAttempt
 

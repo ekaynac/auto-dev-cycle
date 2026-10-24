@@ -205,7 +205,7 @@ const bootstrapRoute = "POST " + apidoc.BootstrapPath
 // routeList is every pattern the daemon serves, in registration order.
 var routeList = []string{bootstrapRoute, "GET " + api.EventsPath, "GET " + api.VersionPath,
 	"POST " + CommandsPath, "GET " + api.WhoamiPath, "GET " + api.ReadPath, "POST " + api.BlobsPath, "GET " + api.BlobsPath,
-	"POST " + api.SandboxProbePath}
+	"POST " + api.SandboxProbePath, "GET " + api.TaskPath}
 
 // Routes are the patterns the daemon serves (the parity harness,
 // internal/parity, checks each against the API description).
@@ -224,6 +224,7 @@ func routes(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.S
 		"POST " + CommandsPath:   cmds,
 		"GET " + api.WhoamiPath:  http.HandlerFunc(reads.Whoami),
 		"GET " + api.ReadPath:    http.HandlerFunc(reads.Resource),
+		"GET " + api.TaskPath:    http.HandlerFunc(reads.Task),
 		"POST " + api.BlobsPath:  blobs,
 		"GET " + api.BlobsPath:   blobs,
 	}

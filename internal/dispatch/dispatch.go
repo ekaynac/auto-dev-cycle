@@ -60,6 +60,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -221,7 +222,7 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 	e, ok := d.Registry.Executor(executor)
 	c := types.LeasePlacementChecks{
 		DataFloor:     pass("policy " + string(card.PolicyDigest)),
-		Destinations:  pass("executor " + string(executor) + " " + digest(e)),
+		Destinations:  pass("executor " + string(executor) + " " + EntryDigest(e)),
 		Capability:    pass(imageSignal(card.Image)), // bounded: the detail holds 4096
 		Independence:  pass("roster " + digest(roster)),
 		PaidAuthority: pass("not checked here: the rails are P17's"),
@@ -293,4 +294,20 @@ func digest(v any) string {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// EntryDigest is the digest of registry entry e as Match records it in a
+// lease's destinations check ("executor ID DIGEST"): what the lease was
+// placed on, which a later reader compares a registry file's entry with
+// (adc dev bench record, P25; Opus #430 M3). Like digest, it is stable
+// within one build.
+func EntryDigest(e types.RegistryExecutor) string { return digest(e) }
+
+// EntryDigestOf is the registry entry digest lease l's destinations check
+// records for its executor; false when it records none (a check that did
+// not pass, or another executor's).
+func EntryDigestOf(l types.Lease) (string, bool) {
+	c := l.PlacementChecks.Destinations
+	d, ok := strings.CutPrefix(c.Detail, "executor "+string(l.Executor)+" ")
+	return d, ok && c.Outcome == types.OutcomeEmpty && strings.HasPrefix(d, "sha256:") && !strings.Contains(d, " ")
 }

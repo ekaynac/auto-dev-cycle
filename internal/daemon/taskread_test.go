@@ -125,6 +125,27 @@ func taskReadWith(t *testing.T, w *seeder, actor types.ActorID, task types.TaskI
 	return rec
 }
 
+// taskOneAs is task's record in the one task's read (api.ReadTask) as
+// actor reads it, its benchmark facts included; the zero record when it
+// reads none.
+func taskOneAs(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID) (rec types.TaskRead) {
+	t.Helper()
+	w.view(func(tx *eventstore.Tx) error {
+		var a types.Actor
+		raw, _, err := tx.Get(identity.ActorProjection, string(actor))
+		if err == nil {
+			err = json.Unmarshal(raw, &a)
+		}
+		scope, serr := authority.ReadScopeOf(tx, a, time.Now())
+		if err = errors.Join(err, serr); err != nil {
+			return err
+		}
+		rec, _, err = api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, task, true)
+		return err
+	})
+	return rec
+}
+
 // commitPlan commits plan's completed result, empty/completed_clean,
 // recorded by attempt once it submits it (nil: by no attempt).
 func commitPlan(t *testing.T, w *seeder, plan types.NodeID, attempt *types.AttemptID) {
@@ -266,14 +287,24 @@ func TestTaskReadKinds(t *testing.T) {
 		return sup.ID
 	}
 	board := taskReadAs(t, w, reader("board"), running)
-	if board.ID != running || board.FirstAttempt != nil {
+	if board.ID != running || board.FirstAttempt != nil || board.Bench != nil {
 		t.Errorf("a board reader: %+v", board)
 	}
-	if f := taskReadAs(t, w, reader("board", "attempt"), running).FirstAttempt; f == nil || f.Attempt != attempt || f.Tokens != nil {
-		t.Errorf("an attempt reader: %+v", f)
+	if rec := taskReadAs(t, w, reader("board", "attempt"), running); rec.FirstAttempt == nil || rec.FirstAttempt.Attempt != attempt || rec.FirstAttempt.Tokens != nil || rec.Bench != nil {
+		t.Errorf("an attempt reader: %+v", rec)
 	}
-	if f := taskReadAs(t, w, reader("board", "attempt", "model_call"), running).FirstAttempt; f == nil || f.Tokens == nil || f.Tokens.In != 300 {
-		t.Errorf("a model-call reader: %+v", f)
+	if rec := taskOneAs(t, w, reader("board", "attempt"), running); rec.ID != running || rec.Bench != nil {
+		t.Errorf("an attempt reader's one-task read: %+v", rec)
+	}
+	if rec := taskOneAs(t, w, reader("board", "model_call"), running); rec.ID != running || rec.Bench != nil {
+		t.Errorf("a model-call reader not reading attempts: %+v", rec)
+	}
+	both := reader("board", "attempt", "model_call")
+	if rec := taskReadAs(t, w, both, running); rec.FirstAttempt == nil || rec.FirstAttempt.Tokens == nil || rec.FirstAttempt.Tokens.In != 300 || rec.Bench != nil {
+		t.Errorf("a model-call reader's list (never the benchmark facts: Opus #430 H1): %+v", rec)
+	}
+	if rec := taskOneAs(t, w, both, running); rec.FirstAttempt == nil || rec.Bench == nil {
+		t.Errorf("a model-call reader's one-task read: %+v", rec)
 	}
 }
 
@@ -281,20 +312,29 @@ func TestTaskReadKinds(t *testing.T) {
 // each lost, sealed and superseded by the next, under a lease of its own.
 func attemptsOn(t *testing.T, w *seeder, node types.NodeID, k int) {
 	t.Helper()
+	ids := make([]types.AttemptID, k)
+	for i := range ids {
+		ids[i] = types.AttemptID(newID(t, "att"))
+	}
+	attemptsWith(t, w, node, ids...)
+}
+
+// attemptsWith is attemptsOn with the attempts' ids.
+func attemptsWith(t *testing.T, w *seeder, node types.NodeID, attempts ...types.AttemptID) {
+	t.Helper()
 	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Claim(tx, node, map[string]graph.Resolved{}, 1)
 	})
 	base := types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"}
 	units := graph.Units{Tasks: authority.Tasks{}}
 	var prev types.AttemptID
-	for i := range k {
+	for i, a := range attempts {
 		ls := w.lease(4)
 		ls.Unit, ls.Reservations = graph.UnitOf(node), []types.LeaseReservationsItem{}
 		w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
 		w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
 		})
-		a := types.AttemptID(newID(t, "att"))
 		if i == 0 {
 			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, ls.ID, 2, a, base) })
 		} else {

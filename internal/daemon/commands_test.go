@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -618,5 +619,13 @@ func TestRaiseRailThroughTheCommandServer(t *testing.T) {
 	}
 	if after.RoundsPerTask != to || len(held) != 0 {
 		t.Errorf("after the raise: rounds_per_task %d (want %d), holds %+v", after.RoundsPerTask, to, held)
+	}
+	// P25: the task read's benchmark facts hold the raise, with the node
+	// its command released (graph.RailCleared).
+	code, out, errb = c.adc(c.op.Reveal(), "task", "show", string(task), "--json")
+	var rec types.TaskRead
+	if code != entry.ExitOK || json.Unmarshal([]byte(out), &rec) != nil || rec.Bench == nil || len(rec.Bench.RailRaises) != 1 ||
+		rec.Bench.RailRaises[0].Rail != "rounds_per_task" || !slices.Equal(rec.Bench.RailRaises[0].Nodes, []types.NodeID{node}) {
+		t.Errorf("the raise's benchmark facts: %d %s %s", code, out, errb)
 	}
 }
