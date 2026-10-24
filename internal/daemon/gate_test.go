@@ -505,7 +505,8 @@ func baseFiles(t *testing.T, files map[string]string, rm ...string) func(map[str
 // declaring no test, a base with no root go.mod, and one that can never
 // compile in the base's package (another package clause, a base test's
 // name: Opus #429 N1; a helper in another package than the base's:
-// Astra #429 H2), and files over gate.MaxOverlay (Astra #429 M5). No
+// Astra #429 H2), files over gate.MaxOverlay (Astra #429 M5), and a test
+// file over gate.MaxFuncs functions (Opus #429 r8 L1). No
 // gate run starts,
 // the base's measure included.
 func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
@@ -518,14 +519,15 @@ func TestTheGateRefusesAnAcceptanceItCannotOverlay(t *testing.T) {
 		"under a file of the base": {files: map[string]string{"go.mod/x_test.go": hiddenInv}},
 		"in a module the base nests": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
 			edit: baseFiles(t, map[string]string{"inv/go.mod": "module example.com/inv\n", "inv/doc.go": "package inv\n"})},
-		"under testdata":           {files: map[string]string{"inv/testdata/inv_hidden_test.go": hiddenInv}},
-		"under a _ directory":      {files: map[string]string{"_inv/inv_hidden_test.go": hiddenInv}},
-		"another platform's":       {files: map[string]string{"inv/inv_hidden_test.go": "//go:build plan9\n\n" + hiddenInv}},
-		"not parsing":              {files: map[string]string{"inv/inv_hidden_test.go": "package inv\nfunc {\n"}},
-		"declaring no test":        {files: map[string]string{"inv/data.txt": "x\n"}},
-		"a base with no go.mod":    {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
-		"over the overlay's bound": {files: overBound()},
-		"a cgo test":               {files: map[string]string{"inv/inv_hidden_test.go": strings.Replace(hiddenInv, "import \"testing\"", "import \"C\"\nimport \"testing\"", 1)}},
+		"under testdata":                    {files: map[string]string{"inv/testdata/inv_hidden_test.go": hiddenInv}},
+		"under a _ directory":               {files: map[string]string{"_inv/inv_hidden_test.go": hiddenInv}},
+		"another platform's":                {files: map[string]string{"inv/inv_hidden_test.go": "//go:build plan9\n\n" + hiddenInv}},
+		"not parsing":                       {files: map[string]string{"inv/inv_hidden_test.go": "package inv\nfunc {\n"}},
+		"declaring no test":                 {files: map[string]string{"inv/data.txt": "x\n"}},
+		"a base with no go.mod":             {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv}, edit: baseFiles(t, nil, "go.mod")},
+		"over the overlay's bound":          {files: overBound()},
+		"more than gate.MaxFuncs functions": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv + strings.Repeat("\nfunc init() {}\n", gate.MaxFuncs)}},
+		"a cgo test":                        {files: map[string]string{"inv/inv_hidden_test.go": strings.Replace(hiddenInv, "import \"testing\"", "import \"C\"\nimport \"testing\"", 1)}},
 		"a helper in another package than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv, "lib/helper.go": "package other\n"},
 			edit: baseFiles(t, map[string]string{"lib/lib.go": "package lib\n"})},
 		"another package clause than the base's": {files: map[string]string{"inv/inv_hidden_test.go": hiddenInv},
