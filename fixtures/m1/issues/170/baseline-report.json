@@ -1,5 +1,5 @@
 {
-  "note": "The measured baseline for #170's gate: gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in the pinned prepared Go image (ghcr.io/ekaynac/adc-prepared-go@sha256:7ab5adabc1296d67745fe8d236f48aaa19b06b9ce5e8e57bafd6b564d87d1116, image a9ba0c53952b, linux/arm64), offline, in gate mode (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0), at base 0d3e81d (tree a75ab3a). The run ended on its own (exit 0) and is green; the three skips are tests that skip as root, and a head that skips them too is not blocked by them. baseline-stream.json is the measured run's go test -json stream.",
+  "note": "The measured baseline for #170's gate: gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in the pinned prepared Go image (ghcr.io/ekaynac/adc-prepared-go@sha256:4e8cf51b55c9115963f1b9485f6261e66dbbd5aa631b0e5142d13eec04f320c7, image f80f24416946, linux/arm64), offline, in gate mode (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0), at base 0d3e81d (tree a75ab3a). The run ended on its own (exit 0) and is green; the three skips are tests that skip as root, and a head that skips them too is not blocked by them. baseline-stream.json is the measured run's go test -json stream.",
   "base": "0d3e81dba68473ecbe4e8cb5f2c0665a28e0cbeb",
   "base_tree": "a75ab3a24c230fd6dcc58817d7d5c399fc92f8da",
   "command": [
@@ -9,8 +9,8 @@
     "-json",
     "./internal/cli/..."
   ],
-  "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:7ab5adabc1296d67745fe8d236f48aaa19b06b9ce5e8e57bafd6b564d87d1116",
-  "image_id": "a9ba0c53952bf594551eae35d4cbf2b90a375ef6c4bf4207d06ec57f458bab8c",
+  "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:4e8cf51b55c9115963f1b9485f6261e66dbbd5aa631b0e5142d13eec04f320c7",
+  "image_id": "f80f244169466cb58bae92b54aaa4e295ce2f35f3642f85a8a858a73c19dee24",
   "os": "linux",
   "arch": "arm64",
   "skipped_root_only": [

@@ -10,11 +10,11 @@
     "./..."
   ],
   "environment": {
-    "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:f5b0ddd7d54c12317df029a4d296976950208b382c84e06285174efc30cddb95",
-    "image_id": "9c99adda7c9920e664db6eaec57d17c3e07acd7431184549c0455624d398d910",
+    "image": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:66b8cd3a5aaee0cc9d6007e226f37e07d258b82edc49d91891048ae242268a31",
+    "image_id": "1053f9d45926bd7d2e51f54235b36bff4eb27532007fa71a28f8cb04ec15cbf5",
     "platform": "linux/arm64",
-    "image_label": {"dev.adc.prepared": {"toolchain": "go", "lockfiles": {"go.mod": "sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"}, "adapter": {"linux/arm64": "sha256:427c3994e51eb5996bbc08f4c46452bf7c976655a5b758c652fc480c5afcda83"}}},
-    "pin": "go-mini's own prepared image (#226 entry 97), built from main f163833 (#226 entry 185), for linux/arm64 only; its manifest names go-mini's go.mod and the arm64 adapter digest (the release of f163833)",
+    "image_label": {"dev.adc.prepared": {"toolchain": "go", "lockfiles": {"go.mod": "sha256:4c74b377c603a5b4a85eaed95d1f5709a6183175286d47321649fc5af9519f04"}, "adapter": {"linux/arm64": "sha256:f2143fea3a47fda98a327353f8c8f3e70b58ddc5d9cfaf45bbc40e41f4ac83aa"}}},
+    "pin": "go-mini's own prepared image (#226 entry 97), built from main 8adbed7a (#226 entry 194), for linux/arm64 only; its manifest names go-mini's go.mod and the arm64 adapter digest (the release of 8adbed7a)",
     "sandbox": "gate mode: --network=none, read-only root, tmpfs /tmp and HOME, --cap-drop=all",
     "measured_by": "gate.Measure (P15): a run that ended on its own with green results",
     "report": "baseline-report.json, with the run's stream in baseline-stream.json"

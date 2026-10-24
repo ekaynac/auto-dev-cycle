@@ -12,7 +12,7 @@
   "package": {"recipe": [["go", "build", "-trimpath", "-o", "bin/", "./..."]], "outputs": ["bin"]},
   "runtime_verification": {"command": null, "facts_from": null},
   "toolchain": {
-    "images": {"go": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:f5b0ddd7d54c12317df029a4d296976950208b382c84e06285174efc30cddb95"},
+    "images": {"go": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:66b8cd3a5aaee0cc9d6007e226f37e07d258b82edc49d91891048ae242268a31"},
     "dependency_recipe": {
       "lockfiles": ["go.mod"],
       "command": ["go", "mod", "download"],
