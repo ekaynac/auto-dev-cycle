@@ -1,0 +1,29 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-provider-429",
+  "control": "Without the 429 the attempt completes with the reference change (the candidate case); the edit before it makes the sealed patch partial, never empty.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "could_not_run",
+        "reason": "quota_exhausted"
+      }
+    },
+    "absent": [
+      "accept",
+      "gate"
+    ],
+    "holds": [
+      "quota_reset"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}

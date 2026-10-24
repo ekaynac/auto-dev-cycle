@@ -1,0 +1,35 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "go-mini-feature-1",
+  "profile_overlay": {
+    "toolchain": {
+      "images": {
+        "go": "ghcr.io/ekaynac/adc-prepared-go-mini@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  },
+  "control": "The profile pins an image digest no store holds; with the profile's own pin (the candidate case) the same launch starts.",
+  "expect": {
+    "until": "held",
+    "nodes": {},
+    "absent": [
+      "accept",
+      "gate"
+    ],
+    "holds": [
+      "wrong_owner"
+    ],
+    "no_attempt": true,
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ],
+    "hold_signals": [
+      "image ghcr.io/ekaynac/adc-prepared-go-mini@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    ]
+  }
+}

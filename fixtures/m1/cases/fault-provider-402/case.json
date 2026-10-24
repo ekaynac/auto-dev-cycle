@@ -1,0 +1,29 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-provider-402",
+  "control": "Without the 402 the attempt completes with the reference change (the candidate case); the edit before it makes the sealed patch partial, never empty.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "could_not_run",
+        "reason": "broker_credit_exhausted"
+      }
+    },
+    "absent": [
+      "accept",
+      "gate"
+    ],
+    "holds": [
+      "broker_credit_exhausted"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}

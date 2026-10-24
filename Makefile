@@ -50,7 +50,7 @@ BINARIES   := adcd adc adc-harness adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check inventory-count vocab-check build dist install-check installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check inventory-count vocab-check build dist install-check installed-cycle-setup installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -97,14 +97,21 @@ install-check: dist build ## Install the dist build into an empty prefix, check 
 	  && scripts/installed-fixtures.sh "$$tmp/prefix" \
 	  && scripts/installed-smoke.sh "$$tmp/prefix"
 
-installed-cycle-stub: dist build ## Install the dist build into an empty prefix and run the installed cycle harness's stub cases from outside the checkout (P24; preflight until P22a lands)
+# The stub set until the candidate (M1 slice plan §2.3, §2.6, §2.7; P24b; #226 entries 188, 189, 193). Not in it:
+# launch-missing-image, fault-provider-402 and -429, awaiting Build307's product fix; hostile-model-switch, whose
+# gateway requests from inside the attempt's container the driver does not send; the unproducible §2.6 cases are
+# listed in docs/design/m1/00-slice-plan.md §2.6.
+STUB_CASES := candidate launch-missing-credential admission-held fault-protected-path fault-test-deletion \
+  fault-test-deletion-skip fault-lying-runner fault-unreadable-results fault-provider-4xx hostile-instructions \
+  hostile-git-dir hostile-gate-output hostile-symlink hostile-symlink-path hostile-test-escape
+
+installed-cycle-setup: dist build ## make ci's installed cycle rows, which need no Podman: preflight, every case's setup, and a missing prerequisite's named refusal (P24b)
 	@$(INSTALL_PREFIX) \
-	  && mkdir "$$tmp/cwd" && (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight) \
-	  && for c in $$(cd fixtures/m1/cases && ls -d hostile-*); do \
-	    (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case "$$c") >"$$tmp/$$c.out" 2>&1 && rc=0 || rc=$$?; \
-	    if [ "$$rc" -ne 2 ] || ! grep -q "could_not_run: $$c needs project and task create" "$$tmp/$$c.out"; then \
-	      echo "installed-cycle-stub: $$c: its setup failed (exit $$rc):" >&2; tail -n 5 "$$tmp/$$c.out" >&2; exit 1; fi; \
-	    echo "installed-cycle-stub: $$c: setup checked; the run needs P22a"; done
+	  && scripts/installed-cycle-set.sh setup "$$tmp/prefix" $$(cd fixtures/m1/cases && ls)
+
+installed-cycle-stub: dist build ## The stub set until the candidate, over the installed prefix from outside the checkout; needs rootless Podman and the pinned go-mini image for this host's platform, else exit 2 named (P24b)
+	@$(INSTALL_PREFIX) \
+	  && scripts/installed-cycle-set.sh run "$$tmp/prefix" $(STUB_CASES)
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
@@ -228,7 +235,7 @@ vocab-check: build ## Registries cross-check; reasons only through generated con
 	@# The check type-checks the module through go list, so the pinned go is put first on PATH.
 	@PATH="$(GOROOT_PIN)/bin:$$PATH" $(BIN_DIR)/adc dev vocab check --root .
 
-ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check installed-cycle-stub ## Everything CI runs
+ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check installed-cycle-setup ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)

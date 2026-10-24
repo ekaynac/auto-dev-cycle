@@ -15,13 +15,18 @@
         "reason": "test_integrity_violation"
       }
     },
-    "holds": [],
+    "holds": [
+      "source_invalid_config"
+    ],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",
       "TestHiddenTransferFailureChangesNothing",
       "TestHiddenTransferAllDropsSourceItem",
       "TestHiddenTransferToSelfIsRejected"
+    ],
+    "hold_signals": [
+      "runner: failed"
     ]
   }
 }

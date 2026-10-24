@@ -1,0 +1,31 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-provider-4xx",
+  "control": "The same task with the go-mini-feature-1 scenario completes its build (the candidate case); only the upstream status differs, and a 4xx names no hold, so the rail decides.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "could_not_run",
+        "reason": "provider_request_refused",
+        "selected": false,
+        "attempt": "own"
+      }
+    },
+    "absent": [
+      "accept",
+      "gate"
+    ],
+    "holds": [
+      "budget_rail"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}
