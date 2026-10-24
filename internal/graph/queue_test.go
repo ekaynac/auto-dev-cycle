@@ -692,6 +692,9 @@ func TestCarryOverReusedReview(t *testing.T) {
 	if err := g.do(evaluate(g.env(noRequirement), reused)); err != nil || g.state(reused).State != types.NodeStateStateCompleted {
 		t.Fatalf("the reuse: %v %+v", err, g.state(reused))
 	}
+	// Opus #432 r4 M1: the reused review's view takes its holder's outcome,
+	// and it closes the candidate as its holder does.
+	g.viewCloses(spec.Review, reused)
 	spec.Review = reused
 	gen, err := g.generate(spec, "B1")
 	if err != nil {

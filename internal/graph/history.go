@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -208,7 +209,8 @@ func TaskNodes(tx *eventstore.Tx, task types.TaskID) ([]NodeView, error) {
 // A node's record under another node's key is ErrIndexDamaged; a selected
 // result that is not the node's own (another node's, or recorded under
 // another id) is missing, its outcome nil: the board's damaged_record, and
-// a stage bench record refuses (Opus #432 r3 H1″).
+// a stage bench record refuses (Opus #432 r3 H1″). A node completed by
+// reuse takes its key holder's result (takesByReuse).
 func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 	var out []NodeView
 	var err error
@@ -226,13 +228,36 @@ func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 			if err != nil {
 				return nil, err
 			}
-			if ok && r.Node == rec.Recorded.Node.ID && r.Result.ID == *id {
+			own := ok && r.Result.ID == *id && r.Node == rec.Recorded.Node.ID
+			if ok && r.Result.ID == *id && !own {
+				if own, err = takesByReuse(tx, rec, r); err != nil {
+					return nil, err
+				}
+			}
+			if own {
 				v.Outcome, v.Reason = &r.Result.Outcome, &r.Result.Reason
 			}
 		}
 		out = append(out, v)
 	}
 	return out, err
+}
+
+// takesByReuse: rec, completed by reuse, takes r, its key holder's
+// result: the reuse index of rec's key in rec's task lists rec, and the
+// key index names r's node as that key's holder (node.reused's own
+// projections; Opus #432 r4 M1).
+func takesByReuse(tx *eventstore.Tx, rec nodeRecord, r types.ResultRecorded) (bool, error) {
+	if rec.State.Key == nil {
+		return false, nil
+	}
+	index := keyIndex(rec.Recorded.Task, rec.State.Key.Key)
+	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, index)
+	h, held, herr := load[types.NodeID](tx, KeyProjection, index)
+	if err = errors.Join(err, herr); err != nil {
+		return false, err
+	}
+	return held && h == r.Node && slices.Contains(reusers, rec.Recorded.Node.ID), nil
 }
 
 // ViewOf is node's view (an unrecorded node is an error).

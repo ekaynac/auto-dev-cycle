@@ -290,6 +290,23 @@ func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
 	if tb, err := g.timesOf(b); err != nil || tb.Claimed.IsZero() || !tb.Claimed.Equal(tb.Selected) {
 		t.Errorf("the reused node's times: %+v %v", tb, err)
 	}
+	g.viewCloses(holder, b)
+	// The reuse's own projections are its evidence: with b dropped from its
+	// key's reusers, or the key held by another node, b's result is not
+	// its own, its outcome nil (the board's damaged_record).
+	index := keyIndex(g.recordOf(b).Task, g.state(b).Key.Key)
+	for name, damage := range map[string][2]string{"the reusers": {ReuseProjection, `[]`}, "the holder": {KeyProjection, `"` + string(b) + `"`}} {
+		was, _ := view[json.RawMessage](g, damage[0], index)
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, tx.Put(damage[0], index, json.RawMessage(damage[1]))
+		})
+		var v NodeView
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { v, err = ViewOf(tx, b); return err }); err != nil || v.Outcome != nil {
+			t.Errorf("b's view with %s damaged: %+v %v", name, v, err)
+		}
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return nil, tx.Put(damage[0], index, was) })
+	}
+	g.viewCloses(holder, b)
 	if th, err := g.timesOf(holder); err != nil || th.Claimed.IsZero() || th.Selected.IsZero() {
 		t.Errorf("the holder's times: %+v %v", th, err)
 	}
@@ -324,5 +341,29 @@ func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
 		if _, err := g.timesOf(holder); !errors.Is(err, ErrTimesMissing) {
 			t.Errorf("the holder's times %q: %v", half, err)
 		}
+	}
+}
+
+// viewCloses: reused, completed by reuse of holder's key, reads holder's
+// outcome and reason in its view (Opus #432 r4 M1), and ClosesCandidate
+// takes it exactly when it takes holder.
+func (g graphStore) viewCloses(holder, reused types.NodeID) {
+	g.t.Helper()
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		h, err := ViewOf(tx, holder)
+		r, rerr := ViewOf(tx, reused)
+		if err = errors.Join(err, rerr); err != nil {
+			return err
+		}
+		nodes, err := TaskNodes(tx, r.Task)
+		if err != nil {
+			return err
+		}
+		if h.Outcome == nil || r.Outcome == nil || *r.Outcome != *h.Outcome || *r.Reason != *h.Reason || ClosesCandidate(nodes, r) != ClosesCandidate(nodes, h) {
+			g.t.Errorf("the reused node's view %+v, its holder's %+v", r, h)
+		}
+		return nil
+	}); err != nil {
+		g.t.Fatal(err)
 	}
 }
