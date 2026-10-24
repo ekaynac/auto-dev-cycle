@@ -55,7 +55,7 @@
 //     parse, a Go test file it never collects or that the gate's platform
 //     excludes (its name, its constraints positive and negated, the
 //     platform's default architecture level and the toolchain's
-//     experiments), a test signature go test refuses, a go.mod or go.work
+//     experiments), a test signature go test refuses, a go.mod
 //     among it, files over MaxOverlay, no expected test at all, or (the
 //     daemon's, AcceptanceFits) a Go file, test or helper, that cannot
 //     compile in the base's package it joins. A candidate tree with no Go

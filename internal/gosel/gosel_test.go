@@ -3,6 +3,7 @@
 package gosel
 
 import (
+	"go/ast"
 	"go/build"
 	"go/parser"
 	"go/token"
@@ -75,6 +76,28 @@ func TestTheGoCommandsRules(t *testing.T) {
 	}
 	if !Walked("p/build/x.py", SkipDir) || Walked("p/build/x.py", func(d string) bool { return d == "build" }) {
 		t.Error("Walked's skip")
+	}
+	// Astra #429 r2 M4: the module metadata and receiver rules, accept's.
+	named, module, ok := Modules([]byte("module m\n\ngo 1.16\n\nrequire lib v1.0.0\n\nreplace foo => ./third/foo\n"))
+	if !ok || module != "m" || !named["lib"] || !named["foo"] || !named["m"] {
+		t.Errorf("Modules: %v %q %t", named, module, ok)
+	}
+	if _, _, ok := Modules([]byte("not a go.mod\n")); ok {
+		t.Error("Modules of no go.mod")
+	}
+	for p, want := range map[string]bool{"fmt": true, "math/rand/v2": true, "foo/bar": false, "foo": false, "lib/x": false, "m/inv": false, "example.com/x": false, "food/x": true} {
+		if Std(p, named) != want {
+			t.Errorf("Std(%s): %t", p, !want)
+		}
+	}
+	if Std("fmt", map[string]bool{"": true}) || !Std("fmt", nil) || Std("a.b/c", nil) {
+		t.Error("Std's every-path and nil names")
+	}
+	for src, want := range map[string]string{"func (s *S[P]) M() {}": "S", "func (S) M() {}": "S", "func (s *S[K, V]) M() {}": "S", "func F() {}": ""} {
+		f, err := parser.ParseFile(token.NewFileSet(), "p.go", "package p\n\n"+src+"\n", 0)
+		if err != nil || Recv(f.Decls[0].(*ast.FuncDecl)) != want {
+			t.Errorf("Recv(%s): %v", src, err)
+		}
 	}
 	if !slices.Equal(ReleaseTags, build.Default.ReleaseTags) {
 		t.Error("the release tags")

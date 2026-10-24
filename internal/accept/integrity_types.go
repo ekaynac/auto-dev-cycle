@@ -648,7 +648,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		for _, d := range f.Decls {
 			where := "package level"
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
-				where = recv(fn) + "." + fn.Name.Name
+				where = gosel.Recv(fn) + "." + fn.Name.Name
 			} else if ok {
 				where = fn.Name.Name
 			}
@@ -684,7 +684,7 @@ func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string
 		methods := map[string][]string{} // a receiver type's methods declared in this file
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
-				methods[recv(fn)] = append(methods[recv(fn)], fn.Name.Name+" "+of(fields(fn.Recv, fn.Type.TypeParams, fn.Type.Params, fn.Type.Results)...))
+				methods[gosel.Recv(fn)] = append(methods[gosel.Recv(fn)], fn.Name.Name+" "+of(fields(fn.Recv, fn.Type.TypeParams, fn.Type.Params, fn.Type.Results)...))
 			}
 		}
 		for _, d := range f.Decls {

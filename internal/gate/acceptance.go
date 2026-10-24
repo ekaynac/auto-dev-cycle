@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/doc"
 	"go/parser"
 	"go/token"
 	"maps"
@@ -21,10 +22,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
-
-	"golang.org/x/mod/modfile"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
@@ -40,7 +37,7 @@ const MaxOverlay = 16 << 20
 var (
 	errTooLarge   = fmt.Errorf("%w: its files are over the overlay's bound", ErrAcceptance)
 	errPath       = fmt.Errorf("%w: a file of it is not at a clean path inside the workspace", ErrAcceptance)
-	errModule     = fmt.Errorf("%w: it holds a go.mod or a go.work", ErrAcceptance)
+	errModule     = fmt.Errorf("%w: it holds a go.mod", ErrAcceptance)
 	errNeverRun   = fmt.Errorf("%w: a Go test file of it is one go test ./... never runs (its directory, its name, its build constraints or its package)", ErrAcceptance)
 	errParse      = fmt.Errorf("%w: a Go file of it does not parse", ErrAcceptance)
 	errSignature  = fmt.Errorf("%w: a test of it has a signature go test refuses", ErrAcceptance)
@@ -65,7 +62,8 @@ var (
 // acceptance that the shared rules (gosel) prove go test never runs. Any
 // other acceptance that does not compile or vet on its own (an unused
 // import, a type error, a printf vet error, an example naming an unknown
-// identifier, a dot-import's name its package declares, an import name
+// identifier, a malformed Test/Benchmark/Fuzz name (vet's tests analyzer;
+// Astra #429 r2 H1), a dot-import's name its package declares, an import name
 // the gate cannot be certain of, a method named like a field of its type)
 // fails every candidate (found/gate_test_failed), bounded by the rails;
 // the acceptance is immutable, so the recovery is a new task. A check that
@@ -82,45 +80,66 @@ type goFile struct {
 	f         *ast.File
 }
 
-// active is overlay's file at p when go builds it on pl (its path, its
-// build constraints, its package not documentation, no import of "C":
-// cgo is off, gosel.Cgo). strict: a Go test
-// file it never runs, or a Go file that does not parse, is refused; a Go
-// file go never builds is data.
+// active is overlay's file at p when go builds it on pl, by go's own
+// order (Astra #429 r2 H3): its path (gosel.Active), then its name's and
+// its constraints' platform (gosel.Builds), then its header (the package
+// clause and imports: documentation, or an import of "C" with cgo off,
+// gosel.Cgo), and only then its body. strict: a Go test file go never runs
+// is refused (errNeverRun), and a file go builds that does not parse is
+// refused (errParse); a Go file go never builds, test or helper, is data
+// and never parsed beyond what decides it, except that a test file is
+// refused instead.
 func active(pl [2]string, p string, src []byte, strict bool) (goFile, bool, error) {
 	test := strings.HasSuffix(p, "_test.go")
-	switch {
-	case strict && test && !gosel.TestFile(p):
-		return goFile{}, false, errNeverRun
-	case !gosel.Active(p):
-		return goFile{}, false, nil
-	}
-	f, err := parser.ParseFile(token.NewFileSet(), p, src, parser.SkipObjectResolution)
-	switch {
-	case err != nil && strict:
-		return goFile{}, false, errParse
-	case err != nil:
-		return goFile{}, false, nil
-	case !gosel.Builds(pl, p, src) || f.Name.Name == gosel.Documentation || gosel.Cgo(f):
+	excluded := func() (goFile, bool, error) {
 		if strict && test {
 			return goFile{}, false, errNeverRun
 		}
 		return goFile{}, false, nil
 	}
+	switch {
+	case strict && test && !gosel.TestFile(p):
+		return goFile{}, false, errNeverRun
+	case !gosel.Active(p):
+		return goFile{}, false, nil
+	case !gosel.Builds(pl, p, src):
+		return excluded()
+	}
+	head, err := parser.ParseFile(token.NewFileSet(), p, src, parser.ImportsOnly)
+	switch {
+	case err != nil && strict:
+		return goFile{}, false, errParse
+	case err != nil:
+		return goFile{}, false, nil
+	case head.Name.Name == gosel.Documentation || gosel.Cgo(head):
+		return excluded()
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), p, src, parser.ParseComments|parser.SkipObjectResolution)
+	switch {
+	case err != nil && strict:
+		return goFile{}, false, errParse
+	case err != nil:
+		return goFile{}, false, nil
+	}
 	return goFile{p, f.Name.Name, test, f}, true, nil
 }
 
-// AcceptanceTests are the top-level tests (TestXxx and FuzzXxx, by
-// gosel.RunName's rule; TestMain(*testing.M) none) the Go test files of
-// overlay declare, sorted by file, which go test ./... runs on pl
-// ({GOOS, GOARCH}). It refuses (ErrAcceptance) what go test ./... could
-// never run, so it is never expected: files over MaxOverlay in all; a
-// go.mod or go.work among them (a module of its own); a Go test file it
+// AcceptanceTests are the top-level tests the Go test files of overlay
+// declare, sorted by file, which go test ./... runs on pl ({GOOS,
+// GOARCH}): TestXxx and FuzzXxx (gosel.RunName's rule; TestMain(*testing.T)
+// a test, TestMain(*testing.M) the hook), and the executable examples the
+// go command runs, those with an output comment, empty included, by the
+// standard library's go/doc.Examples (Astra #429 r2 H2). It refuses
+// (ErrAcceptance) what go test ./... could never run, so it is never
+// expected: files over MaxOverlay in all; a go.mod among them (a module of
+// its own; a go.work is data, the image's GOWORK=off); a Go test file it
 // never collects (testdata, vendor, a _ or . directory or name), that
-// go/build excludes on pl, or of package documentation; a Go file that
-// does not parse; a test, benchmark, fuzz target or example whose
-// signature go test refuses; and no test at all (Opus #429 M1). Files
-// that are not Go files, and Go files go never builds, are data.
+// go/build excludes on pl, of package documentation or importing "C"; a Go file go builds that does not parse;
+// a test, benchmark or fuzz target whose signature the go command refuses
+// (load/test.go); and no test at all (Opus #429 M1). Files that are not Go
+// files, and Go files go never builds, are data. A name go test's vet
+// refuses (Testfoo) is the stated general class, not refused (#226 entry
+// 197; Astra #429 r2 H1).
 func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest, error) {
 	total := 0
 	for _, b := range overlay {
@@ -131,7 +150,7 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 	}
 	var out []AcceptanceTest
 	for _, p := range slices.Sorted(maps.Keys(overlay)) {
-		if b := path.Base(p); b == "go.mod" || b == "go.work" {
+		if path.Base(p) == "go.mod" { // a go.work is data: the image's GOWORK=off (Astra #429 r2 differential)
 			return nil, errModule
 		}
 		g, ok, err := active(pl, p, overlay[p], true)
@@ -145,9 +164,6 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Recv != nil {
 				continue
-			}
-			if malformed(fn) {
-				return nil, errSignature // go test's vet refuses its name (Opus #429 r3 N1)
 			}
 			kind, ok := testKind(fn.Name.Name)
 			if !ok {
@@ -163,6 +179,11 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 				out = append(out, AcceptanceTest{Dir: path.Dir(p), Name: fn.Name.Name})
 			}
 		}
+		for _, e := range doc.Examples(g.f) { // the go command's own collection: run only with an output comment
+			if e.Output != "" || e.EmptyOutput {
+				out = append(out, AcceptanceTest{Dir: path.Dir(p), Name: "Example" + e.Name})
+			}
+		}
 	}
 	if len(out) == 0 {
 		return nil, errNoTest
@@ -170,25 +191,10 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 	return out, nil
 }
 
-// malformed: go test's vet (its tests analyzer) refuses fn, a top-level
-// function of a test file, and the package never runs: Test, Benchmark or
-// Fuzz then a lower-case letter, on that kind's signature. Example then a
-// lower-case letter is refused by vet only when the identifier is unknown:
-// the general class, not refused here (Opus #429 r4 B2).
-func malformed(fn *ast.FuncDecl) bool {
-	for pre, kind := range map[string]string{"Test": "T", "Benchmark": "B", "Fuzz": "F"} {
-		rest, ok := strings.CutPrefix(fn.Name.Name, pre)
-		r, _ := utf8.DecodeRuneInString(rest)
-		if ok && rest != "" && unicode.IsLower(r) && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 && param(fn) == kind {
-			return true
-		}
-	}
-	return false
-}
-
-// testKind is what go test makes of a top-level function named name in a
-// test file: its parameter's type name (T a test, F a fuzz target, B a
-// benchmark, M TestMain's), "" an example; false none.
+// testKind is what the go command makes of a top-level function named name
+// in a test file (load/test.go): its parameter's type name (T a test, F a
+// fuzz target, B a benchmark, M TestMain's); false none. Examples are
+// go/doc's (AcceptanceTests).
 func testKind(name string) (string, bool) {
 	switch {
 	case name == "TestMain":
@@ -202,20 +208,17 @@ func testKind(name string) (string, bool) {
 	case strings.HasPrefix(name, "Fuzz"):
 		return "F", true
 	}
-	return "", true // an example
+	return "", false // an example: go/doc's
 }
 
 // signature is the go command's check of a test function (load/test.go's
-// isTestFunc): one parameter *X or *pkg.X, X kind's, no result, no type
-// parameter; an example takes and returns nothing. TestMain may take a
-// *testing.T instead, and is a test then.
+// isTestFunc and checkTestFunc): one parameter *X or *pkg.X, X kind's, no
+// result, no type parameter. TestMain may take a *testing.T instead, and is
+// a test then.
 func signature(fn *ast.FuncDecl, kind string) bool {
 	t := fn.Type
 	if t.TypeParams != nil && len(t.TypeParams.List) > 0 || t.Results != nil && len(t.Results.List) > 0 {
 		return false
-	}
-	if kind == "" {
-		return t.Params == nil || len(t.Params.List) == 0
 	}
 	if t.Params == nil || len(t.Params.List) != 1 || len(t.Params.List[0].Names) > 1 {
 		return false
@@ -252,7 +255,7 @@ func param(fn *ast.FuncDecl) string {
 // package shares its scope with the package's files; the external one
 // with the other external test files.
 func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
-	baseOf, ownOf, modules := map[string][]goFile{}, map[string][]goFile{}, goModules(base["go.mod"])
+	baseOf, ownOf, named := map[string][]goFile{}, map[string][]goFile{}, baseModules(base["go.mod"])
 	for _, p := range slices.Sorted(maps.Keys(overlay)) {
 		g, ok, err := active(pl, p, overlay[p], true)
 		if err != nil {
@@ -300,7 +303,7 @@ func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
 		// A file's import name is in its file block, which no package-scope
 		// name may share (Opus #429 r3 M1); only a certain one counts (B3).
 		for _, g := range all {
-			for _, name := range importNames(g.f, modules) {
+			for _, name := range importNames(g.f, named) {
 				if other, ok := declared[g.pkg][name]; ok && (own(g.path) || own(other)) {
 					return errRedeclared
 				}
@@ -317,10 +320,10 @@ func AcceptanceFits(pl [2]string, overlay, base map[string][]byte) error {
 // math/rand/v2's rand), which is every importable std package's name. A
 // path is the standard library's by module metadata alone, accept's rule:
 // its first element has no dot and no module the base's go.mod names
-// (modules) is it or a prefix of it, so the go command resolves it from
+// (named, gosel.Std) is it or a prefix of it, so the go command resolves it from
 // its GOROOT only. Every other import is unseen, as is a dot-import's
 // names (stated residuals).
-func importNames(f *ast.File, modules []string) []string {
+func importNames(f *ast.File, named map[string]bool) []string {
 	var out []string
 	for _, is := range f.Imports {
 		if is.Name != nil { // _ and . match no package-scope name (topNames has no _)
@@ -328,7 +331,7 @@ func importNames(f *ast.File, modules []string) []string {
 			continue
 		}
 		p, err := strconv.Unquote(is.Path.Value)
-		if err != nil || !std(p, modules) {
+		if err != nil || !gosel.Std(p, named) {
 			continue
 		}
 		elems := strings.Split(p, "/")
@@ -358,7 +361,7 @@ func topNames(f *ast.File) []string {
 		case *ast.FuncDecl:
 			if x.Recv == nil && x.Name.Name != "init" {
 				add(x.Name)
-			} else if t := recvType(x); x.Recv != nil && t != "" && x.Name.Name != "_" {
+			} else if t := gosel.Recv(x); t != "" && x.Name.Name != "_" {
 				out = append(out, t+"."+x.Name.Name)
 			}
 		case *ast.GenDecl:
@@ -377,58 +380,15 @@ func topNames(f *ast.File) []string {
 	return out
 }
 
-// recvType is the name of fn's receiver's type (T of T, *T, T[P]), "" for
-// none.
-func recvType(fn *ast.FuncDecl) string {
-	if fn.Recv == nil || len(fn.Recv.List) != 1 {
-		return ""
+// baseModules are the module paths the base's go.mod (gomod) names
+// (gosel.Modules). The failure direction is explicit (Opus #429 r5 C1): no
+// go.mod, one that does not parse, or one with no module line names every
+// path ({"": true}), so no path reads as the standard library's and
+// importNames counts explicit names only.
+func baseModules(gomod []byte) map[string]bool {
+	named, module, ok := gosel.Modules(gomod)
+	if gomod == nil || !ok || module == "" {
+		return map[string]bool{"": true}
 	}
-	t := fn.Recv.List[0].Type
-	for {
-		switch x := t.(type) {
-		case *ast.StarExpr:
-			t = x.X
-		case *ast.ParenExpr:
-			t = x.X
-		case *ast.IndexExpr:
-			t = x.X
-		case *ast.IndexListExpr:
-			t = x.X
-		case *ast.Ident:
-			return x.Name
-		default:
-			return ""
-		}
-	}
-}
-
-// goModules are the module paths the base's go.mod (gomod) names: its own,
-// its requirements' and its replacements', read strictly (modfile.Parse:
-// ParseLax drops replace; Opus #429 r5 C1). The failure direction is
-// explicit: nil for no go.mod, one that does not parse, or one with no
-// module line, and std then reads no path as the standard library's, so
-// importNames counts explicit names only. An empty list never makes every
-// dot-free path std.
-func goModules(gomod []byte) []string {
-	f, err := modfile.Parse("go.mod", gomod, nil)
-	if gomod == nil || err != nil || f.Module == nil {
-		return nil
-	}
-	out := []string{f.Module.Mod.Path}
-	for _, r := range f.Require {
-		out = append(out, r.Mod.Path)
-	}
-	for _, r := range f.Replace {
-		out = append(out, r.Old.Path)
-	}
-	return out
-}
-
-// std: p is the standard library's by module metadata (importNames);
-// never when modules is nil (goModules failed).
-func std(p string, modules []string) bool {
-	if first, _, _ := strings.Cut(p, "/"); modules == nil || strings.Contains(first, ".") {
-		return false
-	}
-	return !slices.ContainsFunc(modules, func(m string) bool { return p == m || strings.HasPrefix(p, m+"/") })
+	return named
 }

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"go/ast"
 	"go/build"
+	"go/types"
 	"io"
 	"path"
 	"slices"
@@ -19,6 +20,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/mod/modfile"
 )
 
 // Documentation is the package name go/build ignores a file of.
@@ -83,4 +86,53 @@ func Builds(pl [2]string, p string, src []byte) bool {
 		map[string][]string{"amd64": {"amd64.v1"}, "arm64": {"arm64.v8.0"}}[pl[1]]...) // the toolchain's experiments, pl's default level
 	ok, err := c.MatchFile(path.Dir(p), path.Base(p))
 	return ok && err == nil
+}
+
+// Modules are the module paths a go.mod names (its module, its
+// requirements', its replacements' old paths), read strictly
+// (modfile.Parse: ParseLax drops replace), and its own module path; ok is
+// false when it does not parse. Each caller keeps its own failure policy.
+func Modules(gomod []byte) (named map[string]bool, module string, ok bool) {
+	f, err := modfile.Parse("go.mod", gomod, nil)
+	if err != nil {
+		return nil, "", false
+	}
+	named = map[string]bool{}
+	if f.Module != nil {
+		module, named[f.Module.Mod.Path] = f.Module.Mod.Path, true
+	}
+	for _, q := range f.Require {
+		named[q.Mod.Path] = true
+	}
+	for _, q := range f.Replace {
+		named[q.Old.Path] = true
+	}
+	return named, module, true
+}
+
+// Std: p is the standard library's by module metadata alone (accept's
+// rule, Astra #276 r6): its first element has no dot, and no module path
+// named names is p or a prefix of it (named[""] names every path). The go
+// command resolves such a path from its GOROOT only: it is std or it does
+// not build.
+func Std(p string, named map[string]bool) bool {
+	if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") || named[""] {
+		return false
+	}
+	for q := p; ; q = path.Dir(q) {
+		if named[q] {
+			return false
+		} else if !strings.Contains(q, "/") {
+			return true
+		}
+	}
+}
+
+// Recv is a method's receiver type name, without * or type parameters;
+// "" for a function.
+func Recv(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ""
+	}
+	return strings.TrimLeft(strings.SplitN(types.ExprString(fn.Recv.List[0].Type), "[", 2)[0], "*")
 }

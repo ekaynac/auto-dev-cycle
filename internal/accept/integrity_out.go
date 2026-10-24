@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -120,17 +121,12 @@ var boundHash = 16
 // a prefix of it. The go command resolves such a path from its GOROOT
 // only: it is std or it does not build. Otherwise a new edge warns.
 func (r *run) std(dir, p string) bool {
-	if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {
+	if !gosel.Std(p, nil) { // its first element alone, before any read
 		return false
 	}
 	for _, t := range r.trees {
-		named := r.named(t, t.typer(r, dir, platforms[0]).root)
-		for q := p; ; q = path.Dir(q) {
-			if named[q] || named[""] {
-				return false
-			} else if !strings.Contains(q, "/") {
-				break
-			}
+		if !gosel.Std(p, r.named(t, t.typer(r, dir, platforms[0]).root)) {
+			return false
 		}
 	}
 	return true
@@ -150,20 +146,16 @@ func (r *run) named(t *tree, root string) map[string]bool {
 			continue
 		}
 		b, why, err := r.file(blob)
-		f, perr := modfile.Parse(name, b, nil) // strict: ParseLax drops replace
+		var mods map[string]bool
+		ok := name != "go.mod"
+		if !ok && why == "" && err == nil {
+			mods, _, ok = gosel.Modules(b) // strict: ParseLax drops replace
+		}
 		switch {
-		case why != "" || err != nil || name == "go.mod" && perr != nil:
+		case why != "" || err != nil || !ok:
 			m[""] = true
 		case name == "go.mod":
-			if f.Module != nil {
-				m[f.Module.Mod.Path] = true
-			}
-			for _, q := range f.Require {
-				m[q.Mod.Path] = true
-			}
-			for _, q := range f.Replace {
-				m[q.Old.Path] = true
-			}
+			maps.Copy(m, mods)
 		default:
 			for _, l := range strings.Split(string(b), "\n") {
 				if fs := strings.Fields(l); len(fs) > 1 && fs[0] == "#" {

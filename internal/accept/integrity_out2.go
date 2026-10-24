@@ -10,6 +10,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/gosel"
 )
 
 // P14b-out-2 (split from #276 under 04 §2): in the additive layer, with its
@@ -40,8 +42,8 @@ func (r *run) units(d ast.Decl, p, testing string) []unit {
 		switch {
 		case d.Recv == nil && (d.Name.Name == "init" || strings.HasSuffix(p, "_test.go") && d.Name.Name == "TestMain" && hook(d, testing)):
 			return []unit{{d, "init literal", "init literal", true}}
-		case d.Recv != nil && r.charge(len(d.Name.Name)+len(recv(d)), 0):
-			w := bound(recv(d) + "." + d.Name.Name)
+		case d.Recv != nil && r.charge(len(d.Name.Name)+len(gosel.Recv(d)), 0):
+			w := bound(gosel.Recv(d) + "." + d.Name.Name)
 			return []unit{{d, w, "func " + w, false}}
 		case d.Recv == nil && r.charge(len(d.Name.Name), 0):
 			return []unit{{d, bound(d.Name.Name), "func " + bound(d.Name.Name), false}}

@@ -512,14 +512,9 @@ func b2i(b bool) int {
 // declKey is a function's name, or a method's receiver and name.
 func declKey(fn *ast.FuncDecl) (k string) {
 	if k = fn.Name.Name; fn.Recv != nil {
-		k = recv(fn) + "." + k
+		k = gosel.Recv(fn) + "." + k
 	}
 	return k
-}
-
-// recv is a method's receiver type name, without * or type parameters.
-func recv(fn *ast.FuncDecl) string {
-	return strings.TrimLeft(strings.SplitN(types.ExprString(fn.Recv.List[0].Type), "[", 2)[0], "*")
 }
 
 // group reads one type-checked package of dir.
@@ -659,7 +654,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			if fn != nil && fn.Body != nil && fn.Recv == nil {
 				fname, where = fn.Name.Name, fn.Name.Name
 			} else if fn != nil && fn.Body != nil {
-				where = recv(fn) + "." + fn.Name.Name
+				where = gosel.Recv(fn) + "." + fn.Name.Name
 			}
 			for _, q := range c.refs {
 				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat]++
