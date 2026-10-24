@@ -11,6 +11,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -305,6 +306,41 @@ func TestNodeTimesAgainstTheirEvidence(t *testing.T) {
 			t.Errorf("b's view with %s damaged: %+v %v", name, v, err)
 		}
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return nil, tx.Put(damage[0], index, was) })
+	}
+	g.viewCloses(holder, b)
+	// Lead check of eb4a9ed: the key index's holder is checked against its
+	// own record. Two rows damaged: b's selected result names a foreign
+	// node's result, and the key index names that node. The foreign node,
+	// recorded with that result, is of another task, or holds another key,
+	// or has another result selected: b's outcome is nil.
+	hrec, _ := view[nodeRecord](g, NodeProjection, string(holder))
+	hres, _ := view[types.ResultRecorded](g, ResultProjection, string(*hrec.State.Result))
+	bwas, _ := view[json.RawMessage](g, NodeProjection, string(b))
+	keywas, _ := view[json.RawMessage](g, KeyProjection, index)
+	for name, change := range map[string]func(*nodeRecord){
+		"of another task":       func(f *nodeRecord) { f.Recorded.Task = types.TaskID(must(ids.New("tsk"))) },
+		"holding another key":   func(f *nodeRecord) { k := *f.State.Key; k.Generation++; f.State.Key = &k },
+		"with another selected": func(f *nodeRecord) { other := types.ResultID(must(ids.New("res"))); f.State.Result = &other },
+	} {
+		foreign, res := hrec, hres
+		foreign.Recorded.Node.ID, res.Node = types.NodeID(must(ids.New("nod"))), ""
+		res.Node, res.Result.ID = foreign.Recorded.Node.ID, types.ResultID(must(ids.New("res")))
+		foreign.State.Result = &res.Result.ID
+		change(&foreign)
+		damaged, _ := view[nodeRecord](g, NodeProjection, string(b))
+		damaged.State.Result = &res.Result.ID
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, errors.Join(put(tx, NodeProjection, string(foreign.Recorded.Node.ID), foreign), put(tx, ResultProjection, string(res.Result.ID), res),
+				put(tx, NodeProjection, string(b), damaged), put(tx, KeyProjection, index, foreign.Recorded.Node.ID))
+		})
+		var v NodeView
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { v, err = ViewOf(tx, b); return err }); err != nil || v.Outcome != nil {
+			t.Errorf("b's view through a holder %s: %+v %v", name, v, err)
+		}
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, errors.Join(tx.Put(NodeProjection, string(b), bwas), tx.Put(KeyProjection, index, keywas),
+				tx.Delete(NodeProjection, string(foreign.Recorded.Node.ID)), tx.Delete(ResultProjection, string(res.Result.ID)))
+		})
 	}
 	g.viewCloses(holder, b)
 	if th, err := g.timesOf(holder); err != nil || th.Claimed.IsZero() || th.Selected.IsZero() {

@@ -244,9 +244,10 @@ func views(tx *eventstore.Tx, keys []string) ([]NodeView, error) {
 }
 
 // takesByReuse: rec, completed by reuse, takes r, its key holder's
-// result: the reuse index of rec's key in rec's task lists rec, and the
-// key index names r's node as that key's holder (node.reused's own
-// projections; Opus #432 r4 M1).
+// result: the reuse index of rec's key in rec's task lists rec, the key
+// index names r's node as that key's holder (node.reused's own
+// projections; Opus #432 r4 M1), and the holder's own record is of rec's
+// task, holds the same key and has r selected (lead check of eb4a9ed).
 func takesByReuse(tx *eventstore.Tx, rec nodeRecord, r types.ResultRecorded) (bool, error) {
 	if rec.State.Key == nil {
 		return false, nil
@@ -254,10 +255,15 @@ func takesByReuse(tx *eventstore.Tx, rec nodeRecord, r types.ResultRecorded) (bo
 	index := keyIndex(rec.Recorded.Task, rec.State.Key.Key)
 	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, index)
 	h, held, herr := load[types.NodeID](tx, KeyProjection, index)
-	if err = errors.Join(err, herr); err != nil {
+	if err = errors.Join(err, herr); err != nil || !held || h != r.Node || !slices.Contains(reusers, rec.Recorded.Node.ID) {
 		return false, err
 	}
-	return held && h == r.Node && slices.Contains(reusers, rec.Recorded.Node.ID), nil
+	hrec, recorded, err := load[nodeRecord](tx, NodeProjection, string(h))
+	if err != nil || !recorded {
+		return false, err
+	}
+	return hrec.Recorded.Node.ID == h && hrec.Recorded.Task == rec.Recorded.Task && hrec.State.Key != nil && *hrec.State.Key == *rec.State.Key &&
+		hrec.State.Result != nil && *hrec.State.Result == r.Result.ID, nil
 }
 
 // ViewOf is node's view (an unrecorded node is an error).
