@@ -4,6 +4,7 @@ package installcheck
 
 import (
 	"cmp"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,37 +85,58 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
 	// directory, each recording its owner (pid and start time): the next run
-	// stops what still runs on it and removes it. A live owner's, and a kept
-	// one's (no owner), are never touched. The stale owner is a pid above
-	// the kernel's pid_max limit (4194304): never a live process.
+	// stops the processes that run recorded (.pids), still themselves, and
+	// removes it; a process it did not record, though its command line names
+	// that directory, and a recorded pid whose start time is another
+	// process's (a reused pid), are never killed (no pattern kill: several
+	// runs share a host). A live owner's directory, and a kept one's (no
+	// owner), are never touched. The stale owner is a pid above the kernel's
+	// pid_max limit (4194304): never a live process.
 	tmpdir = t.TempDir()
-	stat, err := os.ReadFile("/proc/self/stat")
-	if err != nil {
-		t.Skip("no /proc")
+	startOf := func(pid int) string {
+		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err != nil {
+			t.Skip("no /proc")
+		}
+		return strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+2:]))[19]
 	}
-	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+2:]))
-	dirs := map[string]string{"stale": "4194305 0\n", "live": strconv.Itoa(os.Getpid()) + " " + fields[19] + "\n", "kept": ""}
+	dirs := map[string]string{"stale": "4194305 0\n", "live": strconv.Itoa(os.Getpid()) + " " + startOf(os.Getpid()) + "\n", "kept": ""}
 	for name, owner := range dirs {
 		write(t, filepath.Join(tmpdir, "adc-cycle."+name, "state/x"), "", 0o600)
 		if owner != "" {
 			write(t, filepath.Join(tmpdir, "adc-cycle."+name, ".owner"), owner, 0o600)
 		}
 	}
-	orphan := exec.Command("sh", "-c", "sleep 300", filepath.Join(tmpdir, "adc-cycle.stale/state/adcd"))
-	if err := orphan.Start(); err != nil {
-		t.Fatal(err)
+	spawn := func() (*exec.Cmd, chan error) {
+		c := exec.Command("sh", "-c", "sleep 300", filepath.Join(tmpdir, "adc-cycle.stale/state/adcd"))
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- c.Wait() }()
+		t.Cleanup(func() { _ = c.Process.Kill() })
+		return c, done
 	}
-	done := make(chan error, 1)
-	go func() { done <- orphan.Wait() }()
-	t.Cleanup(func() { _ = orphan.Process.Kill() })
+	orphan, orphanDone := spawn()
+	bystander, bystanderDone := spawn()
+	reused, reusedDone := spawn()
+	write(t, filepath.Join(tmpdir, "adc-cycle.stale/.pids"), fmt.Sprintf("%d %s\n%d 1\n", orphan.Process.Pid, startOf(orphan.Process.Pid), reused.Process.Pid), 0o600)
 	if out, code := run("--setup-only"); code != 0 {
 		t.Fatalf("the sweeping run: exit %d, %s", code, out)
 	}
 	select {
-	case <-done:
+	case <-orphanDone:
 	case <-time.After(10 * time.Second):
-		t.Error("the stale run's orphan still runs")
+		t.Error("the stale run's recorded child still runs")
 	}
+	for name, done := range map[string]chan error{"an unrecorded process naming the directory": bystanderDone, "a recorded pid of another start time": reusedDone} {
+		select {
+		case <-done:
+			t.Errorf("%s was killed", name)
+		default:
+		}
+	}
+	_, _ = bystander, reused
 	for name := range dirs {
 		if _, err := os.Stat(filepath.Join(tmpdir, "adc-cycle."+name)); (err == nil) == (name == "stale") {
 			t.Errorf("adc-cycle.%s: present %v after the sweep", name, err == nil)

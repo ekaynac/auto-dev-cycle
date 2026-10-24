@@ -80,6 +80,7 @@ cycle_check() {
   adc task show "$tsk" --json >"$work/out/show.json" 2>"$work/out/show.err" || die "adc task show failed: $(head -c 400 "$work/out/show.err")"
   "${run_env[@]}" ADC_SOCKET="$sock" timeout 120 "$prefix/bin/adc" events --follow --json >"$work/out/events.jsonl" 2>"$work/out/events.err" &
   events=$!
+  record_pid "$work" "$events"
   # shellcheck disable=SC2317,SC2329  # invoked by within
   streamed() {
     kill -0 "$events" 2>/dev/null || die "the event stream ended: $(head -c 300 "$work/out/events.err")"

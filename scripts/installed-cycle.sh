@@ -264,6 +264,7 @@ step "the stub provider with scenario $scenario"
 "${run_env[@]}" "$node" "$fixtures/m1/stub-provider/server.mjs" --scenario "$fixtures/m1/stub-provider/scenarios/$scenario.json" \
   --listen 127.0.0.1:0 --log "$work/out/stub.jsonl" --barriers "$work/out" >"$work/out/stub.out" 2>"$work/out/stub.err" &
 stub=$!
+record_pid "$work" "$stub"
 listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(head -c 400 "$work/out/stub.err")"; grep -q '^listening ' "$work/out/stub.out"; }
 within 30 "the stub provider" listening
 base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
@@ -291,6 +292,7 @@ start_adcd() {
   "${run_env[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
     --registry "$work/registry.json" "${sandbox[@]}" >"$log" 2>&1 &
   adcd=$!
+  record_pid "$work" "$adcd"
 }
 # how STATUS: an exit status as the shell gives it, a signal's named (128+N:
 # SIGTERM is "signal TERM"), so a process killed before it logs anything is

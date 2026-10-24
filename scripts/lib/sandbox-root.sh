@@ -38,7 +38,8 @@
 #                               or a live owner, is never touched
 #   work_dirs_stale PARENT...   the same for the drivers' work directories
 #                               (PARENT/adc-cycle.*), what still runs on one
-#                               stopped first
+#                               stopped first: only the processes it recorded
+#                               (record_pid WORK PID)
 
 host_arch() {
   case "$(uname -m)" in
@@ -95,21 +96,29 @@ sandbox_roots_stale() {
 }
 
 # work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory
-# whose owner is gone, after stopping what still runs on it (an adcd whose
-# state directory, or a stub provider whose log, lies under it: a killed
-# driver's children outlive it).
+# whose owner is gone, after stopping what still runs on it: only the
+# processes its driver started and recorded (.pids: pid and start time,
+# record_pid), each still that process (a killed driver's children outlive
+# it); never a process found by a pattern (the host rule: several runs
+# share this host).
 work_dirs_stale() {
-  local p w c
+  local p w pid start
   for p in "$@"; do
     for w in "$p"/adc-cycle.*; do
       stale "$w" || continue
-      for c in /proc/[0-9]*/cmdline; do # each of our processes whose command line names a path under it
-        [[ -O "$c" ]] && tr '\0' ' ' <"$c" 2>/dev/null | grep -qF -- "$w/" && kill -9 "$(basename "$(dirname "$c")")" 2>/dev/null
-      done
+      if [[ -f "$w/.pids" ]]; then
+        while read -r pid start; do
+          [[ "$pid" =~ ^[0-9]+$ && "$(owner_of "$pid")" == "$pid $start" ]] && kill -9 "$pid" 2>/dev/null
+        done <"$w/.pids"
+      fi
       rm -rf "$w" 2>/dev/null || "$PODMAN" unshare rm -rf "$w" 2>/dev/null || true
     done
   done
 }
+
+# record_pid WORK PID: records PID (with its start time) in WORK/.pids, for
+# work_dirs_stale should WORK's driver be killed before its own cleanup.
+record_pid() { owner_of "$2" >>"$1/.pids" 2>/dev/null || true; }
 
 root_podman() {
   local root="$1"
