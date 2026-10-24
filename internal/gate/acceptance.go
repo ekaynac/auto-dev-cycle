@@ -33,6 +33,15 @@ var ErrAcceptance = errors.New("gate: the task's acceptance cannot be run")
 // MaxOverlay bounds an acceptance's files, in all.
 const MaxOverlay = 16 << 20
 
+// MaxFuncs bounds the functions (methods included) a Go test file of an
+// acceptance declares: go/doc.Examples, which collects its examples, is
+// quadratic in a file's examples and its comments and declarations (Opus
+// #429 r8 L1, Astra r3 Low 1: minutes of one core for fifteen 1 MiB files,
+// with no deadline). A file over it is refused as the task's, though go
+// would run it: a stated policy, as MaxOverlay is, not a go rule. 1000 is
+// far above any hand-written acceptance file (go-mini's has four).
+const MaxFuncs = 1000
+
 // The refusals, each a fixed text.
 var (
 	errTooLarge   = fmt.Errorf("%w: its files are over the overlay's bound", ErrAcceptance)
@@ -42,6 +51,7 @@ var (
 	errParse      = fmt.Errorf("%w: a Go file of it does not parse", ErrAcceptance)
 	errSignature  = fmt.Errorf("%w: a test of it has a signature go test refuses", ErrAcceptance)
 	errNoTest     = fmt.Errorf("%w: no Go test file of it declares a test go test runs", ErrAcceptance)
+	errTooMany    = fmt.Errorf("%w: a Go test file of it declares more than %d functions", ErrAcceptance, MaxFuncs)
 	errPackage    = fmt.Errorf("%w: a Go file of it is in another package than its directory's", ErrAcceptance)
 	errRedeclared = fmt.Errorf("%w: a Go file of it declares a name its package declares already", ErrAcceptance)
 )
@@ -68,6 +78,10 @@ var (
 // fails every candidate (found/gate_test_failed), bounded by the rails;
 // the acceptance is immutable, so the recovery is a new task. A check that
 // guesses is worse than a stated residual (Opus #429 r4).
+//
+// Two refusals are policies, not go rules: files over MaxOverlay in all, and
+// a Go test file declaring more than MaxFuncs functions (go/doc.Examples'
+// quadratic cost; Opus #429 r8 L1). Each is the task's, with a fixed text.
 
 // AcceptanceTest is a top-level test an acceptance's Go test file
 // declares: its directory (the repository path; "." the root) and name.
@@ -159,6 +173,9 @@ func AcceptanceTests(pl [2]string, overlay map[string][]byte) ([]AcceptanceTest,
 		}
 		if !ok || !g.test {
 			continue
+		}
+		if funcs := len(slices.DeleteFunc(slices.Clone(g.f.Decls), func(d ast.Decl) bool { _, ok := d.(*ast.FuncDecl); return !ok })); funcs > MaxFuncs {
+			return nil, errTooMany // before go/doc.Examples' quadratic walk
 		}
 		for _, d := range g.f.Decls {
 			fn, ok := d.(*ast.FuncDecl)

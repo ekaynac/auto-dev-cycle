@@ -129,18 +129,22 @@ type Baseline struct {
 
 // In is one gate run.
 type In struct {
-	Host     sandbox.Host
-	Image    sandbox.Image // resolved: its platform is the host's
-	Repo     sandbox.Repo
-	Tree     string // the git tree to gate
-	Base     string // the candidate's base tree, its baseline's
-	Changed  []string
-	Gate     types.ProjectProfileGate
-	Env      string            // the gate environment's name in Gate
-	Overlay  map[string][]byte // acceptance tests, repo path → content
-	Expected []results.Test
-	Baseline *Baseline // Run's; Measure measures one
-	Limits   sandbox.Limits
+	Host    sandbox.Host
+	Image   sandbox.Image // resolved: its platform is the host's
+	Repo    sandbox.Repo
+	Tree    string // the git tree to gate
+	Base    string // the candidate's base tree, its baseline's
+	Changed []string
+	Gate    types.ProjectProfileGate
+	Env     string            // the gate environment's name in Gate
+	Overlay map[string][]byte // acceptance tests, repo path → content
+	// Acceptance is the tests Overlay declares, AcceptanceTests' of it,
+	// computed once by the caller that validated it (Opus #429 r8 L1): an
+	// overlay with none is refused (ErrAcceptance), never recomputed.
+	Acceptance []AcceptanceTest
+	Expected   []results.Test
+	Baseline   *Baseline // Run's; Measure measures one
+	Limits     sandbox.Limits
 }
 
 // Verdict is a gate run's outcome. Why is the controller's own text
@@ -211,9 +215,8 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	}
 	expected := in.Expected
 	if len(in.Overlay) > 0 {
-		hidden, err := AcceptanceTests([2]string{in.Image.OS, in.Image.Arch}, in.Overlay)
-		if err != nil {
-			return v, err
+		if len(in.Acceptance) == 0 { // its caller's, AcceptanceTests': an overlay declaring none never runs
+			return v, errNoTest
 		}
 		if module == "" { // the candidate removed the module its hidden tests are in (Opus #429 L1)
 			v.Stream = []byte{}
@@ -221,7 +224,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 			return v, nil
 		}
 		expected = slices.Clone(expected)
-		for _, h := range hidden {
+		for _, h := range in.Acceptance {
 			expected = append(expected, results.Test{Package: strings.TrimSuffix(module+"/"+h.Dir, "/."), Name: h.Name})
 		}
 	}

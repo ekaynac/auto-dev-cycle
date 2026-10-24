@@ -159,7 +159,7 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 	if err != nil {
 		return notRun(err.Error(), err)
 	}
-	overlay, digests, err := r.overlayOf(ctx, repo, dir, g.accept.base, policy, prof.Gate, g.acceptance)
+	overlay, digests, hidden, err := r.overlayOf(ctx, repo, dir, g.accept.base, policy, prof.Gate, g.acceptance)
 	if err != nil {
 		return errors.Join(err, r.hold(node, err))
 	}
@@ -182,7 +182,7 @@ func (r *runner) gateNode(node types.NodeID) (err error) {
 		cause := fmt.Errorf("the base tree's gate did not measure: %s", measured.Why)
 		return notRun(cause.Error(), cause)
 	}
-	in.Tree, in.Baseline, in.Overlay = g.tree, &base, overlay
+	in.Tree, in.Baseline, in.Overlay, in.Acceptance = g.tree, &base, overlay, hidden
 	v, err := gate.Run(ctx, in)
 	switch {
 	case errors.Is(err, gate.ErrAcceptance): // overlayOf refused it already: a backstop, the task's
@@ -294,8 +294,10 @@ func (r *runner) gating(ctx context.Context, node types.NodeID) (gating, error) 
 // acceptance tests at its record's repository path, its bytes the blob
 // store's checked against its digest (at most an upload's bound, and
 // gate.MaxOverlay in all, before the base's measure: Astra #429 M5), and
-// their digests, the result's lineage. Refused as the task's (errContent,
-// "runner: failed": no retry fixes it), before any run: a path the
+// their digests, the result's lineage, and the tests it declares
+// (gate.AcceptanceTests, computed once: gate.Run takes them). Refused as
+// the task's (errContent, "runner: failed": no retry fixes it), before any
+// run: a path the
 // profile protects; one the base tree holds, or under a file it holds; one
 // in a module the base nests (a go.mod in a directory between it and the
 // root: go test ./... never runs it); a base with no root go.mod; and an
@@ -311,11 +313,11 @@ func (r *runner) gating(ctx context.Context, node types.NodeID) (gating, error) 
 // digest-checked when it was published. Every error is a fixed text (Astra
 // #429 H3).
 func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base string, policy accept.Policy, g types.ProjectProfileGate,
-	acc []types.AcceptanceBlob) (map[string][]byte, []types.Digest, error) {
+	acc []types.AcceptanceBlob) (map[string][]byte, []types.Digest, []gate.AcceptanceTest, error) {
 	goTest := g.ResultAdapter == results.GoTestJSON
 	overlay, digests := map[string][]byte{}, make([]types.Digest, 0, len(acc))
 	if len(acc) == 0 {
-		return nil, digests, nil
+		return nil, digests, nil, nil
 	}
 	var pl [2]string
 	if len(g.Environments) == 1 {
@@ -337,7 +339,7 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 	for _, a := range acc {
 		p := a.Name
 		if policy.Protected(p) {
-			return nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceProtected)
+			return nil, nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceProtected)
 		}
 		asks = append(asks, ask{p, p, func(k string) bool { return k == "missing" }})
 		// Ends: p is the record's AcceptancePath (the schema's: relative and
@@ -350,16 +352,18 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		}
 		b, err := r.readBlob(a.Digest, blobstore.MaxUploadBytes)
 		if err != nil {
-			return nil, nil, errAcceptanceRead // the host's: its cause names the blob (Astra #429 H3)
+			return nil, nil, nil, errAcceptanceRead // the host's: its cause names the blob (Astra #429 H3)
 		}
 		if total += len(b); total > gate.MaxOverlay { // before the base's measure (Astra #429 M5)
-			return nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceLarge)
+			return nil, nil, nil, fmt.Errorf("%w: %w", errContent, errAcceptanceLarge)
 		}
 		overlay[p], digests = b, append(digests, a.Digest)
 	}
+	var tests []gate.AcceptanceTest // once per gate run: gate.Run takes them (Opus #429 r8 L1)
 	if goTest {
-		if _, err := gate.AcceptanceTests(pl, overlay); err != nil {
-			return nil, nil, fmt.Errorf("%w: %w", errContent, err)
+		var err error
+		if tests, err = gate.AcceptanceTests(pl, overlay); err != nil {
+			return nil, nil, nil, fmt.Errorf("%w: %w", errContent, err)
 		}
 	}
 	var check strings.Builder
@@ -368,16 +372,16 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 	}
 	cmd, err := repo.Git(ctx, dir, "cat-file", "--batch-check=%(objecttype)")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var out bytes.Buffer
 	cmd.Stdin, cmd.Stdout = strings.NewReader(check.String()), &out
 	if err := cmd.Run(); err != nil {
-		return nil, nil, fmt.Errorf("git cat-file of the base's acceptance paths: %w", err)
+		return nil, nil, nil, fmt.Errorf("git cat-file of the base's acceptance paths: %w", err)
 	}
 	kinds := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
 	if len(kinds) != len(asks) {
-		return nil, nil, fmt.Errorf("git cat-file answered %d of %d paths", len(kinds), len(asks))
+		return nil, nil, nil, fmt.Errorf("git cat-file answered %d of %d paths", len(kinds), len(asks))
 	}
 	for i, q := range asks {
 		k := kinds[i]
@@ -387,11 +391,11 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		switch {
 		case q.ok(k):
 		case q.of == "":
-			return nil, nil, fmt.Errorf("%w: the base has no root go.mod to place the acceptance tests in", errContent)
+			return nil, nil, nil, fmt.Errorf("%w: the base has no root go.mod to place the acceptance tests in", errContent)
 		case strings.HasSuffix(q.at, "/go.mod"):
-			return nil, nil, fmt.Errorf("%w: an acceptance file is in a module the base nests, which go test ./... never runs", errContent)
+			return nil, nil, nil, fmt.Errorf("%w: an acceptance file is in a module the base nests, which go test ./... never runs", errContent)
 		default:
-			return nil, nil, fmt.Errorf("%w: an acceptance file would replace what the base holds", errContent)
+			return nil, nil, nil, fmt.Errorf("%w: an acceptance file would replace what the base holds", errContent)
 		}
 	}
 	if goTest {
@@ -403,13 +407,13 @@ func (r *runner) overlayOf(ctx context.Context, repo sandbox.Repo, dir, base str
 		}
 		files, err := basePackages(ctx, repo, dir, base, trees, overlay)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := gate.AcceptanceFits(pl, overlay, files); err != nil {
-			return nil, nil, fmt.Errorf("%w: %w", errContent, err)
+			return nil, nil, nil, fmt.Errorf("%w: %w", errContent, err)
 		}
 	}
-	return overlay, digests, nil
+	return overlay, digests, tests, nil
 }
 
 // The acceptance's refusals and its read failure, each a fixed text: none

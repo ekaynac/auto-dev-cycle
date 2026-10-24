@@ -185,6 +185,26 @@ func newFixture(t *testing.T, files map[string]string, command ...string) fixtur
 		Limits:   sandbox.Limits{Memory: 1 << 30, CPUs: "1", PIDs: 100, Timeout: time.Minute, Disk: 64 << 20}}}
 }
 
+// overlay sets in's overlay to files and its acceptance to the tests they
+// declare, as the daemon's overlayOf computes them once (Opus #429 r8 L1);
+// files go test never runs leave no acceptance.
+func overlay(in *In, files map[string][]byte) {
+	in.Overlay = files
+	in.Acceptance, _ = AcceptanceTests([2]string{in.Image.OS, in.Image.Arch}, onlyClean(files))
+}
+
+// onlyClean are files without the paths AcceptanceTests cannot read (an
+// escape the write refuses).
+func onlyClean(files map[string][]byte) map[string][]byte {
+	out := map[string][]byte{}
+	for p, b := range files {
+		if !strings.HasPrefix(p, "../") {
+			out[p] = b
+		}
+	}
+	return out
+}
+
 func gated(t *testing.T, in In) Verdict {
 	t.Helper()
 	v, err := Run(context.Background(), in)
@@ -234,12 +254,12 @@ func TestGateVerdict(t *testing.T) {
 	// An expected (acceptance) test, overlaid on the workspace only, that
 	// never ran is the candidate's, wherever it is.
 	f := newFixture(t, files, "cat", "acc/stream.json")
-	f.in.Overlay = map[string][]byte{"acc/stream.json": []byte(stream["clean.json"]), "c/c_hidden_test.go": []byte(hiddenTest)}
+	overlay(&f.in, map[string][]byte{"acc/stream.json": []byte(stream["clean.json"]), "c/c_hidden_test.go": []byte(hiddenTest)})
 	f.in.Expected = []results.Test{{Package: module + "/c", Name: "TestHidden"}}
 	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) {
 		t.Errorf("a missing acceptance test: %v", v)
 	}
-	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "../escape": nil}
+	overlay(&f.in, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest), "../escape": nil})
 	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) {
 		t.Errorf("an overlay outside the workspace: %v", err)
 	}
@@ -303,13 +323,13 @@ func TestGateOverlaidTestsAreExpected(t *testing.T) {
 		// The stream is the reported one only when the hidden file is the
 		// overlay's, a regular file, and a/a.go is untouched.
 		f := newFixture(t, with(c.files), "sh", "-c", `if test -f c/c_hidden_test.go && ! test -L c/c_hidden_test.go && grep -q TestHiddenX c/c_hidden_test.go && test "$(cat a/a.go)" = "package a"; then cat `+c.reported+`; else cat clean.json; fi`)
-		f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
+		overlay(&f.in, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)})
 		if v := gated(t, f.in); !strings.Contains(v.String(), c.want) {
 			t.Errorf("%s: %v, want %s", name, v, c.want)
 		}
 	}
 	f := newFixture(t, with(map[string]string{"go.mod": "go 1.24\n"}), "cat", "passed.json")
-	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)}
+	overlay(&f.in, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)})
 	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) || v.Why != whyNoModule {
 		t.Errorf("a candidate with no module: %v", v)
 	}
@@ -319,15 +339,32 @@ func TestGateOverlaidTestsAreExpected(t *testing.T) {
 	example := "package c\n\nimport \"fmt\"\n\nfunc Example() {\n\tfmt.Println(\"ok\")\n\t// Output: ok\n}\n"
 	for stream, want := range map[string]string{"examples.json": "empty/completed_clean", "clean.json": "found/gate_test_failed"} {
 		f := newFixture(t, with(map[string]string{"examples.json": events("a.TestA=pass", "b.TestB=pass", "c.Example=pass")}), "cat", stream)
-		f.in.Overlay = map[string][]byte{"c/c_example_test.go": []byte(example)}
+		overlay(&f.in, map[string][]byte{"c/c_example_test.go": []byte(example)})
 		if v := gated(t, f.in); !strings.Contains(v.String(), want) {
 			t.Errorf("an example, %s: %v, want %s", stream, v, want)
 		}
 	}
 	f = newFixture(t, with(nil), "cat", "clean.json")
-	f.in.Overlay = map[string][]byte{"c/c_hidden_test.go": []byte("package c\nfunc {\n")}
+	overlay(&f.in, map[string][]byte{"c/c_hidden_test.go": []byte("package c\nfunc {\n")})
 	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) || errors.Is(err, ErrSpec) {
 		t.Errorf("an acceptance test that does not parse: %v", err)
+	}
+	// Opus #429 r8 L1: Run takes the caller's acceptance, never computing
+	// it again: the tests it is given are the tests it expects (here one no
+	// overlay file declares, never reported: the candidate's), and an
+	// overlay given none is refused.
+	f = newFixture(t, with(nil), "cat", "passed.json")
+	overlay(&f.in, map[string][]byte{"c/c_hidden_test.go": []byte(hiddenTest)})
+	if v := gated(t, f.in); !is(v, vocab.Empty, vocab.ReasonCompletedClean) {
+		t.Errorf("the overlay's own tests: %v", v)
+	}
+	f.in.Acceptance = append(slices.Clone(f.in.Acceptance), AcceptanceTest{Dir: "c", Name: "TestGiven"})
+	if v := gated(t, f.in); !is(v, vocab.Found, vocab.ReasonGateTestFailed) {
+		t.Errorf("a given test never reported: %v", v)
+	}
+	f.in.Acceptance = nil
+	if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrAcceptance) {
+		t.Errorf("an overlay given no acceptance: %v", err)
 	}
 }
 
@@ -377,6 +414,7 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 		"a test taking a *testing.B":      {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(b *testing.B) {}\n"},
 		"a test with a result":            {"c/c_test.go": "package c\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) error { return nil }\n"},
 		"over the overlay's bound":        {"c/c_test.go": root, "c/big.bin": strings.Repeat("x", MaxOverlay)},
+		"more than MaxFuncs functions":    {"c/c_test.go": root + funcs(MaxFuncs)},
 		"a cgo test":                      {"c/c_test.go": strings.Replace(root, "import \"testing\"", "import \"C\"\nimport \"testing\"", 1)},
 		"a cgo test, a raw-string import": {"c/c_test.go": strings.Replace(root, "import \"testing\"", "import `C`\nimport \"testing\"", 1)},
 	} {
@@ -414,6 +452,7 @@ func TestAcceptanceTestsAreWhatGoTestRuns(t *testing.T) {
 		"Benchmarkfoo, vet's general class":  {map[string]string{"c/c_test.go": root + "\nfunc Benchmarkfoo(b *testing.B) {}\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
 		"an example with a parameter":        {map[string]string{"c/c_test.go": root + "\nfunc ExampleX(t *testing.T) {}\n"}, []AcceptanceTest{{"c", "TestRoot"}}},
 		"a lone executable example":          {map[string]string{"c/c_test.go": ex}, []AcceptanceTest{{"c", "Example"}}},
+		"MaxFuncs functions":                 {map[string]string{"c/c_test.go": root + funcs(MaxFuncs-1)}, []AcceptanceTest{{"c", "TestRoot"}}},
 		"a go.work (GOWORK=off)":             {map[string]string{"go.work": "go 1.27\n\nuse .\n", "c/c_test.go": root}, []AcceptanceTest{{"c", "TestRoot"}}},
 		"an example with an empty output":    {map[string]string{"c/c_test.go": strings.Replace(strings.Replace(ex, "// Output: ok", "// Output:", 1), "fmt.Println(\"ok\")", "_ = fmt.Sprint()", 1)}, []AcceptanceTest{{"c", "Example"}}},
 		"a suffixed example":                 {map[string]string{"c/c_test.go": strings.Replace(ex, "func Example()", "func Example_second()", 1)}, []AcceptanceTest{{"c", "Example_second"}}},
@@ -1074,7 +1113,7 @@ func TestGateLineage(t *testing.T) {
 	}
 	// A run that applied an overlay is published only with the overlay's
 	// digests (Opus #321 M2): never with a lineage of nothing.
-	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n"), "c/c_hidden_test.go": []byte(hiddenTest)}
+	overlay(&f.in, map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n"), "c/c_hidden_test.go": []byte(hiddenTest)})
 	overlaid := gated(t, f.in)
 	for name, acc := range map[string][]types.Digest{"none": nil, "empty": {}, "the overlay's": {dg("a")}} {
 		_, err := Result(types.ComputationKey{Key: dg("1")}, overlaid, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},
@@ -1107,4 +1146,13 @@ func TestAReportIsBoundedEncoded(t *testing.T) {
 	if err := json.Unmarshal(b, &r); err != nil || len(b) > MaxReportBytes || CheckReport(b) != nil || r.Truncated == 0 || r.Failed != 1000 {
 		t.Fatalf("%d bytes, truncated %d, failed %d: %v / %v", len(b), r.Truncated, r.Failed, err, CheckReport(b))
 	}
+}
+
+// funcs declares n helper functions, f0 … f(n-1), one per line.
+func funcs(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "\nfunc f%d() {}\n", i)
+	}
+	return b.String()
 }
