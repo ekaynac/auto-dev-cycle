@@ -12,7 +12,8 @@ package api
 //   - the lease of each of those attempts, with its executor, role and
 //     placed price, every call the ledger binds to it (ledger.BoundTo)
 //     with its binding's attempt and every measurement the ledger holds of
-//     it (ledger.Measurements), and its usd_micros liability as Record
+//     it (ledger.Measurements), the registry entry it was placed on
+//     (dispatch.EntryDigestOf), and its usd_micros liability as Record
 //     takes it: the group's liability (capacity.LiabilitiesOf) once the
 //     lease's settlement is recorded, its usd_micros reservation before;
 //     null when that liability is inconsistent or saturated;
@@ -35,6 +36,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
@@ -129,9 +132,6 @@ func stamped(t time.Time) *types.Time {
 	return &s
 }
 
-// maxContract is the contract's maximum integer (2^53-1).
-const maxContract = 1<<53 - 1
-
 // benchLease is lease id's benchmark facts.
 func benchLease(tx *eventstore.Tx, id types.LeaseID) (types.BenchLease, error) {
 	l, _, ok, err := lease.LeaseOf(tx, id)
@@ -142,6 +142,10 @@ func benchLease(tx *eventstore.Tx, id types.LeaseID) (types.BenchLease, error) {
 		return types.BenchLease{}, err
 	}
 	bl := types.BenchLease{ID: id, Executor: l.Executor, Role: l.Role, Price: l.Price, Calls: []types.BenchCall{}}
+	if d, ok := dispatch.EntryDigestOf(l); ok {
+		entry := types.Digest(d)
+		bl.RegistryEntry = &entry
+	}
 	calls, err := ledger.BoundTo(tx, id)
 	if err != nil {
 		return bl, err
@@ -169,7 +173,7 @@ func benchLease(tx *eventstore.Tx, id types.LeaseID) (types.BenchLease, error) {
 	for _, r := range l.Reservations {
 		if r.Unit != types.CapacityUnitUsdMicros {
 			continue
-		} else if int64(r.Amount) > maxContract-liability {
+		} else if int64(r.Amount) > contract.MaxSafeInteger-liability {
 			return bl, nil // past the contract's integers: null
 		}
 		groups, liability = append(groups, r.Group), liability+int64(r.Amount)
@@ -181,7 +185,7 @@ func benchLease(tx *eventstore.Tx, id types.LeaseID) (types.BenchLease, error) {
 		}
 		liability = 0
 		for _, g := range groups {
-			if owed[g] > maxContract-liability {
+			if owed[g] > contract.MaxSafeInteger-liability {
 				return bl, nil
 			}
 			liability += owed[g]

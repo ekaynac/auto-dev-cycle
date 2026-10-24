@@ -66,7 +66,7 @@ func Actions(reg *vocab.Registry) ([]Action, error) {
 // Reads are the reads the controller serves, sorted by resource: the event
 // stream, whoami and each registered resource.
 func Reads() []Read {
-	paths := map[string]string{"events": api.EventsPath, "whoami": api.WhoamiPath}
+	paths := map[string]string{"events": api.EventsPath, "whoami": api.WhoamiPath, cli.OneTask: api.TaskPath}
 	for name := range api.Registered() {
 		paths[name] = "/v1/" + name
 	}

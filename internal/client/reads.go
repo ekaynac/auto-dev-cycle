@@ -85,6 +85,35 @@ func (t Transport) Read(ctx context.Context, resource string) ([]byte, error) {
 	})
 }
 
+// ReadTask gets one task's read (api.TaskPath): the tasks list holding
+// that task's record alone, or none; returned once it validates as Read's
+// tasks list does, with at most that one record (P25; Opus #430 H1).
+func (t Transport) ReadTask(ctx context.Context, task string) ([]byte, error) {
+	const resource = "tasks"
+	res, ok := api.Registered()[resource]
+	if !ok {
+		return nil, ErrNoResource
+	}
+	resp, err := t.do(ctx, http.MethodGet, "/v1/tasks/"+url.PathEscape(task), nil, false)
+	if err := refusal(resp, err); err != nil {
+		return nil, err
+	}
+	return answer(resp, nil, "a task read", func(raw []byte) error {
+		var list struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		}
+		if err := validList(raw, resource, strings.TrimSuffix(res.Schema, ".json")); err != nil {
+			return err
+		}
+		if json.Unmarshal(raw, &list) != nil || len(list.Items) > 1 || len(list.Items) == 1 && list.Items[0].ID != task {
+			return ErrInvalidRead
+		}
+		return nil
+	})
+}
+
 // validList checks a read list of resource, every item against schema.
 func validList(raw []byte, resource, schema string) error {
 	var list struct {

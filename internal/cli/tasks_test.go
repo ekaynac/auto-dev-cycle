@@ -23,7 +23,7 @@ type counting struct {
 	reads atomic.Int64
 }
 
-func (c *counting) Read(context.Context, string) ([]byte, error) {
+func (c *counting) ReadTask(context.Context, string) ([]byte, error) {
 	if n := c.reads.Add(1); n <= c.fails {
 		return nil, errors.New("the controller is restarting")
 	}
@@ -58,7 +58,7 @@ type lost struct {
 	reads atomic.Int64
 }
 
-func (c *lost) Read(context.Context, string) ([]byte, error) {
+func (c *lost) ReadTask(context.Context, string) ([]byte, error) {
 	if c.reads.Add(1) <= 2 {
 		return []byte(c.body), nil
 	}

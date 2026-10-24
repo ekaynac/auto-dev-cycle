@@ -27,6 +27,10 @@ package api
 //     larger, at the higher token rate; once ended, the liability its
 //     settlement kept), null with no price or past the contract's
 //     integers. A reported cost is never read (#226 entry 62).
+//   - bench, the task's benchmark facts (P25; taskbench.go), only in the
+//     one task's read, GET /v1/tasks/{task} (ReadTask): never in the list,
+//     which would carry every task's ledger in one response, past the
+//     client's response bound (Opus #430 H1). Null in the list.
 //
 // Its work is bounded by what the board reads and the task's own nodes:
 // the first attempt is read from each node's first-attempt index
@@ -34,8 +38,10 @@ package api
 // reads, never by scanning the installation's attempts (Astra #335 M1).
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
 
@@ -45,6 +51,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
@@ -69,32 +77,13 @@ var tasks = Resource{
 		}
 		out := []any{}
 		for _, id := range ids {
-			t, recorded, _, err := boardTask(tx, id)
+			read, ok, err := taskRead(tx, at, id, byTask[id], false)
 			if err != nil {
 				return nil, err
 			}
-			if !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) { // a damaged record is the board's to show
-				continue
+			if ok {
+				out = append(out, read)
 			}
-			read := types.TaskRead{ID: id, Project: t.Project}
-			if ending, err := endingOf(tx, t); err != nil { // one task's unreadable record (Mythos chunk 5a L4)
-				read.Card = unplaced(id, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
-			} else {
-				read.Card = boardCard(t, byTask[id], at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project), ending, stalledOf(at, t))
-			}
-			if at.Scope.ReadsRecord(attemptDomain, &t.Project) {
-				f, ok, err := firstAttempt(tx, byTask[id])
-				if err == nil && ok {
-					read.FirstAttempt, err = metrics(tx, t, f, at.Scope.ReadsRecord(modelCallDomain, &t.Project))
-				}
-				if err == nil && at.Scope.ReadsRecord(modelCallDomain, &t.Project) {
-					read.Bench, err = benchOf(tx, t, byTask[id])
-				}
-				if err != nil {
-					return nil, err
-				}
-			}
-			out = append(out, read)
 		}
 		return out, nil
 	},
@@ -105,6 +94,81 @@ var tasks = Resource{
 	},
 	Fields: []string{"id", "project", "card", "first_attempt", "bench"},
 }
+
+// TaskPath is the one task's read: the tasks resource's list holding that
+// task's record alone, its benchmark facts included (P25; Opus #430 H1).
+const TaskPath = "/v1/tasks/{task}"
+
+// ReadTask is task id's record as the one task's read gives it, read at
+// at: its card, its first attempt and its benchmark facts (under both the
+// attempt and model_call read kinds); false when the caller reads no such
+// task. Only that task's nodes, leases and calls are read, and a record of
+// it that cannot be read fails this read alone (Opus #430 M1).
+func ReadTask(tx *eventstore.Tx, at ReadAt, id types.TaskID) (types.TaskRead, bool, error) {
+	nodes, err := graph.TaskNodes(tx, id)
+	if err != nil {
+		return types.TaskRead{}, false, err
+	}
+	return taskRead(tx, at, id, nodes, true)
+}
+
+// taskRead is task id's record over its nodes, with its benchmark facts
+// when bench; false for a task not recorded or whose board the caller does
+// not read.
+func taskRead(tx *eventstore.Tx, at ReadAt, id types.TaskID, nodes []graph.NodeView, bench bool) (types.TaskRead, bool, error) {
+	t, recorded, _, err := boardTask(tx, id)
+	if err != nil || !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) { // a damaged record is the board's to show
+		return types.TaskRead{}, false, err
+	}
+	read := types.TaskRead{ID: id, Project: t.Project}
+	if ending, err := endingOf(tx, t); err != nil { // one task's unreadable record (Mythos chunk 5a L4)
+		read.Card = unplaced(id, &t.Project, types.BoardUnplacedCardReasonDamagedRecord)
+	} else {
+		read.Card = boardCard(t, nodes, at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project), ending, stalledOf(at, t))
+	}
+	if at.Scope.ReadsRecord(attemptDomain, &t.Project) {
+		f, ok, err := firstAttempt(tx, nodes)
+		if err == nil && ok {
+			read.FirstAttempt, err = metrics(tx, t, f, at.Scope.ReadsRecord(modelCallDomain, &t.Project))
+		}
+		if err == nil && bench && at.Scope.ReadsRecord(modelCallDomain, &t.Project) {
+			read.Bench, err = benchOf(tx, t, nodes)
+		}
+		if err != nil {
+			return types.TaskRead{}, false, err
+		}
+	}
+	return read, true, nil
+}
+
+// Task serves TaskPath: the tasks list holding task's record, or none when
+// the caller reads no such task (never an existence oracle).
+func (h Reads) Task(w http.ResponseWriter, r *http.Request) {
+	id := types.TaskID(r.PathValue("task"))
+	if ids.Check(string(id), "tsk") != nil {
+		http.Error(w, "not a task id", http.StatusBadRequest)
+		return
+	}
+	h.view(w, r, func(tx *eventstore.Tx, _ identity.Principal, _ types.Actor, at ReadAt) (any, error) {
+		if at.Scope.Empty() {
+			return nil, errNotGranted
+		}
+		out := types.ReadList{Resource: tasksName, Outcome: types.ReadListOutcomeEmpty, Items: []json.RawMessage{}}
+		rec, ok, err := ReadTask(tx, at, id)
+		if err != nil || !ok {
+			return out, err
+		}
+		item, err := allowed(rec, tasks.Fields)
+		if err != nil {
+			return nil, err
+		}
+		out.Items, out.Outcome = append(out.Items, item), types.ReadListOutcomeFound
+		return out, nil
+	})
+}
+
+// tasksName is the tasks resource's name (Registered).
+const tasksName = "tasks"
 
 // started is an attempt, its node and its start time.
 type started struct {

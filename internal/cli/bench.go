@@ -10,11 +10,16 @@ package cli
 //	  [--fixture PATH]... [--json]
 //
 //   - It reads the task over the controller's API, as adc task show does
-//     (the task read, GET /v1/tasks, under the caller's token): its card
-//     and its benchmark facts (TaskRead.bench, read under the attempt and
+//     (the one task's read, GET /v1/tasks/{task}, under the caller's
+//     token; never the whole list: Opus #430 H1): its card and its
+//     benchmark facts (TaskRead.bench, read under the attempt and
 //     model_call read kinds), never the store. The registry file is the
-//     one adcd ran with: each route's role, family and price, which every
-//     lease's placed price must equal.
+//     one adcd ran with: each route's role, family and price. Every
+//     lease's placed price must equal its entry's, and the registry entry
+//     the lease was placed on (its digest, dispatch.EntryDigestOf) must be
+//     the file's entry (dispatch.EntryDigest), so a file that keeps an
+//     id, role and price but changes its family or destination is refused
+//     (Opus #430 M3).
 //   - --until candidate is checkpoint (a): stages up to review only, so a
 //     node past review (rebase, merge, …) is refused. A stage's round is
 //     its candidate's (graph.CandidateRound, the read's round; Opus #408
@@ -30,9 +35,20 @@ package cli
 //     ledger binds to each lease, each with its binding's attempt and
 //     every measurement the ledger holds of it; a lease's usd_micros
 //     liability once, on the first of its calls not settled
-//     (ledger.StandingOf), zero on the others; each answer at its asking
-//     node's stage; each rail raise at the stage of the first node its
-//     command released, or build when it released none.
+//     (ledger.StandingOf), zero on the others. A positive liability with
+//     no unsettled call to stand on (no call yet, or the lease not settled
+//     though its calls are) is refused, never dropped (Opus #430 M2):
+//     record the task once its leases settle. Each answer counts at its
+//     asking node's stage, each rail raise at the stage of the first node
+//     its command released, or build when it released none.
+//   - Interventions at (a) (Opus #430 L1, L2): answers and rail raises.
+//     No approval is passed: the task's own approval.recorded (task.create)
+//     starts its wall time and is no intervention, and no other approval
+//     reaches checkpoint (a) (the merge approval is (b)'s, P28). An answer
+//     counts only at its owed input's current revision (a new revision
+//     drops the answer to the one before), and no production command
+//     records an owed input yet (authority.RecordOwed has no caller
+//     outside tests), so answers are 0 in (a) today.
 //   - Routes are the executors of the task's attempts, with their
 //     registry role and family; fixtures are each --fixture path under
 //     --root, digested by sandbox.ClosureDigest. The build commit and
@@ -64,6 +80,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/buildinfo"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -349,6 +366,9 @@ func ledgerOf(b *types.TaskBench, t *bench.Task) error {
 			}
 			t.Calls, t.Usage = append(t.Calls, call), append(t.Usage, c.Measurements...)
 		}
+		if owed > 0 { // never dropped (Opus #430 M2)
+			return refusedf("lease %s is liable for %d usd_micros with no unsettled call to stand on: record the task once its leases settle", l.ID, owed)
+		}
 	}
 	return nil
 }
@@ -374,6 +394,8 @@ func routesOf(b *types.TaskBench, reg types.ExecutorRegistry, stub bool) ([]type
 			return nil, nil, refusedf("executor %s has no registry price", e.ID)
 		case l.Price == nil || *l.Price != *e.Price:
 			return nil, nil, refusedf("lease %s was placed at another price than executor %s's in the registry", l.ID, e.ID)
+		case l.RegistryEntry == nil || string(*l.RegistryEntry) != dispatch.EntryDigest(e):
+			return nil, nil, refusedf("lease %s was placed on another registry entry than executor %s's in --registry (its family, destination or another field differs)", l.ID, e.ID)
 		case (e.Destination.ID == stubDestination) != stub:
 			return nil, nil, refusedf("executor %s's destination is %s, against --routes %s", e.ID, e.Destination.ID, map[bool]string{true: "stub", false: "live"}[stub])
 		}

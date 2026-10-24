@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
@@ -836,5 +837,71 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 	var r *authority.Refusal
 	if after, herr := d.store.Head(context.Background()); !errors.As(err, &r) || r.Reason != vocab.ReasonActorKindRefused || herr != nil || after != before {
 		t.Fatalf("the system's note: %v", err)
+	}
+}
+
+// Opus #430 L3: a store written before P25 (with or without the record of
+// built projections) builds graph_node_times, graph_rail_clears and
+// task_rail_raises from its log at start, equal to the rows the log's own
+// folds wrote, and the started store is a full replay: a plan claimed and
+// completed, and a rail raise clearing the build's budget_rail hold.
+func TestStoreBefore430Starts(t *testing.T) {
+	added := []string{graph.TimesProjection, graph.RailClearProjection, authority.RaiseProjection}
+	for _, record := range []bool{true, false} {
+		t.Run(fmt.Sprintf("with the record %v", record), func(t *testing.T) {
+			dir := stateDir(t)
+			w := seed(t, dir, daemonProjection(t, tokens(10)))
+			fullHistory(t, w)
+			plan := plannedIn(t, w, graphProject)
+			task := taskOf(w, plan)
+			build := templateNodes(w, task)[types.NodeKindBuild]
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+			})
+			completePlan(t, w, w.sys, plan)
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				h, err := graph.RailHold(graph.RailRounds)
+				if err != nil {
+					return nil, err
+				}
+				return graph.Raise(tx, build, h, nil)
+			})
+			w.do(w.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				caps, err := authority.Rails(tx, task)
+				if err != nil {
+					return nil, err
+				}
+				to := caps.RoundsPerTask + 2
+				p, err := json.Marshal(types.RailRaised{Task: task, Project: graphProject, Rail: types.RaisableRailRoundsPerTask, To: &to, By: w.op,
+					At: types.Time(tx.Now().Format(time.RFC3339Nano))})
+				if err != nil {
+					return nil, err
+				}
+				project := string(graphProject)
+				cleared, err := graph.ClearRail(tx, task, graph.RailRounds)
+				return append([]eventstore.Event{{ID: newID(t, "evt"), Kind: authority.TaskRailRaised, Subject: string(task), Project: &project, Payload: p}}, cleared...), err
+			})
+			w.done()
+			cfg := Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}
+			if record {
+				startClose(t, cfg)
+			}
+			want := map[string]map[string]string{}
+			for _, p := range added {
+				if want[p] = rows(t, dir, p); len(want[p]) == 0 {
+					t.Fatalf("the store holds no %s record", p)
+				}
+				execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '`+p+`'`)
+				if record {
+					execSQL(t, dir, `DELETE FROM proj_kv WHERE projection = '_built' AND key = '`+p+`'`)
+				}
+			}
+			startClose(t, cfg)
+			for _, p := range added {
+				if got := rows(t, dir, p); fmt.Sprint(got) != fmt.Sprint(want[p]) {
+					t.Errorf("%s built %v, want %v", p, got, want[p])
+				}
+			}
+		})
 	}
 }

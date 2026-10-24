@@ -125,6 +125,27 @@ func taskReadWith(t *testing.T, w *seeder, actor types.ActorID, task types.TaskI
 	return rec
 }
 
+// taskOneAs is task's record in the one task's read (api.ReadTask) as
+// actor reads it, its benchmark facts included; the zero record when it
+// reads none.
+func taskOneAs(t *testing.T, w *seeder, actor types.ActorID, task types.TaskID) (rec types.TaskRead) {
+	t.Helper()
+	w.view(func(tx *eventstore.Tx) error {
+		var a types.Actor
+		raw, _, err := tx.Get(identity.ActorProjection, string(actor))
+		if err == nil {
+			err = json.Unmarshal(raw, &a)
+		}
+		scope, serr := authority.ReadScopeOf(tx, a, time.Now())
+		if err = errors.Join(err, serr); err != nil {
+			return err
+		}
+		rec, _, err = api.ReadTask(tx, api.ReadAt{Now: time.Now(), Scope: scope}, task)
+		return err
+	})
+	return rec
+}
+
 // commitPlan commits plan's completed result, empty/completed_clean,
 // recorded by attempt once it submits it (nil: by no attempt).
 func commitPlan(t *testing.T, w *seeder, plan types.NodeID, attempt *types.AttemptID) {
@@ -272,11 +293,18 @@ func TestTaskReadKinds(t *testing.T) {
 	if rec := taskReadAs(t, w, reader("board", "attempt"), running); rec.FirstAttempt == nil || rec.FirstAttempt.Attempt != attempt || rec.FirstAttempt.Tokens != nil || rec.Bench != nil {
 		t.Errorf("an attempt reader: %+v", rec)
 	}
-	if rec := taskReadAs(t, w, reader("board", "model_call"), running); rec.Bench != nil {
+	if rec := taskOneAs(t, w, reader("board", "attempt"), running); rec.ID != running || rec.Bench != nil {
+		t.Errorf("an attempt reader's one-task read: %+v", rec)
+	}
+	if rec := taskOneAs(t, w, reader("board", "model_call"), running); rec.ID != running || rec.Bench != nil {
 		t.Errorf("a model-call reader not reading attempts: %+v", rec)
 	}
-	if rec := taskReadAs(t, w, reader("board", "attempt", "model_call"), running); rec.FirstAttempt == nil || rec.FirstAttempt.Tokens == nil || rec.FirstAttempt.Tokens.In != 300 || rec.Bench == nil {
-		t.Errorf("a model-call reader: %+v", rec)
+	both := reader("board", "attempt", "model_call")
+	if rec := taskReadAs(t, w, both, running); rec.FirstAttempt == nil || rec.FirstAttempt.Tokens == nil || rec.FirstAttempt.Tokens.In != 300 || rec.Bench != nil {
+		t.Errorf("a model-call reader's list (never the benchmark facts: Opus #430 H1): %+v", rec)
+	}
+	if rec := taskOneAs(t, w, both, running); rec.FirstAttempt == nil || rec.Bench == nil {
+		t.Errorf("a model-call reader's one-task read: %+v", rec)
 	}
 }
 

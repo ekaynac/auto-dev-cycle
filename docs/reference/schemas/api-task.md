@@ -4,7 +4,7 @@
 
 `schemas/api/task.json`
 
-One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. Its benchmark facts (bench) are read under both, in the one task's read only: adc dev bench record reads them (P25). adc task show and adc task wait read it. Never the spec's requirement or acceptance.
 
 ## Fields of the document
 
@@ -14,7 +14,7 @@ One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a re
 | `project` | yes | [ProjectID](common-defs.md#projectid) |  |
 | `card` | yes | [board](api-board.md) |  |
 | `first_attempt` | yes | null or [FirstAttempt](#firstattempt) | The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project. |
-| `bench` | yes | null or [TaskBench](#taskbench) | The task's benchmark facts (M1 slice plan §2.8; P25, adc dev bench record): its approval and end, each of its nodes with its controller event times and attempts, those attempts' leases with their bound calls and each call's usage measurements as the call ledger holds them, and the operator's answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task's project. |
+| `bench` | yes | null or [TaskBench](#taskbench) | The task's benchmark facts (M1 slice plan §2.8; P25, adc dev bench record), only in the one task's read (GET /v1/tasks/{task}); null in the list (Opus #430 H1): its approval and end, each of its nodes with its controller event times and attempts, those attempts' leases with their bound calls and each call's usage measurements as the call ledger holds them, and the operator's answers and rail raises on its nodes. Null unless the reader also reads attempts and model calls (the attempt and model_call read kinds) in the task's project. |
 
 No other fields are allowed.
 
@@ -87,6 +87,7 @@ No other fields are allowed.
 | `id` | yes | [LeaseID](common-defs.md#leaseid) |  |
 | `executor` | yes | [ExecutorID](common-defs.md#executorid) |  |
 | `role` | yes | [Name](records-receipt.md#name) |  |
+| `registry_entry` | yes | null or [Digest](common-defs.md#digest) | The digest of the registry entry the lease was placed on, as its destinations placement check records it (dispatch.EntryDigestOf); null when the check records none. adc dev bench record refuses a registry file whose entry differs (Opus #430 M3). |
 | `price` | yes | null or [RegistryPrice](config-executor-registry.md#registryprice) | The price the lease was placed at (Lease.Price); null for an executor with none. |
 | `liability_usd_micros` | yes | null or integer (minimum `0`, maximum `9007199254740991`) | What the lease is liable for in USD micros: once it has settled (its settlement recorded), its usd_micros group's liability (capacity.LiabilitiesOf); before, its usd_micros reservation; 0 with neither. Null when that liability is inconsistent_usage or saturated: no figure bounds it. |
 | `calls` | yes | array of [BenchCall](#benchcall) | Every call the ledger binds to the lease (ledger.BoundTo), in call id order. |

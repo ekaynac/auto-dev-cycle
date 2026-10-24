@@ -201,8 +201,11 @@ func (Answers) Owed(tx *eventstore.Tx, rec types.NodeRecorded) ([]types.AnswerSo
 
 // Answered are the owed inputs node asked for, ruling and data, that hold
 // an answer recorded at their current revision (in force or since
-// withdrawn: an answer given is an intervention either way), in id order:
-// the benchmark's answers (§2.8; adc dev bench record, P25).
+// withdrawn), in id order: the benchmark's answers (§2.8; adc dev bench
+// record, P25). Only the current revision's answer counts: a new revision
+// drops the answer to the one before (RecordOwed), which is then no longer
+// counted (Opus #430 L2). No production command records an owed input
+// yet (RecordOwed's callers are tests), so it is empty in production.
 func Answered(tx *eventstore.Tx, node types.NodeID) ([]types.OwedInputID, error) {
 	prefix := "asker/" + string(node) + "/"
 	keys, err := tx.Keys(OwedProjection, prefix)

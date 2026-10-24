@@ -14,6 +14,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/bench"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
@@ -33,6 +34,17 @@ func stubReg(t *testing.T) types.ExecutorRegistry {
 		t.Fatal(err)
 	}
 	return reg
+}
+
+// entryOf is the digest of reg's entry of id, as Match records it.
+func entryOf(reg types.ExecutorRegistry, id types.ExecutorID) *types.Digest {
+	for _, e := range reg.Executors {
+		if e.ID == id {
+			d := types.Digest(dispatch.EntryDigest(e))
+			return &d
+		}
+	}
+	return nil
 }
 
 func priceOf(reg types.ExecutorRegistry, id types.ExecutorID) *types.RegistryPrice {
@@ -89,10 +101,10 @@ func candidateRead(t *testing.T) types.TaskRead {
 				node("nod_requirement", types.BenchNodeKindReviewRequirement, "", ""),
 				node("nod_review", types.BenchNodeKindReview, "2026-10-23T10:02:10Z", "2026-10-23T10:03:00Z", types.BenchAttempt{ID: "att_review", Lease: "lea_review"})},
 			Leases: []types.BenchLease{
-				{ID: "lea_build", Executor: stubBuilder, Role: "builder", Price: priceOf(reg, stubBuilder), LiabilityUsdMicros: &owed,
+				{ID: "lea_build", Executor: stubBuilder, Role: "builder", Price: priceOf(reg, stubBuilder), RegistryEntry: entryOf(reg, stubBuilder), LiabilityUsdMicros: &owed,
 					Calls: []types.BenchCall{{ID: "cal_one", Attempt: "att_build", Measurements: []types.UsageMeasurement{delta("cal_one", "att_build")}},
 						{ID: "cal_two", Attempt: "att_build", Measurements: []types.UsageMeasurement{delta("cal_two", "att_build")}}}},
-				{ID: "lea_review", Executor: stubReviewer, Role: "reviewer", Price: priceOf(reg, stubReviewer), LiabilityUsdMicros: &zero, Calls: []types.BenchCall{}}},
+				{ID: "lea_review", Executor: stubReviewer, Role: "reviewer", Price: priceOf(reg, stubReviewer), RegistryEntry: entryOf(reg, stubReviewer), LiabilityUsdMicros: &zero, Calls: []types.BenchCall{}}},
 			Answers:    []types.NodeID{"nod_review"},
 			RailRaises: []types.BenchRailRaise{{Rail: "rounds_per_task", Nodes: []types.NodeID{"nod_build"}}, {Rail: "attempts_per_round", Nodes: []types.NodeID{}}}}}
 }
@@ -169,8 +181,13 @@ func TestBenchInputsRefusals(t *testing.T) {
 		"no placed price":                {func(r *types.TaskRead) { r.Bench.Leases[0].Price = nil }, true, "another price"},
 		"live routes of a stub run":      {func(*types.TaskRead) {}, false, "against --routes live"},
 		"an unbounded liability":         {func(r *types.TaskRead) { r.Bench.Leases[0].LiabilityUsdMicros = nil }, true, "no figure bounds it"},
-		"an answer to no stage":          {func(r *types.TaskRead) { r.Bench.Answers = []types.NodeID{"nod_plan"} }, true, "which is no stage"},
-		"a raise of no stage":            {func(r *types.TaskRead) { r.Bench.RailRaises[0].Nodes = []types.NodeID{"nod_plan"} }, true, "which is no stage"},
+		"a liability with no call (Opus #430 M2)": {func(r *types.TaskRead) {
+			owed := int64(700)
+			r.Bench.Leases[1].LiabilityUsdMicros = &owed
+		}, true, "liable for 700 usd_micros with no unsettled call"},
+		"no registry entry recorded": {func(r *types.TaskRead) { r.Bench.Leases[1].RegistryEntry = nil }, true, "another registry entry"},
+		"an answer to no stage":      {func(r *types.TaskRead) { r.Bench.Answers = []types.NodeID{"nod_plan"} }, true, "which is no stage"},
+		"a raise of no stage":        {func(r *types.TaskRead) { r.Bench.RailRaises[0].Nodes = []types.NodeID{"nod_plan"} }, true, "which is no stage"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := candidateRead(t)
@@ -180,6 +197,16 @@ func TestBenchInputsRefusals(t *testing.T) {
 				t.Errorf("want a refusal %q: %v", c.why, err)
 			}
 		})
+	}
+	other := stubReg(t) // Opus #430 M3: the same id, role and price, another family
+	for i, e := range other.Executors {
+		if e.ID == stubReviewer {
+			other.Executors[i].Family = "another-family"
+		}
+	}
+	var refused errRefused
+	if _, _, err := benchInputs(candidateRead(t), other, true); !errors.As(err, &refused) || !strings.Contains(err.Error(), "another registry entry than executor "+string(stubReviewer)) {
+		t.Errorf("a registry entry of another family: %v", err)
 	}
 	held := candidateRead(t)
 	held.Bench.DoneAs, held.Bench.Closure = nil, nil

@@ -3,7 +3,7 @@
 package cli
 
 // adc task show and adc task wait (M1 slice plan §2.1 step 5, §2.3; P22a-7,
-// W18), over the task read (GET /v1/tasks):
+// W18), over the one task's read (GET /v1/tasks/{task}; Opus #430 H1):
 //   - adc task show TASK [--json] prints the task's record: its board card
 //     and its first-attempt metrics. A task the caller cannot read, or no
 //     task, is refused (exit 1).
@@ -35,8 +35,13 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// tasksResource is the task read's resource.
-const tasksResource = "tasks"
+// tasksResource is the task read's resource; OneTask names the one task's
+// read (GET /v1/tasks/{task}) among the reads (ReadCommands, the parity
+// harness).
+const (
+	tasksResource = "tasks"
+	OneTask       = "task"
+)
 
 // The states adc task wait waits for.
 const (
@@ -67,14 +72,21 @@ type taskState struct {
 	column                 types.BoardPlacedCardColumn
 }
 
-// readTask reads task's record: its raw JSON and state; refused when the
-// read found no task the caller reads.
+// TaskReader is a Client that reads one task (client.Transport.ReadTask:
+// GET /v1/tasks/{task}, the tasks list holding that task alone).
+type TaskReader interface {
+	ReadTask(ctx context.Context, task string) ([]byte, error)
+}
+
+// readTask reads task's record over the one task's read, never the whole
+// list (Opus #430 H1): its raw JSON and state; refused when the read found
+// no task the caller reads.
 func readTask(ctx context.Context, task types.TaskID, c Client) (raw json.RawMessage, st taskState, refused bool, err error) {
-	r, ok := c.(Reader)
+	r, ok := c.(TaskReader)
 	if !ok {
 		return nil, st, false, ErrNoTransport
 	}
-	doc, err := r.Read(ctx, tasksResource)
+	doc, err := r.ReadTask(ctx, string(task))
 	if err != nil {
 		return nil, st, false, err
 	}
