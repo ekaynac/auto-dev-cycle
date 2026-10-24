@@ -191,10 +191,16 @@ type runWorld struct {
 	images *switchImages
 }
 
-// switchImages resolves every image while present is set.
-type switchImages struct{ present atomic.Bool }
+// switchImages resolves every image while present is set; while hang is
+// set, a resolve blocks until its context ends, as a podman stuck on its
+// storage's lock does, and then fails as sandbox.Host.Resolve would.
+type switchImages struct{ present, hang atomic.Bool }
 
 func (s *switchImages) Resolve(ctx context.Context, ref string) (sandbox.Image, error) {
+	if s.hang.Load() {
+		<-ctx.Done()
+		return sandbox.Image{}, fmt.Errorf("%w: %w", sandbox.ErrImage, ctx.Err())
+	}
 	return fakeImages{s.present.Load()}.Resolve(ctx, ref)
 }
 

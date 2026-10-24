@@ -271,7 +271,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err = errors.Join(err, out.Close(), resp.Body.Close())
 	release() // the upstream exchange is over: the count's commit holds no slot (Opus #308 L4)
 	if out.hit {
-		g.observe(b.Attempt, 0, RouteEchoed)
+		g.observe(b.Attempt, 0, RouteEchoed, 0)
 	}
 	g.count(r, b, s, &t, err == nil)
 }
@@ -474,7 +474,7 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		cred = c
 	}
 	if v := cred.Reveal(); v != "" && bytes.Contains(out, []byte(v)) {
-		g.observe(b.Attempt, 0, RouteInBody)
+		g.observe(b.Attempt, 0, RouteInBody, 0)
 		return nil, none, &refusal{http.StatusForbidden, RouteInBody}
 	}
 	// Unbound meanwhile: nothing captured (Opus #322 L4); Unbind waits for it (Astra #308 2).
@@ -513,7 +513,7 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
 	}
 	if err != nil {
-		g.observe(b.Attempt, 0, RouteUncounted)
+		g.observe(b.Attempt, 0, RouteUncounted, 0)
 		return nil, none, &refusal{http.StatusServiceUnavailable, RouteUncounted}
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -532,19 +532,20 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 	req.Header.Set(CallHeader, string(b.Call))
 	resp, err := g.client.Do(req)
 	if resp != nil {
-		g.observe(b.Attempt, resp.StatusCode, "")
+		var reset time.Duration
 		if resp.StatusCode == http.StatusTooManyRequests {
-			g.observeReset(b.Attempt, resetAfter(resp.Header, time.Now()))
+			reset = resetAfter(resp.Header, time.Now())
 		}
+		g.observe(b.Attempt, resp.StatusCode, "", reset)
 	}
 	if op := (*net.OpError)(nil); errors.As(err, &op) && op.Op == "dial" || errors.Is(err, errOffOrigin) {
 		if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, Count{Observed: true}) != nil {
-			g.observe(b.Attempt, 0, RouteUncounted) // never sent, but its floor stands
+			g.observe(b.Attempt, 0, RouteUncounted, 0) // never sent, but its floor stands
 		}
 	}
 	switch {
 	case errors.Is(err, errRedirect):
-		g.observe(b.Attempt, 0, RouteRedirect)
+		g.observe(b.Attempt, 0, RouteRedirect, 0)
 		return nil, none, &refusal{http.StatusBadGateway, RouteRedirect}
 	case err != nil:
 		return nil, none, &refusal{http.StatusBadGateway, "upstream_unreachable"}
@@ -579,8 +580,11 @@ func (g *Gateway) intend(r *http.Request, b Binding, destination types.Slug) err
 	return nil
 }
 
-// observe records for a while its attempt is bound.
-func (g *Gateway) observe(a types.AttemptID, status int, route string) {
+// observe records for a while its attempt is bound: an upstream's status,
+// a route refusal, and for a 429 the reset it names (0: none), so the
+// attempt's Reset is always the last 429's, recorded with its status in one
+// step (Opus #433 M1).
+func (g *Gateway) observe(a types.AttemptID, status int, route string, reset time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !slices.ContainsFunc(slices.Collect(maps.Values(g.bound)), func(b Binding) bool { return b.Attempt == a }) {
@@ -590,38 +594,37 @@ func (g *Gateway) observe(a types.AttemptID, status int, route string) {
 	if status != 0 {
 		o.Statuses = append(o.Statuses, status)
 	}
+	if status == http.StatusTooManyRequests {
+		o.Reset = reset
+	}
 	if route != "" {
 		o.Refusals = append(o.Refusals, route)
 	}
 	g.observed[a] = o
 }
 
-// observeReset records reset, the last 429's, while its attempt is bound.
-func (g *Gateway) observeReset(a types.AttemptID, reset time.Duration) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if !slices.ContainsFunc(slices.Collect(maps.Values(g.bound)), func(b Binding) bool { return b.Attempt == a }) {
-		return // unbound: Unbind has handed the attempt's observations over
-	}
-	o := g.observed[a]
-	o.Reset = reset
-	g.observed[a] = o
-}
-
 // maxReset bounds the reset a header may name, before the hold's own bound
-// (adcd's quotaWait): past it, a number is read as none.
+// (adcd's quotaWait): a later one, however far, reads as maxReset, so a
+// longer named wait never holds shorter (Opus #433 L3).
 const maxReset = 7 * 24 * time.Hour
 
 // resetAfter is the wait a rate-limited response h names for its reset, at
-// now: its Retry-After, in seconds or an HTTP date (RFC 9110 §10.2.3), else
-// its RateLimit-Reset, in seconds (the IETF RateLimit header fields' draft);
-// 0 when it names none, or none this reads (a date past, a number not
-// whole, negative or past maxReset).
+// now: its Retry-After, in whole seconds or an HTTP date (RFC 9110
+// §10.2.3), when that names a wait to come; else its RateLimit-Reset, in
+// whole seconds (the IETF RateLimit header fields' draft), the same way; 0
+// when neither does (absent, unreadable, zero, negative, or a date past). A
+// wait past maxReset, a number too large to read among them, is maxReset.
 func resetAfter(h http.Header, now time.Time) time.Duration {
 	seconds := func(v string) time.Duration {
-		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-		if err != nil || n <= 0 || n > int64(maxReset/time.Second) {
+		v = strings.TrimSpace(v)
+		n, err := strconv.ParseInt(v, 10, 64)
+		switch {
+		case errors.Is(err, strconv.ErrRange) && !strings.HasPrefix(v, "-"):
+			return maxReset
+		case err != nil || n <= 0:
 			return 0
+		case n > int64(maxReset/time.Second):
+			return maxReset
 		}
 		return time.Duration(n) * time.Second
 	}
@@ -629,10 +632,9 @@ func resetAfter(h http.Header, now time.Time) time.Duration {
 		if d := seconds(v); d > 0 {
 			return d
 		}
-		if t, err := http.ParseTime(v); err == nil && t.After(now) && t.Sub(now) <= maxReset {
-			return t.Sub(now)
+		if t, err := http.ParseTime(v); err == nil && t.After(now) {
+			return min(t.Sub(now), maxReset)
 		}
-		return 0
 	}
 	return seconds(h.Get("RateLimit-Reset"))
 }

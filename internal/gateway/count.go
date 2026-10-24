@@ -95,7 +95,7 @@ func (g *Gateway) count(r *http.Request, b Binding, s sending, t *tally, whole b
 	cached := min(clamp(u.Cached), prompt)
 	n := Count{In: max(prompt, tokens(s.sent)) - cached, Out: max(out, tokens(content)), CacheRead: cached, Observed: out >= tokens(content)}
 	if err := g.cfg.Counts.Count(context.WithoutCancel(r.Context()), b, s.seq, n); err != nil {
-		g.observe(b.Attempt, 0, RouteUncounted)
+		g.observe(b.Attempt, 0, RouteUncounted, 0)
 	}
 }
 

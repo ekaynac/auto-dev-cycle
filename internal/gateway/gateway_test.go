@@ -14,8 +14,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,26 +297,68 @@ func TestARateLimitsResetIsObserved(t *testing.T) {
 	}
 }
 
-// resetAfter reads Retry-After in seconds or as an HTTP date, before
-// RateLimit-Reset in seconds; a value it does not read names no reset,
-// never another header's.
+// Opus #433 M1: the reset is recorded with its 429's status in the one
+// observation of the response: across an attempt's responses it is the
+// last 429's, which a later status other than 429 leaves as it was.
+func TestTheLastRateLimitsResetIsObserved(t *testing.T) {
+	replies := []struct {
+		status int
+		header map[string]string
+	}{{429, map[string]string{"Retry-After": "90"}}, {200, map[string]string{"Retry-After": "5"}}, {429, map[string]string{"RateLimit-Reset": "12"}}, {200, nil}}
+	var n atomic.Int32
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		r := replies[int(n.Add(1))-1]
+		for k, v := range r.header {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(r.status)
+		_, _ = io.WriteString(w, `{"choices":[]}`)
+	})
+	g, token := rig(t, up, nil)
+	var after []time.Duration
+	for range replies {
+		call(g, token, "/chat/completions", good, nil)
+		g.mu.Lock()
+		after = append(after, g.observed[attempt].Reset)
+		g.mu.Unlock()
+	}
+	if want := []time.Duration{90 * time.Second, 90 * time.Second, 12 * time.Second, 12 * time.Second}; !slices.Equal(after, want) {
+		t.Fatalf("the reset after each response: %v, want %v", after, want)
+	}
+	if o := g.Unbind(token); !slices.Equal(o.Statuses, []int{429, 200, 429, 200}) || o.Reset != 12*time.Second {
+		t.Fatalf("observed %+v", o)
+	}
+}
+
+// resetAfter reads Retry-After in seconds or as an HTTP date, and when that
+// names no wait to come, RateLimit-Reset in seconds; a wait past maxReset,
+// however far, reads as maxReset (Opus #433 L3: a longer named wait never
+// holds shorter).
 func TestResetAfter(t *testing.T) {
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	for name, c := range map[string]struct {
 		header map[string]string
 		want   time.Duration
 	}{
-		"seconds":                      {map[string]string{"Retry-After": " 30 "}, 30 * time.Second},
-		"an HTTP date":                 {map[string]string{"Retry-After": now.Add(2 * time.Minute).Format(http.TimeFormat)}, 2 * time.Minute},
-		"Retry-After before RateLimit": {map[string]string{"Retry-After": "5", "RateLimit-Reset": "50"}, 5 * time.Second},
-		"RateLimit-Reset alone":        {map[string]string{"RateLimit-Reset": "50"}, 50 * time.Second},
-		"a date past":                  {map[string]string{"Retry-After": now.Add(-time.Minute).Format(http.TimeFormat)}, 0},
-		"zero":                         {map[string]string{"Retry-After": "0"}, 0},
-		"negative":                     {map[string]string{"RateLimit-Reset": "-5"}, 0},
-		"not whole":                    {map[string]string{"Retry-After": "1.5"}, 0},
-		"past a week":                  {map[string]string{"Retry-After": "604801"}, 0},
-		"an unreadable Retry-After":    {map[string]string{"Retry-After": "soon", "RateLimit-Reset": "50"}, 0},
-		"none":                         {nil, 0},
+		"seconds":                          {map[string]string{"Retry-After": " 30 "}, 30 * time.Second},
+		"an HTTP date":                     {map[string]string{"Retry-After": now.Add(2 * time.Minute).Format(http.TimeFormat)}, 2 * time.Minute},
+		"Retry-After before RateLimit":     {map[string]string{"Retry-After": "5", "RateLimit-Reset": "50"}, 5 * time.Second},
+		"RateLimit-Reset alone":            {map[string]string{"RateLimit-Reset": "50"}, 50 * time.Second},
+		"a date past":                      {map[string]string{"Retry-After": now.Add(-time.Minute).Format(http.TimeFormat)}, 0},
+		"a date past, then RateLimit":      {map[string]string{"Retry-After": now.Add(-time.Minute).Format(http.TimeFormat), "RateLimit-Reset": "50"}, 50 * time.Second},
+		"zero":                             {map[string]string{"Retry-After": "0"}, 0},
+		"negative":                         {map[string]string{"RateLimit-Reset": "-5"}, 0},
+		"negative past the integers":       {map[string]string{"RateLimit-Reset": "-99999999999999999999"}, 0},
+		"not whole":                        {map[string]string{"Retry-After": "1.5"}, 0},
+		"a week":                           {map[string]string{"Retry-After": "604800"}, maxReset},
+		"past a week":                      {map[string]string{"Retry-After": "604801"}, maxReset},
+		"past the integers":                {map[string]string{"Retry-After": "99999999999999999999"}, maxReset},
+		"a date past a week":               {map[string]string{"Retry-After": now.Add(8 * 24 * time.Hour).Format(http.TimeFormat)}, maxReset},
+		"RateLimit-Reset past a week":      {map[string]string{"RateLimit-Reset": "999999999"}, maxReset},
+		"an unreadable Retry-After":        {map[string]string{"Retry-After": "soon", "RateLimit-Reset": "50"}, 50 * time.Second},
+		"an unreadable Retry-After, alone": {map[string]string{"Retry-After": "soon"}, 0},
+		"none":                             {nil, 0},
 	} {
 		h := http.Header{}
 		for k, v := range c.header {
@@ -580,7 +624,7 @@ func (emptyHeld) Credential(types.Slug) (Credential, bool, error) {
 func TestAStatusAfterUnbindIsDropped(t *testing.T) {
 	g, token := rig(t, newUpstream(t, nil), nil)
 	g.Unbind(token)
-	g.observe(attempt, 500, "")
+	g.observe(attempt, 429, "", time.Minute)
 	if len(g.observed) != 0 {
 		t.Fatalf("observed %+v", g.observed)
 	}

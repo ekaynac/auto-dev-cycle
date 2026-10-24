@@ -878,7 +878,12 @@ func configFault(cause error) bool {
 // readiness miss (dispatch.ImageMiss), whether the launch or the runner's
 // own resolve finds it (§2.3 launch-missing-image). A pin the profile got
 // wrong (sandbox.ErrUnqualified) is the configuration's (configFault), and
-// a host whose podman did not answer (errHost) is retried.
+// a host whose podman did not answer within resolveTimeout (errHost, from
+// resolveImage: the launch's, accept's and the gate's) is retried. Stated
+// (Opus #433 L2): a podman that answers with an error (its storage or its
+// lock) is read as the image not present, as sandbox.Host.Resolve reads it
+// (ErrImage); placer.imageReady clears that hold on the first pass podman
+// resolves the pin.
 func imageMissing(cause error) bool {
 	return errors.Is(cause, sandbox.ErrImage) && !errors.Is(cause, sandbox.ErrUnqualified) && !errors.Is(cause, errHost)
 }
@@ -962,8 +967,11 @@ func (r *runner) retrySignal(tx *eventstore.Tx, node types.NodeID) (int, string)
 	return n, reconcile.RunnerHold{What: "retry", N: n, Until: tx.Now().Add(retryAfter(n))}.Signal()
 }
 
-// raise is graph.Raise; a test makes it fail.
-var raise = graph.Raise
+// raise is graph.Raise, and retryHold graph.Retry; a test makes each fail.
+var (
+	raise     = graph.Raise
+	retryHold = graph.Retry
+)
 
 // dirsReady reports whether the runner's directories are directories.
 func (r *runner) dirsReady() bool {
@@ -1133,7 +1141,7 @@ func (r *runner) providerHold(destination types.Slug, reset time.Duration) resul
 			hold = types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldQuotaReset, SignalInstance: reconcile.QuotaReset{Until: tx.Now().Add(quotaWait(reset))}.Signal(),
 				Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}
 		}
-		return graph.Retry(tx, node, res.ID, hold, nil)
+		return retryHold(tx, node, res.ID, hold, nil)
 	}
 }
 

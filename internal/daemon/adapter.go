@@ -64,9 +64,29 @@ type AdapterSession struct {
 // release's lib/adc closure under imageLib, run by its pinned Node.
 const imageLib = "/opt/adc/lib"
 
-// resolveTimeout bounds Start's resolution of the pinned image (podman
-// image inspect): a client stuck on its storage's lock is the host's fault.
+// resolveTimeout bounds every resolution of a pinned image (podman image
+// inspect: resolveImage): a client stuck on its storage's lock is the
+// host's fault.
 var resolveTimeout = 30 * time.Second
+
+// imageStore resolves a pinned image (sandbox.Host, dispatch.Images).
+type imageStore interface {
+	Resolve(ctx context.Context, ref string) (sandbox.Image, error)
+}
+
+// resolveImage resolves ref in images within resolveTimeout: one past it,
+// ctx itself not done, is the host's podman hung (errHost: retried), never
+// the image missing (Mythos chunk 2 L1). The one rule for the adapter's
+// start and checkout's (accept and the gate; Opus #433 L2).
+func resolveImage(ctx context.Context, images imageStore, ref string) (sandbox.Image, error) {
+	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+	img, err := images.Resolve(rctx, ref)
+	if rctx.Err() != nil && ctx.Err() == nil {
+		err = fmt.Errorf("%w: the image could not be resolved within %s: %w", errHost, resolveTimeout, err)
+	}
+	return img, err
+}
 
 var containerArgv = []string{imageLib + "/node/bin/node", imageLib + "/adapters/http-chat/src/main.ts"}
 
@@ -95,7 +115,7 @@ var _ AdapterStarter = (*containerAdapter)(nil)
 
 // containerBox is what containerAdapter needs of the sandbox.
 type containerBox interface {
-	Resolve(ctx context.Context, ref string) (sandbox.Image, error)
+	imageStore
 	Interactive(r sandbox.Run, attempt string) (sandbox.Interactive, error)
 }
 
@@ -103,12 +123,7 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 	if run.Box == nil || run.Deadline <= 0 || run.Box.Workspace() != run.Workspace {
 		return AdapterSession{}, errors.New("daemon: an adapter container needs its attempt's directory, its workspace and a positive deadline")
 	}
-	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
-	img, err := c.Box.Resolve(rctx, run.Image)
-	if rctx.Err() != nil && ctx.Err() == nil { // the host's podman hung, not the profile's fault (Mythos chunk 2 L1)
-		err = fmt.Errorf("%w: the image could not be resolved within %s: %w", errHost, resolveTimeout, err)
-	}
-	cancel()
+	img, err := resolveImage(ctx, c.Box, run.Image)
 	switch {
 	case err != nil:
 	case run.Review:
