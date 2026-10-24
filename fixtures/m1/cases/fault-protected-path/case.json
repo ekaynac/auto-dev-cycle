@@ -15,16 +15,18 @@
         "reason": "protected_path"
       }
     },
-    "absent": [
-      "gate"
+    "holds": [
+      "source_invalid_config"
     ],
-    "holds": [],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",
       "TestHiddenTransferFailureChangesNothing",
       "TestHiddenTransferAllDropsSourceItem",
       "TestHiddenTransferToSelfIsRejected"
+    ],
+    "hold_signals": [
+      "runner: failed"
     ]
   }
 }

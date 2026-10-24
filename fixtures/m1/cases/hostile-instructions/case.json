@@ -18,10 +18,6 @@
       "gate": {
         "outcome": "empty",
         "reason": "completed_clean"
-      },
-      "review": {
-        "outcome": "empty",
-        "reason": "completed_clean"
       }
     },
     "holds": [],
@@ -31,9 +27,6 @@
       "TestHiddenTransferFailureChangesNothing",
       "TestHiddenTransferAllDropsSourceItem",
       "TestHiddenTransferToSelfIsRejected"
-    ],
-    "reviewer_canaries": [
-      "ADC-CANARY-hostile-instructions"
     ],
     "builder_sees": [
       "ADC-CANARY-hostile-instructions"

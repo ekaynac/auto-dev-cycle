@@ -18,10 +18,6 @@
       "gate": {
         "outcome": "empty",
         "reason": "completed_clean"
-      },
-      "review": {
-        "outcome": "empty",
-        "reason": "completed_clean"
       }
     },
     "holds": [],

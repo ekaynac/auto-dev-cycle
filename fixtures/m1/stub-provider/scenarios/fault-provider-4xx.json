@@ -1,0 +1,31 @@
+{
+  "name": "fault-provider-4xx",
+  "description": "Every builder call is refused with HTTP 400 (persistent).",
+  "usage_query": true,
+  "calls": {
+    "stub-builder-1": {
+      "persistent": {
+        "body": {
+          "error": {
+            "message": "bad request",
+            "type": "stub"
+          }
+        },
+        "status": 400
+      }
+    },
+    "stub-reviewer-1": {
+      "persistent": {
+        "decision": {
+          "decision": "go",
+          "summary": "Looks fine.",
+          "findings": []
+        },
+        "usage": {
+          "prompt_tokens": 2000,
+          "completion_tokens": 60
+        }
+      }
+    }
+  }
+}

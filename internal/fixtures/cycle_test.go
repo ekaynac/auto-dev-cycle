@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -149,11 +150,13 @@ func TestCycleCases(t *testing.T) {
 		// P24c: a reviewer canary is in a file of the case's base overlay, or
 		// is the driver's {canary}, which the case's profile overlay carries;
 		// the scenario never carries it (the stub cannot leak it itself). Its
-		// case names its review node: a run with no reviewer request would
-		// hold it trivially.
+		// case records a review: it names its review node, or ends at the
+		// candidate (stub mode: the review recorded and held review_inactive,
+		// #226 entry 189; the live route reviews it), so a run with no review
+		// cannot hold it trivially where a reviewer runs.
 		if c.Expect.ReviewerCanaries != nil {
-			if _, ok := c.Expect.Nodes["review"]; !ok {
-				t.Errorf("%s: it has reviewer canaries, but names no review node", name)
+			if _, ok := c.Expect.Nodes["review"]; !ok && c.Expect.Until != "candidate" {
+				t.Errorf("%s: it has reviewer canaries, but records no review (no review node, and it does not end at the candidate)", name)
 			}
 			for _, canary := range *c.Expect.ReviewerCanaries {
 				found := canary == "{canary}" && strings.Contains(string(c.ProfileOverlay), "{canary}") || in(overlay, canary)
@@ -161,6 +164,25 @@ func TestCycleCases(t *testing.T) {
 					t.Errorf("%s: the reviewer canary %q is in no file of its base overlay (nor its profile overlay's {canary}), or the scenario carries it", name, canary)
 				}
 			}
+		}
+		// Opus #435 H1: a case whose profile carries the run's {canary} (the
+		// gate writes it) names it a reviewer canary, so a run checks it.
+		if strings.Contains(string(c.ProfileOverlay), "{canary}") && (c.Expect.ReviewerCanaries == nil || !slices.Contains(*c.Expect.ReviewerCanaries, "{canary}")) {
+			t.Errorf("%s: its profile overlay carries {canary}, which its reviewer canaries do not name", name)
+		}
+		// #436 (Opus #436 answer 5): a kind none of whose results is selected
+		// names what each result's attempt is, so the run checks every
+		// recorded result; attempt goes only with selected false.
+		for kind, n := range c.Expect.Nodes {
+			if unselected := n.Selected != nil && !*n.Selected; unselected != (n.Attempt != nil) {
+				t.Errorf("%s: its %s node names selected false without attempt, or attempt without selected false", name, kind)
+			}
+		}
+		// Opus #435 M1: source_invalid_config is the hold of several signals
+		// (runner: failed, runner: profile, placement: ...), so a case ending
+		// on it names its signal: the kind alone passes the wrong refusal.
+		if slices.Contains(c.Expect.Holds, "source_invalid_config") && (c.Expect.HoldSignals == nil || len(*c.Expect.HoldSignals) == 0) {
+			t.Errorf("%s: it ends held source_invalid_config, but names no hold signal", name)
 		}
 		// P24c: what the builder must see comes from the run, never from the scenario.
 		if c.Expect.BuilderSees != nil {
@@ -175,6 +197,8 @@ func TestCycleCases(t *testing.T) {
 				exists("a gateway request", filepath.Join(filepath.Dir(file), r.File))
 			}
 		}
+		// The task's tokens are the builder's alone: in stub mode review stays
+		// inactive (#226 entry 189), so the reviewer's script is never called.
 		if c.Expect.Usage != nil {
 			var s struct {
 				Calls map[string]struct {
@@ -192,18 +216,17 @@ func TestCycleCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			var in, out int64
-			for call, script := range s.Calls {
-				if script.Turns != nil || script.Persistent != nil || script.Replies == nil {
-					t.Errorf("%s: usage is given, but the scenario's %s is not a replies script", name, call)
-				}
-				for _, r := range script.Replies {
-					if r.Usage != nil {
-						in, out = in+r.Usage.PromptTokens, out+r.Usage.CompletionTokens
-					}
+			script := s.Calls["stub-builder-1"]
+			if script.Turns != nil || script.Persistent != nil || script.Replies == nil {
+				t.Errorf("%s: usage is given, but the scenario's builder script is not a replies script", name)
+			}
+			for _, r := range script.Replies {
+				if r.Usage != nil {
+					in, out = in+r.Usage.PromptTokens, out+r.Usage.CompletionTokens
 				}
 			}
 			if in != c.Expect.Usage.In || out != c.Expect.Usage.Out {
-				t.Errorf("%s: usage %d in and %d out; the scenario's %d and %d", name, c.Expect.Usage.In, c.Expect.Usage.Out, in, out)
+				t.Errorf("%s: usage %d in and %d out; the scenario's builder's %d and %d", name, c.Expect.Usage.In, c.Expect.Usage.Out, in, out)
 			}
 		}
 	}
