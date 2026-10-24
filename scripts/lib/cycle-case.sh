@@ -40,12 +40,10 @@ cycle_case() {
   until="$(json "$case_file" d.expect.until)"
   step "waiting for task $tsk to end ($until)"
   local deadline=$((SECONDS + 1500))
-  started_at=$SECONDS
   until ended; do
     ((SECONDS < deadline)) || die "timed out waiting for the task to end: $(head -c 600 "$work/out/show.json")"
     sleep 2
   done
-  elapsed=$((SECONDS - started_at))
   if [[ "$(json "$case_file" 'd.expect.second_task_admitted === false')" == true ]]; then
     step "a second task while the first is held: it stays unadmitted (I22)"
     adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task2.out" 2>&1 ||
@@ -95,5 +93,4 @@ cycle_check() {
   local rc=0
   summary="$("$node" "$here/lib/cycle-expect.mjs" "$case_file" "$work/out" "$case")" || rc=$?
   if ((rc != 0)); then die "the case's expectations do not hold:"$'\n'"$summary"; fi
-  summary="${summary% |} ${elapsed}s |"
 }

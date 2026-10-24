@@ -67,10 +67,11 @@ sandbox_roots_stale
 root="$(sandbox_root)" || die "the sandbox root cannot be made"
 rows=() failed=0
 for c in "$@"; do
-  rc=0
+  rc=0 t0=$SECONDS
   cycle --case "$c" --expect candidate --sandbox-root "$root" >"$cwd/$c.out" 2>&1 || rc=$?
+  wall=$((SECONDS - t0))
   case "$rc" in
-    0) rows+=("$(sed -n 's/^installed-cycle: summary: //p' "$cwd/$c.out")") ;;
+    0) rows+=("$(sed -n 's/^installed-cycle: summary: //p' "$cwd/$c.out") ${wall}s |") ;;
     2)
       grep 'could_not_run' "$cwd/$c.out" >&2 || tail -n 3 "$cwd/$c.out" >&2
       echo "installed-cycle-set: the stub set cannot run on this host: $c refused (exit 2)" >&2
@@ -78,11 +79,13 @@ for c in "$@"; do
       ;;
     *)
       failed=1
-      rows+=("| $c | FAILED (exit $rc) | $(grep -m 3 -E '^fail:|^installed-cycle: [a-z]' "$cwd/$c.out" | grep -v ": $c: " | tr '\n' ' ' | cut -c1-300) | | | |")
+      echo "installed-cycle-set: $c failed (exit $rc); its last lines:" >&2
+      tail -n 15 "$cwd/$c.out" >&2 || true
+      rows+=("| $c | FAILED (exit $rc) | $({ grep -m 3 -E '^fail:|^installed-cycle: [a-z]' "$cwd/$c.out" || true; } | tr '\n' ' ' | cut -c1-300) | | | ${wall}s |")
       ;;
   esac
 done
-echo "| case | end | results | tokens in/out | requests builder/reviewer | seconds |"
+echo "| case | end | results | tokens in/out | requests builder/reviewer | wall |"
 echo "|---|---|---|---|---|---|"
 printf '%s\n' "${rows[@]}"
 exit "$failed"
