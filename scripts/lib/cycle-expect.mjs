@@ -111,6 +111,8 @@ for (let i = 1; i < events.length; i++) if (events[i].seq !== events[i - 1].seq 
 // Protected acceptance and the hostile canaries (§2.3 assertion 3, §2.7):
 // in no builder or reviewer request the stub logged.
 const requests = stub.filter((x) => x.kind === "request");
+// A full log stopped logging requests: what came after it is unchecked (Mythos #435 L2).
+if (stub.some((x) => x.kind === "log_full")) fail("the stub provider's log is full: requests past it went unlogged");
 const roleOf = (x) => (x.model === "stub-builder-1" ? "builder" : x.model === "stub-reviewer-1" ? "reviewer" : "other");
 const sub = (s) => s.replaceAll("{canary}", canary);
 for (const x of requests) {
@@ -136,7 +138,8 @@ const first = show.first_attempt;
 if (requests.length > 0) {
   if (first === null || first === undefined) fail("the task read has no first attempt");
   else {
-    for (const k of ["seconds_after_approval", "status", "tokens", "charge"]) if (first[k] === null) fail(`the first attempt's ${k} is null`);
+    // An absent key is as missing as a null one (Mythos #435 L3).
+    for (const k of ["seconds_after_approval", "status", "tokens", "charge"]) if (first[k] == null) fail(`the first attempt's ${k} is null or absent`);
   }
 }
 

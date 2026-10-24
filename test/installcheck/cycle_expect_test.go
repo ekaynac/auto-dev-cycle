@@ -221,6 +221,14 @@ func TestCycleExpect(t *testing.T) {
 		"an attempt and no builder request": {func(v map[string]any) {
 			v["stub"] = []map[string]any{{"kind": "usage", "request_id": "r1", "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 20}}}
 		}, "an attempt started, and the stub logged no builder request"},
+		// Mythos #435 L2: a full stub log stopped logging requests.
+		"a full stub log": {func(v map[string]any) {
+			v["stub"] = append(v["stub"].([]map[string]any), map[string]any{"kind": "log_full", "logged": 1000})
+		}, "the stub provider's log is full"},
+		// Mythos #435 L3: an absent key of the first attempt is missing.
+		"the first attempt's charge absent": {func(v map[string]any) {
+			delete(v["show"].(map[string]any)["first_attempt"].(map[string]any), "charge")
+		}, "the first attempt's charge is null or absent"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			v := base()

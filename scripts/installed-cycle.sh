@@ -169,8 +169,11 @@ cleanup() {
     wait "$p" 2>/dev/null || true
   done
   if ((keep)); then
-    # Kept on purpose: no owner left to go stale, so no later run's sweep removes them.
-    rm -f "$work/.owner" ${root:+"$root/.owner" "$root/runs/.owner"}
+    # Kept on purpose: no owner left to go stale, so no later run's sweep
+    # removes them; a shared root's owner files are its owner's (the set's),
+    # never this case's to remove (Mythos #435 L4).
+    rm -f "$work/.owner"
+    if ((private)) && [[ -n "${root:-}" ]]; then rm -f "$root/.owner" "$root/runs/.owner"; fi
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
   elif [[ -n "${root:-}" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
@@ -383,6 +386,8 @@ fi
 step "no secret outside the operator's token file"
 scan "" "$boot" "$work"
 scan "$work/home/.config/adc/token" "$tok" "$work"
+# The stub's per-run credential: adcd reads it from its environment only, so it is nowhere under the work directory (Mythos #435 M2).
+if [[ -n "${stub_cred:-}" ]]; then scan "" "$stub_cred" "$work"; fi
 after="$(snapshot)" || die "$config cannot be read"
 [[ "$after" == "$before" ]] || die "the real ~/.config/adc changed"
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -148,6 +149,47 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 			t.Errorf("adc-cycle.%s: present %v after the sweep", name, err == nil)
 		}
 	}
+
+	// Mythos #435 L4: --keep removes the owner files only of a root the case
+	// made, never of a shared one (the set's). A stand-in Podman that is
+	// rootless and has no image: the case refuses at the pull (exit 2) with
+	// its root made, and keeps it.
+	fake := filepath.Join(root, "podman")
+	write(t, fake, "#!/bin/sh\ncase \"$1\" in info) echo true ;; *) exit 1 ;; esac\n", 0o755)
+	shared, err := os.MkdirTemp("/tmp", "adct")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if runs, err := os.Readlink(filepath.Join(shared, "runs")); err == nil && strings.HasPrefix(runs, "/dev/shm/adcr") {
+			os.RemoveAll(runs)
+		}
+		os.RemoveAll(shared)
+	})
+	write(t, filepath.Join(shared, ".owner"), "the set's\n", 0o600)
+	out, code = run("--keep", "--sandbox-root", shared, "--podman", fake)
+	if code != 2 || !strings.Contains(out, "cannot be pulled") {
+		t.Fatalf("a shared root, kept: exit %d, %s", code, out)
+	}
+	if b, err := os.ReadFile(filepath.Join(shared, ".owner")); err != nil || string(b) != "the set's\n" {
+		t.Errorf("--keep removed a shared root's owner: %q %v", b, err)
+	}
+	out, code = run("--keep", "--podman", fake)
+	m := regexp.MustCompile(`kept (\S+) and the sandbox root (/tmp/adc[A-Za-z0-9]{6})`).FindStringSubmatch(out)
+	if code != 2 || m == nil {
+		t.Fatalf("a private root, kept: exit %d, %s", code, out)
+	}
+	t.Cleanup(func() {
+		if runs, err := os.Readlink(filepath.Join(m[2], "runs")); err == nil && strings.HasPrefix(runs, "/dev/shm/adcr") {
+			os.RemoveAll(runs)
+		}
+		os.RemoveAll(m[2])
+	})
+	for _, f := range []string{filepath.Join(m[1], ".owner"), filepath.Join(m[2], ".owner"), filepath.Join(m[2], "runs/.owner")} {
+		if _, err := os.Stat(f); err == nil {
+			t.Errorf("--keep left %s: a later sweep would remove what was kept", f)
+		}
+	}
 }
 
 // Opus #435 L2: removing a sandbox root follows its runs/ link only to a
@@ -162,7 +204,7 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	}
 	sh := func(script string) string {
 		t.Helper()
-		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/sandbox-root.sh; "+script)
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -241,5 +283,27 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	runsDir, _ := filepath.EvalSymlinks(filepath.Join(made, "runs"))
 	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.Contains(out, filepath.Join(runsDir, "att_1/x", name)) || !strings.HasSuffix(out, "rc=1") {
 		t.Errorf("a canary under the root's runs/: %q", out)
+	}
+}
+
+// Mythos #435 L1: each read of the wait first checks that adcd still runs;
+// one that exited fails the case at once (started), and adc task wait is
+// never asked; a running one is read.
+func TestEndedFailsOnceAdcdExited(t *testing.T) {
+	dir := t.TempDir()
+	for name, want := range map[string]string{"exited": "started: adcd exited", "running": "read 1"} {
+		script := `set -euo pipefail; die() { echo "die: $*"; exit 1; }; started() { echo "started: adcd exited"; exit 1; }
+adc() { echo read >>"$work/reads"; return 5; }
+. ../../scripts/lib/cycle-case.sh
+work="$1/$2"; mkdir -p "$work/out"; tsk=tsk_x node=/bin/false
+if [[ "$2" == exited ]]; then true & adcd=$!; wait "$adcd"; else adcd=$$; fi
+ended || true
+echo "read $(wc -l <"$work/reads")"`
+		cmd := exec.Command("bash", "-c", script, "x", dir, name)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		out, _ := cmd.CombinedOutput()
+		if !strings.Contains(string(out), want) || (name == "exited" && strings.Contains(string(out), "read ")) {
+			t.Errorf("%s: %s", name, out)
+		}
 	}
 }

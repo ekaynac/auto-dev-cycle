@@ -118,18 +118,23 @@ sandbox_roots_stale() {
   done
 }
 
-# root_canary_path ROOT NAME: prints the first path named NAME under ROOT or
-# its runs/ directory (searched in the root's user namespace: a run's files
-# may be a container's), or beside either (their parents, at depth 1), and
-# fails when there is one (§2.7's canary_paths: an escape past an attempt's
-# directory outlives its teardown; Opus #435 M2). 2: bad input.
+# root_canary_path ROOT NAME: canary_path (base-remote.sh, sourced beside
+# this file) over ROOT and its runs/ directory, each run in the root's user
+# namespace (a run's files may be a container's): the first path named NAME
+# under either, or beside either (their parents, at depth 1), printed, and
+# exit 1 when there is one (§2.7's canary_paths: an escape past an
+# attempt's directory outlives its teardown; Opus #435 M2; one search,
+# Mythos #435 M1). 2: bad input; any other: the search could not run.
 root_canary_path() {
-  local root="$1" name="$2" runs found
+  local root="$1" name="$2" runs d rc
   [[ -d "$root" && -n "$name" && "$name" != */* ]] || { echo "root_canary_path: ROOT must exist, NAME be a plain name" >&2; return 2; }
   runs="$(runs_of "$root")"
-  found="$(root_podman "$root" unshare find "$root" ${runs:+"$runs"} -name "$name" -print -quit 2>/dev/null)" || return 2
-  found+="$(find "$(dirname "$root")" ${runs:+"$(dirname "$runs")"} -mindepth 1 -maxdepth 1 -name "$name" -print -quit 2>/dev/null)"
-  [[ -z "$found" ]] || { printf '%s\n' "$found"; return 1; }
+  for d in "$root" ${runs:+"$runs"}; do
+    rc=0
+    # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments
+    root_podman "$root" unshare bash -c "$(declare -f canary_path)"'; canary_path "$1" "$2"' canary_path "$d" "$name" || rc=$?
+    ((rc == 0)) || return "$rc"
+  done
 }
 
 # work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory

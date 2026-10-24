@@ -63,9 +63,12 @@ cycle_case() {
 # (stub mode's end: nothing more runs); or a node of it but a review held,
 # on a hold that is not a runner's bounded retry ("runner: retry N until
 # ...", which clears itself). cycle_check reads the whole task, its bench
-# included, once.
+# included, once. Each read first checks that adcd still runs: one that
+# exited fails the case at once (started: its exit status and its log's
+# excerpt), never at the deadline (Mythos #435 L1).
 ended() {
   local rc=0
+  kill -0 "$adcd" 2>/dev/null || started ""
   adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/show.json" 2>"$work/out/show.err" || rc=$?
   # 5: neither state within the 5 s, read again; 6, with closed,held asked: its card is unplaced (no column), which no wait ends.
   if ((rc == 6)); then die "task $tsk's card is unplaced: $(head -c 300 "$work/out/show.err")"; fi
