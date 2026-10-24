@@ -225,9 +225,12 @@ const runnerPrefix = "runner: "
 
 // RunnerHold is a runner hold's signal, typed: What dirs, failed or
 // sandbox (no_sandbox's, #226 entry 171); a
-// profile, its Digest; a retry, its N and Until. Signal formats it and
-// ParseRunner reads it back: one rule (5c-1's Unblock decides on the type,
-// never on a text prefix).
+// profile, its Digest; a retry, its N and Until; and image, the legacy
+// signal of an image not present that a store from before #433 may hold
+// (Astra #433 H1): read, offered and cleared once the image resolves
+// (runner.cleared), never raised now (dispatch.ImageMiss is the one rule).
+// Signal formats it and ParseRunner reads it back: one rule (5c-1's Unblock
+// decides on the type, never on a text prefix).
 type RunnerHold struct {
 	What   string
 	Digest string    // a profile's
@@ -253,7 +256,7 @@ func ParseRunner(signal string) (RunnerHold, bool) {
 	what, arg, _ := strings.Cut(rest, " ")
 	r := RunnerHold{What: what}
 	switch what {
-	case "dirs", "failed", "sandbox":
+	case "dirs", "failed", "sandbox", "image":
 	case "profile":
 		r.Digest = arg
 		ok = ok && contract.IsDigest(arg)

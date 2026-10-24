@@ -985,8 +985,11 @@ func (r *runner) dirsReady() bool {
 
 // cleared reports whether node's runner hold on signal may clear (the
 // placer's Unblocked): the runner's directories are there again; its
-// project's profile changed since the hold; or a retry's time has come.
-// The spent retries ("failed") never clear.
+// project's profile changed since the hold; a retry's time has come; or,
+// for the legacy "runner: image" a store from before #433 may hold (Astra
+// #433 H1), the project's pinned image resolves (placer.imageReady, the
+// same bounded rule as the launch's image hold). The spent retries
+// ("failed") never clear.
 func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (bool, error) {
 	hold, ok := reconcile.ParseRunner(signal)
 	switch {
@@ -1000,6 +1003,8 @@ func (r *runner) cleared(tx *eventstore.Tx, node types.NodeID, signal string) (b
 		return false, nil
 	case hold.What == "retry":
 		return !tx.Now().Before(hold.Until), nil
+	case hold.What == "image": // legacy: never raised since #433
+		return r.place.imageReady(tx, node)
 	}
 	v, err := graph.ViewOf(tx, node)
 	if err != nil {

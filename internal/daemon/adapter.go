@@ -74,17 +74,12 @@ const imageLib = "/opt/adc/lib"
 // command, since imageReady runs in one (Opus #400 M2).
 var resolveTimeout = dispatch.ReadinessBound
 
-// imageStore resolves a pinned image (sandbox.Host, dispatch.Images).
-type imageStore interface {
-	Resolve(ctx context.Context, ref string) (sandbox.Image, error)
-}
-
 // resolveImage resolves ref in images within resolveTimeout: one past it,
 // ctx itself not done, is the host's podman hung (errHost: retried), never
 // the image missing (Mythos chunk 2 L1). The one rule of every image
 // resolve: the launch's readiness (placer.launch), the adapter's start,
 // checkout's (accept and the gate; Opus #433 L2) and imageReady.
-func resolveImage(ctx context.Context, images imageStore, ref string) (sandbox.Image, error) {
+func resolveImage(ctx context.Context, images dispatch.Images, ref string) (sandbox.Image, error) {
 	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 	img, err := images.Resolve(rctx, ref)
@@ -119,9 +114,11 @@ type containerAdapter struct {
 
 var _ AdapterStarter = (*containerAdapter)(nil)
 
-// containerBox is what containerAdapter needs of the sandbox.
+// containerBox is what containerAdapter needs of the sandbox: its image
+// resolve (dispatch.Images, the one contract; Astra #433 M1) and its
+// interactive run.
 type containerBox interface {
-	imageStore
+	dispatch.Images
 	Interactive(r sandbox.Run, attempt string) (sandbox.Interactive, error)
 }
 

@@ -318,3 +318,49 @@ func TestImageReadyIsBoundAsEveryResolve(t *testing.T) {
 		t.Fatalf("a resolving image: ready %v, %v", ok, err)
 	}
 }
+
+// Astra #433 H1: an upgrade from a store whose accept was held, before
+// #433, on the legacy "runner: image" (source_invalid_config, no reason;
+// the hold main raised for an image not present). Under #433 the hold is
+// still read and offered, holds while the image is absent, and clears once
+// the image resolves (runner.cleared → placer.imageReady), after which
+// accept runs and completes. Nothing raises that signal any more: a new
+// miss is dispatch.ImageMiss.
+func TestALegacyRunnerImageHoldClearsAfterAnUpgrade(t *testing.T) {
+	rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	rw.untilRun(t)
+	rw.images.present.Store(false)
+	imageHeld(t, rw, rw.accepting(t, nil).State) // the accept node claimed and held; its hold becomes the persisted legacy one
+	node := nodesOf(rw.w, rw.task)[types.NodeKindAccept]
+	rw.w.do(rw.w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		h := node.State.Holds[0]
+		evs, err := graph.Clear(tx, node.Node.ID, h.ID, h.SignalInstance)
+		if err != nil {
+			return nil, err
+		}
+		legacy, err := graph.Raise(tx, node.Node.ID, types.NodeHold{ID: types.HoldID(newID(t, "hld")), Hold: vocab.HoldSourceInvalidConfig,
+			SignalInstance: "runner: image", Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
+		return append(evs, legacy...), err
+	})
+	held := func() []types.NodeHold { return nodesOf(rw.w, rw.task)[types.NodeKindAccept].State.Holds }
+	if h := held(); len(h) != 1 || h[0].SignalInstance != "runner: image" || h[0].Reason != nil {
+		t.Fatalf("the persisted legacy hold: %+v", h)
+	}
+	// A restart under #433: a new loop over the same store.
+	rw.l = reconcile.NewLoop(rw.x, reconcile.Gates{Admits: true, Evaluates: true}, time.Hour, io.Discard)
+	rw.passesFor(t, 3, 0)
+	if h := held(); len(h) != 1 || h[0].SignalInstance != "runner: image" {
+		t.Fatalf("the legacy hold, the image still absent: %+v", h)
+	}
+	rw.images.present.Store(true)
+	var v graph.NodeView
+	for range 8 {
+		rw.passesFor(t, 1, 0)
+		if v = nodesOf(rw.w, rw.task)[types.NodeKindAccept]; v.State.State == types.NodeStateStateCompleted {
+			break
+		}
+	}
+	if v.State.State != types.NodeStateStateCompleted {
+		t.Fatalf("accept once the image resolved: %s, holds %+v", v.State.State, v.State.Holds)
+	}
+}
