@@ -168,7 +168,8 @@ func (c *countRuns) count() int {
 // runWorld is the loop and adcd's runner over a project whose repository
 // is a local one holding a.go, the stub builder its builder: its images
 // present when images, peer every attempt's adapter, a gateway that only
-// records its ends. ended is called at each end.
+// records its ends and reports observed at each. ended is called at each
+// end.
 type runWorld struct {
 	w      *seeder
 	l      *reconcile.Loop
@@ -180,8 +181,27 @@ type runWorld struct {
 	exch   string
 	ended  func(gateway.Binding)
 	opened func(gateway.Binding)
-	nudged atomic.Int32 // the runs that nudged the loop
-	x      reconcile.Executor
+	// observed is what the gateway reports it saw of each attempt's
+	// upstream (a row's provider statuses and reset).
+	observed gateway.Observed
+	nudged   atomic.Int32 // the runs that nudged the loop
+	x        reconcile.Executor
+	// images is the image store the loop's placer and the runner share
+	// (each holds its own copy of the placer): present flips both.
+	images *switchImages
+}
+
+// switchImages resolves every image while present is set; while hang is
+// set, a resolve blocks until its context ends, as a podman stuck on its
+// storage's lock does, and then fails as sandbox.Host.Resolve would.
+type switchImages struct{ present, hang atomic.Bool }
+
+func (s *switchImages) Resolve(ctx context.Context, ref string) (sandbox.Image, error) {
+	if s.hang.Load() {
+		<-ctx.Done()
+		return sandbox.Image{}, fmt.Errorf("%w: %w", sandbox.ErrImage, ctx.Err())
+	}
+	return fakeImages{s.present.Load()}.Resolve(ctx, ref)
 }
 
 func newRunWorld(t *testing.T, images bool, peer *inproc.Peer) *runWorld {
@@ -201,9 +221,10 @@ func newRunWorldWith(t *testing.T, images bool, peer *inproc.Peer, edit func(map
 			edit(p)
 		}
 	})
-	pl.d.Images, pl.d.Credentials = fakeImages{images}, fakeCredentials{}
+	rw := &runWorld{w: w, tmp: tmp, exch: filepath.Join(tmp, "exchange"), images: &switchImages{}}
+	rw.images.present.Store(images)
+	pl.d.Images, pl.d.Credentials = rw.images, fakeCredentials{}
 	x.Placer = pl
-	rw := &runWorld{w: w, tmp: tmp, exch: filepath.Join(tmp, "exchange")}
 	socks := filepath.Join(tmp, "gw")
 	for _, d := range []string{rw.exch, socks} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -221,7 +242,7 @@ func newRunWorldWith(t *testing.T, images bool, peer *inproc.Peer, edit func(map
 				if rw.ended != nil {
 					rw.ended(b)
 				}
-				return gateway.Observed{}, nil
+				return rw.observed, nil
 			}, nil
 		},
 		adapters: &peerStarter{peer: peer}, log: testLog{t}, done: func() { rw.nudged.Add(1) }}
@@ -437,20 +458,26 @@ func TestTheRunHandsTheContainerItsAttempt(t *testing.T) {
 
 // P22a-5d-3: an adapter that cannot be started (Start) or made ready over
 // the prepared exchange (Ready) starts nothing: no attempt, the exchange
-// discarded, the lease released, and the build held source_invalid_config.
-// An image whose manifest or adapter is not the profile's toolchain's or
-// the installed release's, or a pin with no registry, is a configuration
-// fault, held on the project's profile, which a profile pinning a rebuilt
-// image clears; any other refusal is retried, the sandbox refusing the
-// container (the host's fault, errHost: Opus #393 L2, L3) among them.
+// discarded, the lease released, and the build held. An image whose
+// manifest or adapter is not the profile's toolchain's or the installed
+// release's, or a pin with no registry, is a configuration fault, held
+// source_invalid_config on the project's profile, which a profile pinning
+// a rebuilt image clears. An image not present at its digest is the
+// launch's miss at once (§2.3 launch-missing-image; #226 entry 193):
+// wrong_owner naming the image, as dispatch's (imageHeld), never a retry.
+// Any other refusal is retried, the sandbox refusing the container or a
+// podman that did not answer (the host's fault, errHost: Opus #393 L2, L3)
+// among them.
 func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 	for name, c := range map[string]struct {
 		refuse, notReady error
-		signal           string // the hold's signal's start
+		signal           string // the source_invalid_config hold's signal's start; "": the image's wrong_owner
 	}{
 		"another adapter in the image": {refuse: sandbox.ErrAdapter, signal: runnerText("profile ")},
 		"an image not prepared for it": {refuse: sandbox.ErrManifest, signal: runnerText("profile ")},
-		"an image not present":         {refuse: sandbox.ErrImage, signal: runnerText("retry 1 until ")},
+		"an image not present":         {refuse: sandbox.ErrImage},
+		"an image podman did not list": {refuse: fmt.Errorf("%w: podman: exit status 125", sandbox.ErrImage)},
+		"a podman that did not answer": {refuse: fmt.Errorf("%w: the image could not be resolved within 30s: %w", errHost, sandbox.ErrImage), signal: runnerText("retry 1 until ")},
 		"a pin with no registry":       {refuse: sandbox.ErrUnqualified, signal: runnerText("profile ")},
 		"a container not made":         {notReady: fmt.Errorf("%w: %w", errHost, sandbox.ErrSpec), signal: runnerText("retry 1 until ")},
 		"a Ready that fails":           {notReady: errors.New("no"), signal: runnerText("retry 1 until ")},
@@ -464,7 +491,9 @@ func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 				t.Fatalf("an attempt started: %v %v", ok, err)
 			}
 			st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
-			if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, c.signal) {
+			if c.signal == "" {
+				imageHeld(t, rw, st)
+			} else if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldSourceInvalidConfig || !strings.HasPrefix(st.Holds[0].SignalInstance, c.signal) {
 				t.Errorf("the node: %+v, want a hold on %q…", st, c.signal)
 			}
 			if _, live := leaseOn(rw.w, rw.build); live {
@@ -472,6 +501,142 @@ func TestAnAdapterThatCannotStartEndsTheLease(t *testing.T) {
 			}
 			if !empty(rw.exch) {
 				t.Error("the prepared exchange was not discarded")
+			}
+		})
+	}
+}
+
+// imageHeld checks that st holds exactly the launch's image miss
+// (dispatch.ImageMiss): wrong_owner on "image <the profile's pin>", owned
+// by the toolchain image's named owner.
+func imageHeld(t *testing.T, rw *runWorld, st types.NodeState) {
+	t.Helper()
+	want := "image " + profileImage(t, rw)
+	if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldWrongOwner || st.Holds[0].SignalInstance != want || st.Holds[0].Reason != nil ||
+		st.Holds[0].Owner != types.OwnerNamedOwner || st.Holds[0].OwnerRef == nil || *st.Holds[0].OwnerRef != "toolchain image" {
+		t.Errorf("the node: %+v, want only wrong_owner on %q", st, want)
+	}
+}
+
+// profileImage is the task's project's one pinned image.
+func profileImage(t *testing.T, rw *runWorld) string {
+	t.Helper()
+	var prof types.ProjectProfile
+	rw.w.view(func(tx *eventstore.Tx) error {
+		task, err := authority.TaskOf(tx, rw.task)
+		if err != nil {
+			return err
+		}
+		p, _, err := authority.ProjectProfile(tx, task.Project)
+		if p != nil {
+			prof = *p
+		}
+		return err
+	})
+	image, _, err := pinnedImage(prof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return image
+}
+
+// #226 entry 193 (§2.3 launch-missing-image): the runner's own resolve
+// finding the image absent holds the build as the launch's miss does, and
+// that hold clears once the project's pinned image resolves
+// (placer.imageReady), not before; the build then launches.
+func TestTheRunnersImageHoldClearsOnceItResolves(t *testing.T) {
+	rw := newRunWorld(t, false, builder(writes(map[string]string{"README.md": "hello\n"}), false, nil))
+	s := rw.r.adapters.(*peerStarter)
+	s.refuse = sandbox.ErrImage
+	rw.untilRun(t)
+	imageHeld(t, rw, nodesOf(rw.w, rw.task)[types.NodeKindBuild].State)
+	rw.passesFor(t, 3, 0)
+	if st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State; len(st.Holds) != 1 || rw.runs.count() != 1 {
+		t.Fatalf("the image hold, the image still absent: %d runs, %+v", rw.runs.count(), st)
+	}
+	rw.images.present.Store(true)
+	s.refuse = nil
+	for range 6 {
+		if _, ok, _ := firstAttempt(rw); ok {
+			break
+		}
+		rw.passesFor(t, 1, 0)
+	}
+	if _, ok, err := firstAttempt(rw); err != nil || !ok {
+		t.Fatalf("no attempt once the image resolved: %v %v; the node %+v", ok, err, nodesOf(rw.w, rw.task)[types.NodeKindBuild].State)
+	}
+}
+
+// #226 entry 193 (§2.6 fault-provider-402, -429): an attempt the provider
+// refused for its account is could_not_run with the reason the exit map
+// gives its status, its partial change sealed (partial_patch, never
+// empty), and the build held, in the result's command, on the hold that
+// reason names, as its retry wait: no further launch, so no attempt of the
+// rail spent, while it holds.
+//   - 429: quota_reset until the provider's reset (Retry-After or
+//     RateLimit-Reset, observed by the gateway), a minute when it named
+//     none, an hour at most; the loop clears it once that time has come,
+//     and the build launches again.
+//   - 402: broker_credit_exhausted on the destination's balance probe,
+//     owned by the operator; nothing clears it (stated, #400's table).
+func TestAProviderRefusalHoldsTheBuild(t *testing.T) {
+	for name, c := range map[string]struct {
+		status      int
+		reset       time.Duration
+		reason      vocab.Reason
+		hold        string
+		owner       types.Owner
+		wait        time.Duration // quota_reset's, from the hold's raise to its Until
+		clearsAfter bool          // the hold clears once wait has passed
+	}{
+		"a 429 naming its reset":   {status: 429, reset: 400 * time.Millisecond, reason: vocab.ReasonQuotaExhausted, hold: vocab.HoldQuotaReset, owner: types.OwnerSystem, wait: 400 * time.Millisecond, clearsAfter: true},
+		"a 429 naming none":        {status: 429, reason: vocab.ReasonQuotaExhausted, hold: vocab.HoldQuotaReset, owner: types.OwnerSystem, wait: quotaWaitUnknown},
+		"a 429 naming three hours": {status: 429, reset: 3 * time.Hour, reason: vocab.ReasonQuotaExhausted, hold: vocab.HoldQuotaReset, owner: types.OwnerSystem, wait: quotaWaitMax},
+		"a 402":                    {status: 402, reason: vocab.ReasonBrokerCreditExhausted, hold: vocab.HoldBrokerCreditExhausted, owner: types.OwnerOperator},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rw := newRunWorld(t, true, builder(writes(map[string]string{"README.md": "hello\n"}), true, nil))
+			rw.observed = gateway.Observed{Statuses: []int{200, c.status}, Reset: c.reset}
+			rw.untilRun(t)
+			v := nodesOf(rw.w, rw.task)[types.NodeKindBuild]
+			got := resultsOn(t, rw.w, rw.build)
+			if len(got) != 1 || got[0].Result.Outcome != types.OutcomeCouldNotRun || got[0].Result.Reason != c.reason || got[0].Result.Kind != types.ResultKindPartialPatch {
+				t.Fatalf("the build's results: %+v", got)
+			}
+			st := v.State
+			if len(st.Holds) != 1 || st.Holds[0].Hold != c.hold || st.Holds[0].Owner != c.owner || st.Holds[0].Reason == nil || *st.Holds[0].Reason != c.reason {
+				t.Fatalf("the node: %+v, want %s owned by %s with the result's reason", st, c.hold, c.owner)
+			}
+			h := st.Holds[0]
+			if c.hold == vocab.HoldBrokerCreditExhausted {
+				e, _ := rw.r.place.d.Registry.Executor(rw.r.place.d.Registry.Executors(types.RegistryExecutorRoleBuilder)[0])
+				if p, ok := reconcile.ParseCreditProbe(h.SignalInstance); !ok || p.Destination != e.Destination.ID {
+					t.Errorf("the credit hold's signal %q, want the destination %s's", h.SignalInstance, e.Destination.ID)
+				}
+			} else {
+				q, ok := reconcile.ParseQuotaReset(h.SignalInstance)
+				since, err := time.Parse(time.RFC3339Nano, string(h.Since))
+				if d := q.Until.Sub(since); !ok || err != nil || d < c.wait || d > c.wait+time.Second {
+					t.Errorf("the quota hold's signal %q, raised at %s: a wait of %s, want %s", h.SignalInstance, h.Since, q.Until.Sub(since), c.wait)
+				}
+			}
+			rw.passesFor(t, 3, 0)
+			if st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State; rw.runs.count() != 1 || len(st.Holds) != 1 {
+				t.Fatalf("while held: %d runs, %+v", rw.runs.count(), st)
+			}
+			if !c.clearsAfter {
+				return
+			}
+			rw.observed = gateway.Observed{}
+			time.Sleep(c.wait)
+			for range 6 {
+				if rw.runs.count() > 1 {
+					break
+				}
+				rw.passesFor(t, 1, 0)
+			}
+			if rw.runs.count() != 2 {
+				t.Fatalf("once the reset came: %d runs; the node %+v", rw.runs.count(), nodesOf(rw.w, rw.task)[types.NodeKindBuild].State)
 			}
 		})
 	}
@@ -486,10 +651,7 @@ func TestALaunchMissStartsNothing(t *testing.T) {
 	if _, ok, err := firstAttempt(rw); err != nil || ok {
 		t.Fatalf("a missed launch started an attempt: %v %v", ok, err)
 	}
-	st := nodesOf(rw.w, rw.task)[types.NodeKindBuild].State
-	if len(st.Holds) != 1 || st.Holds[0].Hold != vocab.HoldWrongOwner {
-		t.Errorf("the node after a miss: %+v", st)
-	}
+	imageHeld(t, rw, nodesOf(rw.w, rw.task)[types.NodeKindBuild].State)
 	if _, live := leaseOn(rw.w, rw.build); live {
 		t.Error("the missed launch left its lease live")
 	}

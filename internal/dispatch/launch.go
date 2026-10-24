@@ -183,10 +183,7 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		}
 	}
 	e, _ := d.Registry.Executor(l.Executor) // registered: the placement still holds
-	image := func() (*Miss, error) {
-		ref := "toolchain image"
-		return held("the pinned image is not present at its digest", "wrong_owner", imageSignal(card.Image), types.OwnerNamedOwner, &ref)
-	}
+	image := func() (*Miss, error) { return ImageMiss(card.Image) }
 	credential := func() (*Miss, error) {
 		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config", // Configured checks it (#226 entry 156)
 			Placement{"destination", string(e.Destination.ID)}.Signal(), types.OwnerOperator, nil)
@@ -228,6 +225,17 @@ func (d Dispatcher) attemptRail(tx *eventstore.Tx, node types.NodeID) (*Miss, er
 	}
 	h, err := graph.RailHold(graph.RailAttempts)
 	return &Miss{Reason: reason(fmt.Sprintf("%d attempts started on the round, its rail %d", started, caps.AttemptsPerRound)), Hold: &h}, err
+}
+
+// ImageMiss is the miss of a launch whose pinned image is not present at
+// its digest: wrong_owner on the image (imageSignal), owned by the named
+// owner of the toolchain image, which the reconcile loop clears once the
+// project's pinned image resolves (IsImageSignal). The one rule for a
+// missing image: the launch's readiness (miss) and the runner's own
+// resolve (adcd's runner, §2.3 launch-missing-image) both hold on it.
+func ImageMiss(image string) (*Miss, error) {
+	ref := "toolchain image"
+	return held("the pinned image is not present at its digest", "wrong_owner", imageSignal(image), types.OwnerNamedOwner, &ref)
 }
 
 // maxSignal is records/node-hold's bound on a signal instance.

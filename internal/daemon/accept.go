@@ -253,10 +253,6 @@ func (r *runner) acceptance(ctx context.Context, node types.NodeID, claimed bool
 	return a, err
 }
 
-// errImageMissing: the profile's pinned image did not resolve; its hold
-// ("runner: image") clears once it does (cleared).
-var errImageMissing = errors.New("the pinned image is not present")
-
 // errNotSealed: the build's attempt recorded its result and is not sealed
 // yet (its seal is the next command): nothing to hold.
 var errNotSealed = errors.New("the build's attempt is not sealed yet")
@@ -284,8 +280,11 @@ func (r *runner) readBlob(d types.Digest, max int64) ([]byte, error) {
 // image is the configuration's (errConfig; Opus 22a-5c-2b-2 L2); a clone
 // failure is classed by holdOn (Opus 22a-5c-2b-3 M1): a repository the
 // controller refuses (sandbox.ErrSpec) the configuration's, a network
-// failure (sandbox.ErrGit) a bounded retry; an image not present is held
-// until it resolves (errImageMissing).
+// failure (sandbox.ErrGit) a bounded retry; the image is resolved as the
+// adapter's start resolves it (resolveImage): one not present
+// (sandbox.ErrImage) is held wrong_owner until it resolves (imageMissing,
+// the launch's hold: dispatch.ImageMiss), and a podman that does not answer
+// within resolveTimeout is the host's, retried (Opus #433 L2).
 func (r *runner) checkout(ctx context.Context, profile types.ProjectProfile, dir string) (sandbox.Repo, sandbox.Image, error) {
 	if len(profile.Toolchain.Images) != 1 {
 		return sandbox.Repo{}, sandbox.Image{}, fmt.Errorf("%w: the profile pins %d images, not one", errConfig, len(profile.Toolchain.Images))
@@ -298,9 +297,9 @@ func (r *runner) checkout(ctx context.Context, profile types.ProjectProfile, dir
 	if err != nil {
 		return repo, sandbox.Image{}, fmt.Errorf("the repository: %w", err)
 	}
-	img, err := r.place.d.Images.Resolve(ctx, image)
+	img, err := resolveImage(ctx, r.place.d.Images, image)
 	if err != nil {
-		return repo, img, fmt.Errorf("%w: %w", errImageMissing, err)
+		return repo, img, fmt.Errorf("the pinned image: %w", err)
 	}
 	return repo, img, nil
 }

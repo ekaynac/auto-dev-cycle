@@ -12,6 +12,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
@@ -64,9 +65,29 @@ type AdapterSession struct {
 // release's lib/adc closure under imageLib, run by its pinned Node.
 const imageLib = "/opt/adc/lib"
 
-// resolveTimeout bounds Start's resolution of the pinned image (podman
-// image inspect): a client stuck on its storage's lock is the host's fault.
-var resolveTimeout = 30 * time.Second
+// resolveTimeout bounds every resolution of a pinned image (podman image
+// inspect: resolveImage): the launch's readiness, the adapter's start,
+// checkout's (accept and the gate) and the hold's clear (imageReady), so a
+// podman that answers within it passes each and clears each, and one that
+// does not is the host's fault everywhere (Opus #433 r2 L1). It is
+// dispatch.ReadinessBound, the bound of a readiness check in the writer's
+// command, since imageReady runs in one (Opus #400 M2).
+var resolveTimeout = dispatch.ReadinessBound
+
+// resolveImage resolves ref in images within resolveTimeout: one past it,
+// ctx itself not done, is the host's podman hung (errHost: retried), never
+// the image missing (Mythos chunk 2 L1). The one rule of every image
+// resolve: the launch's readiness (placer.launch), the adapter's start,
+// checkout's (accept and the gate; Opus #433 L2) and imageReady.
+func resolveImage(ctx context.Context, images dispatch.Images, ref string) (sandbox.Image, error) {
+	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+	img, err := images.Resolve(rctx, ref)
+	if rctx.Err() != nil && ctx.Err() == nil {
+		err = fmt.Errorf("%w: the image could not be resolved within %s: %w", errHost, resolveTimeout, err)
+	}
+	return img, err
+}
 
 var containerArgv = []string{imageLib + "/node/bin/node", imageLib + "/adapters/http-chat/src/main.ts"}
 
@@ -93,9 +114,11 @@ type containerAdapter struct {
 
 var _ AdapterStarter = (*containerAdapter)(nil)
 
-// containerBox is what containerAdapter needs of the sandbox.
+// containerBox is what containerAdapter needs of the sandbox: its image
+// resolve (dispatch.Images, the one contract; Astra #433 M1) and its
+// interactive run.
 type containerBox interface {
-	Resolve(ctx context.Context, ref string) (sandbox.Image, error)
+	dispatch.Images
 	Interactive(r sandbox.Run, attempt string) (sandbox.Interactive, error)
 }
 
@@ -103,12 +126,7 @@ func (c *containerAdapter) Start(ctx context.Context, run AdapterRun) (AdapterSe
 	if run.Box == nil || run.Deadline <= 0 || run.Box.Workspace() != run.Workspace {
 		return AdapterSession{}, errors.New("daemon: an adapter container needs its attempt's directory, its workspace and a positive deadline")
 	}
-	rctx, cancel := context.WithTimeout(ctx, resolveTimeout)
-	img, err := c.Box.Resolve(rctx, run.Image)
-	if rctx.Err() != nil && ctx.Err() == nil { // the host's podman hung, not the profile's fault (Mythos chunk 2 L1)
-		err = fmt.Errorf("%w: the image could not be resolved within %s: %w", errHost, resolveTimeout, err)
-	}
-	cancel()
+	img, err := resolveImage(ctx, c.Box, run.Image)
 	switch {
 	case err != nil:
 	case run.Review:

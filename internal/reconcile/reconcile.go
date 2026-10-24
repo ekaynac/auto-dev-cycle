@@ -223,11 +223,14 @@ type Held struct {
 // once the runner's preconditions hold again (the Placer decides).
 const runnerPrefix = "runner: "
 
-// RunnerHold is a runner hold's signal, typed: What dirs, failed, image or
+// RunnerHold is a runner hold's signal, typed: What dirs, failed or
 // sandbox (no_sandbox's, #226 entry 171); a
-// profile, its Digest; a retry, its N and Until. Signal formats it and
-// ParseRunner reads it back: one rule (5c-1's Unblock decides on the type,
-// never on a text prefix).
+// profile, its Digest; a retry, its N and Until; and image, the legacy
+// signal of an image not present that a store from before #433 may hold
+// (Astra #433 H1): read, offered and cleared once the image resolves
+// (runner.cleared), never raised now (dispatch.ImageMiss is the one rule).
+// Signal formats it and ParseRunner reads it back: one rule (5c-1's Unblock
+// decides on the type, never on a text prefix).
 type RunnerHold struct {
 	What   string
 	Digest string    // a profile's
@@ -253,7 +256,7 @@ func ParseRunner(signal string) (RunnerHold, bool) {
 	what, arg, _ := strings.Cut(rest, " ")
 	r := RunnerHold{What: what}
 	switch what {
-	case "dirs", "failed", "image", "sandbox":
+	case "dirs", "failed", "sandbox", "image":
 	case "profile":
 		r.Digest = arg
 		ok = ok && contract.IsDigest(arg)
@@ -268,25 +271,76 @@ func ParseRunner(signal string) (RunnerHold, bool) {
 	return r, ok && r.Signal() == signal
 }
 
+// quotaPrefix starts QuotaReset's signals.
+const quotaPrefix = "quota: reset "
+
+// QuotaReset is a quota_reset hold's signal, typed: the provider's reset
+// time (holds.yaml: the earliest known reset), Until. The runner raises it
+// on an attempt the provider rate-limited (a 429: quota_exhausted, §2.6),
+// and the loop clears it once Until has come (Placer.Unblocked). Signal
+// formats it and ParseQuotaReset reads it back: one rule.
+type QuotaReset struct{ Until time.Time }
+
+// Signal is q's signal instance: "quota: reset <RFC 3339, UTC>".
+func (q QuotaReset) Signal() string { return quotaPrefix + q.Until.UTC().Format(time.RFC3339Nano) }
+
+// ParseQuotaReset is the QuotaReset signal is, if it is exactly one.
+func ParseQuotaReset(signal string) (QuotaReset, bool) {
+	rest, ok := strings.CutPrefix(signal, quotaPrefix)
+	t, err := time.Parse(time.RFC3339Nano, rest)
+	q := QuotaReset{Until: t}
+	return q, ok && err == nil && q.Signal() == signal
+}
+
+// creditPrefix starts CreditProbe's signals.
+const creditPrefix = "credit: "
+
+// CreditProbe is a broker_credit_exhausted hold's signal, typed: the
+// destination whose balance a probe would check (holds.yaml: a balance
+// probe, or the operator's top-up). The runner raises it on an attempt the
+// provider refused for credit (a 402, §2.6). Nothing clears it in M1: no
+// balance probe exists, so the loop never offers it (Offered); the
+// recovery is revoking the task's approval. Signal formats it and
+// ParseCreditProbe reads it back: one rule.
+type CreditProbe struct{ Destination types.Slug }
+
+// Signal is c's signal instance: "credit: <destination>".
+func (c CreditProbe) Signal() string { return creditPrefix + string(c.Destination) }
+
+// ParseCreditProbe is the CreditProbe signal is, if it is exactly one: a
+// destination is the profile schema's Slug.
+func ParseCreditProbe(signal string) (CreditProbe, bool) {
+	rest, ok := strings.CutPrefix(signal, creditPrefix)
+	return CreditProbe{Destination: types.Slug(rest)}, ok && slug(rest)
+}
+
+// slug is the profile schema's Slug rule, read from it.
+var slug = contract.DefPattern("config/project-profile", "Slug").MatchString
+
 // Offered reports whether the loop offers node hold h to the code that
 // clears it, the one rule Observe collects holds by (#226 entry 156; Opus
 // #400 M1), on typed signals, never a text prefix (5c-1): never a result's
-// retry wait (Reason set: graph.Retry, its signal the caller's); else
-// budget_rail on the day's USD rail (ClearRail: Placer.Reopened);
-// source_invalid_config on a signal that parses as a placement's
-// (dispatch.ParsePlacement) or a runner's (ParseRunner), and wrong_owner on
-// a launch's image signal (dispatch.IsImageSignal) (Unblock:
-// Placer.Unblocked), and no_sandbox on the runner's sandbox signal
-// (Unblock, offered only while a runner runs: Gates.Runs);
+// retry wait (Reason set: graph.Retry, its signal the caller's) but
+// quota_reset's; else budget_rail on the day's USD rail (ClearRail:
+// Placer.Reopened); source_invalid_config on a signal that parses as a
+// placement's (dispatch.ParsePlacement) or a runner's (ParseRunner),
+// wrong_owner on a launch's image signal (dispatch.IsImageSignal) and
+// quota_reset on the provider's reset time (ParseQuotaReset, the runner's
+// retry wait of a rate-limited attempt: cleared once that time has come)
+// (Unblock: Placer.Unblocked), and no_sandbox on the runner's sandbox
+// signal (Unblock, offered only while a runner runs: Gates.Runs);
 // reviewer_unavailable on a roster signal (graph.ParseIndependence) and
 // review_inactive on ReviewSignal (ReviewUnblock: Reviewer.Unheld). The loop
 // leaves every other hold to its own clearer (an answer, task.raise_rail)
-// or to its stated terminal state.
+// or to its stated terminal state (broker_credit_exhausted's CreditProbe).
 func Offered(h types.NodeHold) bool {
-	if h.Reason != nil { // a result's retry wait (graph.Retry), its signal the caller's: never the loop's to clear
+	if h.Reason != nil && h.Hold != vocab.HoldQuotaReset { // a result's retry wait (graph.Retry), its signal the caller's: never the loop's to clear
 		return false
 	}
 	switch signal := h.SignalInstance; h.Hold {
+	case vocab.HoldQuotaReset:
+		_, ok := ParseQuotaReset(signal)
+		return ok
 	case vocab.HoldBudgetRail:
 		return signal == graph.RailSignal(graph.RailDayUSD)
 	case vocab.HoldSourceInvalidConfig:

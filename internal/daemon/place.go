@@ -23,6 +23,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -203,15 +204,18 @@ func (p placer) Reopened(tx *eventstore.Tx, node types.NodeID, hold types.HoldID
 }
 
 // Unblocked clears node's placement hold (hold, on signal: the loop passes
-// only placement, runner and launch image holds, dispatch.ParsePlacement,
-// reconcile.ParseRunner and dispatch.IsImageSignal) once the
+// only placement, runner, launch image and quota reset holds,
+// dispatch.ParsePlacement, reconcile.ParseRunner, dispatch.IsImageSignal
+// and reconcile.ParseQuotaReset) once the
 // configuration admits node again: its card is made, and no placement
 // check, missing credential, footprint or missing USD rail refuses it
 // (Dispatcher.Configured); nothing otherwise (Mythos 22a-5c-1 M1). Match
 // then places it, or raises the rail it reaches. A runner's hold clears
 // once the runner's preconditions hold again (ready); a launch's image
-// hold once the project's pinned image resolves (imageReady; #226 entry
-// 156). Stated (Opus #400 L2): a credentialed executor's placement hold
+// hold, the launch's or the runner's (dispatch.ImageMiss), once the
+// project's pinned image resolves (imageReady; #226 entry 156); a quota
+// reset once the provider's reset time has come (§2.6 fault-provider-429).
+// Stated (Opus #400 L2): a credentialed executor's placement hold
 // stays, naming its own cause, while the gateway lacks the credential,
 // even once that cause is fixed: Configured asks for both, as the launch
 // would miss on the credential anyway.
@@ -219,14 +223,19 @@ func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldI
 	var ready func(*eventstore.Tx, types.NodeID, string) (bool, error)
 	_, runner := reconcile.ParseRunner(signal)
 	_, placement := dispatch.ParsePlacement(signal)
+	quota, reset := reconcile.ParseQuotaReset(signal)
 	switch {
 	case dispatch.IsImageSignal(signal): // a launch's wrong_owner hold
 		ready = func(tx *eventstore.Tx, node types.NodeID, _ string) (bool, error) { return p.imageReady(tx, node) }
+	case reset: // a provider's rate limit: its reset has come
+		ready = func(tx *eventstore.Tx, _ types.NodeID, _ string) (bool, error) {
+			return !tx.Now().Before(quota.Until), nil
+		}
 	case runner: // the runner's hold (Opus 22a-5c-2a H2)
 		if ready = p.ready; ready == nil {
 			return nil, nil
 		}
-	case !placement: // none of the placement's, the runner's or the launch's: never cleared here (5c-1: typed, not a text prefix)
+	case !placement: // none of the placement's, the runner's, the launch's or the provider's: never cleared here (5c-1: typed, not a text prefix)
 		return nil, nil
 	}
 	if ready != nil {
@@ -252,9 +261,10 @@ func (p placer) Unblocked(tx *eventstore.Tx, node types.NodeID, hold types.HoldI
 }
 
 // imageReady reports whether node's project's one pinned image resolves
-// now, within dispatch.ReadinessBound (the writer's command): its image
-// hold clears, the runner's (Opus 22a-5c-2b-3 M1) and the launch's
-// wrong_owner one (#226 entry 156). No image store resolves none. It
+// now, within resolveTimeout (resolveImage, the one bound of every image
+// resolve; Opus #433 r2 L1): its image hold clears, the runner's (Opus
+// 22a-5c-2b-3 M1) and the launch's wrong_owner one (#226 entry 156). No
+// image store resolves none. It
 // resolves the profile's pin, not the image a hold names (Opus #400 L3):
 // the two are one while placer.card takes card.Image from that one pin; a
 // card whose image is not the profile's would need the hold's own.
@@ -268,9 +278,7 @@ func (p placer) imageReady(tx *eventstore.Tx, node types.NodeID) (bool, error) {
 		return false, err
 	}
 	for _, ref := range prof.Toolchain.Images {
-		ctx, cancel := context.WithTimeout(context.Background(), dispatch.ReadinessBound)
-		_, rerr := p.d.Images.Resolve(ctx, string(ref))
-		cancel()
+		_, rerr := resolveImage(context.Background(), p.d.Images, string(ref))
 		return rerr == nil, nil
 	}
 	return false, nil
@@ -367,6 +375,11 @@ func registered(ev eventstore.Event, reg registry.Registry, exe types.ExecutorID
 // command, after the attempt.started it binds, and checked by its fold
 // (intent.Projector; P22a-5c-2b-1): an intent the fold refuses refuses
 // the launch, so no attempt starts without its intent.
+// The readiness resolves the pinned image as every image resolve does
+// (resolveImage; Opus #433 r2 H1): a podman that does not answer within
+// resolveTimeout is the host's, returned as errHost before any command,
+// so the run ends the lease on the bounded retry (holdOn), never a
+// wrong_owner miss: a hang is not a missing image.
 func (p placer) launch(ctx context.Context, store *eventstore.Store, system identity.Principal, node types.NodeID, l types.LeaseID,
 	attempt types.AttemptID, base types.AttemptBase, mi *types.ManifestIntent) (*dispatch.Miss, error) {
 	var card dispatch.Card
@@ -386,7 +399,15 @@ func (p placer) launch(ctx context.Context, store *eventstore.Store, system iden
 	}); err != nil {
 		return nil, err
 	}
-	ready := p.d.Observe(ctx, card, exe)
+	images := &boundedImages{images: p.d.Images}
+	d := p.d
+	if d.Images != nil {
+		d.Images = images
+	}
+	ready := d.Observe(ctx, card, exe)
+	if images.host != nil {
+		return nil, images.host
+	}
 	cmd, err := ids.New("cmd")
 	input, merr := json.Marshal(map[string]any{"node": node, "lease": l, "attempt": attempt})
 	if err = errors.Join(err, merr); err != nil {
@@ -408,6 +429,21 @@ func (p placer) launch(ctx context.Context, store *eventstore.Store, system iden
 			return evs, json.RawMessage(`{}`), err
 		}))
 	return miss, err
+}
+
+// boundedImages resolves through resolveImage, keeping the host's fault
+// (errHost) it met, if any.
+type boundedImages struct {
+	images dispatch.Images
+	host   error
+}
+
+func (b *boundedImages) Resolve(ctx context.Context, ref string) (sandbox.Image, error) {
+	img, err := resolveImage(ctx, b.images, ref)
+	if errors.Is(err, errHost) {
+		b.host = err
+	}
+	return img, err
 }
 
 // pinnedImage is p's one pinned toolchain image and its key: M1 places, and
