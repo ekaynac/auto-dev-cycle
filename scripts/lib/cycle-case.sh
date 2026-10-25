@@ -23,36 +23,42 @@
 cycle_case() {
   step "project create (the case's profile)"
   adc project create --expect 0 --reason installed-cycle --json --scope-file "$work/profile.json" >"$work/out/project.out" 2>&1 ||
-    die "project create failed: $(head -c 400 "$work/out/project.out")"
+    die "project create failed: $(excerpt "$work/out/project.out" 400)"
   prj="$(sed -n 's/.*"project":"\(prj_[a-z0-9]*\)".*/\1/p' "$work/out/project.out" | head -n 1)"
-  [[ "$prj" == prj_* ]] || die "project create: no project id: $(head -c 400 "$work/out/project.out")"
+  [[ "$prj" == prj_* ]] || die "project create: no project id: $(excerpt "$work/out/project.out" 400)"
 
   step "task create ($task, its hidden/ attached as its acceptance)"
-  local t="$fixtures/t0/$project/tasks/$task" att=()
+  local t="$fixtures/t0/$project/tasks/$task" att=() hidden f second
   "$node" -e 'const fs = require("node:fs"); const [task, prj, out] = process.argv.slice(1); const t = JSON.parse(fs.readFileSync(task, "utf8"));
     fs.writeFileSync(out, JSON.stringify({project: prj, title: t.title, requirement: t.requirement}))' "$t/task.json" "$prj" "$work/spec.json"
   # Each acceptance file at its repository path, where the gate overlays it (adc task create's --attach REPO_PATH=FILE).
-  while IFS= read -r -d '' f; do att+=(--attach "${f#"$t/hidden/"}=$f"); done < <(find "$t/hidden" -type f -print0 | LC_ALL=C sort -z)
+  # Listed whole first (#226 entry 203): a find that fails refuses, never fewer attachments.
+  hidden="$(cd "$t/hidden" && find . -type f | LC_ALL=C sort)" || die "the task's hidden files could not be listed"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    att+=(--attach "${f#./}=$t/hidden/${f#./}")
+  done <<<"$hidden"
   adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task.out" 2>&1 ||
-    die "task create failed: $(head -c 400 "$work/out/task.out")"
+    die "task create failed: $(excerpt "$work/out/task.out" 400)"
   tsk="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task.out" | head -n 1)"
-  [[ "$tsk" == tsk_* ]] || die "task create: no task id: $(head -c 400 "$work/out/task.out")"
+  [[ "$tsk" == tsk_* ]] || die "task create: no task id: $(excerpt "$work/out/task.out" 400)"
 
   until="$(json "$case_file" d.expect.until)"
   step "waiting for task $tsk to end ($until)"
   local deadline=$((SECONDS + 1500))
   until ended; do
-    ((SECONDS < deadline)) || die "timed out waiting for the task to end: $(head -c 600 "$work/out/show.json")"
+    ((SECONDS < deadline)) || die "timed out waiting for the task to end: $(excerpt "$work/out/show.json" 600)"
     sleep 2
   done
-  if [[ "$(json "$case_file" 'd.expect.second_task_admitted === false')" == true ]]; then
+  second="$(json "$case_file" 'd.expect.second_task_admitted === false')" || die "the case's second_task_admitted could not be read"
+  if [[ "$second" == true ]]; then
     step "a second task while the first is held: it stays unadmitted (I22)"
     adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task2.out" 2>&1 ||
-      die "the second task create failed: $(head -c 400 "$work/out/task2.out")"
+      die "the second task create failed: $(excerpt "$work/out/task2.out" 400)"
     tsk2="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task2.out" | head -n 1)"
     [[ "$tsk2" == tsk_* ]] || die "the second task create: no task id"
     sleep 15 # three of the reconcile loop's 5-second passes (daemon.reconcileEvery), each of which admits a task when none is admitted
-    adc task show "$tsk2" --json >"$work/out/second.json" 2>&1 || die "adc task show (the second task) failed: $(head -c 300 "$work/out/second.json")"
+    adc task show "$tsk2" --json >"$work/out/second.json" 2>&1 || die "adc task show (the second task) failed: $(excerpt "$work/out/second.json" 300)"
   fi
 }
 
@@ -71,7 +77,7 @@ ended() {
   kill -0 "$adcd" 2>/dev/null || started ""
   adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/show.json" 2>"$work/out/show.err" || rc=$?
   # 5: neither state within the 5 s, read again; 6, with closed,held asked: its card is unplaced (no column), which no wait ends.
-  if ((rc == 6)); then die "task $tsk's card is unplaced: $(head -c 300 "$work/out/show.err")"; fi
+  if ((rc == 6)); then die "task $tsk's card is unplaced: $(excerpt "$work/out/show.err" 300)"; fi
   ((rc == 0)) || return 1
   "$node" -e 'const fs = require("node:fs"); const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const nodes = s.card?.nodes ?? []; const holds = (n) => (n.holds ?? []).map((h) => h.hold);
@@ -86,20 +92,20 @@ cycle_check() {
   local head="$1"
   [[ -z "${events:-}" ]] || { kill "$events" 2>/dev/null; wait "$events" 2>/dev/null || true; }
   step "the task, the event stream to seq $head, the capabilities"
-  adc task show "$tsk" --json >"$work/out/show.json" 2>"$work/out/show.err" || die "adc task show failed: $(head -c 400 "$work/out/show.err")"
+  adc task show "$tsk" --json >"$work/out/show.json" 2>"$work/out/show.err" || die "adc task show failed: $(excerpt "$work/out/show.err" 400)"
   "${run_env[@]}" ADC_SOCKET="$sock" timeout 120 "$prefix/bin/adc" events --follow --json >"$work/out/events.jsonl" 2>"$work/out/events.err" &
   events=$!
   record_pid "$work" "$events"
   # shellcheck disable=SC2317,SC2329  # invoked by within
   streamed() {
-    kill -0 "$events" 2>/dev/null || die "the event stream ended: $(head -c 300 "$work/out/events.err")"
+    kill -0 "$events" 2>/dev/null || die "the event stream ended: $(excerpt "$work/out/events.err" 300)"
     [[ "$(tail -n 1 "$work/out/events.jsonl" | sed -n 's/^{"seq":\([0-9]*\),.*/\1/p')" == "$head" ]]
   }
   within 60 "the event stream to reach seq $head" streamed
   kill "$events" 2>/dev/null
   wait "$events" 2>/dev/null || true
   events=""
-  adc dev capabilities --json >"$work/out/capabilities.json" 2>&1 || die "adc dev capabilities failed: $(head -c 300 "$work/out/capabilities.json")"
+  adc dev capabilities --json >"$work/out/capabilities.json" 2>&1 || die "adc dev capabilities failed: $(excerpt "$work/out/capabilities.json" 300)"
   step "the case's expect block"
   local rc=0
   summary="$("$node" "$here/lib/cycle-expect.mjs" "$case_file" "$work/out" "$case")" || rc=$?

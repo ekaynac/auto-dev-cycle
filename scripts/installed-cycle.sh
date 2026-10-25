@@ -53,6 +53,17 @@
 # logs (out/adcd-1.log, out/adcd-2.log) included. --routes live is P25's. Every wait is
 # bounded. Exit 0 only when every check holds; 1 when one fails; 2 when the
 # case cannot run.
+#
+# The clean shell (scripts/lib/clean-shell.sh: the drivers' one prelude),
+# first, before any helper, tracing off before anything is traced; its path
+# by parameter expansion alone.
+set +o xtrace +o verbose
+clean_shell_tag=installed-cycle clean_shell_fd3=1
+adc_here="${BASH_SOURCE[0]%/*}"
+[[ "$adc_here" != "${BASH_SOURCE[0]}" ]] || adc_here=.
+# shellcheck source=scripts/lib/clean-shell.sh
+. "$adc_here/lib/clean-shell.sh"
+unset adc_here
 set -euo pipefail
 
 SECRETS_TAG=installed-cycle
@@ -65,9 +76,23 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$here/lib/sandbox-root.sh"
 
 cannot() {
-  echo "installed-cycle: could_not_run: $*" >&2
+  local msg="$*"
+  redact msg
+  echo "installed-cycle: could_not_run: $msg" >&2
   exit 2
 }
+# The caller's registry credentials, received on fd 3 from the re-exec and
+# validated whole before anything of them is kept or printed
+# (clean_shell_credentials); each redacted from every line from here on,
+# names only ever printed.
+caller_cred=() rc=0
+clean_shell_credentials caller_cred || rc=$?
+case "$rc" in
+  0) ;;
+  2) cannot "no list of credentials on fd 3 (the driver's re-exec writes one)" ;;
+  *) cannot "the credentials received on fd 3 are malformed" ;;
+esac
+if ((${#caller_cred[@]})); then echo "installed-cycle: the caller's credentials, received on fd 3: $(for v in "${caller_cred[@]}"; do printf '%s ' "${v%%=*}"; done)" >&2; fi
 usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]"; }
 
 [[ $# -ge 1 ]] || usage
@@ -159,9 +184,16 @@ work_dirs_stale "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-/nonexistent}" /dev/shm
 sandbox_roots_stale
 work="$(mktemp -d -p "$parent" adc-cycle.XXXXXXXX)" || cannot "mktemp in $parent failed"
 owner_of $$ >"$work/.owner" || cannot "$work/.owner cannot be written"
+# Everything cleanup reads is set here, before its trap, never inherited from
+# the caller's environment (Astra #440 H1, Opus #441 H1, M2): the run's own
+# processes (stub, adcd, events: set only when this run starts each), the
+# sandbox root and whether it is the run's own (root, private: set only once
+# the run makes or takes one), keep and work (set above).
+stub="" adcd="" events="" root="" private=0
+# cleanup's inputs: stub adcd events keep work root private
 cleanup() {
   local p i
-  for p in "${stub:-}" "${adcd:-}" "${events:-}"; do
+  for p in "$stub" "$adcd" "$events"; do
     [[ -n "$p" ]] || continue
     kill "$p" 2>/dev/null || continue
     for ((i = 0; i < 100; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
@@ -173,9 +205,9 @@ cleanup() {
     # removes them; a shared root's owner files are its owner's (the set's),
     # never this case's to remove (Mythos #435 L4).
     rm -f "$work/.owner"
-    if [[ -n "${root:-}" ]] && ((private)); then rm -f "$root/.owner" "$root/runs/.owner"; fi
+    if [[ -n "$root" ]] && ((private)); then rm -f "$root/.owner" "$root/runs/.owner"; fi
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
-  elif [[ -n "${root:-}" ]]; then
+  elif [[ -n "$root" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
   fi
   ((keep)) || rm -rf "$work"
@@ -190,8 +222,9 @@ fs_known "$work" || die "$work is not on ext2/ext3/ext4, xfs, btrfs or tmpfs"
 cd "$work"
 umask 077
 mkdir home state out
-run_env=(env -i PATH=/usr/bin:/bin HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" XDG_DATA_HOME="$work/home/.local/share"
+run_vars=(PATH=/usr/bin:/bin HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" XDG_DATA_HOME="$work/home/.local/share"
   XDG_STATE_HOME="$work/home/.local/state" XDG_CACHE_HOME="$work/home/.cache" XDG_RUNTIME_DIR="$work/home/run" TMPDIR="$work")
+run_env=(env -i "${run_vars[@]}")
 sock="$work/state/adcd.sock"
 step() { echo "installed-cycle: $case: $*"; }
 adc() { "${run_env[@]}" ADC_SOCKET="$sock" timeout 60 "$prefix/bin/adc" "$@"; }
@@ -207,10 +240,13 @@ fi
 step "the base remote of $project's $task"
 tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "$overlay" "$work/remote.git")" || die "the base remote failed"
 if [[ -n "$overlay" ]]; then
-  while IFS= read -r -d '' f; do
-    f="${f#"$overlay"/}" f="${f%.hostile}"
+  # Listed whole first (#226 entry 203): a find that fails refuses, never fewer files checked.
+  files="$(cd "$overlay" && find . \( -type f -o -type l \))" || die "the case's overlay could not be listed"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    f="${f#./}" f="${f%.hostile}"
     git --git-dir="$work/remote.git" cat-file -e "main:$f" 2>/dev/null || die "the base remote lacks the case's $f"
-  done < <(find "$overlay" \( -type f -o -type l \) -print0)
+  done <<<"$files"
 fi
 if [[ -n "$case_file" ]]; then
   step "the case's profile, its canary minted for this run"
@@ -229,7 +265,14 @@ if [[ -n "$case_file" ]]; then
     p.repo.url = remote; p.data_policy.allowed_destinations = ["stub"];
     fs.writeFileSync(out, JSON.stringify(p))' \
     "$fixtures/m1/profiles/$project.json" "$case_file" "$canary" "$work/remote.git" "$work/profile.json" || die "the case's profile failed"
-  if grep -q '{canary}' "$case_file" && ! grep -qF "$canary" "$work/profile.json"; then die "the case's profile does not carry its canary"; fi
+  # grep's statuses mapped: 1 is "no {canary} in the case", any other a read that failed (#226 entry 203).
+  rc=0
+  grep -q '{canary}' "$case_file" || rc=$?
+  case "$rc" in
+    0) grep -qF "$canary" "$work/profile.json" || die "the case's profile does not carry its canary" ;;
+    1) ;;
+    *) die "the case could not be read for its canary (exit $rc)" ;;
+  esac
 fi
 if [[ "$project" == go-mini && -z "$case_file" ]]; then
   want="$(json "$fixtures/m1/stub/go-mini/baseline.json" d.base_tree)"
@@ -246,7 +289,6 @@ fi
 # sandbox root's storage (the shared root, --sandbox-root, or the case's
 # own). Each missing one refuses the case (exit 2), named, before adcd
 # starts.
-root="" private=0
 if [[ -n "$case_file" ]]; then
   arch="$(host_arch)" || cannot "this host's platform ($(uname -m)) has no prepared image"
   rootless_podman "$PODMAN" || cannot "rootless Podman ($PODMAN) is required: the product sandbox runs every build, accept and gate"
@@ -261,7 +303,7 @@ if [[ -n "$case_file" ]]; then
   case "$rc" in
     0) ;;
     2) cannot "the pinned image $pin has no instance for linux/$arch" ;;
-    *) cannot "the pinned image $pin cannot be pulled for linux/$arch: $(tr '\n' ' ' <"$work/out/image.err" | head -c 300)" ;;
+    *) cannot "the pinned image $pin cannot be pulled for linux/$arch: $(excerpt "$work/out/image.err" 300)" ;;
   esac
 fi
 
@@ -272,7 +314,7 @@ step "the stub provider with scenario $scenario"
   --listen 127.0.0.1:0 --log "$work/out/stub.jsonl" --barriers "$work/out" >"$work/out/stub.out" 2>"$work/out/stub.err" &
 stub=$!
 record_pid "$work" "$stub"
-listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(head -c 400 "$work/out/stub.err")"; grep -q '^listening ' "$work/out/stub.out"; }
+listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(excerpt "$work/out/stub.err" 400)"; grep -q '^listening ' "$work/out/stub.out"; }
 within 30 "the stub provider" listening
 base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
 # shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals, not shell expansions
@@ -286,18 +328,23 @@ n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFile
 # case's adcd runs the product sandbox under its root, and holds the stub's
 # credential (ADC_CREDENTIAL_STUB, minted per run), unless the case
 # withholds it (§2.3 assertion 6).
-run=0 cred=() sandbox=()
+run=0 cred=() sandbox=() stub_cred=""
 if [[ -n "$case_file" ]]; then
   sandbox=(--sandbox-root "$root" --podman "$PODMAN")
   stub_cred="$(head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d =)"
   known "$stub_cred"
-  [[ "$(json "$case_file" 'd.credential_withheld === true')" == true ]] || cred=(ADC_CREDENTIAL_STUB="$stub_cred")
+  withheld="$(json "$case_file" 'd.credential_withheld === true')" || die "the case's credential_withheld could not be read"
+  [[ "$withheld" == true ]] || cred=(ADC_CREDENTIAL_STUB="$stub_cred")
 fi
+# start_adcd: adcd with the run's variables and the credential in its
+# environment only, exported by builtins (clean_exec, secrets.sh): no
+# process's argv ever holds a credential, and nothing of the caller's
+# environment reaches adcd (Opus #440 H1, Astra #440 H2).
 start_adcd() {
   run=$((run + 1))
   log="$work/out/adcd-$run.log"
-  "${run_env[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
-    --registry "$work/registry.json" "${sandbox[@]}" >"$log" 2>&1 &
+  (clean_exec $((${#run_vars[@]} + ${#cred[@]})) "${run_vars[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" \
+    --resource-groups "$fixtures/m1/config/groups.json" --registry "$work/registry.json" "${sandbox[@]}") >"$log" 2>&1 &
   adcd=$!
   record_pid "$work" "$adcd"
 }
@@ -310,7 +357,7 @@ started() {
   if ! kill -0 "$adcd" 2>/dev/null; then
     wait "$adcd" || rc=$?
     adcd=""
-    die "adcd exited ($(how "$rc")): $(head -c 400 "$log")"
+    die "adcd exited ($(how "$rc")): $(excerpt "$log" 400)"
   fi
   grep -q "^adcd: started${1:-}" "$log"
 }
@@ -321,7 +368,7 @@ within 60 "adcd to start" started
 step "bootstrapping the operator"
 boot="$(<"$work/state/bootstrap.secret")"
 known "$boot"
-adc admin bootstrap --state-dir "$work/state" >"$work/out/bootstrap.out" 2>&1 || die "the bootstrap failed: $(head -c 400 "$work/out/bootstrap.out")"
+adc admin bootstrap --state-dir "$work/state" >"$work/out/bootstrap.out" 2>&1 || die "the bootstrap failed: $(excerpt "$work/out/bootstrap.out" 400)"
 tok="$(<"$work/home/.config/adc/token")"
 known "$tok"
 
@@ -331,10 +378,11 @@ if [[ -z "$case_file" ]]; then
     -d '{"model":"stub-reviewer-1","messages":[{"role":"user","content":"preflight"}],"stream":false}' "$base/chat/completions")" ||
     die "the stub provider did not answer"
   id="$(sed -n 's/^{"id":"\([^"]*\)".*/\1/p' <<<"$reply")"
-  [[ -n "$id" && "$reply" == *'\"decision\":\"go\"'* ]] || die "the stub's reply is not its scenario's: $(head -c 300 <<<"$reply")"
+  printf '%s\n' "$reply" >"$work/out/reply.json"
+  [[ -n "$id" && "$reply" == *'\"decision\":\"go\"'* ]] || die "the stub's reply is not its scenario's: $(excerpt "$work/out/reply.json" 300)"
   curl -q -sS --noproxy '*' --max-time 30 -f "$base/usage/$id" >/dev/null || die "the stub's usage query failed for $id"
-  adc board --json >"$work/out/board.out" 2>&1 || die "adc board failed: $(head -c 400 "$work/out/board.out")"
-  grep -q '"resource":"board"' "$work/out/board.out" || die "adc board: $(head -c 400 "$work/out/board.out")"
+  adc board --json >"$work/out/board.out" 2>&1 || die "adc board failed: $(excerpt "$work/out/board.out" 400)"
+  grep -q '"resource":"board"' "$work/out/board.out" || die "adc board: $(excerpt "$work/out/board.out" 400)"
 else
   # shellcheck source=scripts/lib/cycle-case.sh
   . "$here/lib/cycle-case.sh"
@@ -348,14 +396,14 @@ stop() {
   within 60 "adcd to stop" stopped
   local rc=0
   wait "$adcd" || rc=$?
-  ((rc == 0)) || die "adcd stopped with an error ($(how "$rc")): $(tail -c 400 "$log")"
+  ((rc == 0)) || die "adcd stopped with an error ($(how "$rc")): $(excerpt "$log" 400 tail)"
   adcd=""
 }
 stop
-adc dev verify-log --state "$work/state" >"$work/out/verify.out" 2>&1 || die "the log does not verify: $(head -c 400 "$work/out/verify.out")"
+adc dev verify-log --state "$work/state" >"$work/out/verify.out" 2>&1 || die "the log does not verify: $(excerpt "$work/out/verify.out" 400)"
 seq="$(sed -n 's/^[a-z_]*\/[a-z_]*: head \([0-9][0-9]*\) .*/\1/p' "$work/out/verify.out" | head -n 1)"
 if [[ -z "$seq" ]] || ((seq <= 0)); then
-  die "verify-log reports no head past seq 0: $(head -c 400 "$work/out/verify.out")"
+  die "verify-log reports no head past seq 0: $(excerpt "$work/out/verify.out" 400)"
 fi
 secrets_before="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)"
 start_adcd
@@ -364,12 +412,17 @@ if [[ -n "$case_file" ]]; then cycle_check "$seq"; fi
 stop
 [[ "$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" == "$secrets_before" ]] ||
   die "the restart wrote a new bootstrap secret: it did not replay the store"
-kill "$stub" 2>/dev/null || true
-wait "$stub" 2>/dev/null || true
-stub=""
+if [[ -n "$stub" ]]; then
+  kill "$stub" 2>/dev/null || true
+  wait "$stub" 2>/dev/null || true
+  stub=""
+fi
 
 if [[ -n "$case_file" ]]; then
   step "no canary path under the work directory, the sandbox root and its runs/, or beside either"
+  # Listed whole first (Astra #441 r3 High 2; #226 entry 203): a read that
+  # fails refuses, never a canary search skipped.
+  canary_names="$(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')" || die "the case's canary paths could not be read"
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
     for where in work root; do
@@ -381,13 +434,27 @@ if [[ -n "$case_file" ]]; then
         *) die "canary_path could not check $name under the $where (exit $rc)" ;;
       esac
     done
-  done < <(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')
+  done <<<"$canary_names"
 fi
 step "no secret outside the operator's token file"
 scan "" "$boot" "$work"
 scan "$work/home/.config/adc/token" "$tok" "$work"
-# The stub's per-run credential: adcd reads it from its environment only, so it is nowhere under the work directory (Mythos #435 M2).
-if [[ -n "${stub_cred:-}" ]]; then scan "" "$stub_cred" "$work"; fi
+# The stub's per-run credential: adcd reads it from its environment only, so it is nowhere under the work directory (Mythos #435 M2),
+# nor in the sandbox root and its runs/, where a container's config, environment and run files are (Opus #438 N1).
+# root_scan SECRET: the latter, before the cleanup removes a private root; a search that never ran fails (Astra #440 H3).
+root_scan() {
+  local rc=0 found
+  found="$(root_secret_scan "$root" "$1")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "a secret appears in the sandbox root: $(tr '\n' ' ' <<<"$found")" ;;
+    *) die "the sandbox root $root could not be searched for a secret (exit $rc)" ;;
+  esac
+}
+if [[ -n "$stub_cred" ]]; then
+  scan "" "$stub_cred" "$work"
+  root_scan "$stub_cred"
+fi
 after="$(snapshot)" || die "$config cannot be read"
 [[ "$after" == "$before" ]] || die "the real ~/.config/adc changed"
 

@@ -40,7 +40,7 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	if err := os.Symlink(node, filepath.Join(lib, "node/bin/node")); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"installed-cycle.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh"} {
+	for _, s := range []string{"installed-cycle.sh", "lib/clean-shell.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh"} {
 		b, err := os.ReadFile("../../scripts/" + s)
 		if err != nil {
 			t.Fatal(err)
@@ -56,13 +56,14 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		}
 	}
 	tmpdir := ""
+	var extra []string
 	run := func(args ...string) (string, int) {
 		t.Helper()
 		os.Remove(marker)
 		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), append([]string{prefix, "--routes", "stub", "--project", "go-mini",
 			"--case", "candidate", "--expect", "candidate"}, args...)...)
 		cmd.Dir = root
-		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+cmp.Or(tmpdir, t.TempDir()))
+		cmd.Env = append(append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+cmp.Or(tmpdir, t.TempDir())), extra...)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {
@@ -87,6 +88,169 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	for _, flag := range []string{"--podman", "--sandbox-root", "--expect"} {
 		if out, code := run(flag); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: usage: ") || started() {
 			t.Errorf("%s with no value: exit %d, adcd started %v, %s", flag, code, started(), out)
+		}
+	}
+	// Astra #440 H1: a process handle the driver inherits (stub, adcd, events
+	// exported by its caller) is none of the run's: its cleanup never stops it.
+	inherited := exec.Command("sleep", "60")
+	if err := inherited.Start(); err != nil {
+		t.Fatal(err)
+	}
+	inheritedDone := make(chan error, 1)
+	go func() { inheritedDone <- inherited.Wait() }()
+	t.Cleanup(func() { _ = inherited.Process.Kill() })
+	pid := strconv.Itoa(inherited.Process.Pid)
+	extra = []string{"stub=" + pid, "adcd=" + pid, "events=" + pid}
+	if out, code := run("--setup-only"); code != 0 {
+		t.Errorf("--setup-only with inherited handles: exit %d, %s", code, out)
+	}
+	extra = nil
+	select {
+	case err := <-inheritedDone:
+		t.Errorf("an inherited handle's process was stopped: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	// Opus #441 H1: a sandbox root the driver inherits (root and private
+	// exported by its caller) is none of the run's: neither a run that ends
+	// after its setup nor one that dies in it removes it.
+	kept := filepath.Join(t.TempDir(), "callers")
+	write(t, filepath.Join(kept, "marker"), "the caller's\n", 0o600)
+	extra = []string{"root=" + kept, "private=1"}
+	for _, c := range []struct {
+		args []string
+		code int
+	}{{[]string{"--setup-only"}, 0}, {[]string{"--project", "other"}, 2}} {
+		if out, code := run(c.args...); code != c.code {
+			t.Errorf("%v with an inherited root: exit %d, %s", c.args, code, out)
+		}
+		if _, err := os.Stat(filepath.Join(kept, "marker")); err != nil {
+			t.Fatalf("%v with an inherited root removed the caller's directory: %v", c.args, err)
+		}
+	}
+	extra = nil
+
+	// Opus #441 r3 H1: the caller's shell state stays behind the driver's
+	// re-exec. With xtrace on (SHELLOPTS), TMOUT=1, an exported grep
+	// function, the driver's own secret-holding names exported and a
+	// registry credential in the environment, the setup runs as before: no
+	// trace and no secret on its output, the credential received on fd 3 by
+	// name, and none of it in any child's environment (a git on PATH records
+	// its own /proc/PID/environ).
+	const credential = "sk-caller-probe-0123456789abcdef0123456789"
+	wrap := filepath.Join(t.TempDir(), "bin")
+	environ := filepath.Join(t.TempDir(), "environ")
+	write(t, filepath.Join(wrap, "git"), "#!/bin/sh\ncat /proc/$$/environ >>"+environ+"\nprintf '\\n--\\n' >>"+environ+"\nexec /usr/bin/git \"$@\"\n", 0o755)
+	extra = []string{"PATH=" + wrap + ":/usr/bin:/bin", "SHELLOPTS=xtrace", "TMOUT=1", "BASH_FUNC_grep%%=() { return 1; }",
+		"boot=boot-PROBE-value", "tok=tok-PROBE-value", "stub_cred=stub-cred-PROBE-value", "ADC_CREDENTIAL_PROBE=" + credential}
+	out, code = run("--setup-only")
+	extra = nil
+	if code != 0 || !strings.Contains(out, "installed-cycle: candidate: setup checked (--setup-only)") ||
+		!strings.Contains(out, "installed-cycle: the caller's credentials, received on fd 3: ADC_CREDENTIAL_PROBE") {
+		t.Errorf("a caller's shell state: exit %d, %s", code, out)
+	}
+	// The one line traced is the one that turns tracing off.
+	for _, l := range strings.Split(out, "\n") {
+		if (strings.HasPrefix(l, "+") && l != "+ set +o xtrace +o verbose") || strings.Contains(l, "PROBE-value") || strings.Contains(l, credential) {
+			t.Errorf("a trace or a secret on the driver's output: %q", l)
+		}
+	}
+	seen, err := os.ReadFile(environ)
+	if err != nil || !strings.Contains(string(seen), "--") {
+		t.Fatalf("no child's environment recorded: %v", err)
+	}
+	for _, leak := range []string{"SHELLOPTS", "TMOUT", "BASH_FUNC_grep", "PROBE-value", "ADC_CREDENTIAL_PROBE", credential} {
+		if strings.Contains(string(seen), leak) {
+			t.Errorf("%s reached a child's environment", leak)
+		}
+	}
+	// The credential received is redacted from every line from then on: a
+	// refusal that names it (here, as the case) prints [redacted].
+	extra = []string{"ADC_CREDENTIAL_PROBE=" + credential}
+	if out, code := run("--case", credential); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: no case [redacted]") || strings.Contains(out, credential) {
+		t.Errorf("a refusal naming the caller's credential: exit %d, %s", code, out)
+	}
+	// Opus #441 r4 N3: the marker never skips the re-exec by itself. Only an
+	// environment exactly the re-exec's (read from /proc/PID/environ) does;
+	// the marker with anything more (a variable, an exported function
+	// shadowing a builtin the driver uses, TMOUT) refuses the run (exit 2).
+	for _, env := range []string{"OTHER=x", "BASH_FUNC_grep%%=() { return 1; }", "BASH_FUNC_declare%%=() { :; }", "BASH_FUNC_printf%%=() { :; }", "TMOUT=1"} {
+		extra = []string{"ADC_CLEAN_SHELL=1", env, "ADC_CREDENTIAL_PROBE=" + credential}
+		if out, code := run("--setup-only"); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: the environment holds more than the re-exec's allowlist (ADC_CLEAN_SHELL set by the caller)") || strings.Contains(out, credential) {
+			t.Errorf("the marker with %s: exit %d, %s", env, code, out)
+		}
+	}
+	extra = nil
+	// The positive control: a caller whose environment is exactly the
+	// re-exec's, in its order, runs without being re-executed or refused.
+	// testguard.HomeEnv's own entries (its home and XDG directories), in the re-exec's order.
+	home := map[string]string{}
+	for _, kv := range testguard.HomeEnv(t) {
+		k, _, _ := strings.Cut(kv, "=")
+		home[k] = kv
+	}
+	exact := []string{"ADC_CLEAN_SHELL=1", "LANG=C", home["HOME"], "PATH=/usr/bin:/bin", "TMPDIR=" + t.TempDir()}
+	for _, k := range []string{"RUNTIME_DIR", "CONFIG_HOME", "DATA_HOME", "STATE_HOME", "CACHE_HOME"} {
+		if kv, ok := home["XDG"+"_"+k]; ok {
+			exact = append(exact, kv)
+		}
+	}
+	// direct runs the driver as that caller, fd 3 holding FD3 (nil: no fd 3).
+	direct := func(fd3 *string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), prefix, "--routes", "stub", "--project", "go-mini", "--case", "candidate", "--expect", "candidate", "--setup-only")
+		cmd.Dir = root
+		cmd.Env = exact
+		// No fd 3 is a closed one: an fd 3 the test itself inherited (make's) is not passed on.
+		cmd.ExtraFiles = []*os.File{nil}
+		if fd3 != nil {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.WriteString(*fd3); err != nil {
+				t.Fatal(err)
+			}
+			w.Close()
+			defer r.Close()
+			cmd.ExtraFiles = []*os.File{r}
+		}
+		out, err := cmd.CombinedOutput()
+		code := 0
+		if e, ok := err.(*exec.ExitError); ok {
+			code = e.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return string(out), code
+	}
+	none := "adc-credentials-end 0\x00"
+	if out, code := direct(&none); code != 0 || !strings.Contains(out, "installed-cycle: candidate: setup checked (--setup-only)") {
+		t.Errorf("an environment exactly the re-exec's: exit %d, %s", code, out)
+	}
+	// Astra #441 r3 High 1, Opus #441 r4 N2: fd 3's stream is checked whole
+	// before anything of it is kept or printed: records of ADC_CREDENTIAL_*
+	// names, each NUL-terminated, then the end record counting them, nothing
+	// after. Anything else refuses the run (exit 2), quoting none of it.
+	one := "ADC_CREDENTIAL_PROBE=" + credential + "\x00adc-credentials-end 1\x00"
+	if out, code := direct(&one); code != 0 || !strings.Contains(out, "installed-cycle: the caller's credentials, received on fd 3: ADC_CREDENTIAL_PROBE") || strings.Contains(out, credential) {
+		t.Errorf("one credential on fd 3: exit %d, %s", code, out)
+	}
+	if out, code := direct(nil); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: no list of credentials on fd 3") {
+		t.Errorf("no fd 3: exit %d, %s", code, out)
+	}
+	for name, fd3 := range map[string]string{
+		"Astra's: the credential again, as a record": "ADC_CREDENTIAL_PROBE=" + credential + "\x00" + credential + "\x00",
+		"another name":         "OTHER=" + credential + "\x00adc-credentials-end 1\x00",
+		"no =":                 "ADC_CREDENTIAL_PROBE" + credential + "\x00adc-credentials-end 1\x00",
+		"no end record":        "ADC_CREDENTIAL_PROBE=" + credential + "\x00",
+		"a count that is not":  "ADC_CREDENTIAL_PROBE=" + credential + "\x00adc-credentials-end 2\x00",
+		"a record after it":    "adc-credentials-end 0\x00ADC_CREDENTIAL_PROBE=" + credential + "\x00",
+		"an unterminated last": "ADC_CREDENTIAL_PROBE=" + credential + "\x00adc-credentials-end 1",
+		"an unterminated tail": "adc-credentials-end 0\x00ADC_CREDENTIAL_PROBE=" + credential,
+		"nothing":              "",
+	} {
+		if out, code := direct(&fd3); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: the credentials received on fd 3 are malformed") || strings.Contains(out, credential) || strings.Contains(out, "PROBE") {
+			t.Errorf("fd 3 with %s: exit %d, %s", name, code, out)
 		}
 	}
 
@@ -204,7 +368,7 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	}
 	sh := func(script string) string {
 		t.Helper()
-		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -284,6 +448,113 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.Contains(out, filepath.Join(runsDir, "att_1/x", name)) || !strings.HasSuffix(out, "rc=1") {
 		t.Errorf("a canary under the root's runs/: %q", out)
 	}
+
+	// Opus #438 N1: a credential in a container's config under the root's
+	// storage, or in a run file under runs/, is found (in the root's user
+	// namespace: the stand-in podman's unshare runs its command); any form
+	// of it counts (secrets.sh's forms), and a root without one passes.
+	secret := "c2VjcmV0LWZvci10aGUtcm9vdC1zY2FuLTAxMjM0NTY3"
+	if out := sh("PODMAN=" + fake + "; root_secret_scan " + made + " " + secret + " && echo none"); out != "none" {
+		t.Errorf("no secret under the root: %q", out)
+	}
+	for where, file := range map[string]string{
+		"a container's config": filepath.Join(made, "storage/overlay-containers/c1/userdata/config.json"),
+		"a run file":           filepath.Join(runsDir, "att_2/env"),
+	} {
+		write(t, file, `{"env":["ADC_CREDENTIAL_STUB=`+secret+`"]}`, 0o600)
+		out := sh("PODMAN=" + fake + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc")
+		if !strings.Contains(out, file) || !strings.HasSuffix(out, "rc=1") {
+			t.Errorf("the secret in %s: %q", where, out)
+		}
+		os.Remove(file)
+	}
+	write(t, filepath.Join(made, "storage/x"), "tail "+secret[len(secret)-16:]+"\n", 0o600)
+	if out := sh("PODMAN=" + fake + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=1") {
+		t.Errorf("a form of the secret (its last 16 characters): %q", out)
+	}
+	// Astra #440 H3: a podman that fails before the search runs (exit 1, no
+	// output, as a namespace-launch failure) is a scan error (3), never a
+	// clean scan, for either search.
+	broken := filepath.Join(t.TempDir(), "podman")
+	write(t, broken, "#!/bin/sh\nexit 1\n", 0o755)
+	for what, call := range map[string]string{"root_secret_scan": "root_secret_scan " + made + " " + secret, "root_canary_path": "root_canary_path " + made + " " + name} {
+		if out := sh("PODMAN=" + broken + "; rc=0; " + call + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+			t.Errorf("%s with a podman that never runs it: %q", what, out)
+		}
+	}
+	// Astra #441 High 2: a search that runs but cannot read a directory
+	// under the root (find fails, nothing printed) is a scan error (3) too,
+	// never a clean scan: each find's status is checked.
+	os.Remove(filepath.Join(made, "runs/att_1/x", name))
+	locked := filepath.Join(made, "storage/locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+		t.Errorf("root_canary_path over an unreadable directory: %q", out)
+	}
+	if out := sh("rc=0; canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+		t.Errorf("canary_path over an unreadable directory: %q", out)
+	}
+	if err := os.Chmod(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Opus #441 r3 L3: a launch that loses the patterns on their way in (no
+	// stdin, or only part of it) is grep's failure (2), never a clean scan.
+	for what, body := range map[string]string{"no stdin": "exec \"$@\" </dev/null", "one pattern of all": "head -n 1 | \"$@\""} {
+		lossy := filepath.Join(t.TempDir(), "podman")
+		write(t, lossy, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\n"+body+"\n", 0o755)
+		if out := sh("PODMAN=" + lossy + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=2") {
+			t.Errorf("root_secret_scan with %s: %q", what, out)
+		}
+	}
+	// Astra #441 r2 High 1: both scans require the root's runs/: a link that
+	// cannot be read (a readlink that fails), or one turned into a loop
+	// after the root was made, is a scan error (3), never a search without
+	// runs/.
+	for what, call := range map[string]string{"root_secret_scan": "root_secret_scan " + made + " " + secret, "root_canary_path": "root_canary_path " + made + " " + name} {
+		if out := sh("PODMAN=" + fake + "; readlink() { return 1; }; rc=0; " + call + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+			t.Errorf("%s with a readlink that fails: %q", what, out)
+		}
+	}
+	link := filepath.Join(made, "runs")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(link, link); err != nil {
+		t.Fatal(err)
+	}
+	for what, call := range map[string]string{"root_secret_scan": "root_secret_scan " + made + " " + secret, "root_canary_path": "root_canary_path " + made + " " + name} {
+		if out := sh("PODMAN=" + fake + "; rc=0; " + call + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+			t.Errorf("%s with runs/ a loop: %q", what, out)
+		}
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	// The search beside WORK too: a parent it may enter but not list.
+	hidden := filepath.Join(t.TempDir(), "unlisted")
+	if err := os.MkdirAll(filepath.Join(hidden, "w"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o700) })
+	if out := sh("rc=0; canary_path " + filepath.Join(hidden, "w") + " " + name + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+		t.Errorf("canary_path beside a directory it cannot list: %q", out)
+	}
 }
 
 // Mythos #435 L1: each read of the wait first checks that adcd still runs;
@@ -305,5 +576,54 @@ echo "read $(wc -l <"$work/reads")"`
 		if !strings.Contains(string(out), want) || (name == "exited" && strings.Contains(string(out), "read ")) {
 			t.Errorf("%s: %s", name, out)
 		}
+	}
+}
+
+// Opus #441 r3 H1, the set's side: installed-cycle-set.sh re-executes itself
+// clean too, so the caller's shell state (xtrace, TMOUT, an exported grep
+// function, any other variable) reaches neither its output nor the driver
+// it runs (a stand-in that records its own environment); and a marker set
+// by its caller still meets the check (exit 2, named).
+func TestInstalledCycleSetRunsClean(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), "prefix")
+	environ := filepath.Join(t.TempDir(), "environ")
+	write(t, filepath.Join(prefix, "lib/adc/scripts/installed-cycle.sh"), `#!/bin/sh
+cat /proc/$$/environ >>`+environ+`
+printf '\n--\n' >>`+environ+`
+case "$*" in *nonexistent*) echo "installed-cycle: could_not_run: rootless Podman (/nonexistent/podman) is required"; exit 2 ;; esac
+`, 0o755)
+	for _, s := range []string{"lib/secrets.sh", "lib/sandbox-root.sh"} {
+		b, err := os.ReadFile("../../scripts/" + s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(prefix, "lib/adc/scripts", s), string(b), 0o644)
+	}
+	run := func(extra ...string) (string, error) {
+		cmd := exec.Command("../../scripts/installed-cycle-set.sh", "setup", prefix)
+		cmd.Env = append(append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+t.TempDir()), extra...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := run("SHELLOPTS=xtrace", "TMOUT=1", "BASH_FUNC_grep%%=() { return 1; }", "CALLERS_OWN=PROBE-value")
+	if err != nil || !strings.Contains(out, "installed-cycle-set: a missing prerequisite refuses the case, exit 2, named") {
+		t.Errorf("the set with a caller's shell state: %v %s", err, out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if (strings.HasPrefix(l, "+") && l != "+ set +o xtrace +o verbose") || strings.Contains(l, "PROBE-value") {
+			t.Errorf("a trace or the caller's value on the set's output: %q", l)
+		}
+	}
+	seen, err := os.ReadFile(environ)
+	if err != nil || strings.Count(string(seen), "--") != 2 {
+		t.Fatalf("the driver's environment, twice: %v %q", err, seen)
+	}
+	for _, leak := range []string{"SHELLOPTS", "TMOUT", "BASH_FUNC_grep", "CALLERS_OWN", "PROBE-value", "ADC_CLEAN_SHELL"} {
+		if strings.Contains(string(seen), leak) {
+			t.Errorf("%s reached the driver's environment", leak)
+		}
+	}
+	if out, err := run("ADC_CLEAN_SHELL=1", "OTHER=x"); err == nil || !strings.Contains(out, "installed-cycle-set: could_not_run: the environment holds more than the re-exec's allowlist (ADC_CLEAN_SHELL set by the caller)") {
+		t.Errorf("the set with its marker set by the caller: %v %s", err, out)
 	}
 }

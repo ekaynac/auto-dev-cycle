@@ -40,6 +40,27 @@
 #                               (PARENT/adc-cycle.*), what still runs on one
 #                               stopped first: only the processes it recorded
 #                               (record_pid WORK PID)
+#   root_canary_path ROOT NAME  canary_path over the root and its runs/ (3:
+#                               runs/ unresolved or the search never ran)
+#   root_secret_scan ROOT SECRET
+#                               no form of SECRET (secrets.sh's forms) in any
+#                               file under the root or its runs/, searched in
+#                               the root's user namespace: a container's
+#                               config and environment (storage/
+#                               overlay-containers) and its run files
+#                               (runs/, which must resolve: runs_required);
+#                               prints each file that holds one and
+#                               fails 1; 2: grep failed; 3: runs/ unresolved
+#                               or the search never ran
+#
+# Ownership (the lead's ruling on Mythos #435 M1): a leftover's owner is a
+# pid with its start time (.owner, .pids; owner_of), not a locked manifest
+# like scripts/test-sandbox.sh's. Several drivers' runs share this host; a
+# lock held by no one cannot say whether its owner died or never took it,
+# and a bare pid may be reused. Only the pid with the start time it had
+# tells a dead owner from a live one, which is what a sweep must know
+# before it kills or removes anything (the restart failures of #435, lesson
+# 7). The two schemes stay apart on purpose.
 
 host_arch() {
   case "$(uname -m)" in
@@ -84,11 +105,23 @@ sandbox_root() {
 
 # runs_of ROOT: the directory ROOT/runs links to, only when it is one
 # sandbox_root makes (/dev/shm/adcrXXXXXX, a directory); else nothing, so
-# no removal ever follows the link elsewhere.
+# no removal ever follows the link elsewhere. The cleanup's: permissive.
+# The scans use runs_required instead.
 runs_of() {
   local runs
   runs="$(readlink "$1/runs" 2>/dev/null)" || return 0
   if [[ "$runs" =~ ^/dev/shm/adcr[A-Za-z0-9]{6}$ && -d "$runs" && ! -L "$runs" ]]; then echo "$runs"; fi
+}
+
+# runs_required ROOT: runs_of ROOT, which every root sandbox_root makes
+# resolves; nothing (a link that cannot be read, a loop, another path) is 3:
+# a scan that would leave runs/ out never runs (Astra #441 r2 High 1; one
+# validator, Astra #441 r3 M4).
+runs_required() {
+  local runs
+  runs="$(runs_of "$1")"
+  [[ -n "$runs" ]] || { echo "runs_required: $1/runs does not resolve to a directory /dev/shm/adcrXXXXXX" >&2; return 3; }
+  echo "$runs"
 }
 
 # stale DIR: DIR is ours and records an owner (.owner) that is gone.
@@ -128,13 +161,54 @@ sandbox_roots_stale() {
 root_canary_path() {
   local root="$1" name="$2" runs d rc
   [[ -d "$root" && -n "$name" && "$name" != */* ]] || { echo "root_canary_path: ROOT must exist, NAME be a plain name" >&2; return 2; }
-  runs="$(runs_of "$root")"
-  for d in "$root" ${runs:+"$runs"}; do
+  runs="$(runs_required "$root")" || return 3
+  for d in "$root" "$runs"; do
     rc=0
     # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments
-    root_podman "$root" unshare bash -c "$(declare -f canary_path)"'; canary_path "$1" "$2"' canary_path "$d" "$name" || rc=$?
+    root_scanned "$root" "$(declare -f canary_path)"'; canary_path "$1" "$2"' "$d" "$name" </dev/null || rc=$?
     ((rc == 0)) || return "$rc"
   done
+}
+
+# root_scanned ROOT SCRIPT ARGS...: runs SCRIPT (bash, its ARGS as $1...) in
+# the root's user namespace, its stdin passed on, and returns SCRIPT's own
+# status, which a last line of its output reports ("adc-scanned N"); that
+# line is removed from the output it prints. A launch that never ran SCRIPT
+# (podman unshare failing, no line) is 3, never a finding or a clean search
+# (Astra #440 H3).
+root_scanned() {
+  local root="$1" script="$2" out rc=0 last n
+  shift 2
+  # SCRIPT in a subshell, so its own exit still reaches the line that reports it.
+  # shellcheck disable=SC2016 # the inner bash's own expansions
+  out="$(root_podman "$root" unshare bash -c '( '"$script"$'\n'' ); rc=$?; printf "adc-scanned %d\n" "$rc"' -- "$@")" || rc=$?
+  last="${out##*$'\n'}"
+  [[ $rc == 0 && "$last" =~ ^adc-scanned\ ([0-9]+)$ ]] || { echo "root_scanned: the search did not run in $root (exit $rc)" >&2; return 3; }
+  n="${BASH_REMATCH[1]}"
+  if [[ "$out" == *$'\n'* ]]; then printf '%s\n' "${out%$'\n'*}"; fi
+  return "$n"
+}
+
+# root_secret_scan ROOT SECRET (Opus #438 N1): see the header. Devices and
+# fifos are skipped (a container's run files may hold one). 1: a file holds
+# a form of SECRET (printed); 2: grep failed; 3: the search never ran.
+root_secret_scan() {
+  local root="$1" secret="$2" runs found pats n rc=0
+  [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
+  runs="$(runs_required "$root")" || return 3
+  pats="$(forms "$secret")"
+  n="$(grep -c '' <<<"$pats")"
+  # Inside: the patterns come on stdin (never an argument), and fewer than the
+  # N sent is grep's failure (2), never an empty, clean search (Opus #441 r3
+  # L3); grep's "nothing found" (1) is the clean result (0), a match is 1,
+  # anything else grep's failure (2).
+  # shellcheck disable=SC2016 # the inner bash's own expansions
+  found="$(printf '%s\n' "$pats" | root_scanned "$root" 'n="$1"; shift; p="$(cat)"; [[ -n "$p" && "$(grep -c "" <<<"$p")" -ge "$n" ]] || exit 2; rc=0; grep -rlaF -D skip -f - -- "$@" <<<"$p" || rc=$?; case $rc in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac' "$n" "$root" "$runs")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) printf '%s\n' "$found"; return 1 ;;
+    *) return "$rc" ;;
+  esac
 }
 
 # work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory

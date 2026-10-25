@@ -35,7 +35,7 @@ func TestInstalledCycleWorkFilesystem(t *testing.T) {
 	} {
 		write(t, filepath.Join(prefix, name), content, 0o755)
 	}
-	for _, s := range []string{"installed-cycle.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh"} {
+	for _, s := range []string{"installed-cycle.sh", "lib/clean-shell.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh"} {
 		b, err := os.ReadFile("../../scripts/" + s)
 		if err != nil {
 			t.Fatal(err)
@@ -47,10 +47,13 @@ func TestInstalledCycleWorkFilesystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The shim reads which paths are tmpfs from a file: the driver re-executes
+	// itself under env -i (Opus #441 r3 H1), so no variable of the test's reaches it.
+	fakeTmpfs := filepath.Join(root, "fake-tmpfs")
 	write(t, filepath.Join(shims, "stat"), `#!/bin/bash
 if [[ "$1" == -f ]]; then
   p="${@: -1}"
-  IFS=: read -ra tmpfs <<<"${FAKE_TMPFS:-}"
+  IFS=: read -ra tmpfs <`+fakeTmpfs+`
   for d in "${tmpfs[@]}"; do [[ -n "$d" && "$p" == "$d"* ]] && { echo tmpfs; exit 0; }; done
   echo overlayfs
   exit 0
@@ -61,12 +64,13 @@ exec `+realStat+` "$@"
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	run := func(fakeTmpfs string) (string, int) {
+	run := func(tmpfsPaths string) (string, int) {
 		t.Helper()
 		os.Remove(marker)
+		write(t, fakeTmpfs, tmpfsPaths+"\n", 0o600)
 		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), prefix, "--routes", "stub", "--project", "go-mini", "--case", "preflight", "--keep")
 		cmd.Dir = root
-		cmd.Env = append(testguard.HomeEnv(t), "PATH="+shims+":/usr/bin:/bin", "TMPDIR="+tmp, "FAKE_TMPFS="+fakeTmpfs)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH="+shims+":/usr/bin:/bin", "TMPDIR="+tmp)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {

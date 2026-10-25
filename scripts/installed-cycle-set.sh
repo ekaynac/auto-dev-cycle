@@ -18,6 +18,17 @@
 #       the set, exit 2, naming it, before any case runs past its setup.
 #       It prints one summary row per case (a Markdown table) and exits 1
 #       when any case failed.
+#
+# The clean shell (scripts/lib/clean-shell.sh: the drivers' one prelude),
+# first, before any helper, tracing off before anything is traced; its path
+# by parameter expansion alone.
+set +o xtrace +o verbose
+clean_shell_tag=installed-cycle-set
+adc_here="${BASH_SOURCE[0]%/*}"
+[[ "$adc_here" != "${BASH_SOURCE[0]}" ]] || adc_here=.
+# shellcheck source=scripts/lib/clean-shell.sh
+. "$adc_here/lib/clean-shell.sh"
+unset adc_here
 set -euo pipefail
 
 die() { echo "installed-cycle-set: $*" >&2; exit 1; }
@@ -26,11 +37,15 @@ mode="$1" prefix="$(cd "$2" && pwd)"
 shift 2
 driver="$prefix/lib/adc/scripts/installed-cycle.sh"
 [[ -x "$driver" ]] || die "$driver is not installed"
+SECRETS_TAG=installed-cycle-set
+# shellcheck source=scripts/lib/secrets.sh
+. "$prefix/lib/adc/scripts/lib/secrets.sh"
 cwd="$(mktemp -d)"
 root=""
 PODMAN=/usr/bin/podman
 # shellcheck source=scripts/lib/sandbox-root.sh
 . "$prefix/lib/adc/scripts/lib/sandbox-root.sh"
+# cleanup's inputs: root cwd (both set above, before its trap; Opus #441 M2)
 # shellcheck disable=SC2317,SC2329  # invoked only by the EXIT trap
 cleanup() {
   if [[ -n "$root" ]]; then sandbox_root_remove "$root"; fi
