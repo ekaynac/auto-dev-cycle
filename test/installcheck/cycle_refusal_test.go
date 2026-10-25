@@ -182,15 +182,16 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	extra = nil
 	// The positive control: a caller whose environment is exactly the
 	// re-exec's, in its order, runs without being re-executed or refused.
+	// testguard.HomeEnv's own entries (its home and XDG directories), in the re-exec's order.
 	home := map[string]string{}
 	for _, kv := range testguard.HomeEnv(t) {
-		k, v, _ := strings.Cut(kv, "=")
-		home[k] = v
+		k, _, _ := strings.Cut(kv, "=")
+		home[k] = kv
 	}
-	exact := []string{"ADC_CLEAN_SHELL=1", "LANG=C", "HOME=" + home["HOME"], "PATH=/usr/bin:/bin", "TMPDIR=" + t.TempDir()}
-	for _, k := range []string{"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
-		if v, ok := home[k]; ok {
-			exact = append(exact, k+"="+v)
+	exact := []string{"ADC_CLEAN_SHELL=1", "LANG=C", home["HOME"], "PATH=/usr/bin:/bin", "TMPDIR=" + t.TempDir()}
+	for _, k := range []string{"RUNTIME_DIR", "CONFIG_HOME", "DATA_HOME", "STATE_HOME", "CACHE_HOME"} {
+		if kv, ok := home["XDG"+"_"+k]; ok {
+			exact = append(exact, kv)
 		}
 	}
 	direct := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), prefix, "--routes", "stub", "--project", "go-mini", "--case", "candidate", "--expect", "candidate", "--setup-only")
