@@ -3,7 +3,10 @@
 # The only entry point for humans and CI (docs/design/m0/01 "Build and CI").
 # Targets that are not built yet are added by the PR that builds them.
 
-SHELL := /usr/bin/env bash
+# SHELLOPTS or BASHOPTS from the caller (noexec: bash runs nothing and
+# succeeds) never reach a recipe's bash, nor a $(shell ...)'s (Opus #441 r4
+# N1; make 4.3's unexport does not cover $(shell ...)).
+SHELL := /usr/bin/env -u SHELLOPTS -u BASHOPTS bash
 .SHELLFLAGS := -euo pipefail -c
 .DEFAULT_GOAL := help
 
