@@ -4,7 +4,7 @@
 // server, scripted per scenario, the upstream of the real gateway and the
 // real http-chat adapter in stub mode. It has no dependency beyond Node.
 //
-//   node server.mjs --scenario FILE [--listen HOST:PORT|SOCKET] [--log FILE] [--barriers DIR]
+//   node server.mjs --scenario FILE [--listen HOST:PORT|SOCKET] [--log FILE] [--barriers DIR] [--answer-by-prompt FILE]
 //
 // It prints "listening <base URL>" once ready (the base URL ends in /v1). It
 // listens on loopback only (127.0.0.1, ::1 or localhost) or on a Unix socket
@@ -52,7 +52,20 @@
 // barrier, and each usage query with its status. It holds at most maxLog
 // bytes: past that, a request is refused with a 500 and one "log_full" entry
 // is written, so no body is ever truncated.
+//
+// --answer-by-prompt FILE (the live-route rehearsal's reviewer
+// qualification only, make installed-cycle-rehearsal; #226 entry 201; no
+// scenario can ask for it, and the stub set never passes it): FILE is
+// {"model": MODEL, "answers": {DIGEST: DECISION}}, both plain objects,
+// mapping a prompt's digest ("sha256:" and the hex of a request's first
+// user message) to "go" or "no_go"; a request of MODEL alone whose prompt
+// it names is answered with that decision, logged with "answered_by_prompt",
+// and is no call of its model's script. Any other model's requests, a
+// builder's among them, get their scenario's replies. Which model that is
+// is the file's choice: the rehearsal names its reviewer's (stub-reviewer-1),
+// so its map never steers a build (Opus #441 L2, r2 N2).
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -130,8 +143,14 @@ async function read(req) {
 }
 
 /** start checks and serves scenario (an object) and resolves to {base, close}. */
-export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = ".", maxLog = 256 << 20 }) {
+export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = ".", maxLog = 256 << 20, answers = null }) {
   check(scenario);
+  const plain = (o) => o !== null && typeof o === "object" && Object.getPrototypeOf(o) === Object.prototype;
+  if (answers !== null && !(plain(answers) && Object.keys(answers).sort().join() === "answers,model" &&
+    typeof answers.model === "string" && answers.model !== "" && plain(answers.answers) &&
+    Object.entries(answers.answers).every(([k, v]) => /^sha256:[0-9a-f]{64}$/.test(k) && (v === "go" || v === "no_go")))) {
+    throw new Error("--answer-by-prompt: {\"model\": the reviewer's model, \"answers\": a map of sha256:HEX to go or no_go}");
+  }
   const calls = new Map(); // model -> calls served
   const usages = new Map(); // request id -> usage
   const byCall = new Map(); // X-Adc-Call -> its requests: {id}, the id set once the body is read
@@ -188,6 +207,21 @@ export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = 
       const doc = await read(req);
       const id = `req-${++served}`;
       if (serving) serving.id = id;
+      const prompt = (doc.messages ?? []).find((m) => m?.role === "user")?.content;
+      const key = typeof prompt === "string" ? `sha256:${createHash("sha256").update(prompt).digest("hex")}` : "";
+      const answer = answers && doc.model === answers.model && Object.hasOwn(answers.answers, key) ? answers.answers[key] : undefined;
+      if (answer) {
+        if (!record({ kind: "request", request_id: id, model: doc.model, answered_by_prompt: answer, adc_call: adcCall ?? null, body: doc })) {
+          return send(res, 500, { error: { message: `scenario ${scenario.name}: the log is full` } });
+        }
+        const decision = answer === "go" ? { decision: "go", summary: "The change does what the task asks.", findings: [] }
+          : { decision: "no_go", summary: "The change is wrong.", findings: [{ severity: "high", title: "A defect", detail: "The change does not do what the task asks." }] };
+        const b = body({ decision }, id);
+        usages.set(id, b.usage);
+        send(res, 200, b);
+        record({ kind: "usage", request_id: id, usage: b.usage, delivered: "body" });
+        return;
+      }
       const script = scenario.calls[doc.model];
       const n = calls.get(doc.model) ?? 0;
       calls.set(doc.model, n + 1);
@@ -261,12 +295,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const file = flag(args, "--scenario");
   if (!file) {
-    process.stderr.write("usage: server.mjs --scenario FILE [--listen HOST:PORT|SOCKET] [--log FILE] [--barriers DIR]\n");
+    process.stderr.write("usage: server.mjs --scenario FILE [--listen HOST:PORT|SOCKET] [--log FILE] [--barriers DIR] [--answer-by-prompt FILE]\n");
     process.exit(2);
   }
   let s;
   try {
-    s = await start({ scenario: JSON.parse(readFileSync(file, "utf8")), listen: flag(args, "--listen"), log: flag(args, "--log"), barriers: flag(args, "--barriers") });
+    s = await start({ scenario: JSON.parse(readFileSync(file, "utf8")), listen: flag(args, "--listen"), log: flag(args, "--log"), barriers: flag(args, "--barriers"),
+      answers: flag(args, "--answer-by-prompt") ? JSON.parse(readFileSync(flag(args, "--answer-by-prompt"), "utf8")) : null });
   } catch (err) {
     process.stderr.write(`stub provider: ${err.message ?? err}\n`);
     process.exit(2);
