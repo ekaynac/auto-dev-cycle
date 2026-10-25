@@ -54,36 +54,42 @@
 # bounded. Exit 0 only when every check holds; 1 when one fails; 2 when the
 # case cannot run.
 #
-# The clean shell (Opus #441 r3 H1). Nothing of the caller's shell state
-# runs past the next lines: the driver re-executes itself once, under env
-# -i, with only the non-secret variables below and the marker that it has
-# (ADC_CLEAN_SHELL), in a bash that reads no startup file. Shell options
-# (SHELLOPTS=xtrace would print every secret), TMOUT (it would end a read
-# loop early), exported functions (BASH_FUNC_grep%% would shadow grep) and
-# every other variable of the caller's stay behind; clean_shell (secrets.sh)
-# then checks the result, so a caller that sets the marker itself gains
-# nothing. The registry credentials a live run needs (ADC_CREDENTIAL_*)
-# cross on file descriptor 3, written and read by builtins only, never in an
-# argv or the new environment. The trust boundary: BASH_ENV, PATH and the
-# executables on it (env, bash), and the caller's shell up to this re-exec
-# (an exported function named set or exec), are the operator's: they run
-# before the script can guard.
+# The clean shell (Opus #441 r3 H1, r4 N3). Nothing of the caller's shell
+# state runs past the next lines: unless this process's own environment, as
+# it was exec'd (/proc/$$/environ, read by a redirection, which no function
+# can shadow), is exactly the re-exec's (the marker ADC_CLEAN_SHELL=1, LANG=C
+# and the variables below, in that order), the driver re-executes itself
+# under env -i, with only those, in a bash that reads no startup file.
+# Shell options (SHELLOPTS=xtrace would print every secret), TMOUT (it would
+# end a read loop early), exported functions (BASH_FUNC_grep%% would shadow
+# grep) and every other variable of the caller's stay behind. A caller that
+# sets the marker itself, with anything more, is refused (exit 2). The
+# registry credentials a live run needs (ADC_CREDENTIAL_*) cross on file
+# descriptor 3, written and read by builtins only, never in an argv or the
+# new environment.
+# The trust boundary: BASH_ENV, PATH and the executables on it (env, bash),
+# SHELLOPTS or BASHOPTS with noexec (bash then runs nothing; the Makefile's
+# shell drops both), and, before the re-exec, functions named set, exec and
+# printf are the operator's: they run before the script can guard.
 set +o xtrace +o verbose
-if [[ -z "${ADC_CLEAN_SHELL:-}" ]]; then
+{ adc_environ="$(</proc/$$/environ)"; } 2>/dev/null
+if [[ "$adc_environ" != "ADC_CLEAN_SHELL=1LANG=C${HOME+HOME=$HOME}${PATH+PATH=$PATH}${TMPDIR+TMPDIR=$TMPDIR}${XDG_RUNTIME_DIR+XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR}${XDG_CONFIG_HOME+XDG_CONFIG_HOME=$XDG_CONFIG_HOME}${XDG_DATA_HOME+XDG_DATA_HOME=$XDG_DATA_HOME}${XDG_STATE_HOME+XDG_STATE_HOME=$XDG_STATE_HOME}${XDG_CACHE_HOME+XDG_CACHE_HOME=$XDG_CACHE_HOME}" ]]; then
+  if [[ -n "${ADC_CLEAN_SHELL:-}" ]]; then
+    exec env -i ${PATH+"PATH=$PATH"} bash --noprofile --norc -c 'echo "installed-cycle: could_not_run: the environment holds more than the re-exec'"'"'s allowlist (ADC_CLEAN_SHELL set by the caller)" >&2; exit 2'
+  fi
   exec 3< <(for v in "${!ADC_CREDENTIAL_@}"; do printf '%s=%s\0' "$v" "${!v}"; done)
   exec env -i ADC_CLEAN_SHELL=1 LANG=C ${HOME+"HOME=$HOME"} ${PATH+"PATH=$PATH"} ${TMPDIR+"TMPDIR=$TMPDIR"} \
     ${XDG_RUNTIME_DIR+"XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"} ${XDG_CONFIG_HOME+"XDG_CONFIG_HOME=$XDG_CONFIG_HOME"} \
     ${XDG_DATA_HOME+"XDG_DATA_HOME=$XDG_DATA_HOME"} ${XDG_STATE_HOME+"XDG_STATE_HOME=$XDG_STATE_HOME"} \
     ${XDG_CACHE_HOME+"XDG_CACHE_HOME=$XDG_CACHE_HOME"} bash --noprofile --norc "$0" "$@"
 fi
-[[ -z "$(declare -F)" ]] || { echo "installed-cycle: could_not_run: a shell function is defined before the driver's own" >&2; exit 2; }
+unset adc_environ ADC_CLEAN_SHELL
 set -euo pipefail
 
 SECRETS_TAG=installed-cycle
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/secrets.sh
 . "$here/lib/secrets.sh"
-clean_shell
 # The caller's registry credentials, received on fd 3 (by builtins), each
 # redacted from every line from here on; names only ever printed.
 caller_cred=()

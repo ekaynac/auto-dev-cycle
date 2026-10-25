@@ -169,24 +169,36 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	if out, code := run("--case", credential); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: no case [redacted]") || strings.Contains(out, credential) {
 		t.Errorf("a refusal naming the caller's credential: exit %d, %s", code, out)
 	}
-	// The marker set by the caller skips the re-exec, never the check: an
-	// extra variable, or a function, refuses the run (exit 2), named.
-	for _, c := range []struct{ env, want string }{
-		{"OTHER=x", "installed-cycle: could_not_run: the shell's environment holds more than the re-exec's allowlist: OTHER"},
-		{"BASH_FUNC_grep%%=() { return 1; }", "installed-cycle: could_not_run: a shell function is defined before the driver's own"},
-	} {
-		extra = []string{"ADC_CLEAN_SHELL=1", c.env}
-		if out, code := run("--setup-only"); code != 2 || !strings.Contains(out, c.want) {
-			t.Errorf("the marker with %s: exit %d, %s", c.env, code, out)
+	// Opus #441 r4 N3: the marker never skips the re-exec by itself. Only an
+	// environment exactly the re-exec's (read from /proc/PID/environ) does;
+	// the marker with anything more (a variable, an exported function
+	// shadowing a builtin the driver uses, TMOUT) refuses the run (exit 2).
+	for _, env := range []string{"OTHER=x", "BASH_FUNC_grep%%=() { return 1; }", "BASH_FUNC_declare%%=() { :; }", "BASH_FUNC_printf%%=() { :; }", "TMOUT=1"} {
+		extra = []string{"ADC_CLEAN_SHELL=1", env, "ADC_CREDENTIAL_PROBE=" + credential}
+		if out, code := run("--setup-only"); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: the environment holds more than the re-exec's allowlist (ADC_CLEAN_SHELL set by the caller)") || strings.Contains(out, credential) {
+			t.Errorf("the marker with %s: exit %d, %s", env, code, out)
 		}
 	}
-	// The variables that change how bash itself behaves are unset after the
-	// re-exec, so even under a caller's own marker they do not refuse it.
-	extra = []string{"ADC_CLEAN_SHELL=1", "TMOUT=1", "CDPATH=/nonexistent", "GLOBIGNORE=*"}
-	if out, code := run("--setup-only"); code != 0 {
-		t.Errorf("the marker with TMOUT, CDPATH and GLOBIGNORE: exit %d, %s", code, out)
-	}
 	extra = nil
+	// The positive control: a caller whose environment is exactly the
+	// re-exec's, in its order, runs without being re-executed or refused.
+	home := map[string]string{}
+	for _, kv := range testguard.HomeEnv(t) {
+		k, v, _ := strings.Cut(kv, "=")
+		home[k] = v
+	}
+	exact := []string{"ADC_CLEAN_SHELL=1", "LANG=C", "HOME=" + home["HOME"], "PATH=/usr/bin:/bin", "TMPDIR=" + t.TempDir()}
+	for _, k := range []string{"XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		if v, ok := home[k]; ok {
+			exact = append(exact, k+"="+v)
+		}
+	}
+	direct := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), prefix, "--routes", "stub", "--project", "go-mini", "--case", "candidate", "--expect", "candidate", "--setup-only")
+	direct.Dir = root
+	direct.Env = exact
+	if out, err := direct.CombinedOutput(); err != nil || !strings.Contains(string(out), "installed-cycle: candidate: setup checked (--setup-only)") {
+		t.Errorf("an environment exactly the re-exec's: %v %s", err, out)
+	}
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
 	// directory, each recording its owner (pid and start time): the next run
@@ -557,7 +569,7 @@ case "$*" in *nonexistent*) echo "installed-cycle: could_not_run: rootless Podma
 			t.Errorf("%s reached the driver's environment", leak)
 		}
 	}
-	if out, err := run("ADC_CLEAN_SHELL=1", "OTHER=x"); err == nil || !strings.Contains(out, "installed-cycle-set: could_not_run: the shell's environment holds more than the re-exec's allowlist: OTHER") {
+	if out, err := run("ADC_CLEAN_SHELL=1", "OTHER=x"); err == nil || !strings.Contains(out, "installed-cycle-set: could_not_run: the environment holds more than the re-exec's allowlist (ADC_CLEAN_SHELL set by the caller)") {
 		t.Errorf("the set with its marker set by the caller: %v %s", err, out)
 	}
 }
