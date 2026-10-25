@@ -146,29 +146,28 @@ func TestProducersThatFailRefuse(t *testing.T) {
 			t.Errorf("%s: %s", name, out)
 		}
 	}
-	// base_remote: an overlay whose hostile files cannot all be listed fails the base remote.
+	// base_remote: a listing of the overlay's hostile files that fails (a
+	// find that dies after printing part of its list) fails the base remote,
+	// never a remote with some of them left unrenamed.
 	repo, task, overlay := filepath.Join(dir, "repo"), filepath.Join(dir, "task"), filepath.Join(dir, "overlay")
 	write(t, filepath.Join(repo, "go.mod"), "module m\n", 0o644)
 	write(t, filepath.Join(task, "task.json"), "{}", 0o644)
 	write(t, filepath.Join(overlay, "a.go.hostile"), "package m\n", 0o644)
-	if err := os.MkdirAll(filepath.Join(overlay, "locked"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	write(t, filepath.Join(overlay, "b.go.hostile"), "package m\n", 0o644)
+	bin := filepath.Join(dir, "bin")
+	write(t, filepath.Join(bin, "find"), "#!/bin/sh\ncase \"$*\" in *hostile*) [ -e \"$D/find-dies\" ] && { echo ./a.go.hostile; exit 1; } ;; esac\nexec /usr/bin/find \"$@\"\n", 0o755)
 	run := func() (string, error) {
 		// As the driver calls it: in a checked assignment, where errexit does not reach inside.
 		cmd := exec.Command("bash", "-c", `set -euo pipefail; . ../../scripts/lib/base-remote.sh; rm -rf "$D/remote.git"; tree="$(base_remote "$D/repo" "$D/task" "$D/overlay" "$D/remote.git")" || exit 7`)
-		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH="+bin+":/usr/bin:/bin", "D="+dir)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
 	if out, err := run(); err != nil {
 		t.Fatalf("the positive control: %v %s", err, out)
 	}
-	if err := os.Chmod(filepath.Join(overlay, "locked"), 0o300); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(overlay, "locked"), 0o700) })
+	write(t, filepath.Join(dir, "find-dies"), "", 0o600)
 	if out, err := run(); err == nil {
-		t.Errorf("an overlay that cannot be listed: %s", out)
+		t.Errorf("a listing of the hostile files that fails: %s", out)
 	}
 }
