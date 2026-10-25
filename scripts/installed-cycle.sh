@@ -53,19 +53,57 @@
 # logs (out/adcd-1.log, out/adcd-2.log) included. --routes live is P25's. Every wait is
 # bounded. Exit 0 only when every check holds; 1 when one fails; 2 when the
 # case cannot run.
+#
+# The clean shell (Opus #441 r3 H1). Nothing of the caller's shell state
+# runs past the next lines: the driver re-executes itself once, under env
+# -i, with only the non-secret variables below and the marker that it has
+# (ADC_CLEAN_SHELL), in a bash that reads no startup file. Shell options
+# (SHELLOPTS=xtrace would print every secret), TMOUT (it would end a read
+# loop early), exported functions (BASH_FUNC_grep%% would shadow grep) and
+# every other variable of the caller's stay behind; clean_shell (secrets.sh)
+# then checks the result, so a caller that sets the marker itself gains
+# nothing. The registry credentials a live run needs (ADC_CREDENTIAL_*)
+# cross on file descriptor 3, written and read by builtins only, never in an
+# argv or the new environment. The trust boundary: BASH_ENV, PATH and the
+# executables on it (env, bash), and the caller's shell up to this re-exec
+# (an exported function named set or exec), are the operator's: they run
+# before the script can guard.
+set +o xtrace +o verbose
+if [[ -z "${ADC_CLEAN_SHELL:-}" ]]; then
+  exec 3< <(for v in "${!ADC_CREDENTIAL_@}"; do printf '%s=%s\0' "$v" "${!v}"; done)
+  exec env -i ADC_CLEAN_SHELL=1 LANG=C ${HOME+"HOME=$HOME"} ${PATH+"PATH=$PATH"} ${TMPDIR+"TMPDIR=$TMPDIR"} \
+    ${XDG_RUNTIME_DIR+"XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"} ${XDG_CONFIG_HOME+"XDG_CONFIG_HOME=$XDG_CONFIG_HOME"} \
+    ${XDG_DATA_HOME+"XDG_DATA_HOME=$XDG_DATA_HOME"} ${XDG_STATE_HOME+"XDG_STATE_HOME=$XDG_STATE_HOME"} \
+    ${XDG_CACHE_HOME+"XDG_CACHE_HOME=$XDG_CACHE_HOME"} bash --noprofile --norc "$0" "$@"
+fi
+[[ -z "$(declare -F)" ]] || { echo "installed-cycle: could_not_run: a shell function is defined before the driver's own" >&2; exit 2; }
 set -euo pipefail
 
 SECRETS_TAG=installed-cycle
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/secrets.sh
 . "$here/lib/secrets.sh"
+clean_shell
+# The caller's registry credentials, received on fd 3 (by builtins), each
+# redacted from every line from here on; names only ever printed.
+caller_cred=()
+if [[ -e /proc/self/fd/3 ]]; then
+  while IFS= read -r -d '' v <&3; do
+    caller_cred+=("$v")
+    if [[ -n "${v#*=}" ]]; then known_text "${v#*=}"; fi
+  done
+  exec 3<&-
+fi
+if ((${#caller_cred[@]})); then echo "installed-cycle: the caller's credentials, received on fd 3: $(for v in "${caller_cred[@]}"; do printf '%s ' "${v%%=*}"; done)" >&2; fi
 # shellcheck source=scripts/lib/base-remote.sh
 . "$here/lib/base-remote.sh"
 # shellcheck source=scripts/lib/sandbox-root.sh
 . "$here/lib/sandbox-root.sh"
 
 cannot() {
-  echo "installed-cycle: could_not_run: $*" >&2
+  local msg="$*"
+  redact msg
+  echo "installed-cycle: could_not_run: $msg" >&2
   exit 2
 }
 usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]"; }

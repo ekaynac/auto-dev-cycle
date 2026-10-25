@@ -108,18 +108,30 @@ scan() {
 # Opus #441 M1). Then it execs CMD. Run it in a subshell: ( clean_exec ... )
 # & leaves the caller's environment as it was, and $! is CMD's pid.
 clean_exec() {
-  local n="$1" v name last="" extra=()
+  local n="$1" v names=() extra rc=0
   shift
   local pairs=("${@:1:n}")
   shift "$n"
-  local -A allow=([SHLVL]=1 [_]=1)
   while IFS= read -r v; do unset -f "$v" 2>/dev/null || true; done < <(declare -Fx | sed 's/^declare -[a-zA-Z]* //')
   while IFS= read -r v; do unset "$v" 2>/dev/null || true; done < <(compgen -e)
   for v in "${pairs[@]}"; do export "${v%%=*}=${v#*=}"; done
-  for v in "${pairs[@]}"; do allow["${v%%=*}"]=1; done
-  # Each entry whole, NUL-delimited, its name read only: a name that is no
-  # identifier (a newline in it too) is refused before anything splits it
-  # (Astra #441 High 1); the last entry is env's own status.
+  for v in "${pairs[@]}"; do names+=("${v%%=*}"); done
+  extra="$(env_extra "${names[@]}")" || rc=$?
+  ((rc == 0)) || die "clean_exec: the environment could not be read"
+  [[ -z "$extra" ]] || die "clean_exec: the environment holds more than its allowlist: $extra"
+  exec "$@"
+}
+
+# env_extra NAME...: every name in the environment a child of this shell
+# gets (env -0, read whole, NUL-delimited: its names only, never a value)
+# that is none of NAMES, nor SHLVL or _ (bash may add them), on one line; a
+# name that is no identifier (a newline in it too) %q-quoted, so nothing
+# splits it (Astra #441 High 1). 3: the environment could not be read (the
+# last entry is env's own status).
+env_extra() {
+  local v name last="" extra=()
+  local -A allow=([SHLVL]=1 [_]=1)
+  for v in "$@"; do allow["$v"]=1; done
   while IFS= read -r -d '' v; do
     if [[ -n "$last" ]]; then
       name="${last%%=*}"
@@ -127,7 +139,21 @@ clean_exec() {
     fi
     last="$v"
   done < <("$clean_exec_env" -0; printf 'adc-env-status %s\0' "$?")
-  [[ "$last" == "adc-env-status 0" ]] || die "clean_exec: the environment could not be read"
-  ((${#extra[@]} == 0)) || die "clean_exec: the environment holds more than its allowlist: ${extra[*]}"
-  exec "$@"
+  [[ "$last" == "adc-env-status 0" ]] || return 3
+  printf '%s' "${extra[*]}"
+}
+
+# clean_shell: the drivers' shell after their re-exec (Opus #441 r3 H1; see
+# installed-cycle.sh's header): no shell option that prints (xtrace,
+# verbose), none of TMOUT BASH_XTRACEFD PS4 CDPATH GLOBIGNORE, and nothing
+# in its environment but the re-exec's allowlist (and PWD and OLDPWD, which
+# bash sets); else it refuses (exit 2), naming them. A caller that sets the
+# re-exec's marker itself skips the re-exec, never this check.
+clean_shell() {
+  local extra rc=0
+  set +o xtrace +o verbose
+  unset ADC_CLEAN_SHELL TMOUT BASH_XTRACEFD PS4 CDPATH GLOBIGNORE
+  extra="$(env_extra HOME PATH TMPDIR LANG XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME PWD OLDPWD)" || rc=$?
+  ((rc == 0)) || { echo "${SECRETS_TAG:-adc}: could_not_run: the shell's environment could not be read" >&2; exit 2; }
+  [[ -z "$extra" ]] || { echo "${SECRETS_TAG:-adc}: could_not_run: the shell's environment holds more than the re-exec's allowlist: $extra" >&2; exit 2; }
 }

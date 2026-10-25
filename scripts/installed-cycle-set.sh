@@ -18,6 +18,27 @@
 #       the set, exit 2, naming it, before any case runs past its setup.
 #       It prints one summary row per case (a Markdown table) and exits 1
 #       when any case failed.
+#
+# The clean shell (Opus #441 r3 H1). Nothing of the caller's shell state
+# runs past the next lines: the driver re-executes itself once, under env
+# -i, with only the non-secret variables below and the marker that it has
+# (ADC_CLEAN_SHELL), in a bash that reads no startup file. Shell options
+# (SHELLOPTS=xtrace would print every secret), TMOUT (it would end a read
+# loop early), exported functions (BASH_FUNC_grep%% would shadow grep) and
+# every other variable of the caller's stay behind; clean_shell (secrets.sh)
+# then checks the result, so a caller that sets the marker itself gains
+# nothing. The trust boundary: BASH_ENV, PATH and the executables on it
+# (env, bash), and the caller's shell up to this re-exec (an exported
+# function named set or exec), are the operator's: they run before the
+# script can guard.
+set +o xtrace +o verbose
+if [[ -z "${ADC_CLEAN_SHELL:-}" ]]; then
+  exec env -i ADC_CLEAN_SHELL=1 LANG=C ${HOME+"HOME=$HOME"} ${PATH+"PATH=$PATH"} ${TMPDIR+"TMPDIR=$TMPDIR"} \
+    ${XDG_RUNTIME_DIR+"XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"} ${XDG_CONFIG_HOME+"XDG_CONFIG_HOME=$XDG_CONFIG_HOME"} \
+    ${XDG_DATA_HOME+"XDG_DATA_HOME=$XDG_DATA_HOME"} ${XDG_STATE_HOME+"XDG_STATE_HOME=$XDG_STATE_HOME"} \
+    ${XDG_CACHE_HOME+"XDG_CACHE_HOME=$XDG_CACHE_HOME"} bash --noprofile --norc "$0" "$@"
+fi
+[[ -z "$(declare -F)" ]] || { echo "installed-cycle-set: could_not_run: a shell function is defined before the driver's own" >&2; exit 2; }
 set -euo pipefail
 
 die() { echo "installed-cycle-set: $*" >&2; exit 1; }
@@ -26,6 +47,10 @@ mode="$1" prefix="$(cd "$2" && pwd)"
 shift 2
 driver="$prefix/lib/adc/scripts/installed-cycle.sh"
 [[ -x "$driver" ]] || die "$driver is not installed"
+SECRETS_TAG=installed-cycle-set
+# shellcheck source=scripts/lib/secrets.sh
+. "$prefix/lib/adc/scripts/lib/secrets.sh"
+clean_shell
 cwd="$(mktemp -d)"
 root=""
 PODMAN=/usr/bin/podman

@@ -193,12 +193,17 @@ root_scanned() {
 # fifos are skipped (a container's run files may hold one). 1: a file holds
 # a form of SECRET (printed); 2: grep failed; 3: the search never ran.
 root_secret_scan() {
-  local root="$1" secret="$2" runs found rc=0
+  local root="$1" secret="$2" runs found pats n rc=0
   [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
   runs="$(runs_required "$root")" || return 3
-  # Inside: grep's "nothing found" (1) is the clean result (0), a match is 1, anything else grep's failure (2).
+  pats="$(forms "$secret")"
+  n="$(grep -c '' <<<"$pats")"
+  # Inside: the patterns come on stdin (never an argument), and fewer than the
+  # N sent is grep's failure (2), never an empty, clean search (Opus #441 r3
+  # L3); grep's "nothing found" (1) is the clean result (0), a match is 1,
+  # anything else grep's failure (2).
   # shellcheck disable=SC2016 # the inner bash's own expansions
-  found="$(forms "$secret" | root_scanned "$root" 'rc=0; grep -rlaF -D skip -f - -- "$@" || rc=$?; case $rc in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac' "$root" "$runs")" || rc=$?
+  found="$(printf '%s\n' "$pats" | root_scanned "$root" 'n="$1"; shift; p="$(cat)"; [[ -n "$p" && "$(grep -c "" <<<"$p")" -ge "$n" ]] || exit 2; rc=0; grep -rlaF -D skip -f - -- "$@" <<<"$p" || rc=$?; case $rc in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac' "$n" "$root" "$runs")" || rc=$?
   case "$rc" in
     0) ;;
     1) printf '%s\n' "$found"; return 1 ;;

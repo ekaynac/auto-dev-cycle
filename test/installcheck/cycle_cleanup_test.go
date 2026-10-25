@@ -14,9 +14,10 @@ import (
 // cleanupProblems reads a driver's text: every variable its cleanup reads
 // must be named in the comment above it ("# cleanup's inputs: ...") and
 // assigned at the top level before its trap, each such assignment a literal
-// ("", a number, or a command's output), never one that keeps an inherited
-// value (name="${name:-...}"); and cleanup must read nothing this parse
-// cannot follow (an indirect ${!x}, eval, a nameref).
+// ("", a number, a word, or a command's output that never reads the
+// variable itself), never one that keeps an inherited value
+// (name="${name:-...}", name="$(printf %s "$name")"); and cleanup must read
+// nothing this parse cannot follow (an indirect ${!x}, eval, a nameref).
 func cleanupProblems(text string) []string {
 	use := regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)|\(\(\s*!?([A-Za-z_][A-Za-z0-9_]*)\s*\)\)`)
 	// The whole assignment, up to a blank, ; or the line's end: "", a number,
@@ -61,6 +62,8 @@ func cleanupProblems(text string) []string {
 	for _, v := range reads {
 		assigned := regexp.MustCompile(`(^|\s)` + v + `=`)
 		whole := regexp.MustCompile(`^` + v + `=` + literal)
+		// A command's output that reads the variable itself keeps its inherited value (Opus #441 r3 L2).
+		self := regexp.MustCompile(`\$\{?` + v + `([^A-Za-z0-9_]|$)`)
 		found := false
 		for _, l := range lines[:start] {
 			if l == "" || l[0] == ' ' || l[0] == '\t' || l[0] == '#' {
@@ -69,7 +72,7 @@ func cleanupProblems(text string) []string {
 			for _, m := range assigned.FindAllStringIndex(l, -1) {
 				found = true
 				at := strings.TrimLeft(l[m[0]:], " \t")
-				if !whole.MatchString(at) {
+				if w := whole.FindString(at); w == "" || self.MatchString(w[len(v)+1:]) {
 					problems = append(problems, fmt.Sprintf("%s is assigned %s before cleanup's trap, not a literal", v, strings.Fields(at)[0][len(v)+1:]))
 				}
 			}
@@ -107,6 +110,7 @@ func TestCleanupReadsOnlyItsOwnVariables(t *testing.T) {
 		"no assignment":                      {strings.Replace(good, "root=\"\" ", "", 1), "cleanup reads root, which is not assigned"},
 		"an inherited value":                 {strings.Replace(good, "root=\"\"", "root=\"${root:-}\"", 1), "root is assigned \"${root:-}\""},
 		"an inherited value after a literal": {strings.Replace(good, "root=\"\"", "root=\"\"${root:-}", 1), "root is assigned \"\"${root:-}"},
+		"a command's output of itself":       {strings.Replace(good, "dir=\"$(mktemp -d)\"", "dir=\"$(printf %s \"$dir\")\"", 1), "dir is assigned \"$(printf"},
 		"an indented one alone":              {strings.Replace(strings.Replace(good, "root=\"\" ", "", 1), "# cleanup's", "if true; then\n  root=\"\"\nfi\n# cleanup's", 1), "cleanup reads root, which is not assigned"},
 		"an indirect read":                   {strings.Replace(good, "  local p\n", "  local p\n  p=root; echo \"${!p}\"\n", 1), "cleanup reads through \"${!\""},
 		"eval":                               {strings.Replace(good, "  local p\n", "  local p\n  eval \"echo $root\"\n", 1), "cleanup reads through \"eval \""},

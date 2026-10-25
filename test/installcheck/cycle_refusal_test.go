@@ -129,6 +129,59 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	}
 	extra = nil
 
+	// Opus #441 r3 H1: the caller's shell state stays behind the driver's
+	// re-exec. With xtrace on (SHELLOPTS), TMOUT=1, an exported grep
+	// function, the driver's own secret-holding names exported and a
+	// registry credential in the environment, the setup runs as before: no
+	// trace and no secret on its output, the credential received on fd 3 by
+	// name, and none of it in any child's environment (a git on PATH records
+	// its own /proc/PID/environ).
+	const credential = "sk-caller-probe-0123456789abcdef0123456789"
+	wrap := filepath.Join(t.TempDir(), "bin")
+	environ := filepath.Join(t.TempDir(), "environ")
+	write(t, filepath.Join(wrap, "git"), "#!/bin/sh\ncat /proc/$$/environ >>"+environ+"\nprintf '\\n--\\n' >>"+environ+"\nexec /usr/bin/git \"$@\"\n", 0o755)
+	extra = []string{"PATH=" + wrap + ":/usr/bin:/bin", "SHELLOPTS=xtrace", "TMOUT=1", "BASH_FUNC_grep%%=() { return 1; }",
+		"boot=boot-PROBE-value", "tok=tok-PROBE-value", "stub_cred=stub-cred-PROBE-value", "ADC_CREDENTIAL_PROBE=" + credential}
+	out, code = run("--setup-only")
+	extra = nil
+	if code != 0 || !strings.Contains(out, "installed-cycle: candidate: setup checked (--setup-only)") ||
+		!strings.Contains(out, "installed-cycle: the caller's credentials, received on fd 3: ADC_CREDENTIAL_PROBE") {
+		t.Errorf("a caller's shell state: exit %d, %s", code, out)
+	}
+	// The one line traced is the one that turns tracing off.
+	for _, l := range strings.Split(out, "\n") {
+		if (strings.HasPrefix(l, "+") && l != "+ set +o xtrace +o verbose") || strings.Contains(l, "PROBE-value") || strings.Contains(l, credential) {
+			t.Errorf("a trace or a secret on the driver's output: %q", l)
+		}
+	}
+	seen, err := os.ReadFile(environ)
+	if err != nil || !strings.Contains(string(seen), "--") {
+		t.Fatalf("no child's environment recorded: %v", err)
+	}
+	for _, leak := range []string{"SHELLOPTS", "TMOUT", "BASH_FUNC_grep", "PROBE-value", "ADC_CREDENTIAL_PROBE", credential} {
+		if strings.Contains(string(seen), leak) {
+			t.Errorf("%s reached a child's environment", leak)
+		}
+	}
+	// The credential received is redacted from every line from then on: a
+	// refusal that names it (here, as the case) prints [redacted].
+	extra = []string{"ADC_CREDENTIAL_PROBE=" + credential}
+	if out, code := run("--case", credential); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: no case [redacted]") || strings.Contains(out, credential) {
+		t.Errorf("a refusal naming the caller's credential: exit %d, %s", code, out)
+	}
+	// The marker set by the caller skips the re-exec, never the check: an
+	// extra variable, or a function, refuses the run (exit 2), named.
+	for _, c := range []struct{ env, want string }{
+		{"OTHER=x", "installed-cycle: could_not_run: the shell's environment holds more than the re-exec's allowlist: OTHER"},
+		{"BASH_FUNC_grep%%=() { return 1; }", "installed-cycle: could_not_run: a shell function is defined before the driver's own"},
+	} {
+		extra = []string{"ADC_CLEAN_SHELL=1", c.env}
+		if out, code := run("--setup-only"); code != 2 || !strings.Contains(out, c.want) {
+			t.Errorf("the marker with %s: exit %d, %s", c.env, code, out)
+		}
+	}
+	extra = nil
+
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
 	// directory, each recording its owner (pid and start time): the next run
 	// stops the processes that run recorded (.pids), still themselves, and
@@ -378,6 +431,15 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if err := os.Chmod(locked, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Opus #441 r3 L3: a launch that loses the patterns on their way in (no
+	// stdin, or only part of it) is grep's failure (2), never a clean scan.
+	for what, body := range map[string]string{"no stdin": "exec \"$@\" </dev/null", "one pattern of all": "head -n 1 | \"$@\""} {
+		lossy := filepath.Join(t.TempDir(), "podman")
+		write(t, lossy, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\n"+body+"\n", 0o755)
+		if out := sh("PODMAN=" + lossy + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=2") {
+			t.Errorf("root_secret_scan with %s: %q", what, out)
+		}
+	}
 	// Astra #441 r2 High 1: both scans require the root's runs/: a link that
 	// cannot be read (a readlink that fails), or one turned into a loop
 	// after the root was made, is a scan error (3), never a search without
@@ -442,5 +504,54 @@ echo "read $(wc -l <"$work/reads")"`
 		if !strings.Contains(string(out), want) || (name == "exited" && strings.Contains(string(out), "read ")) {
 			t.Errorf("%s: %s", name, out)
 		}
+	}
+}
+
+// Opus #441 r3 H1, the set's side: installed-cycle-set.sh re-executes itself
+// clean too, so the caller's shell state (xtrace, TMOUT, an exported grep
+// function, any other variable) reaches neither its output nor the driver
+// it runs (a stand-in that records its own environment); and a marker set
+// by its caller still meets the check (exit 2, named).
+func TestInstalledCycleSetRunsClean(t *testing.T) {
+	prefix := filepath.Join(t.TempDir(), "prefix")
+	environ := filepath.Join(t.TempDir(), "environ")
+	write(t, filepath.Join(prefix, "lib/adc/scripts/installed-cycle.sh"), `#!/bin/sh
+cat /proc/$$/environ >>`+environ+`
+printf '\n--\n' >>`+environ+`
+case "$*" in *nonexistent*) echo "installed-cycle: could_not_run: rootless Podman (/nonexistent/podman) is required"; exit 2 ;; esac
+`, 0o755)
+	for _, s := range []string{"lib/secrets.sh", "lib/sandbox-root.sh"} {
+		b, err := os.ReadFile("../../scripts/" + s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(prefix, "lib/adc/scripts", s), string(b), 0o644)
+	}
+	run := func(extra ...string) (string, error) {
+		cmd := exec.Command("../../scripts/installed-cycle-set.sh", "setup", prefix)
+		cmd.Env = append(append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+t.TempDir()), extra...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := run("SHELLOPTS=xtrace", "TMOUT=1", "BASH_FUNC_grep%%=() { return 1; }", "CALLERS_OWN=PROBE-value")
+	if err != nil || !strings.Contains(out, "installed-cycle-set: a missing prerequisite refuses the case, exit 2, named") {
+		t.Errorf("the set with a caller's shell state: %v %s", err, out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if (strings.HasPrefix(l, "+") && l != "+ set +o xtrace +o verbose") || strings.Contains(l, "PROBE-value") {
+			t.Errorf("a trace or the caller's value on the set's output: %q", l)
+		}
+	}
+	seen, err := os.ReadFile(environ)
+	if err != nil || strings.Count(string(seen), "--") != 2 {
+		t.Fatalf("the driver's environment, twice: %v %q", err, seen)
+	}
+	for _, leak := range []string{"SHELLOPTS", "TMOUT", "BASH_FUNC_grep", "CALLERS_OWN", "PROBE-value", "ADC_CLEAN_SHELL"} {
+		if strings.Contains(string(seen), leak) {
+			t.Errorf("%s reached the driver's environment", leak)
+		}
+	}
+	if out, err := run("ADC_CLEAN_SHELL=1", "OTHER=x"); err == nil || !strings.Contains(out, "installed-cycle-set: could_not_run: the shell's environment holds more than the re-exec's allowlist: OTHER") {
+		t.Errorf("the set with its marker set by the caller: %v %s", err, out)
 	}
 }
