@@ -76,7 +76,10 @@ rc=0; (start_adcd; wait "$adcd") || rc=$?
 [[ $rc != 0 && ! -f "$D/work/out/ready" ]] && grep -q "holds more than its allowlist: CALLERS_RO" "$D/work/out/adcd-2.log" || { echo "a readonly variable: rc=$rc $(cat "$D/work/out/adcd-2.log")"; exit 1; }
 echo ok`
 	cmd := exec.Command("bash", "-c", script)
-	cmd.Env = append(testguard.HomeEnv(t), "PATH="+bin+":/usr/bin:/bin", "D="+dir, "S="+secret)
+	// Astra #441 r2 High 2: the caller's variables named as secrets.sh's own
+	// globals (their export attribute would survive an assignment) neither
+	// stop adcd's start nor reach it.
+	cmd.Env = append(testguard.HomeEnv(t), "PATH="+bin+":/usr/bin:/bin", "D="+dir, "S="+secret, "clean_exec_env=anything", "secrets=inherited")
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.HasSuffix(strings.TrimSpace(string(out)), "ok") {
 		t.Fatalf("%v %s", err, out)
@@ -95,7 +98,7 @@ echo ok`
 		t.Fatal(err)
 	}
 	if e := string(environ); !strings.Contains(e, "ADC_CREDENTIAL_PROBE="+secret+"\n") || !strings.Contains(e, "RUN_DIR="+work+"\n") || strings.Contains(e, "CALLERS_OWN") ||
-		strings.Contains(e, "BASH_FUNC") || strings.Contains(e, "PRIVATE_VALUE") || len(strings.Split(strings.TrimSpace(e), "\n")) != 3 {
+		strings.Contains(e, "BASH_FUNC") || strings.Contains(e, "PRIVATE_VALUE") || strings.Contains(e, "clean_exec_env") || strings.Contains(e, "inherited") || len(strings.Split(strings.TrimSpace(e), "\n")) != 3 {
 		t.Errorf("adcd's environment: %q", e)
 	}
 }
@@ -179,12 +182,22 @@ func TestCleanExecRefusesWhatBashCannotSee(t *testing.T) {
 		"a malformed function":        {"BASH_FUNC_x%%=private-data", "", "the environment holds more than its allowlist: BASH_FUNC_x%%"},
 		"an exported readonly":        {"SHELLOPTS=braceexpand", "", "the environment holds more than its allowlist: SHELLOPTS"},
 		"a variable bash can see":     {"OTHER=private-data", "", ""},
-		"an environment never read":   {"", "clean_exec_env=/bin/false", "clean_exec: the environment could not be read"},
-		"an environment read in part": {"", "clean_exec_env=" + filepath.Join(dir, "half-env"), "clean_exec: the environment could not be read"},
+		"an environment never read":   {"", "/bin/false", "clean_exec: the environment could not be read"},
+		"an environment read in part": {"", filepath.Join(dir, "half-env"), "clean_exec: the environment could not be read"},
 	} {
 		write(t, filepath.Join(dir, "half-env"), "#!/bin/sh\nprintf 'PATH=/usr/bin:/bin\\0'\nexit 1\n", 0o755)
 		ran := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
-		script := "set -euo pipefail\n. ../../scripts/lib/secrets.sh\n" + c.pre + "\n(clean_exec 2 PATH=/usr/bin:/bin ADC_CREDENTIAL_X=v /usr/bin/touch \"$1\")\n"
+		lib := "../../scripts/lib/secrets.sh"
+		if c.pre != "" {
+			// The probe is readonly: a copy of secrets.sh names the failing one.
+			b, err := os.ReadFile(lib)
+			if err != nil || strings.Count(string(b), "\nclean_exec_env=/usr/bin/env\n") != 1 {
+				t.Fatalf("secrets.sh's probe: %v", err)
+			}
+			lib = filepath.Join(dir, "secrets.sh")
+			write(t, lib, strings.Replace(string(b), "\nclean_exec_env=/usr/bin/env\n", "\nclean_exec_env="+c.pre+"\n", 1), 0o600)
+		}
+		script := "set -euo pipefail\n. " + lib + "\n(clean_exec 2 PATH=/usr/bin:/bin ADC_CREDENTIAL_X=v /usr/bin/touch \"$1\")\n"
 		cmd := exec.Command("bash", "-c", script, "bash", ran)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		if c.env != "" {
@@ -201,5 +214,11 @@ func TestCleanExecRefusesWhatBashCannotSee(t *testing.T) {
 		if err == nil || !strings.Contains(string(out), c.want) || statErr == nil || strings.Contains(string(out), "private-data") {
 			t.Errorf("%s: exit %v, ran %v, %s", name, err, statErr == nil, out)
 		}
+	}
+	// The probe is readonly: nothing after secrets.sh can name another.
+	cmd := exec.Command("bash", "-c", "set -euo pipefail\n. ../../scripts/lib/secrets.sh\nclean_exec_env=/bin/true\necho reassigned\n")
+	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+	if out, err := cmd.CombinedOutput(); err == nil || strings.Contains(string(out), "reassigned") || !strings.Contains(string(out), "readonly variable") {
+		t.Errorf("the probe reassigned: %v %s", err, out)
 	}
 }

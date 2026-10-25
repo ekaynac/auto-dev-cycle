@@ -23,9 +23,15 @@
 #   builtin, never passed to env(1).
 
 secrets=()
-# The program clean_exec reads a child's environment with (a shell variable,
-# set here, never inherited: its rows replace it with one that fails).
+# The program clean_exec reads a child's environment with: set here and
+# readonly (its rows source a copy of this file naming one that fails).
 clean_exec_env=/usr/bin/env
+# Neither global is ever the caller's: an exported one of the same name
+# keeps its export attribute through an assignment, so it is removed here,
+# before clean_exec would unset it (Astra #441 r2 High 2). These are the
+# only variables this file and sandbox-root.sh set at the top level.
+export -n secrets clean_exec_env
+readonly clean_exec_env
 # redact VAR: every known secret form and known text in the variable VAR
 # replaced, in place; the one redaction rule, die's and excerpt's (Astra
 # #441 Medium 3).

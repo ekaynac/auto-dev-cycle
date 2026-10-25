@@ -19,7 +19,9 @@ import (
 // cannot follow (an indirect ${!x}, eval, a nameref).
 func cleanupProblems(text string) []string {
 	use := regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)|\(\(\s*!?([A-Za-z_][A-Za-z0-9_]*)\s*\)\)`)
-	literal := regexp.MustCompile(`^(""|[0-9]+|"?\$\()`)
+	// The whole assignment, up to a blank, ; or the line's end: "", a number,
+	// a literal word, or a command's output "$(...)" (Astra #441 r2 Low 3).
+	literal := `(""|[0-9]+|[A-Za-z0-9_./:-]+|"\$\([^)]*\)")(\s|;|$)`
 	lines := strings.Split(text, "\n")
 	trap := slices.Index(lines, "trap cleanup EXIT")
 	start := slices.Index(lines, "cleanup() {")
@@ -57,16 +59,18 @@ func cleanupProblems(text string) []string {
 		problems = append(problems, fmt.Sprintf("cleanup reads %v, its comment lists %v", reads, listed))
 	}
 	for _, v := range reads {
-		assigned := regexp.MustCompile(`(^|\s)` + v + `=(\S*)`)
+		assigned := regexp.MustCompile(`(^|\s)` + v + `=`)
+		whole := regexp.MustCompile(`^` + v + `=` + literal)
 		found := false
 		for _, l := range lines[:start] {
 			if l == "" || l[0] == ' ' || l[0] == '\t' || l[0] == '#' {
 				continue
 			}
-			for _, m := range assigned.FindAllStringSubmatch(l, -1) {
+			for _, m := range assigned.FindAllStringIndex(l, -1) {
 				found = true
-				if !literal.MatchString(m[2]) {
-					problems = append(problems, fmt.Sprintf("%s is assigned %s before cleanup's trap, not a literal", v, m[2]))
+				at := strings.TrimLeft(l[m[0]:], " \t")
+				if !whole.MatchString(at) {
+					problems = append(problems, fmt.Sprintf("%s is assigned %s before cleanup's trap, not a literal", v, strings.Fields(at)[0][len(v)+1:]))
 				}
 			}
 		}
@@ -98,14 +102,15 @@ func TestCleanupReadsOnlyItsOwnVariables(t *testing.T) {
 		t.Errorf("a cleanup of its own variables: %v", p)
 	}
 	for name, c := range map[string]struct{ text, want string }{
-		"an unlisted read":      {strings.Replace(good, "\"$dir\"", "\"$dir\" \"$other\"", 1), "cleanup reads [dir n other root]"},
-		"a listed name unread":  {strings.Replace(good, "inputs: root n dir", "inputs: root n dir x", 1), "its comment lists [root n dir x]"},
-		"no assignment":         {strings.Replace(good, "root=\"\" ", "", 1), "cleanup reads root, which is not assigned"},
-		"an inherited value":    {strings.Replace(good, "root=\"\"", "root=\"${root:-}\"", 1), "root is assigned \"${root:-}\""},
-		"an indented one alone": {strings.Replace(strings.Replace(good, "root=\"\" ", "", 1), "# cleanup's", "if true; then\n  root=\"\"\nfi\n# cleanup's", 1), "cleanup reads root, which is not assigned"},
-		"an indirect read":      {strings.Replace(good, "  local p\n", "  local p\n  p=root; echo \"${!p}\"\n", 1), "cleanup reads through \"${!\""},
-		"eval":                  {strings.Replace(good, "  local p\n", "  local p\n  eval \"echo $root\"\n", 1), "cleanup reads through \"eval \""},
-		"a nameref":             {strings.Replace(good, "  local p\n", "  local -n p=root\n", 1), "cleanup reads through \"local -n\""},
+		"an unlisted read":                   {strings.Replace(good, "\"$dir\"", "\"$dir\" \"$other\"", 1), "cleanup reads [dir n other root]"},
+		"a listed name unread":               {strings.Replace(good, "inputs: root n dir", "inputs: root n dir x", 1), "its comment lists [root n dir x]"},
+		"no assignment":                      {strings.Replace(good, "root=\"\" ", "", 1), "cleanup reads root, which is not assigned"},
+		"an inherited value":                 {strings.Replace(good, "root=\"\"", "root=\"${root:-}\"", 1), "root is assigned \"${root:-}\""},
+		"an inherited value after a literal": {strings.Replace(good, "root=\"\"", "root=\"\"${root:-}", 1), "root is assigned \"\"${root:-}"},
+		"an indented one alone":              {strings.Replace(strings.Replace(good, "root=\"\" ", "", 1), "# cleanup's", "if true; then\n  root=\"\"\nfi\n# cleanup's", 1), "cleanup reads root, which is not assigned"},
+		"an indirect read":                   {strings.Replace(good, "  local p\n", "  local p\n  p=root; echo \"${!p}\"\n", 1), "cleanup reads through \"${!\""},
+		"eval":                               {strings.Replace(good, "  local p\n", "  local p\n  eval \"echo $root\"\n", 1), "cleanup reads through \"eval \""},
+		"a nameref":                          {strings.Replace(good, "  local p\n", "  local -n p=root\n", 1), "cleanup reads through \"local -n\""},
 	} {
 		if p := cleanupProblems(c.text); !strings.Contains(strings.Join(p, "; "), c.want) {
 			t.Errorf("%s: %v, want %q", name, p, c.want)

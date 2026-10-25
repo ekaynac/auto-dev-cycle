@@ -378,6 +378,37 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if err := os.Chmod(locked, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Astra #441 r2 High 1: both scans require the root's runs/: a link that
+	// cannot be read (a readlink that fails), or one turned into a loop
+	// after the root was made, is a scan error (3), never a search without
+	// runs/.
+	for what, call := range map[string]string{"root_secret_scan": "root_secret_scan " + made + " " + secret, "root_canary_path": "root_canary_path " + made + " " + name} {
+		if out := sh("PODMAN=" + fake + "; readlink() { return 1; }; rc=0; " + call + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+			t.Errorf("%s with a readlink that fails: %q", what, out)
+		}
+	}
+	link := filepath.Join(made, "runs")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(link, link); err != nil {
+		t.Fatal(err)
+	}
+	for what, call := range map[string]string{"root_secret_scan": "root_secret_scan " + made + " " + secret, "root_canary_path": "root_canary_path " + made + " " + name} {
+		if out := sh("PODMAN=" + fake + "; rc=0; " + call + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+			t.Errorf("%s with runs/ a loop: %q", what, out)
+		}
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
 	// The search beside WORK too: a parent it may enter but not list.
 	hidden := filepath.Join(t.TempDir(), "unlisted")
 	if err := os.MkdirAll(filepath.Join(hidden, "w"), 0o700); err != nil {

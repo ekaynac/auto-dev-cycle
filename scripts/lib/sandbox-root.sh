@@ -40,15 +40,18 @@
 #                               (PARENT/adc-cycle.*), what still runs on one
 #                               stopped first: only the processes it recorded
 #                               (record_pid WORK PID)
-#   root_canary_path ROOT NAME  canary_path over the root and its runs/
+#   root_canary_path ROOT NAME  canary_path over the root and its runs/ (3:
+#                               runs/ unresolved or the search never ran)
 #   root_secret_scan ROOT SECRET
 #                               no form of SECRET (secrets.sh's forms) in any
 #                               file under the root or its runs/, searched in
 #                               the root's user namespace: a container's
 #                               config and environment (storage/
 #                               overlay-containers) and its run files
-#                               (runs/); prints each file that holds one and
-#                               fails 1; 2: the search could not run
+#                               (runs/, which must resolve: runs_required);
+#                               prints each file that holds one and
+#                               fails 1; 2: grep failed; 3: runs/ unresolved
+#                               or the search never ran
 #
 # Ownership (the lead's ruling on Mythos #435 M1): a leftover's owner is a
 # pid with its start time (.owner, .pids; owner_of), not a locked manifest
@@ -102,11 +105,23 @@ sandbox_root() {
 
 # runs_of ROOT: the directory ROOT/runs links to, only when it is one
 # sandbox_root makes (/dev/shm/adcrXXXXXX, a directory); else nothing, so
-# no removal ever follows the link elsewhere.
+# no removal ever follows the link elsewhere. The cleanup's: permissive.
+# The scans use runs_required instead.
 runs_of() {
   local runs
   runs="$(readlink "$1/runs" 2>/dev/null)" || return 0
   if [[ "$runs" =~ ^/dev/shm/adcr[A-Za-z0-9]{6}$ && -d "$runs" && ! -L "$runs" ]]; then echo "$runs"; fi
+}
+
+# runs_required ROOT: the directory ROOT/runs links to, which every root
+# sandbox_root makes has; a link that cannot be read, or names anything but
+# a real directory /dev/shm/adcrXXXXXX (a loop, another path), is 3: a scan
+# that would leave runs/ out never runs (Astra #441 r2 High 1).
+runs_required() {
+  local runs
+  runs="$(readlink "$1/runs")" || runs=""
+  [[ "$runs" =~ ^/dev/shm/adcr[A-Za-z0-9]{6}$ && -d "$runs" && ! -L "$runs" ]] || { echo "runs_required: $1/runs does not resolve to a directory /dev/shm/adcrXXXXXX" >&2; return 3; }
+  echo "$runs"
 }
 
 # stale DIR: DIR is ours and records an owner (.owner) that is gone.
@@ -146,8 +161,8 @@ sandbox_roots_stale() {
 root_canary_path() {
   local root="$1" name="$2" runs d rc
   [[ -d "$root" && -n "$name" && "$name" != */* ]] || { echo "root_canary_path: ROOT must exist, NAME be a plain name" >&2; return 2; }
-  runs="$(runs_of "$root")"
-  for d in "$root" ${runs:+"$runs"}; do
+  runs="$(runs_required "$root")" || return 3
+  for d in "$root" "$runs"; do
     rc=0
     # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments
     root_scanned "$root" "$(declare -f canary_path)"'; canary_path "$1" "$2"' "$d" "$name" </dev/null || rc=$?
@@ -180,10 +195,10 @@ root_scanned() {
 root_secret_scan() {
   local root="$1" secret="$2" runs found rc=0
   [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
-  runs="$(runs_of "$root")"
+  runs="$(runs_required "$root")" || return 3
   # Inside: grep's "nothing found" (1) is the clean result (0), a match is 1, anything else grep's failure (2).
   # shellcheck disable=SC2016 # the inner bash's own expansions
-  found="$(forms "$secret" | root_scanned "$root" 'rc=0; grep -rlaF -D skip -f - -- "$@" || rc=$?; case $rc in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac' "$root" ${runs:+"$runs"})" || rc=$?
+  found="$(forms "$secret" | root_scanned "$root" 'rc=0; grep -rlaF -D skip -f - -- "$@" || rc=$?; case $rc in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac' "$root" "$runs")" || rc=$?
   case "$rc" in
     0) ;;
     1) printf '%s\n' "$found"; return 1 ;;
