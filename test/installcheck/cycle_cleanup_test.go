@@ -110,6 +110,7 @@ func TestCleanupReadsOnlyItsOwnVariables(t *testing.T) {
 		"no assignment":                      {strings.Replace(good, "root=\"\" ", "", 1), "cleanup reads root, which is not assigned"},
 		"an inherited value":                 {strings.Replace(good, "root=\"\"", "root=\"${root:-}\"", 1), "root is assigned \"${root:-}\""},
 		"an inherited value after a literal": {strings.Replace(good, "root=\"\"", "root=\"\"${root:-}", 1), "root is assigned \"\"${root:-}"},
+		"another variable's value":           {strings.Replace(good, "root=\"\"", "root=\"$other\"", 1), "root is assigned \"$other\""},
 		"a command's output of itself":       {strings.Replace(good, "dir=\"$(mktemp -d)\"", "dir=\"$(printf %s \"$dir\")\"", 1), "dir is assigned \"$(printf"},
 		"an indented one alone":              {strings.Replace(strings.Replace(good, "root=\"\" ", "", 1), "# cleanup's", "if true; then\n  root=\"\"\nfi\n# cleanup's", 1), "cleanup reads root, which is not assigned"},
 		"an indirect read":                   {strings.Replace(good, "  local p\n", "  local p\n  p=root; echo \"${!p}\"\n", 1), "cleanup reads through \"${!\""},

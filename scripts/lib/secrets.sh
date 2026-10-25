@@ -144,14 +144,13 @@ env_extra() {
 }
 
 # clean_shell: the drivers' shell after their re-exec (Opus #441 r3 H1; see
-# installed-cycle.sh's header): no shell option that prints (xtrace,
-# verbose), none of TMOUT BASH_XTRACEFD PS4 CDPATH GLOBIGNORE, and nothing
+# installed-cycle.sh's header; its first line turned xtrace and verbose
+# off): none of TMOUT BASH_XTRACEFD PS4 CDPATH GLOBIGNORE, and nothing
 # in its environment but the re-exec's allowlist (and PWD and OLDPWD, which
 # bash sets); else it refuses (exit 2), naming them. A caller that sets the
 # re-exec's marker itself skips the re-exec, never this check.
 clean_shell() {
   local extra rc=0
-  set +o xtrace +o verbose
   unset ADC_CLEAN_SHELL TMOUT BASH_XTRACEFD PS4 CDPATH GLOBIGNORE
   extra="$(env_extra HOME PATH TMPDIR LANG XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME PWD OLDPWD)" || rc=$?
   ((rc == 0)) || { echo "${SECRETS_TAG:-adc}: could_not_run: the shell's environment could not be read" >&2; exit 2; }

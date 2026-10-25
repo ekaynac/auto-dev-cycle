@@ -180,6 +180,12 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 			t.Errorf("the marker with %s: exit %d, %s", c.env, code, out)
 		}
 	}
+	// The variables that change how bash itself behaves are unset after the
+	// re-exec, so even under a caller's own marker they do not refuse it.
+	extra = []string{"ADC_CLEAN_SHELL=1", "TMOUT=1", "CDPATH=/nonexistent", "GLOBIGNORE=*"}
+	if out, code := run("--setup-only"); code != 0 {
+		t.Errorf("the marker with TMOUT, CDPATH and GLOBIGNORE: exit %d, %s", code, out)
+	}
 	extra = nil
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
