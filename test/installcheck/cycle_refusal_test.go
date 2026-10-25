@@ -357,6 +357,39 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 			t.Errorf("%s with a podman that never runs it: %q", what, out)
 		}
 	}
+	// Astra #441 High 2: a search that runs but cannot read a directory
+	// under the root (find fails, nothing printed) is a scan error (3) too,
+	// never a clean scan: each find's status is checked.
+	os.Remove(filepath.Join(made, "runs/att_1/x", name))
+	locked := filepath.Join(made, "storage/locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+		t.Errorf("root_canary_path over an unreadable directory: %q", out)
+	}
+	if out := sh("rc=0; canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+		t.Errorf("canary_path over an unreadable directory: %q", out)
+	}
+	if err := os.Chmod(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The search beside WORK too: a parent it may enter but not list.
+	hidden := filepath.Join(t.TempDir(), "unlisted")
+	if err := os.MkdirAll(filepath.Join(hidden, "w"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o700) })
+	if out := sh("rc=0; canary_path " + filepath.Join(hidden, "w") + " " + name + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+		t.Errorf("canary_path beside a directory it cannot list: %q", out)
+	}
 }
 
 // Mythos #435 L1: each read of the wait first checks that adcd still runs;

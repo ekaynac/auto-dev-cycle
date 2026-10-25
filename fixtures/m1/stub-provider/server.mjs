@@ -56,12 +56,14 @@
 // --answer-by-prompt FILE (the live-route rehearsal's reviewer
 // qualification only, make installed-cycle-rehearsal; #226 entry 201; no
 // scenario can ask for it, and the stub set never passes it): FILE is
-// {"model": REVIEWER_MODEL, "answers": {DIGEST: DECISION}}, both plain
-// objects, mapping a prompt's digest ("sha256:" and the hex of a request's
-// first user message) to "go" or "no_go"; a request of that model alone
-// (never a builder's: a map cannot steer a build; Opus #441 L2) whose prompt
+// {"model": MODEL, "answers": {DIGEST: DECISION}}, both plain objects,
+// mapping a prompt's digest ("sha256:" and the hex of a request's first
+// user message) to "go" or "no_go"; a request of MODEL alone whose prompt
 // it names is answered with that decision, logged with "answered_by_prompt",
-// and is no call of its model's script.
+// and is no call of its model's script. Any other model's requests, a
+// builder's among them, get their scenario's replies. Which model that is
+// is the file's choice: the rehearsal names its reviewer's (stub-reviewer-1),
+// so its map never steers a build (Opus #441 L2, r2 N2).
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, readFileSync, unlinkSync } from "node:fs";

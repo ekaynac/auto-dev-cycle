@@ -131,8 +131,10 @@ exit 0
 
 // An excerpt of a run's output (a failed task create, a timed-out wait)
 // names no known text (known_text: a path, a canary) and no credential
-// (known): one redaction (secrets.sh excerpt), applied before the excerpt
-// is cut, so a text across the cut leaves no part of itself (Astra #440 H6).
+// (known): one redaction (secrets.sh redact, die's too: Astra #441 Medium
+// 3), applied before the excerpt is cut, so a text across the cut leaves no
+// part of itself (Astra #440 H6). A tail of a log shorter than the excerpt
+// is the whole log (Astra #441 Low 4).
 func TestExcerptsAreRedacted(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "store/accept_hidden_test.go")
@@ -142,17 +144,19 @@ func TestExcerptsAreRedacted(t *testing.T) {
 	write(t, out, "adc task create: --attach: open "+store+": permission denied\n"+canary+"\n"+secret+"\n", 0o600)
 	cut := filepath.Join(dir, "cut.out")
 	write(t, cut, strings.Repeat("x", 395)+canary+"\n", 0o600)
+	short := filepath.Join(dir, "short.log")
+	write(t, short, "adcd: shutdown failed\n", 0o600)
 	cmd := exec.Command("bash", "-c", `set -euo pipefail; . ../../scripts/lib/secrets.sh; known_text "$1"; known_text "$2"; known "$3"
-excerpt "$4" 400; echo; excerpt "$5" 400; echo; excerpt "$5" 30 tail`, "x", store, canary, secret, out, cut)
+excerpt "$4" 400; echo; excerpt "$5" 400; echo; excerpt "$5" 30 tail; echo; excerpt "$6" 400 tail; echo; (die "the secret: $3") 2>&1 || true`, "x", store, canary, secret, out, cut, short)
 	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 	got, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v %s", err, got)
 	}
-	lines := strings.Split(string(got), "\n")
-	if len(lines) != 3 || strings.Contains(string(got), store) || strings.Contains(string(got), "q7v") || strings.Contains(string(got), "sk-never") ||
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	if len(lines) != 5 || strings.Contains(string(got), store) || strings.Contains(string(got), "q7v") || strings.Contains(string(got), "sk-never") ||
 		lines[0] != "adc task create: --attach: open [redacted]: permission denied [redacted] [redacted]" || lines[1] != strings.Repeat("x", 395)+"[reda" ||
-		!strings.HasSuffix(lines[2], "x[redacted]") {
+		!strings.HasSuffix(lines[2], "x[redacted]") || lines[3] != "adcd: shutdown failed" || lines[4] != "adc: the secret: [redacted]" {
 		t.Errorf("excerpts: %q", got)
 	}
 }
@@ -160,24 +164,27 @@ excerpt "$4" 400; echo; excerpt "$5" 400; echo; excerpt "$5" 30 tail`, "x", stor
 // Opus #441 M1: an entry bash can neither unset nor see (a name that is no
 // identifier; a malformed exported function) still reaches every child, so
 // clean_exec checks the environment a child gets: it refuses, naming it,
-// and never execs its command. Its own allowlist alone passes.
+// and never execs its command. Astra #441 High 1: each entry is read whole,
+// so a name holding a newline (HOME\nPATH, two allowed names once split) is
+// refused too, and a child environment that cannot be read refuses. Its own
+// allowlist alone passes. No value is ever printed.
 func TestCleanExecRefusesWhatBashCannotSee(t *testing.T) {
 	dir := t.TempDir()
-	script := `set -euo pipefail
-. ../../scripts/lib/secrets.sh
-(clean_exec 2 PATH=/usr/bin:/bin ADC_CREDENTIAL_X=v /usr/bin/touch "$1")
-`
 	for name, c := range map[string]struct {
-		env  string
-		want string
+		env, pre, want string
 	}{
-		"its allowlist alone":     {"", ""},
-		"a name no identifier":    {"ADC-SECRET=a-secret", "the environment holds more than its allowlist: ADC-SECRET "},
-		"a malformed function":    {"BASH_FUNC_x%%=junk", "the environment holds more than its allowlist: BASH_FUNC_x%% "},
-		"an exported readonly":    {"SHELLOPTS=braceexpand", "the environment holds more than its allowlist: SHELLOPTS "},
-		"a variable bash can see": {"OTHER=x", ""},
+		"its allowlist alone":         {"", "", ""},
+		"a name no identifier":        {"ADC-SECRET=private-data", "", "the environment holds more than its allowlist: ADC-SECRET"},
+		"a name holding a newline":    {"HOME\nPATH=private-data", "", `the environment holds more than its allowlist: $'HOME\nPATH'`},
+		"a malformed function":        {"BASH_FUNC_x%%=private-data", "", "the environment holds more than its allowlist: BASH_FUNC_x%%"},
+		"an exported readonly":        {"SHELLOPTS=braceexpand", "", "the environment holds more than its allowlist: SHELLOPTS"},
+		"a variable bash can see":     {"OTHER=private-data", "", ""},
+		"an environment never read":   {"", "clean_exec_env=/bin/false", "clean_exec: the environment could not be read"},
+		"an environment read in part": {"", "clean_exec_env=" + filepath.Join(dir, "half-env"), "clean_exec: the environment could not be read"},
 	} {
+		write(t, filepath.Join(dir, "half-env"), "#!/bin/sh\nprintf 'PATH=/usr/bin:/bin\\0'\nexit 1\n", 0o755)
 		ran := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
+		script := "set -euo pipefail\n. ../../scripts/lib/secrets.sh\n" + c.pre + "\n(clean_exec 2 PATH=/usr/bin:/bin ADC_CREDENTIAL_X=v /usr/bin/touch \"$1\")\n"
 		cmd := exec.Command("bash", "-c", script, "bash", ran)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		if c.env != "" {
@@ -191,7 +198,7 @@ func TestCleanExecRefusesWhatBashCannotSee(t *testing.T) {
 			}
 			continue
 		}
-		if err == nil || !strings.Contains(string(out), c.want) || statErr == nil || strings.Contains(string(out), "a-secret") {
+		if err == nil || !strings.Contains(string(out), c.want) || statErr == nil || strings.Contains(string(out), "private-data") {
 			t.Errorf("%s: exit %v, ran %v, %s", name, err, statErr == nil, out)
 		}
 	}

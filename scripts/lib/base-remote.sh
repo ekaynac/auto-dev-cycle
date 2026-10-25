@@ -49,9 +49,12 @@ base_remote() {
 # canary_path WORK NAME (§2.7's canary_paths, P24c) prints the first path
 # named NAME under WORK, or beside it (WORK's parent, at depth 1), and fails
 # when there is one: a hostile case's file written outside where it ran.
+# 2: bad input; 3: either search failed (a directory it could not read),
+# never a clean search (Astra #441 High 2).
 canary_path() {
-  local work="$1" name="$2" found
+  local work="$1" name="$2" under beside
   [[ -d "$work" && -n "$name" && "$name" != */* ]] || { echo "canary_path: WORK must exist, NAME be a plain name" >&2; return 2; }
-  found="$(find "$work" -name "$name" -print -quit)$(find "$(dirname "$work")" -mindepth 1 -maxdepth 1 -name "$name" -print -quit)"
-  [[ -z "$found" ]] || { printf '%s\n' "$found"; return 1; }
+  under="$(find "$work" -name "$name" -print -quit)" || { echo "canary_path: the search under $work failed" >&2; return 3; }
+  beside="$(find "$(dirname "$work")" -mindepth 1 -maxdepth 1 -name "$name" -print -quit)" || { echo "canary_path: the search beside $work failed" >&2; return 3; }
+  [[ -z "$under$beside" ]] || { printf '%s\n' "$under$beside"; return 1; }
 }

@@ -23,9 +23,20 @@
 #   builtin, never passed to env(1).
 
 secrets=()
+# The program clean_exec reads a child's environment with (a shell variable,
+# set here, never inherited: its rows replace it with one that fails).
+clean_exec_env=/usr/bin/env
+# redact VAR: every known secret form and known text in the variable VAR
+# replaced, in place; the one redaction rule, die's and excerpt's (Astra
+# #441 Medium 3).
+redact() {
+  local -n redact_text="$1"
+  local v
+  for v in "${secrets[@]}"; do redact_text="${redact_text//"$v"/[redacted]}"; done
+}
 die() {
-  local msg="$*" v
-  for v in "${secrets[@]}"; do msg="${msg//"$v"/[redacted]}"; done
+  local msg="$*"
+  redact msg
   echo "${SECRETS_TAG:-adc}: $msg" >&2
   exit 1
 }
@@ -59,11 +70,12 @@ known_text() {
 # start, or its end), so a redaction never meets a text cut in two by the
 # excerpt's own bound.
 excerpt() {
-  local text v
+  local text
   if [[ "${3:-}" == tail ]]; then text="$(tail -c 1048576 -- "$1" 2>/dev/null)"; else text="$(head -c 1048576 -- "$1" 2>/dev/null)"; fi
-  for v in "${secrets[@]}"; do text="${text//"$v"/[redacted]}"; done
+  redact text
   text="${text//$'\n'/ }"
-  if [[ "${3:-}" == tail ]]; then printf '%s' "${text: -$2}"; else printf '%s' "${text:0:$2}"; fi
+  # A tail of a text shorter than N is the whole text (Astra #441 Low 4).
+  if [[ "${3:-}" == tail ]]; then printf '%s' "${text:$((${#text} > $2 ? ${#text} - $2 : 0))}"; else printf '%s' "${text:0:$2}"; fi
 }
 # scan OWN SECRET DIR...: no form of SECRET in any file under the DIRs but
 # OWN (none: ""). The forms are grep's patterns on its stdin.
@@ -82,7 +94,7 @@ scan() {
 # clean_exec N NAME=VALUE... CMD ARGS...: in the calling (sub)shell, unsets
 # every exported variable and exported function, exports the N NAME=VALUE
 # pairs (builtins: no argv holds a value), then checks the environment a
-# command it execs gets, by running one (/usr/bin/env -0, its names read
+# command it execs gets, by running one (env -0, its names read
 # only): past SHLVL and _, which bash may add, it must be exactly those names.
 # An entry bash cannot unset, nor see (a readonly variable; a name that is
 # no identifier, ADC-SECRET=...; a malformed BASH_FUNC_x%%=...), is passed
@@ -90,15 +102,26 @@ scan() {
 # Opus #441 M1). Then it execs CMD. Run it in a subshell: ( clean_exec ... )
 # & leaves the caller's environment as it was, and $! is CMD's pid.
 clean_exec() {
-  local n="$1" v want have
+  local n="$1" v name last="" extra=()
   shift
   local pairs=("${@:1:n}")
   shift "$n"
+  local -A allow=([SHLVL]=1 [_]=1)
   while IFS= read -r v; do unset -f "$v" 2>/dev/null || true; done < <(declare -Fx | sed 's/^declare -[a-zA-Z]* //')
   while IFS= read -r v; do unset "$v" 2>/dev/null || true; done < <(compgen -e)
   for v in "${pairs[@]}"; do export "${v%%=*}=${v#*=}"; done
-  want="$(for v in "${pairs[@]}"; do printf '%s\n' "${v%%=*}"; done | LC_ALL=C sort -u)"
-  have="$(/usr/bin/env -0 | while IFS= read -r -d '' v; do v="${v%%=*}"; [[ "$v" == SHLVL || "$v" == _ ]] || printf '%s\n' "$v"; done | LC_ALL=C sort -u)"
-  [[ "$have" == "$want" ]] || die "clean_exec: the environment holds more than its allowlist: $(comm -13 <(printf '%s\n' "$want") <(printf '%s\n' "$have") | tr '\n' ' ')"
+  for v in "${pairs[@]}"; do allow["${v%%=*}"]=1; done
+  # Each entry whole, NUL-delimited, its name read only: a name that is no
+  # identifier (a newline in it too) is refused before anything splits it
+  # (Astra #441 High 1); the last entry is env's own status.
+  while IFS= read -r -d '' v; do
+    if [[ -n "$last" ]]; then
+      name="${last%%=*}"
+      if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then extra+=("$(printf '%q' "$name")"); elif [[ -z "${allow[$name]:-}" ]]; then extra+=("$name"); fi
+    fi
+    last="$v"
+  done < <("$clean_exec_env" -0; printf 'adc-env-status %s\0' "$?")
+  [[ "$last" == "adc-env-status 0" ]] || die "clean_exec: the environment could not be read"
+  ((${#extra[@]} == 0)) || die "clean_exec: the environment holds more than its allowlist: ${extra[*]}"
   exec "$@"
 }
