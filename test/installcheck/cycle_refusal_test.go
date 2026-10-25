@@ -56,13 +56,14 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		}
 	}
 	tmpdir := ""
+	var extra []string
 	run := func(args ...string) (string, int) {
 		t.Helper()
 		os.Remove(marker)
 		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), append([]string{prefix, "--routes", "stub", "--project", "go-mini",
 			"--case", "candidate", "--expect", "candidate"}, args...)...)
 		cmd.Dir = root
-		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+cmp.Or(tmpdir, t.TempDir()))
+		cmd.Env = append(append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "TMPDIR="+cmp.Or(tmpdir, t.TempDir())), extra...)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {
@@ -88,6 +89,26 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		if out, code := run(flag); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: usage: ") || started() {
 			t.Errorf("%s with no value: exit %d, adcd started %v, %s", flag, code, started(), out)
 		}
+	}
+	// Astra #440 H1: a process handle the driver inherits (stub, adcd, events
+	// exported by its caller) is none of the run's: its cleanup never stops it.
+	inherited := exec.Command("sleep", "60")
+	if err := inherited.Start(); err != nil {
+		t.Fatal(err)
+	}
+	inheritedDone := make(chan error, 1)
+	go func() { inheritedDone <- inherited.Wait() }()
+	t.Cleanup(func() { _ = inherited.Process.Kill() })
+	pid := strconv.Itoa(inherited.Process.Pid)
+	extra = []string{"stub=" + pid, "adcd=" + pid, "events=" + pid}
+	if out, code := run("--setup-only"); code != 0 {
+		t.Errorf("--setup-only with inherited handles: exit %d, %s", code, out)
+	}
+	extra = nil
+	select {
+	case err := <-inheritedDone:
+		t.Errorf("an inherited handle's process was stopped: %v", err)
+	case <-time.After(500 * time.Millisecond):
 	}
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
@@ -204,7 +225,7 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	}
 	sh := func(script string) string {
 		t.Helper()
-		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -283,6 +304,40 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	runsDir, _ := filepath.EvalSymlinks(filepath.Join(made, "runs"))
 	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.Contains(out, filepath.Join(runsDir, "att_1/x", name)) || !strings.HasSuffix(out, "rc=1") {
 		t.Errorf("a canary under the root's runs/: %q", out)
+	}
+
+	// Opus #438 N1: a credential in a container's config under the root's
+	// storage, or in a run file under runs/, is found (in the root's user
+	// namespace: the stand-in podman's unshare runs its command); any form
+	// of it counts (secrets.sh's forms), and a root without one passes.
+	secret := "c2VjcmV0LWZvci10aGUtcm9vdC1zY2FuLTAxMjM0NTY3"
+	if out := sh("PODMAN=" + fake + "; root_secret_scan " + made + " " + secret + " && echo none"); out != "none" {
+		t.Errorf("no secret under the root: %q", out)
+	}
+	for where, file := range map[string]string{
+		"a container's config": filepath.Join(made, "storage/overlay-containers/c1/userdata/config.json"),
+		"a run file":           filepath.Join(runsDir, "att_2/env"),
+	} {
+		write(t, file, `{"env":["ADC_CREDENTIAL_STUB=`+secret+`"]}`, 0o600)
+		out := sh("PODMAN=" + fake + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc")
+		if !strings.Contains(out, file) || !strings.HasSuffix(out, "rc=1") {
+			t.Errorf("the secret in %s: %q", where, out)
+		}
+		os.Remove(file)
+	}
+	write(t, filepath.Join(made, "storage/x"), "tail "+secret[len(secret)-16:]+"\n", 0o600)
+	if out := sh("PODMAN=" + fake + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=1") {
+		t.Errorf("a form of the secret (its last 16 characters): %q", out)
+	}
+	// Astra #440 H3: a podman that fails before the search runs (exit 1, no
+	// output, as a namespace-launch failure) is a scan error (3), never a
+	// clean scan, for either search.
+	broken := filepath.Join(t.TempDir(), "podman")
+	write(t, broken, "#!/bin/sh\nexit 1\n", 0o755)
+	for what, call := range map[string]string{"root_secret_scan": "root_secret_scan " + made + " " + secret, "root_canary_path": "root_canary_path " + made + " " + name} {
+		if out := sh("PODMAN=" + broken + "; rc=0; " + call + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=3") {
+			t.Errorf("%s with a podman that never runs it: %q", what, out)
+		}
 	}
 }
 
