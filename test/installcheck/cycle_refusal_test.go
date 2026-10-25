@@ -354,6 +354,47 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 			t.Errorf("--keep left %s: a later sweep would remove what was kept", f)
 		}
 	}
+
+	// Opus #443 L2: a /dev/shm (or work directory) whose filesystem cannot be
+	// read is refused, named, never taken as "apart" (a stat on PATH that
+	// fails for -c %d; the fake podman above passes as rootless first).
+	statWrap := filepath.Join(t.TempDir(), "bin")
+	write(t, filepath.Join(statWrap, "stat"), "#!/bin/sh\ncase \"$*\" in *'-c %d'*) exit 1 ;; esac\nexec /usr/bin/stat \"$@\"\n", 0o755)
+	extra = []string{"PATH=" + statWrap + ":/usr/bin:/bin"}
+	if out, code := run("--podman", fake); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: /dev/shm's filesystem cannot be read") {
+		t.Errorf("a stat that fails: exit %d, %s", code, out)
+	}
+	extra = nil
+
+	// Opus #443 H1b: the snapshot of the real configuration checks each of
+	// its pipelines: a metadata listing that dies (a find on PATH that fails
+	// for it) refuses the case before adcd starts, never compares as
+	// unchanged.
+	homeEnv := testguard.HomeEnv(t)
+	var homeDir string
+	for _, kv := range homeEnv {
+		if k, v, _ := strings.Cut(kv, "="); k == "HOME" {
+			homeDir = v
+		}
+	}
+	write(t, filepath.Join(homeDir, ".config/adc/token"), "x\n", 0o600)
+	for _, dies := range []string{"%p %i %s", "sha256sum"} {
+		findWrap := filepath.Join(t.TempDir(), "bin")
+		write(t, filepath.Join(findWrap, "find"), "#!/bin/sh\ncase \"$*\" in *'"+dies+"'*) exit 1 ;; esac\nexec /usr/bin/find \"$@\"\n", 0o755)
+		extra = append(homeEnv, "PATH="+findWrap+":/usr/bin:/bin")
+		if out, code := run("--setup-only"); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: "+homeDir+"/.config/adc cannot be read") || started() {
+			t.Errorf("a snapshot whose %s listing dies: exit %d, adcd started %v, %s", dies, code, started(), out)
+		}
+	}
+	extra = nil
+
+	// Opus #443 L1: the libraries come from the driver's own directory ($0):
+	// an inherited BASH_SOURCE chooses none of them.
+	extra = []string{"BASH_SOURCE=/nonexistent/installed-cycle.sh"}
+	if out, code := run("--setup-only"); code != 0 || !strings.Contains(out, "installed-cycle: candidate: setup checked (--setup-only)") {
+		t.Errorf("an inherited BASH_SOURCE: exit %d, %s", code, out)
+	}
+	extra = nil
 }
 
 // Opus #435 L2: removing a sandbox root follows its runs/ link only to a

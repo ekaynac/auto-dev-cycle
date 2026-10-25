@@ -24,27 +24,32 @@
 # by parameter expansion alone.
 set +o xtrace +o verbose
 clean_shell_tag=installed-cycle-set
-adc_here="${BASH_SOURCE[0]%/*}"
-[[ "$adc_here" != "${BASH_SOURCE[0]}" ]] || adc_here=.
+adc_here="${0%/*}"
+[[ "$adc_here" != "$0" ]] || adc_here=.
 # shellcheck source=scripts/lib/clean-shell.sh
-. "$adc_here/lib/clean-shell.sh"
+. "$adc_here/lib/clean-shell.sh" || exit 2
 unset adc_here
 set -euo pipefail
+# A failure inside a command substitution is fatal too (Opus #443).
+shopt -s inherit_errexit
 
 die() { echo "installed-cycle-set: $*" >&2; exit 1; }
 [[ $# -ge 2 && ( "$1" == setup || "$1" == run ) ]] || { echo "usage: installed-cycle-set.sh setup|run PREFIX CASE..." >&2; exit 64; }
-mode="$1" prefix="$(cd "$2" && pwd)"
+mode="$1"
+prefix="$(cd "$2" && pwd)"
 shift 2
+# A run of no case would pass having run none (Opus #443 L3).
+[[ "$mode" != run || $# -gt 0 ]] || die "run: no case given"
 driver="$prefix/lib/adc/scripts/installed-cycle.sh"
 [[ -x "$driver" ]] || die "$driver is not installed"
 SECRETS_TAG=installed-cycle-set
 # shellcheck source=scripts/lib/secrets.sh
-. "$prefix/lib/adc/scripts/lib/secrets.sh"
+. "$prefix/lib/adc/scripts/lib/secrets.sh" || exit 2
 cwd="$(mktemp -d)"
 root=""
 PODMAN=/usr/bin/podman
 # shellcheck source=scripts/lib/sandbox-root.sh
-. "$prefix/lib/adc/scripts/lib/sandbox-root.sh"
+. "$prefix/lib/adc/scripts/lib/sandbox-root.sh" || exit 2
 # cleanup's inputs: root cwd (both set above, before its trap; Opus #441 M2)
 # shellcheck disable=SC2317,SC2329  # invoked only by the EXIT trap
 cleanup() {

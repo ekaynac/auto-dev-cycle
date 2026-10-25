@@ -13,11 +13,13 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
-// #226 entry 203 (Astra #441 r1-r3): a producer that dies, or is cut short,
-// must never read as success. In the drivers and the libraries they source,
+// #226 entry 203 (Astra #441 r1-r3, Opus #443): a producer that dies, or
+// is cut short, must never read as success. In the drivers and the libraries they source,
 // no loop reads a process substitution (`< <(...)`: its producer's status is
 // lost, so a list cut short is a shorter list), and no command ends in
-// `|| true` or `|| :` (a status discarded). Every list a check consumes is
+// `|| true` or `|| :` (a status discarded), and no command substitution
+// sits in a test, a case word or an echo/printf argument (its status lost).
+// Every list a check consumes is
 // acquired first by a checked assignment (`x="$(cmd)" || die ...`), and
 // grep's 1 is mapped explicitly. What remains is listed here, each use with
 // why its outcome decides no check; a use not listed, or a listed one gone,
@@ -30,6 +32,8 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 			{`wait "$p" 2>/dev/null || true`, "cleanup: reaping a stopped process; its status decides nothing"},
 			{`kill "$stub" 2>/dev/null || true`, "the preflight's stub stopped once its reply was checked"},
 			{`wait "$stub" 2>/dev/null || true`, "reaping that stub; its status decides nothing"},
+			{`case "$(stat -f -c %T -- "$1" 2>/dev/null)" in`, "fs_known: a type that cannot be read is no known type, never chosen"},
+			{`how() { if (($1 > 128)); then echo "signal $(kill -l`, "naming a signal in a message already failing the run"},
 		},
 		"installed-cycle-set.sh": {
 			{`tail -n 15 "$cwd/$c.out" >&2 || true`, "a failed case's last lines, printed after its row already says FAILED"},
@@ -44,13 +48,17 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 			{`root_podman "$tmp" unshare rm -rf "$r" 2>/dev/null || rm -rf "$r" 2>/dev/null || true`, "removing a stale runs/: best effort; the next sweep finds what is left"},
 			{`root_podman "$tmp" unshare rm -rf "$tmp/storage" "$tmp/r" 2>/dev/null || true`, "removing the sweep's scratch root's storage before the root itself"},
 			{`rm -rf "$w" 2>/dev/null || true`, "removing a stale work directory: best effort; the next sweep finds what is left"},
-			{`record_pid() { owner_of "$2" >>"$1/.pids" 2>/dev/null || true; }`, "recording a pid for a later sweep; the run's own cleanup stops it either way"},
+			{`printf '%s\n' "$rec" >>"$1/.pids" 2>/dev/null || true`, "record_pid's write alone: .pids serves only a sweep after this run is killed without its cleanup; a lost line leaves that process to end by itself"},
+			{`case "$(uname -m)" in`, "host_arch: an unknown or unread machine is no prepared platform, refused"},
+			{`[[ -x "$1" ]] && [[ "$("$1" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" == true ]]`, "rootless_podman: an info that fails is not rootless, refused"},
+			{`p="$(cat)"; [[ -n "$p" && "$(grep -c "" <<<"$p")" -ge "$n" ]] || exit 2;`, "inside the namespace script: a count that fails is no count, exit 2"},
 			{`root_podman "$1" rm --all --force --time 0 >/dev/null 2>&1 || true`, "sweeping a root's containers: removal, decides nothing"},
 			{`root_podman "$root" system reset --force >/dev/null 2>&1 || true`, "removing a private root: its storage, then the directory"},
 			{`root_podman "$root" unshare rm -rf "$root/storage" "$root/r" ${runs:+"$runs"} 2>/dev/null || true`, "removing a private root's files in its namespace"},
 			{`[[ -z "$runs" ]] || rm -rf "$runs" 2>/dev/null || true`, "removing a private root's runs/"},
 		},
 		"lib/cycle-case.sh": {
+			{`[[ "$(tail -n 1 "$work/out/events.jsonl" | sed -n`, "a wait's condition: a read that fails is 'not yet', and the wait's deadline fails the case"},
 			{`wait "$events" 2>/dev/null || true; }`, "stopping the event reader before a new one; its status decides nothing"},
 			{`  wait "$events" 2>/dev/null || true`, "reaping the stopped event reader"},
 		},
@@ -59,8 +67,10 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 			{`exec 3< <(n=0; for v in "${!ADC_CREDENTIAL_@}"`, "the fd-3 writer, no loop of a check: its stream ends in a counting record clean_shell_credentials checks"},
 		},
 	}
-	discard := regexp.MustCompile(`< <\(|\|\|\s*(true|:)(\s|;|\)|}|$)`)
-	for l, want := range map[string]bool{`x || true`: true, `x || :`: true, `{ x || true; }`: true, `done < <(y)`: true, `x || rc=$?`: false, `x || die "y"`: false, `x <<<"$y"`: false} {
+	// A status discarded (`< <(`, `|| true`, `|| :`), or lost in a command
+	// substitution inside a test, a case word or an echo/printf argument (Opus #443).
+	discard := regexp.MustCompile(`< <\(|\|\|\s*(true|:)(\s|;|\)|}|$)|\[\[[^]]*\$\([^(]|case "?\$\([^(]|\b(echo|printf)\b[^#]*\$\([^(]`)
+	for l, want := range map[string]bool{`x || true`: true, `x || :`: true, `{ x || true; }`: true, `done < <(y)`: true, `x || rc=$?`: false, `x || die "y"`: false, `x <<<"$y"`: false, `[[ "$(f)" == y ]]`: true, `case "$(f)" in`: true, `echo "a $(f)"`: true, `printf '%s' "$((1 + 2))"`: false, `x="$(f)" || die y`: false} {
 		if discard.MatchString(l) != want {
 			t.Errorf("the row reads %q as discarding a status: %v", l, !want)
 		}
@@ -107,6 +117,20 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 			`  canary_names="$(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')" || die "the case's canary paths could not be read"`,
 			`  done <<<"$canary_names"`,
 			`    *) die "the case could not be read for its canary (exit $rc)" ;;`,
+			`secrets_after="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" || die "the bootstrap secrets cannot be listed"`,
+			`    sums="$(find "$config" -type f -exec sha256sum -- {} + | LC_ALL=C sort)" || return 1`,
+			`  work_dev="$(stat -c %d "$work")" || cannot "$work's filesystem cannot be read"`,
+			`shopt -s inherit_errexit`,
+			`. "$adc_here/lib/clean-shell.sh" || exit 2`,
+			`. "$here/lib/secrets.sh" || exit 2`,
+			`. "$here/lib/base-remote.sh" || exit 2`,
+			`. "$here/lib/sandbox-root.sh" || exit 2`,
+		},
+		"installed-cycle-set.sh": {
+			`shopt -s inherit_errexit`,
+			`. "$adc_here/lib/clean-shell.sh" || exit 2`,
+			`. "$prefix/lib/adc/scripts/lib/secrets.sh" || exit 2`,
+			`. "$prefix/lib/adc/scripts/lib/sandbox-root.sh" || exit 2`,
 		},
 		"lib/cycle-case.sh": {
 			`  hidden="$(cd "$t/hidden" && find . -type f | LC_ALL=C sort)" || die "the task's hidden files could not be listed"`,
@@ -134,10 +158,12 @@ func TestProducersThatFailRefuse(t *testing.T) {
 	write(t, filepath.Join(dir, "tree/leak"), "sk-filter-PROBE-0123456789abcdef\n", 0o600)
 	write(t, filepath.Join(dir, "tree/own"), "sk-filter-PROBE-0123456789abcdef\n", 0o600)
 	for name, c := range map[string]struct{ script, want string }{
-		"known, its forms failing": {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; known x; echo ran`, "known: the forms of a secret could not be made"},
-		"scan, its forms failing":  {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; scan "" x "$D/tree"; echo ran`, "scan: the forms of the secret could not be made"},
-		"scan, its filter failing": {`grep() { if [[ "$1" == -vxF ]]; then return 2; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the filter of OWN failed (exit 2)"},
-		"scan, its filter clean":   {`rm "$D/tree/leak"; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "ran"},
+		"known, its forms failing":  {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; known x; echo ran`, "known: the forms of a secret could not be made"},
+		"scan, its forms failing":   {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; scan "" x "$D/tree"; echo ran`, "scan: the forms of the secret could not be made"},
+		"scan, its filter failing":  {`grep() { if [[ "$1" == -vxF ]]; then return 2; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the filter of OWN failed (exit 2)"},
+		"known, its base64 failing": {`base64() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		"known, its tr failing":     {`tr() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		"scan, its filter clean":    {`rm "$D/tree/leak"; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "ran"},
 	} {
 		cmd := exec.Command("bash", "-c", "set -euo pipefail; . ../../scripts/lib/secrets.sh; "+c.script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir)

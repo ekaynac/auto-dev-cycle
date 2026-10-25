@@ -59,21 +59,25 @@
 # by parameter expansion alone.
 set +o xtrace +o verbose
 clean_shell_tag=installed-cycle clean_shell_fd3=1
-adc_here="${BASH_SOURCE[0]%/*}"
-[[ "$adc_here" != "${BASH_SOURCE[0]}" ]] || adc_here=.
+adc_here="${0%/*}"
+[[ "$adc_here" != "$0" ]] || adc_here=.
 # shellcheck source=scripts/lib/clean-shell.sh
-. "$adc_here/lib/clean-shell.sh"
+. "$adc_here/lib/clean-shell.sh" || exit 2
 unset adc_here
 set -euo pipefail
+# A failure inside a command substitution is fatal too (Opus #443).
+shopt -s inherit_errexit
 
 SECRETS_TAG=installed-cycle
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The libraries' directory from $0, never BASH_SOURCE, which bash imports
+# from the environment (Opus #443 L1); each source fatal.
+here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/secrets.sh
-. "$here/lib/secrets.sh"
+. "$here/lib/secrets.sh" || exit 2
 # shellcheck source=scripts/lib/base-remote.sh
-. "$here/lib/base-remote.sh"
+. "$here/lib/base-remote.sh" || exit 2
 # shellcheck source=scripts/lib/sandbox-root.sh
-. "$here/lib/sandbox-root.sh"
+. "$here/lib/sandbox-root.sh" || exit 2
 
 cannot() {
   local msg="$*"
@@ -92,7 +96,9 @@ case "$rc" in
   2) cannot "no list of credentials on fd 3 (the driver's re-exec writes one)" ;;
   *) cannot "the credentials received on fd 3 are malformed" ;;
 esac
-if ((${#caller_cred[@]})); then echo "installed-cycle: the caller's credentials, received on fd 3: $(for v in "${caller_cred[@]}"; do printf '%s ' "${v%%=*}"; done)" >&2; fi
+cred_names=""
+for v in "${caller_cred[@]}"; do cred_names+="${v%%=*} "; done
+if [[ -n "$cred_names" ]]; then echo "installed-cycle: the caller's credentials, received on fd 3: $cred_names" >&2; fi
 usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]"; }
 
 [[ $# -ge 1 ]] || usage
@@ -149,9 +155,12 @@ within() {
 # mtime and mode, and every file's sha256, or "absent".
 config="${HOME:-/nonexistent}/.config/adc"
 snapshot() {
+  local meta sums
   if [[ -e "$config" || -L "$config" ]]; then
-    find "$config" -printf '%p %i %s %T@ %m\n' | LC_ALL=C sort
-    find "$config" -type f -exec sha256sum -- {} + | LC_ALL=C sort
+    # Each pipeline checked: a listing that fails is no snapshot (Opus #443 H1b).
+    meta="$(find "$config" -printf '%p %i %s %T@ %m\n' | LC_ALL=C sort)" || return 1
+    sums="$(find "$config" -type f -exec sha256sum -- {} + | LC_ALL=C sort)" || return 1
+    printf '%s\n%s\n' "$meta" "$sums"
   else
     echo absent
   fi
@@ -231,7 +240,9 @@ adc() { "${run_env[@]}" ADC_SOCKET="$sock" timeout 60 "$prefix/bin/adc" "$@"; }
 
 task="go-mini-feature-1" scenario="go-mini-feature-1" overlay=""
 if [[ -n "$case_file" ]]; then
-  task="$(json "$case_file" d.task)" scenario="$(json "$case_file" d.scenario)" want="$(json "$case_file" d.project)"
+  task="$(json "$case_file" d.task)"
+  scenario="$(json "$case_file" d.scenario)"
+  want="$(json "$case_file" d.project)"
   [[ "$want" == "$project" ]] || cannot "case $case is $want's, not $project's"
   o="$(json "$case_file" d.base_overlay)"
   if [[ -n "$o" ]]; then overlay="$(dirname "$case_file")/$o"; fi
@@ -292,7 +303,10 @@ fi
 if [[ -n "$case_file" ]]; then
   arch="$(host_arch)" || cannot "this host's platform ($(uname -m)) has no prepared image"
   rootless_podman "$PODMAN" || cannot "rootless Podman ($PODMAN) is required: the product sandbox runs every build, accept and gate"
-  [[ -d /dev/shm && "$(stat -c %d /dev/shm)" != "$(stat -c %d "$work")" ]] ||
+  [[ -d /dev/shm ]] || cannot "the sandbox's runs/ needs /dev/shm"
+  shm_dev="$(stat -c %d /dev/shm)" || cannot "/dev/shm's filesystem cannot be read"
+  work_dev="$(stat -c %d "$work")" || cannot "$work's filesystem cannot be read"
+  [[ "$shm_dev" != "$work_dev" ]] ||
     cannot "the sandbox's runs/ needs /dev/shm on a filesystem apart from the state directory's ($work)"
   [[ -n "$shared" ]] || private=1
   root="$(sandbox_root "$shared")" || cannot "the sandbox root ${shared:-under /tmp} cannot be made"
@@ -410,7 +424,8 @@ start_adcd
 within 60 "adcd to restart" started "; event log verified to seq $seq;"
 if [[ -n "$case_file" ]]; then cycle_check "$seq"; fi
 stop
-[[ "$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" == "$secrets_before" ]] ||
+secrets_after="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" || die "the bootstrap secrets cannot be listed"
+[[ "$secrets_after" == "$secrets_before" ]] ||
   die "the restart wrote a new bootstrap secret: it did not replay the store"
 if [[ -n "$stub" ]]; then
   kill "$stub" 2>/dev/null || true

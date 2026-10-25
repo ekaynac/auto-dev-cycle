@@ -51,12 +51,13 @@ die() {
 # its first and last 16 characters, the base64 of the whole, and, when it
 # is base64 (a registry credential need not be), the hex of its bytes.
 forms() {
-  local s="${1#*.}" std pad hex
-  std="$(tr -- '-_' '+/' <<<"$s")"
+  local s="${1#*.}" std pad hex b64
+  std="$(tr -- '-_' '+/' <<<"$s")" || return 1
+  b64="$(printf '%s' "$1" | base64 -w0)" || return 1
   pad="$std"
   while ((${#pad} % 4)); do pad+="="; done
   hex="$(base64 -d <<<"$pad" 2>/dev/null | od -An -tx1 | tr -d ' \n')" || hex=""
-  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$(printf '%s' "$1" | base64 -w0)"
+  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$b64"
   if [[ -n "$hex" ]]; then printf '%s\n' "$hex"; fi
 }
 # known SECRET: every form of SECRET is redacted from now on.

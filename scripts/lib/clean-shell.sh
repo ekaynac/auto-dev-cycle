@@ -26,8 +26,10 @@
 #
 # The trust boundary: BASH_ENV, PATH and the executables on it (env, bash),
 # SHELLOPTS or BASHOPTS with noexec (bash then runs nothing; the Makefile's
-# shell drops both), and, before the re-exec, functions named ., set, exec
-# and printf are the operator's: they run before the script can guard.
+# shell drops both), and, before the re-exec, functions named ., set, exec,
+# exit and printf are the operator's: they run before the script can guard.
+# The driver finds this file from $0, never BASH_SOURCE (bash imports it
+# from the environment; Opus #443 L1).
 # shellcheck shell=bash
 # (The driver turned xtrace and verbose off as its first line.)
 { adc_environ="$(</proc/$$/environ)"; } 2>/dev/null

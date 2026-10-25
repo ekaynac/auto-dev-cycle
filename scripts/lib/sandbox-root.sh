@@ -77,10 +77,13 @@ rootless_podman() {
 # owner_of PID: PID's start time (field 22 of /proc/PID/stat), so a reused
 # pid is not taken for the owner; nothing when PID is gone.
 owner_of() {
-  local stat
+  local stat start
   stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
   stat="${stat##*) }"
-  echo "$1 $(cut -d' ' -f20 <<<"$stat")"
+  # The start time read, and numeric, or no owner at all (Opus #443 H1a).
+  start="$(cut -d' ' -f20 <<<"$stat")" || return 1
+  [[ "$start" =~ ^[0-9]+$ ]] || return 1
+  echo "$1 $start"
 }
 
 sandbox_root() {
@@ -99,7 +102,8 @@ sandbox_root() {
     if ((owned)); then cp "$root/.owner" "$runs/.owner" || return 1; fi
     ln -s "$runs" "$root/runs" || return 1
   fi
-  [[ -n "$(runs_of "$root")" ]] || { echo "sandbox_root: $root/runs is not a directory /dev/shm/adcrXXXXXX" >&2; return 1; }
+  runs="$(runs_of "$root")"
+  [[ -n "$runs" ]] || { echo "sandbox_root: $root/runs is not a directory /dev/shm/adcrXXXXXX" >&2; return 1; }
   echo "$root"
 }
 
@@ -126,10 +130,19 @@ runs_required() {
 
 # stale DIR: DIR is ours and records an owner (.owner) that is gone.
 stale() {
-  local owner pid
+  local owner pid now
   [[ -d "$1" && ! -L "$1" && -O "$1" && -f "$1/.owner" ]] || return 1
-  owner="$(<"$1/.owner")" pid="${owner%% *}"
-  [[ "$pid" =~ ^[0-9]+$ && "$(owner_of "$pid")" != "$owner" ]]
+  # Stale only on evidence (Opus #443 H1a): a well-formed record whose pid is
+  # gone, or whose start time was read and differs. A record that cannot be
+  # read or is malformed, or a start time that cannot be read, keeps it.
+  # Readable first: an unreadable file in $(<…) ends the whole shell.
+  [[ -r "$1/.owner" ]] || return 1
+  owner="$(<"$1/.owner")" || return 1
+  [[ "$owner" =~ ^([0-9]+)\ [0-9]+$ ]] || return 1
+  pid="${BASH_REMATCH[1]}"
+  [[ -e "/proc/$pid" ]] || return 0
+  now="$(owner_of "$pid")" || return 1
+  [[ "$now" != "$owner" ]]
 }
 
 sandbox_roots_stale() {
@@ -197,7 +210,7 @@ root_secret_scan() {
   [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
   runs="$(runs_required "$root")" || return 3
   pats="$(forms "$secret")"
-  n="$(grep -c '' <<<"$pats")"
+  n="$(grep -c '' <<<"$pats")" || return 2
   # Inside: the patterns come on stdin (never an argument), and fewer than the
   # N sent is grep's failure (2), never an empty, clean search (Opus #441 r3
   # L3); grep's "nothing found" (1) is the clean result (0), a match is 1,
@@ -233,8 +246,18 @@ work_dirs_stale() {
 }
 
 # record_pid WORK PID: records PID (with its start time) in WORK/.pids, for
-# work_dirs_stale should WORK's driver be killed before its own cleanup.
-record_pid() { owner_of "$2" >>"$1/.pids" 2>/dev/null || true; }
+# work_dirs_stale should WORK's driver be killed before its own cleanup. A
+# PID already gone has nothing to record; one whose start time cannot be
+# read fails it.
+record_pid() {
+  local rec
+  [[ -e "/proc/$2" ]] || return 0
+  rec="$(owner_of "$2")" || return 1
+  # The write alone is best effort: .pids serves only a later sweep, after
+  # this run is killed without its cleanup (SIGKILL); a line lost leaves
+  # that process to end by itself (Opus #443 L4).
+  printf '%s\n' "$rec" >>"$1/.pids" 2>/dev/null || true
+}
 
 root_podman() {
   local root="$1"
