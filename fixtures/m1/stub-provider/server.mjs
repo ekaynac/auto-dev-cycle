@@ -55,11 +55,13 @@
 //
 // --answer-by-prompt FILE (the live-route rehearsal's reviewer
 // qualification only, make installed-cycle-rehearsal; #226 entry 201; no
-// scenario can ask for it, and the stub set never passes it): FILE maps a
-// prompt's digest ("sha256:" and the hex of a request's first user
-// message) to "go" or "no_go"; a request whose prompt it names is answered
-// with that decision, logged with "answered_by_prompt", and is no call of
-// its model's script.
+// scenario can ask for it, and the stub set never passes it): FILE is
+// {"model": REVIEWER_MODEL, "answers": {DIGEST: DECISION}}, both plain
+// objects, mapping a prompt's digest ("sha256:" and the hex of a request's
+// first user message) to "go" or "no_go"; a request of that model alone
+// (never a builder's: a map cannot steer a build; Opus #441 L2) whose prompt
+// it names is answered with that decision, logged with "answered_by_prompt",
+// and is no call of its model's script.
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, readFileSync, unlinkSync } from "node:fs";
@@ -141,8 +143,11 @@ async function read(req) {
 /** start checks and serves scenario (an object) and resolves to {base, close}. */
 export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = ".", maxLog = 256 << 20, answers = null }) {
   check(scenario);
-  if (answers !== null && !(typeof answers === "object" && Object.entries(answers).every(([k, v]) => /^sha256:[0-9a-f]{64}$/.test(k) && (v === "go" || v === "no_go")))) {
-    throw new Error("--answer-by-prompt: a map of sha256:HEX to go or no_go");
+  const plain = (o) => o !== null && typeof o === "object" && Object.getPrototypeOf(o) === Object.prototype;
+  if (answers !== null && !(plain(answers) && Object.keys(answers).sort().join() === "answers,model" &&
+    typeof answers.model === "string" && answers.model !== "" && plain(answers.answers) &&
+    Object.entries(answers.answers).every(([k, v]) => /^sha256:[0-9a-f]{64}$/.test(k) && (v === "go" || v === "no_go")))) {
+    throw new Error("--answer-by-prompt: {\"model\": the reviewer's model, \"answers\": a map of sha256:HEX to go or no_go}");
   }
   const calls = new Map(); // model -> calls served
   const usages = new Map(); // request id -> usage
@@ -201,7 +206,8 @@ export async function start({ scenario, listen = "127.0.0.1:0", log, barriers = 
       const id = `req-${++served}`;
       if (serving) serving.id = id;
       const prompt = (doc.messages ?? []).find((m) => m?.role === "user")?.content;
-      const answer = answers && typeof prompt === "string" ? answers[`sha256:${createHash("sha256").update(prompt).digest("hex")}`] : undefined;
+      const key = typeof prompt === "string" ? `sha256:${createHash("sha256").update(prompt).digest("hex")}` : "";
+      const answer = answers && doc.model === answers.model && Object.hasOwn(answers.answers, key) ? answers.answers[key] : undefined;
       if (answer) {
         if (!record({ kind: "request", request_id: id, model: doc.model, answered_by_prompt: answer, adc_call: adcCall ?? null, body: doc })) {
           return send(res, 500, { error: { message: `scenario ${scenario.name}: the log is full` } });

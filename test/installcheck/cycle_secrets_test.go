@@ -156,3 +156,43 @@ excerpt "$4" 400; echo; excerpt "$5" 400; echo; excerpt "$5" 30 tail`, "x", stor
 		t.Errorf("excerpts: %q", got)
 	}
 }
+
+// Opus #441 M1: an entry bash can neither unset nor see (a name that is no
+// identifier; a malformed exported function) still reaches every child, so
+// clean_exec checks the environment a child gets: it refuses, naming it,
+// and never execs its command. Its own allowlist alone passes.
+func TestCleanExecRefusesWhatBashCannotSee(t *testing.T) {
+	dir := t.TempDir()
+	script := `set -euo pipefail
+. ../../scripts/lib/secrets.sh
+(clean_exec 2 PATH=/usr/bin:/bin ADC_CREDENTIAL_X=v /usr/bin/touch "$1")
+`
+	for name, c := range map[string]struct {
+		env  string
+		want string
+	}{
+		"its allowlist alone":     {"", ""},
+		"a name no identifier":    {"ADC-SECRET=a-secret", "the environment holds more than its allowlist: ADC-SECRET "},
+		"a malformed function":    {"BASH_FUNC_x%%=junk", "the environment holds more than its allowlist: BASH_FUNC_x%% "},
+		"an exported readonly":    {"SHELLOPTS=braceexpand", "the environment holds more than its allowlist: SHELLOPTS "},
+		"a variable bash can see": {"OTHER=x", ""},
+	} {
+		ran := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
+		cmd := exec.Command("bash", "-c", script, "bash", ran)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		if c.env != "" {
+			cmd.Env = append(cmd.Env, c.env)
+		}
+		out, err := cmd.CombinedOutput()
+		_, statErr := os.Stat(ran)
+		if c.want == "" {
+			if err != nil || statErr != nil {
+				t.Errorf("%s: %v %v %s", name, err, statErr, out)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(string(out), c.want) || statErr == nil || strings.Contains(string(out), "a-secret") {
+			t.Errorf("%s: exit %v, ran %v, %s", name, err, statErr == nil, out)
+		}
+	}
+}

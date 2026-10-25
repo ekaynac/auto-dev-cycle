@@ -47,10 +47,12 @@ func TestAnswerByPromptIsTheRehearsalsAlone(t *testing.T) {
 	}
 }
 
-// The mode itself: a request whose first user message's digest the map
-// names gets that decision and is no call of its model's script (the
-// scenario's own reply for that model is still the first one); another
-// prompt gets the scenario's reply.
+// The mode itself: a reviewer-model request whose first user message's
+// digest the map names gets that decision and is no call of its model's
+// script (the scenario's own reply for that model is still the first one);
+// another prompt, or the same prompt from another model (a builder's: a map
+// cannot steer a build; Opus #441 L2), gets the scenario's reply. A map that
+// is not a plain object of plain objects is refused at start.
 func TestStubAnswersByPrompt(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -58,7 +60,25 @@ func TestStubAnswersByPrompt(t *testing.T) {
 	}
 	dir := t.TempDir()
 	sum := sha256.Sum256([]byte("a qualification prompt"))
-	write(t, filepath.Join(dir, "answers.json"), `{"sha256:`+hex.EncodeToString(sum[:])+`":"no_go"}`, 0o600)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	for name, bad := range map[string]string{
+		"an array":            `[]`,
+		"no model":            `{"answers":{"` + digest + `":"no_go"}}`,
+		"answers as an array": `{"model":"stub-reviewer-1","answers":[]}`,
+		"an empty model":      `{"model":"","answers":{}}`,
+		"another key":         `{"model":"stub-reviewer-1","answers":{},"x":1}`,
+		"a bad decision":      `{"model":"stub-reviewer-1","answers":{"` + digest + `":"maybe"}}`,
+	} {
+		write(t, filepath.Join(dir, "bad.json"), bad, 0o600)
+		cmd := exec.Command(node, "../../fixtures/m1/stub-provider/server.mjs", "--scenario", "../../fixtures/m1/stub-provider/scenarios/go-mini-feature-1.json",
+			"--listen", "127.0.0.1:0", "--answer-by-prompt", filepath.Join(dir, "bad.json"))
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "--answer-by-prompt: ") {
+			t.Errorf("%s: %v %s", name, err, out)
+		}
+	}
+	write(t, filepath.Join(dir, "answers.json"), `{"model":"stub-reviewer-1","answers":{"`+digest+`":"no_go"}}`, 0o600)
 	cmd := exec.Command(node, "../../fixtures/m1/stub-provider/server.mjs", "--scenario", "../../fixtures/m1/stub-provider/scenarios/go-mini-feature-1.json",
 		"--listen", "127.0.0.1:0", "--answer-by-prompt", filepath.Join(dir, "answers.json"))
 	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
@@ -75,9 +95,9 @@ func TestStubAnswersByPrompt(t *testing.T) {
 		t.Fatalf("%q %v", line, err)
 	}
 	base := strings.TrimSpace(strings.TrimPrefix(line, "listening "))
-	decision := func(prompt string) string {
+	post := func(model, prompt string) string {
 		t.Helper()
-		body, _ := json.Marshal(map[string]any{"model": "stub-reviewer-1", "messages": []map[string]string{{"role": "system", "content": "s"}, {"role": "user", "content": prompt}}})
+		body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "system", "content": "s"}, {"role": "user", "content": prompt}}})
 		res, err := http.Post(base+"/chat/completions", "application/json", bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
@@ -89,11 +109,18 @@ func TestStubAnswersByPrompt(t *testing.T) {
 		if err := json.NewDecoder(res.Body).Decode(&doc); err != nil || len(doc.Choices) != 1 {
 			t.Fatalf("status %d: %v", res.StatusCode, err)
 		}
+		return doc.Choices[0].Message.Content
+	}
+	decision := func(prompt string) string {
+		t.Helper()
 		var d struct{ Decision string }
-		if err := json.Unmarshal([]byte(doc.Choices[0].Message.Content), &d); err != nil {
+		if err := json.Unmarshal([]byte(post("stub-reviewer-1", prompt)), &d); err != nil {
 			t.Fatal(err)
 		}
 		return d.Decision
+	}
+	if c := post("stub-builder-1", "a qualification prompt"); strings.Contains(c, "no_go") || strings.Contains(c, "The change is wrong.") {
+		t.Errorf("a builder's request was answered from the map: %q", c)
 	}
 	if d := decision("a qualification prompt"); d != "no_go" {
 		t.Errorf("the named prompt: %q", d)

@@ -159,12 +159,16 @@ work_dirs_stale "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-/nonexistent}" /dev/shm
 sandbox_roots_stale
 work="$(mktemp -d -p "$parent" adc-cycle.XXXXXXXX)" || cannot "mktemp in $parent failed"
 owner_of $$ >"$work/.owner" || cannot "$work/.owner cannot be written"
-# The run's own processes, set only when this run starts each (an inherited
-# value is never one of them; Astra #440 H1).
-stub="" adcd="" events=""
+# Everything cleanup reads is set here, before its trap, never inherited from
+# the caller's environment (Astra #440 H1, Opus #441 H1, M2): the run's own
+# processes (stub, adcd, events: set only when this run starts each), the
+# sandbox root and whether it is the run's own (root, private: set only once
+# the run makes or takes one), keep and work (set above).
+stub="" adcd="" events="" root="" private=0
+# cleanup's inputs: stub adcd events keep work root private
 cleanup() {
   local p i
-  for p in "${stub:-}" "${adcd:-}" "${events:-}"; do
+  for p in "$stub" "$adcd" "$events"; do
     [[ -n "$p" ]] || continue
     kill "$p" 2>/dev/null || continue
     for ((i = 0; i < 100; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
@@ -176,9 +180,9 @@ cleanup() {
     # removes them; a shared root's owner files are its owner's (the set's),
     # never this case's to remove (Mythos #435 L4).
     rm -f "$work/.owner"
-    if [[ -n "${root:-}" ]] && ((private)); then rm -f "$root/.owner" "$root/runs/.owner"; fi
+    if [[ -n "$root" ]] && ((private)); then rm -f "$root/.owner" "$root/runs/.owner"; fi
     echo "installed-cycle: kept $work${root:+ and the sandbox root $root}" >&2
-  elif [[ -n "${root:-}" ]]; then
+  elif [[ -n "$root" ]]; then
     if ((private)); then sandbox_root_remove "$root"; else sandbox_root_sweep "$root"; fi
   fi
   ((keep)) || rm -rf "$work"
@@ -250,7 +254,6 @@ fi
 # sandbox root's storage (the shared root, --sandbox-root, or the case's
 # own). Each missing one refuses the case (exit 2), named, before adcd
 # starts.
-root="" private=0
 if [[ -n "$case_file" ]]; then
   arch="$(host_arch)" || cannot "this host's platform ($(uname -m)) has no prepared image"
   rootless_podman "$PODMAN" || cannot "rootless Podman ($PODMAN) is required: the product sandbox runs every build, accept and gate"
@@ -290,7 +293,7 @@ n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFile
 # case's adcd runs the product sandbox under its root, and holds the stub's
 # credential (ADC_CREDENTIAL_STUB, minted per run), unless the case
 # withholds it (§2.3 assertion 6).
-run=0 cred=() sandbox=()
+run=0 cred=() sandbox=() stub_cred=""
 if [[ -n "$case_file" ]]; then
   sandbox=(--sandbox-root "$root" --podman "$PODMAN")
   stub_cred="$(head -c 32 /dev/urandom | base64 -w0 | tr '+/' '-_' | tr -d =)"
@@ -409,7 +412,7 @@ root_scan() {
     *) die "the sandbox root $root could not be searched for a secret (exit $rc)" ;;
   esac
 }
-if [[ -n "${stub_cred:-}" ]]; then
+if [[ -n "$stub_cred" ]]; then
   scan "" "$stub_cred" "$work"
   root_scan "$stub_cred"
 fi

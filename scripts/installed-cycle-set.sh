@@ -31,6 +31,7 @@ root=""
 PODMAN=/usr/bin/podman
 # shellcheck source=scripts/lib/sandbox-root.sh
 . "$prefix/lib/adc/scripts/lib/sandbox-root.sh"
+# cleanup's inputs: root cwd (both set above, before its trap; Opus #441 M2)
 # shellcheck disable=SC2317,SC2329  # invoked only by the EXIT trap
 cleanup() {
   if [[ -n "$root" ]]; then sandbox_root_remove "$root"; fi

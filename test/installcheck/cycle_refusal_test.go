@@ -110,6 +110,24 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		t.Errorf("an inherited handle's process was stopped: %v", err)
 	case <-time.After(500 * time.Millisecond):
 	}
+	// Opus #441 H1: a sandbox root the driver inherits (root and private
+	// exported by its caller) is none of the run's: neither a run that ends
+	// after its setup nor one that dies in it removes it.
+	kept := filepath.Join(t.TempDir(), "callers")
+	write(t, filepath.Join(kept, "marker"), "the caller's\n", 0o600)
+	extra = []string{"root=" + kept, "private=1"}
+	for _, c := range []struct {
+		args []string
+		code int
+	}{{[]string{"--setup-only"}, 0}, {[]string{"--project", "other"}, 2}} {
+		if out, code := run(c.args...); code != c.code {
+			t.Errorf("%v with an inherited root: exit %d, %s", c.args, code, out)
+		}
+		if _, err := os.Stat(filepath.Join(kept, "marker")); err != nil {
+			t.Fatalf("%v with an inherited root removed the caller's directory: %v", c.args, err)
+		}
+	}
+	extra = nil
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
 	// directory, each recording its owner (pid and start time): the next run

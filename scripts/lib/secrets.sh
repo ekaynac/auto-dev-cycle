@@ -81,10 +81,14 @@ scan() {
 }
 # clean_exec N NAME=VALUE... CMD ARGS...: in the calling (sub)shell, unsets
 # every exported variable and exported function, exports the N NAME=VALUE
-# pairs (builtins: no argv holds a value), checks that the environment is
-# exactly those names (a readonly variable cannot be unset: it refuses), then
-# execs CMD. Run it in a subshell: ( clean_exec ... ) & leaves the caller's
-# environment as it was, and $! is CMD's pid (Astra #440 H2, Opus N2).
+# pairs (builtins: no argv holds a value), then checks the environment a
+# command it execs gets, by running one (/usr/bin/env -0, its names read
+# only): past SHLVL and _, which bash may add, it must be exactly those names.
+# An entry bash cannot unset, nor see (a readonly variable; a name that is
+# no identifier, ADC-SECRET=...; a malformed BASH_FUNC_x%%=...), is passed
+# on to every child: it refuses, naming it (Astra #440 H2, Opus #440 r2 N2,
+# Opus #441 M1). Then it execs CMD. Run it in a subshell: ( clean_exec ... )
+# & leaves the caller's environment as it was, and $! is CMD's pid.
 clean_exec() {
   local n="$1" v want have
   shift
@@ -94,7 +98,7 @@ clean_exec() {
   while IFS= read -r v; do unset "$v" 2>/dev/null || true; done < <(compgen -e)
   for v in "${pairs[@]}"; do export "${v%%=*}=${v#*=}"; done
   want="$(for v in "${pairs[@]}"; do printf '%s\n' "${v%%=*}"; done | LC_ALL=C sort -u)"
-  have="$({ compgen -e; declare -Fx | sed 's/^declare -[a-zA-Z]* /BASH_FUNC_/'; } | LC_ALL=C sort -u)"
+  have="$(/usr/bin/env -0 | while IFS= read -r -d '' v; do v="${v%%=*}"; [[ "$v" == SHLVL || "$v" == _ ]] || printf '%s\n' "$v"; done | LC_ALL=C sort -u)"
   [[ "$have" == "$want" ]] || die "clean_exec: the environment holds more than its allowlist: $(comm -13 <(printf '%s\n' "$want") <(printf '%s\n' "$have") | tr '\n' ' ')"
   exec "$@"
 }
