@@ -398,6 +398,44 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		t.Errorf("an inherited BASH_SOURCE: exit %d, %s", code, out)
 	}
 	extra = nil
+
+	// Opus #443 r2 O1: a child whose sweep record cannot be made (its PID
+	// namespace not read: a readlink stand-in that fails for the Kth child
+	// of the driver, the driver read from its own .owner) refuses the run,
+	// exit 2, named; never exit 1 with no message (a case FAILED). The
+	// preflight starts the stub (the first) and adcd (the second; a stand-in
+	// that lives long enough to be recorded).
+	if out, err := exec.Command("cp", "-R", "../../fixtures/m1", filepath.Join(lib, "fixtures")+"/").CombinedOutput(); err != nil {
+		t.Fatalf("the m1 fixtures: %v %s", err, out)
+	}
+	write(t, filepath.Join(prefix, "bin/adcd"), "#!/bin/sh\ntouch "+marker+"\nexec sleep 5\n", 0o755)
+	for k, want := range map[string]string{"1": "the stub provider's start time cannot be read (its sweep record)", "2": "adcd's start time cannot be read (its sweep record)"} {
+		tmpdir = t.TempDir()
+		wrap := t.TempDir()
+		write(t, filepath.Join(wrap, "readlink"), `#!/bin/bash
+case "$1" in
+/proc/[0-9]*/ns/pid)
+  n="${1#/proc/}" n="${n%%/*}"
+  pp="$(sed -n 's/^PPid:\t*//p' "/proc/$n/status" 2>/dev/null)"
+  for o in `+tmpdir+`/adc-cycle.*/.owner; do
+    [[ -f "$o" ]] || continue
+    read -r d _ <"$o"
+    if [[ -n "$pp" && "$pp" == "$d" ]]; then
+      c=$(($(cat `+wrap+`/count 2>/dev/null || echo 0) + 1))
+      echo "$c" >`+wrap+`/count
+      [[ "$c" != `+k+` ]] || exit 1
+    fi
+  done ;;
+esac
+exec /usr/bin/readlink "$@"
+`, 0o755)
+		extra = []string{"PATH=" + wrap + ":/usr/bin:/bin"}
+		if out, code := run("--case", "preflight"); code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: "+want) {
+			t.Errorf("child %s's record not made: exit %d, %s", k, code, out)
+		}
+	}
+	tmpdir, extra = "", nil
+	write(t, filepath.Join(prefix, "bin/adcd"), "#!/bin/sh\ntouch "+marker+"\n", 0o755)
 }
 
 // Opus #435 L2: removing a sandbox root follows its runs/ link only to a

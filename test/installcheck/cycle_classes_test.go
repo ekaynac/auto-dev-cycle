@@ -126,6 +126,8 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 			`. "$here/lib/secrets.sh" || exit 2`,
 			`. "$here/lib/base-remote.sh" || exit 2`,
 			`. "$here/lib/sandbox-root.sh" || exit 2`,
+			`record_pid "$work" "$stub" || cannot "the stub provider's start time cannot be read (its sweep record)"`,
+			`  record_pid "$work" "$adcd" || cannot "adcd's start time cannot be read (its sweep record)"`,
 		},
 		"installed-cycle-set.sh": {
 			`shopt -s inherit_errexit`,
@@ -136,6 +138,7 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 		"lib/cycle-case.sh": {
 			`  hidden="$(cd "$t/hidden" && find . -type f | LC_ALL=C sort)" || die "the task's hidden files could not be listed"`,
 			`  second="$(json "$case_file" 'd.expect.second_task_admitted === false')" || die "the case's second_task_admitted could not be read"`,
+			`  record_pid "$work" "$events" || cannot "the event reader's start time cannot be read (its sweep record)"`,
 		},
 	} {
 		b, err := os.ReadFile("../../scripts/" + file)

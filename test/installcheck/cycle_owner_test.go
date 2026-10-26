@@ -58,7 +58,9 @@ func TestStaleOnlyOnEvidence(t *testing.T) {
 	if err := live.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = live.Process.Kill(); _ = live.Wait() })
+	liveEnded := make(chan error, 1)
+	go func() { liveEnded <- live.Wait() }()
+	t.Cleanup(func() { _ = live.Process.Kill(); <-liveEnded })
 	parent := t.TempDir()
 	// Named as sandbox_root names them (adc + 6, adcr + 6), under the row's own parent.
 	dirs := map[string]string{"root": "adcROOT01", "runs": "adcrRUNS01", "gone-root": "adcGONE01"}
@@ -68,26 +70,31 @@ func TestStaleOnlyOnEvidence(t *testing.T) {
 	all := []string{"live", "root", "runs", "other-ns", "malformed-1", "malformed-2", "malformed-3", "malformed-4"}
 	gone := []string{"gone", "gone-root"}
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(parent, dirs["live"], ".owner"), 0o600) })
+	// pids: the gone run's .pids records the live owner, as record_pid would:
+	// a start time that cannot be read now is not that process, never killed.
 	for name, c := range map[string]struct {
 		standIn string
+		pids    bool
 		kept    []string
 		removed []string
 	}{
-		"no stand-in":     {"", all, gone},
-		"a cut that dies": {`cut() { return 1; }`, []string{"live", "root", "runs"}, gone},
-		"a stat not read": {`cat() { return 1; }`, []string{"live", "root", "runs"}, gone},
+		"no stand-in":     {"", false, all, gone},
+		"a cut that dies": {`cut() { return 1; }`, true, []string{"live", "root", "runs"}, gone},
+		"a stat not read": {`cat() { return 1; }`, true, []string{"live", "root", "runs"}, gone},
 		// A cut that dies after part of its output, or prints no number: no start time read.
-		"a cut cut short":             {`cut() { command cut "$@" | head -c 2; return 1; }`, []string{"live", "root", "runs"}, gone},
-		"a cut that prints no number": {`cut() { echo x; }`, []string{"live", "root", "runs"}, gone},
+		"a cut cut short":             {`cut() { command cut "$@" | head -c 2; return 1; }`, true, []string{"live", "root", "runs"}, gone},
+		"a cut that prints no number": {`cut() { echo x; }`, true, []string{"live", "root", "runs"}, gone},
 		// No namespace read, the sweep's own or the owner's: nothing is evidence.
-		"a readlink that dies":   {`readlink() { return 1; }`, append(append([]string{}, all...), gone...), nil},
-		"an owner file not read": {`chmod 0 "$P/adc-cycle.live/.owner"`, []string{"live"}, gone},
+		"a readlink that dies":   {`readlink() { return 1; }`, true, append(append([]string{}, all...), gone...), nil},
+		"an owner file not read": {`chmod 0 "$P/adc-cycle.live/.owner"`, false, []string{"live"}, gone},
 		"owner_of, cut dead": {`cut() { return 1; }; if out="$(owner_of $$)"; then echo "owner_of: $out"; exit 1; fi; [ -z "$out" ] || exit 1
-if record_pid "$P/adc-cycle.live" "$LIVE"; then echo "record_pid recorded no start time"; exit 1; fi`, nil, nil},
-		"owner_of, readlink dead": {`readlink() { return 1; }; if out="$(owner_of $$)"; then echo "owner_of: $out"; exit 1; fi; [ -z "$out" ] || exit 1`, nil, nil},
-		"record_pid, the pid gone": {`record_pid "$P/adc-cycle.gone" 4194399; [ ! -e "$P/adc-cycle.gone/.pids" ] || exit 1; work_dirs_stale /nonexistent`, nil, nil},
+if record_pid "$P/adc-cycle.live" "$LIVE"; then echo "record_pid recorded no start time"; exit 1; fi`, false, nil, nil},
+		"owner_of, readlink dead":                {`readlink() { return 1; }; if out="$(owner_of $$)"; then echo "owner_of: $out"; exit 1; fi; [ -z "$out" ] || exit 1`, false, nil, nil},
+		"owner_of, readlink prints no namespace": {`readlink() { echo x; }; if out="$(owner_of $$)"; then echo "owner_of: $out"; exit 1; fi; [ -z "$out" ] || exit 1`, false, nil, nil},
+		"record_pid, the pid gone":               {`record_pid "$P/adc-cycle.gone" 4194399; [ ! -e "$P/adc-cycle.gone/.pids" ] || exit 1; work_dirs_stale /nonexistent`, false, nil, nil},
 	} {
 		_ = os.Chmod(filepath.Join(parent, dirs["live"], ".owner"), 0o600)
+		_ = os.Remove(filepath.Join(parent, dirs["gone"], ".pids"))
 		for _, d := range dirs {
 			if err := os.MkdirAll(filepath.Join(parent, d), 0o700); err != nil {
 				t.Fatal(err)
@@ -99,9 +106,13 @@ if record_pid "$P/adc-cycle.live" "$LIVE"; then echo "record_pid recorded no sta
 		} {
 			write(t, filepath.Join(parent, dirs[d], ".owner"), owner+"\n", 0o600)
 		}
+		pids := ""
+		if c.pids {
+			pids = `owner_of "$LIVE" >"$P/adc-cycle.gone/.pids"` + "\n"
+		}
 		script := ownerLib(t) + `rm -f "$P/adc-cycle.live/.owner"; owner_of "$LIVE" >"$P/adc-cycle.live/.owner"
 owner_of "$LIVE" >"$P/adcROOT01/.owner"; owner_of "$LIVE" >"$P/adcrRUNS01/.owner"
-` + c.standIn + `
+` + pids + c.standIn + `
 work_dirs_stale "$P"
 sandbox_roots_stale
 echo swept`
@@ -120,6 +131,14 @@ echo swept`
 		for _, d := range c.removed {
 			if _, err := os.Stat(filepath.Join(parent, dirs[d])); err == nil {
 				t.Errorf("%s: %s was kept", name, d)
+			}
+		}
+		if c.pids {
+			select {
+			case err := <-liveEnded:
+				liveEnded <- err
+				t.Fatalf("%s: the live owner, recorded in a gone run's .pids, was killed: %v", name, err)
+			case <-time.After(300 * time.Millisecond):
 			}
 		}
 	}
