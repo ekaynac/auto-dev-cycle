@@ -64,10 +64,10 @@ func TestStaleOnlyOnEvidence(t *testing.T) {
 	parent := t.TempDir()
 	// Named as sandbox_root names them (adc + 6, adcr + 6), under the row's own parent.
 	dirs := map[string]string{"root": "adcROOT01", "runs": "adcrRUNS01", "gone-root": "adcGONE01"}
-	for _, d := range []string{"live", "gone", "other-ns", "malformed-1", "malformed-2", "malformed-3", "malformed-4"} {
+	for _, d := range []string{"live", "gone", "other-ns", "malformed-1", "malformed-2", "malformed-3", "malformed-4", "malformed-5", "malformed-6"} {
 		dirs[d] = "adc-cycle." + d
 	}
-	all := []string{"live", "root", "runs", "other-ns", "malformed-1", "malformed-2", "malformed-3", "malformed-4"}
+	all := []string{"live", "root", "runs", "other-ns", "malformed-1", "malformed-2", "malformed-3", "malformed-4", "malformed-5", "malformed-6"}
 	gone := []string{"gone", "gone-root"}
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(parent, dirs["live"], ".owner"), 0o600) })
 	// pids: the gone run's .pids records the live owner, as record_pid would:
@@ -103,6 +103,8 @@ if record_pid "$P/adc-cycle.live" "$LIVE"; then echo "record_pid recorded no sta
 		for d, owner := range map[string]string{
 			"gone": "4194399 1 " + ns, "gone-root": "4194399 1 " + ns, "other-ns": "4194399 1 pid:[1]",
 			"malformed-1": strconv.Itoa(live.Process.Pid) + " ", "malformed-2": "4194399", "malformed-3": "4194399 1 2", "malformed-4": "4194399 1",
+			// This namespace's, but with no start time, or with more after it.
+			"malformed-5": "4194399 " + ns, "malformed-6": "4194399 1 " + ns + " x",
 		} {
 			write(t, filepath.Join(parent, dirs[d], ".owner"), owner+"\n", 0o600)
 		}
