@@ -118,7 +118,7 @@ installed-cycle-stub: dist build ## The stub set until the candidate, over the i
 
 installed-cycle-rehearsal: dist build ts-deps ## The live route's rehearsal against the stub (#440; #226 entry 201): its reviewer qualified by the real procedure in a scratch release only; needs rootless Podman and the pinned go-mini image, as installed-cycle-stub
 	@$(INSTALL_PREFIX) \
-	  && scripts/installed-cycle-rehearsal.sh "$$tmp/prefix"
+	  && GO="$(GO)" scripts/installed-cycle-rehearsal.sh "$$tmp/prefix"
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go

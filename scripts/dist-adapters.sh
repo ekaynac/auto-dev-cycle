@@ -33,7 +33,7 @@ committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/
   gen/ts/package.json gen/ts/adapter-validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini
   fixtures/t0/go-mini fixtures/m1/profiles fixtures/m1/config/groups.json fixtures/m1/config/registry-stub.json
   fixtures/m1/stub-provider/server.mjs fixtures/m1/stub-provider/scenarios fixtures/m1/cases fixtures/m1/stub
-  fixtures/m1/review-qualification adapters/package.json adapters/pnpm-workspace.yaml adapters/pnpm-lock.yaml
+  fixtures/m1/review-qualification fixtures/m1/issues adapters/package.json adapters/pnpm-workspace.yaml adapters/pnpm-lock.yaml
   scripts/installed-cycle.sh scripts/lib)
 for p in "${committed[@]}"; do
   git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null || die "$p is not committed"

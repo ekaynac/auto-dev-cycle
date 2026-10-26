@@ -67,8 +67,9 @@ live_acceptance() {
   mkdir "$work/acceptance"
   : >"$work/out/acceptance-digests"
   for a in "${acceptance[@]}"; do
+    [[ "$a" == *=* ]] || cannot "--acceptance: an entry without '=' (REPO_PATH=FILE)"
     name="${a%%=*}" file="${a#*=}"
-    [[ "$a" == *=* && -n "$name" && -f "$file" && -r "$file" ]] || cannot "--acceptance $name: REPO_PATH=FILE, FILE a readable file"
+    [[ -n "$name" && -f "$file" && -r "$file" ]] || cannot "--acceptance $name: REPO_PATH=FILE, FILE a readable file"
     digest="$("$node" -e 'const d = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
       console.log((d.attachments ?? []).find((a) => a.name === process.argv[2])?.digest ?? "")' "$t" "$name")" ||
       cannot "issue $issue's task.json cannot be read"

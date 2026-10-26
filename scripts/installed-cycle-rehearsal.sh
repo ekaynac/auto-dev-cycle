@@ -58,6 +58,7 @@ node="$lib/node/bin/node"
 issue=999
 for f in "$prefix/bin/adc" "$prefix/bin/adcd" "$node" "$lib/scripts/installed-cycle.sh"; do [[ -x "$f" ]] || die "$f is not installed"; done
 [[ ! -e "$lib/rehearsal" && ! -e "$lib/fixtures/m1/issues/$issue" ]] || die "$prefix is not a fresh scratch release"
+[[ -f "$lib/fixtures/m1/issues/170/task.json" ]] || die "the release does not carry fixtures/m1/issues/170/task.json"
 PODMAN=/usr/bin/podman
 # shellcheck source=scripts/lib/sandbox-root.sh
 . "$lib/scripts/lib/sandbox-root.sh"
@@ -131,7 +132,7 @@ records="$lib/fixtures/m1/review-qualification/records"
 for run in 1 2; do
   (cd "$repo" && ADC_QUALIFY_REGISTRY="$scratch/registry.json" ADC_QUALIFY_GROUPS="$lib/fixtures/m1/config/groups.json" \
     ADC_QUALIFY_EXECUTOR="$reviewer" ADC_QUALIFY_OUT="$records" \
-    go test -count=1 -tags qualify -run TestQualifyLive -timeout 30m ./internal/qualify/ >"$scratch/qualify-$run.log" 2>&1) ||
+    "${GO:?}" test -count=1 -tags qualify -run TestQualifyLive -timeout 30m ./internal/qualify/ >"$scratch/qualify-$run.log" 2>&1) ||
     die "qualification run $run: $(tail -c 600 "$scratch/qualify-$run.log")"
   sleep 1.1 # a record's name is its second
 done

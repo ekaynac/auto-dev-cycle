@@ -486,7 +486,7 @@ func TestDistAdaptersRefusals(t *testing.T) {
 			want := []string{"LICENSE", "NOTICE", "adapters/contract/package.json", "adapters/contract/src/index.ts", "adapters/fake/package.json",
 				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "adapters/http-chat/package.json", "adapters/http-chat/src/main.ts",
 				"adapters/package.json", "adapters/pnpm-lock.yaml", "adapters/pnpm-workspace.yaml",
-				"fixtures/m1/cases/c/case.json", "fixtures/m1/config/groups.json", "fixtures/m1/config/registry-stub.json", "fixtures/m1/profiles/go-mini.json",
+				"fixtures/m1/cases/c/case.json", "fixtures/m1/config/groups.json", "fixtures/m1/config/registry-stub.json", "fixtures/m1/issues/1/issue.json", "fixtures/m1/profiles/go-mini.json",
 				"fixtures/m1/review-qualification/suite.json",
 				"fixtures/m1/stub/go-mini/baseline.json", "fixtures/m1/stub-provider/scenarios/s.json", "fixtures/m1/stub-provider/server.mjs",
 				"fixtures/t0/go-mini/repo/go.mod", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
@@ -595,12 +595,12 @@ func TestDistAdapters(t *testing.T) {
 	for _, f := range []string{"LICENSE", "NOTICE", "adapters/fake/src/main.ts", "adapters/http-chat/src/main.ts", "adapters/contract/src/index.ts", "gen/ts/adapter-validators.cjs",
 		"node_modules/require-from-string/license", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
 		"fixtures/m1/stub-provider/server.mjs", "fixtures/m1/cases/candidate/case.json", "scripts/installed-cycle.sh", "scripts/lib/secrets.sh",
-		"fixtures/m1/review-qualification/suite.json", "adapters/pnpm-lock.yaml"} {
+		"fixtures/m1/review-qualification/suite.json", "fixtures/m1/issues/170/task.json", "adapters/pnpm-lock.yaml"} {
 		if fi, err := os.Lstat(filepath.Join(out, f)); err != nil || !fi.Mode().IsRegular() {
 			t.Errorf("%s: %v", f, err)
 		}
 	}
-	for _, f := range []string{"fixtures/m1/stub-provider/test", "fixtures/m1/issues", "fixtures/m1/images", "fixtures/m1/config/registry-live.example.json"} {
+	for _, f := range []string{"fixtures/m1/stub-provider/test", "fixtures/m1/images", "fixtures/m1/config/registry-live.example.json"} {
 		if _, err := os.Lstat(filepath.Join(out, f)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s is packaged: %v", f, err)
 		}

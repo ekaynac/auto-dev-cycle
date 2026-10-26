@@ -136,6 +136,7 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 		want string
 	}{
 		"another file":               {held, []string{"--acceptance", "internal/cli/accept_hidden_test.go=" + other, "--canary-file", own}, "its file is not the recorded sha256:"},
+		"an entry without =":         {held, []string{"--acceptance", acceptance, "--canary-file", own}, "--acceptance: an entry without '=' (REPO_PATH=FILE)"},
 		"another name":               {held, []string{"--acceptance", "internal/cli/x_test.go=" + acceptance, "--canary-file", own}, "names no such attachment"},
 		"a canary not in it":         {held, []string{"--acceptance", given, "--canary-file", canaryFile("elsewhere", "// ADC-CANARY-somewhere-else-0123\n", 0o600)}, "the canary is no line of the acceptance files"},
 		"no credential":              {nil, []string{"--acceptance", given, "--canary-file", own}, "the registry's credential api-reviewer is not in this environment (ADC_CREDENTIAL_API_REVIEWER)"},
