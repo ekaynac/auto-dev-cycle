@@ -1,0 +1,65 @@
+{
+  "repo": "repos/py-mini.git",
+  "base": "f64fc46fda78dedd8f8727feeb6d130caa7dbab8",
+  "image": "docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70",
+  "setup": [
+    "python",
+    "-m",
+    "pip",
+    "install",
+    "--no-cache-dir",
+    "--disable-pip-version-check",
+    "--require-hashes",
+    "--only-binary=:all:",
+    "--target",
+    "/workspace/.deps",
+    "-r",
+    "requirements-dev.txt"
+  ],
+  "test_command": [
+    "env",
+    "PYTHONPATH=/workspace/.deps",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "python",
+    "-P",
+    "-m",
+    "pytest",
+    "-q",
+    "--junitxml=junit.xml"
+  ],
+  "results": {
+    "format": "junit_xml",
+    "path": "junit.xml"
+  },
+  "acceptance": [
+    {
+      "path": "tests/test_hidden_bulk_thresholds.py",
+      "file": "../../t0/py-mini/tasks/py-mini-bugfix-1/hidden/tests/test_hidden_bulk_thresholds.py"
+    }
+  ],
+  "hidden_tests": [
+    "pytest > tests.test_hidden_bulk_thresholds > test_line_of_exactly_fifty_units_is_discounted",
+    "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[100-0.10]",
+    "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[101-0.10]",
+    "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[49-0]",
+    "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[50-0.05]",
+    "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[51-0.05]",
+    "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[99-0.05]"
+  ],
+  "editable": [
+    "invoicekit/**"
+  ],
+  "protected": [
+    "**/conftest.py",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "requirements-dev.txt",
+    "tests/**",
+    "**/sitecustomize.py",
+    "**/usercustomize.py",
+    ".deps/**"
+  ],
+  "timeout_seconds": 600
+}

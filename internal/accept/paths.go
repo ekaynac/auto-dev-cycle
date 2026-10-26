@@ -97,6 +97,11 @@ func gitControl(c string) bool {
 	return dotGit(c) || dotGeneric(n, "gitattributes", "gi7d29") || dotGeneric(n, "gitmodules", "gi7eba") || dotGeneric(n, "githooks", "")
 }
 
+// Plain: p is a path accept lets a candidate write: one plain repository
+// path, with no git control component (adc dev referee's acceptance and
+// results paths).
+func Plain(p string) bool { return !unsafePath(p) && !(Policy{}).Protected(p) }
+
 // unsafePath: p is not one plain repository path: empty, absolute, with an
 // empty, "." or ".." component, or a backslash (a separator elsewhere).
 func unsafePath(p string) bool {

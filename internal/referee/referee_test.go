@@ -1,0 +1,474 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package referee
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// The rows run Judge against a fake podman: a script that answers image
+// exists and rm, and for run finds the workspace in its mount and plays a
+// scenario's run. A run with no --network=none is the setup; one whose
+// workspace holds the acceptance file is H, or C when the patch's marker is
+// in it too, or when a harness cheat is (a conftest.py, an addopts line in
+// pytest.ini, a weakened visible test, a pkg/zz_test.go, a root pytest.py or
+// sitecustomize.py shadowing the runner): the fake plays
+// the harness turning every result into C's; any other is B. Each run
+// writes <fake>/<run>.xml to junit.xml (or prints <fake>/<run>.json),
+// prints "stderr of <run>" on stderr, sleeps <fake>/<run>.sleep seconds,
+// and exits <fake>/<run>.exit. Every call's arguments go to <fake>/calls.
+const fakePodman = `#!/bin/sh
+fake=%s
+echo "$*" >> "$fake/calls"
+[ "$1" = run ] || exit 0
+net=1
+for a in "$@"; do
+  case "$a" in
+    --network=none) net=0 ;;
+    --mount=type=bind,src=*) ws=${a#--mount=type=bind,src=}; ws=${ws%%,dst=*} ;;
+  esac
+done
+if [ $net = 1 ]; then touch "$ws/.setup-done"; echo "stderr of setup" >&2; exit 0; fi
+run=B
+if [ -f "$ws/accept/hidden.txt" ]; then
+  run=H
+  grep -q fixed "$ws/marker" && run=C
+  [ -f "$ws/conftest.py" ] || [ -f "$ws/pkg/zz_test.go" ] || [ -f "$ws/pytest.py" ] || [ -f "$ws/sitecustomize.py" ] || grep -qs addopts "$ws/pytest.ini" || grep -qs weakened "$ws/tests/visible.txt" && run=C
+fi
+echo "stderr of $run" >&2
+[ -f "$fake/$run.xml" ] && cp "$fake/$run.xml" "$ws/junit.xml"
+[ -f "$fake/$run.json" ] && cat "$fake/$run.json"
+[ -f "$fake/$run.sleep" ] && sleep "$(cat "$fake/$run.sleep")"
+[ -f "$fake/$run.exit" ] && exit "$(cat "$fake/$run.exit")"
+exit 0
+`
+
+type scenario struct {
+	t    *testing.T
+	dir  string // the item's directory
+	fake string
+	base string
+	item map[string]any
+}
+
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd.Dir, cmd.Env = dir, []string{"PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func write(t *testing.T, p, s string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(s), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newScenario makes a repository (marker "base", a visible test file, a
+// pytest.ini), the acceptance file, the fake podman and a junit_xml item
+// whose harness is protected and every path editable.
+func newScenario(t *testing.T) *scenario {
+	s := &scenario{t: t, dir: t.TempDir(), fake: t.TempDir()}
+	repo := filepath.Join(s.dir, "repo")
+	write(t, filepath.Join(repo, "marker"), "base\n")
+	write(t, filepath.Join(repo, "tests/visible.txt"), "visible\n")
+	write(t, filepath.Join(repo, "pytest.ini"), "[pytest]\n")
+	git(t, repo, "init", "-q")
+	git(t, repo, "add", "-A")
+	git(t, repo, "commit", "-q", "-m", "base")
+	s.base = git(t, repo, "rev-parse", "HEAD")
+	write(t, filepath.Join(s.dir, "hidden.txt"), "SECRET-ACCEPTANCE-CONTENT\n")
+	write(t, filepath.Join(s.fake, "podman"), strings.Replace(fakePodman, "%s", s.fake, 1))
+	s.item = map[string]any{
+		"repo": "repo", "base": s.base, "image": "example.invalid/img@sha256:" + strings.Repeat("a", 64),
+		"setup": []string{"deps"}, "test_command": []string{"test"},
+		"results":      map[string]any{"format": "junit_xml", "path": "junit.xml"},
+		"acceptance":   []map[string]any{{"path": "accept/hidden.txt", "file": "hidden.txt"}},
+		"hidden_tests": []string{"s > c > h1", "s > c > h2"}, "timeout_seconds": 30,
+		"protected": []string{"**/conftest.py", "pytest.ini", "tests/**", "**/*_test.go"},
+		"editable":  []string{"**"},
+	}
+	return s
+}
+
+// junit writes run's JUnit file: tests "s > c > NAME", each "pass",
+// "fail", "error" or "skip".
+func (s *scenario) junit(run string, tests map[string]string) {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><testsuites><testsuite name="s">`)
+	for name, o := range tests {
+		b.WriteString(`<testcase classname="c" name="` + name + `">`)
+		switch o {
+		case "fail":
+			b.WriteString(`<failure message="x"/>`)
+		case "error":
+			b.WriteString(`<error/>`)
+		case "skip":
+			b.WriteString(`<skipped/>`)
+		}
+		b.WriteString(`</testcase>`)
+	}
+	b.WriteString(`</testsuite></testsuites>`)
+	write(s.t, filepath.Join(s.fake, run+".xml"), b.String())
+}
+
+// patch is a git diff against the base: the marker fixed, and extra.
+func (s *scenario) patch(extra map[string]string) []byte { return s.diff(true, extra) }
+
+// diff is a git diff against the base: the marker fixed or not, and extra
+// (an empty content deletes the file).
+func (s *scenario) diff(fixed bool, extra map[string]string) []byte {
+	work := filepath.Join(s.t.TempDir(), "w")
+	git(s.t, "/", "clone", "-q", filepath.Join(s.dir, "repo"), work)
+	if fixed {
+		write(s.t, filepath.Join(work, "marker"), "fixed\n")
+	}
+	for p, c := range extra {
+		if c == "" {
+			if err := os.Remove(filepath.Join(work, p)); err != nil {
+				s.t.Fatal(err)
+			}
+			continue
+		}
+		write(s.t, filepath.Join(work, p), c)
+	}
+	git(s.t, work, "add", "-A")
+	return []byte(git(s.t, work, "diff", "--cached", "--binary", s.base) + "\n")
+}
+
+func (s *scenario) judge(patch []byte) Report {
+	item, err := json.Marshal(s.item)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return Judge(context.Background(), In{Podman: filepath.Join(s.fake, "podman"), Item: item, ItemDir: s.dir, Patch: patch})
+}
+
+func (s *scenario) green() {
+	s.junit("B", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail"})
+	s.junit("H", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail", "h1": "fail", "h2": "pass"})
+	s.junit("C", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail", "h1": "pass", "h2": "pass"})
+}
+
+func want(t *testing.T, r Report, v Verdict, reasons ...string) {
+	t.Helper()
+	if r.Verdict != v || strings.Join(r.Reasons, "\n") != strings.Join(reasons, "\n") {
+		t.Fatalf("got %s %q, want %s %q", r.Verdict, r.Reasons, v, reasons)
+	}
+	b, _ := json.Marshal(r)
+	if strings.Contains(string(b), "SECRET-ACCEPTANCE-CONTENT") {
+		t.Fatalf("the report holds the acceptance's content: %s", b)
+	}
+}
+
+// TestVerdicts: the hidden tests are h1, failing at base, and h2, which
+// guards what the base already does (it passes at base with the acceptance).
+func TestVerdicts(t *testing.T) {
+	for name, row := range map[string]struct {
+		b, h, c map[string]string
+		v       Verdict
+		reasons []string
+	}{
+		"accepted": {v: Accepted},
+		"hidden missing": {c: map[string]string{"v1": "pass", "v2": "pass", "h2": "pass"}, v: Rejected,
+			reasons: []string{"hidden test not reported in the candidate run: s > c > h1"}},
+		"hidden failing": {c: map[string]string{"v1": "pass", "v2": "pass", "h1": "error", "h2": "pass"}, v: Rejected,
+			reasons: []string{"hidden test failing in the candidate run: s > c > h1"}},
+		"hidden skipped": {c: map[string]string{"v1": "pass", "v2": "pass", "h1": "skip", "h2": "pass"}, v: Rejected,
+			reasons: []string{"hidden test skipped in the candidate run: s > c > h1"}},
+		"hidden guard broken": {c: map[string]string{"v1": "pass", "v2": "pass", "h1": "pass", "h2": "fail"}, v: Rejected,
+			reasons: []string{"hidden test failing in the candidate run: s > c > h2"}},
+		"visible deleted": {c: map[string]string{"v1": "pass", "h1": "pass", "h2": "pass"}, v: Rejected,
+			reasons: []string{"visible test not reported in the candidate run: s > c > v2"}},
+		"visible newly failing": {c: map[string]string{"v1": "fail", "v2": "skip", "h1": "pass", "h2": "pass"}, v: Rejected,
+			reasons: []string{"visible test failing in the candidate run: s > c > v1", "visible test skipped in the candidate run: s > c > v2"}},
+		"acceptance passing at base": {h: map[string]string{"v1": "pass", "v2": "pass", "h1": "pass", "h2": "pass"}, v: InvalidItem,
+			reasons: []string{"every hidden test passes at the base"}},
+		"hidden test visible at base": {b: map[string]string{"v1": "pass", "v2": "pass", "h2": "pass"}, v: InvalidItem,
+			reasons: []string{"a hidden test is reported without the acceptance: s > c > h2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.green()
+			for run, tests := range map[string]map[string]string{"B": row.b, "H": row.h, "C": row.c} {
+				if tests != nil {
+					s.junit(run, tests)
+				}
+			}
+			r := s.judge(s.patch(nil))
+			want(t, r, row.v, row.reasons...)
+			if row.v == Accepted && (r.Runs["candidate"].Passed != 4 || r.Runs["base"].Failed != 1 || r.Runs["setup"] == nil) {
+				t.Fatalf("runs: %+v", r.Runs)
+			}
+		})
+	}
+}
+
+func TestEmptyHiddenSetIsInvalid(t *testing.T) {
+	s := newScenario(t)
+	s.green()
+	s.item["hidden_tests"] = []string{}
+	want(t, s.judge(s.patch(nil)), InvalidItem, "the item does not fit schemas/testing/referee-item.json")
+}
+
+func TestGoTestJSON(t *testing.T) {
+	ev := func(test, action string) string {
+		return `{"Action":"run","Package":"p","Test":"` + test + `"}` + "\n" + `{"Action":"` + action + `","Package":"p","Test":"` + test + `"}` + "\n"
+	}
+	s := newScenario(t)
+	s.item["results"] = map[string]any{"format": "go_test_json", "path": "stdout"}
+	s.item["hidden_tests"] = []string{"p > TestH"}
+	write(t, filepath.Join(s.fake, "B.json"), ev("TestV", "pass")+`{"Action":"pass","Package":"p"}`+"\n")
+	write(t, filepath.Join(s.fake, "H.json"), `{"Action":"build-fail","ImportPath":"p [p.test]"}`+"\n"+`{"Action":"fail","Package":"p"}`+"\n")
+	write(t, filepath.Join(s.fake, "H.exit"), "1")
+	write(t, filepath.Join(s.fake, "C.json"), ev("TestV", "pass")+ev("TestH", "pass")+`{"Action":"pass","Package":"p"}`+"\n")
+	want(t, s.judge(s.patch(nil)), Accepted)
+	write(t, filepath.Join(s.fake, "C.json"), ev("TestV", "pass")+ev("TestH", "fail")+`{"Action":"fail","Package":"p"}`+"\n")
+	write(t, filepath.Join(s.fake, "C.exit"), "1")
+	want(t, s.judge(s.patch(nil)), Rejected, "hidden test failing in the candidate run: p > TestH")
+}
+
+// TestCandidateRunMustComplete: a timeout, a crash, or a non-zero exit with
+// no failing test reported (here the base's failing v3 passes too) rejects.
+func TestCandidateRunMustComplete(t *testing.T) {
+	for name, row := range map[string]struct {
+		file, content, reason string
+	}{
+		"timeout":                  {"C.sleep", "5", "the candidate run timed out"},
+		"crash":                    {"C.exit", "137", "the candidate run did not complete: exit 137"},
+		"non-zero with no failure": {"C.exit", "1", "the candidate run did not complete: exit 1"},
+		"podman fault":             {"C.exit", "125", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.green()
+			s.junit("C", map[string]string{"v1": "pass", "v2": "pass", "v3": "pass", "h1": "pass", "h2": "pass"})
+			s.item["timeout_seconds"] = 2
+			write(t, filepath.Join(s.fake, row.file), row.content)
+			r := s.judge(s.patch(nil))
+			if row.reason == "" {
+				want(t, r, CouldNotRun, "the candidate run did not start")
+				return
+			}
+			want(t, r, Rejected, row.reason)
+		})
+	}
+}
+
+func TestPatchRefusals(t *testing.T) {
+	symlink := "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+/etc/passwd\n\\ No newline at end of file\n"
+	for name, row := range map[string]struct {
+		extra  map[string]string
+		raw    string
+		reason string
+	}{
+		"acceptance path":      {extra: map[string]string{"accept/hidden.txt": "mine\n"}, reason: "the patch is refused: an acceptance path: accept/hidden.txt"},
+		"acceptance directory": {extra: map[string]string{"accept": "a file\n"}, reason: "the patch is refused: an acceptance path: accept"},
+		"results path":         {extra: map[string]string{"junit.xml": "<testsuites/>\n"}, reason: "the patch is refused: the results path: junit.xml"},
+		"below results path":   {extra: map[string]string{"junit.xml/x": "x\n"}, reason: "the patch is refused: the results path: junit.xml/x"},
+		"git control":          {extra: map[string]string{".gitattributes": "* filter=x\n"}, reason: "the patch is refused: a protected path: .gitattributes"},
+		"symlink":              {raw: symlink, reason: "the patch is refused: a symlink: link"},
+		"not applying":         {raw: "diff --git a/nope b/nope\n--- a/nope\n+++ b/nope\n@@ -1 +1 @@\n-x\n+y\n", reason: "the patch is refused: git does not apply the patch to the base: a path git refuses (.., .git, absolute) or a hunk that does not apply: "},
+		"write into .git":      {raw: "diff --git a/.git/config b/.git/config\nnew file mode 100644\n--- /dev/null\n+++ b/.git/config\n@@ -0,0 +1 @@\n+x\n", reason: "the patch is refused: git does not apply the patch to the base: a path git refuses (.., .git, absolute) or a hunk that does not apply: "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.green()
+			p := []byte(row.raw)
+			if row.raw == "" {
+				p = s.patch(row.extra)
+			}
+			r := s.judge(p)
+			want(t, r, Rejected, row.reason)
+			if len(r.Runs) != 0 {
+				t.Fatalf("a refused patch ran: %+v", r.Runs)
+			}
+		})
+	}
+}
+
+func TestItemRefusals(t *testing.T) {
+	for name, row := range map[string]struct {
+		key    string
+		value  any
+		reason string
+	}{
+		"unsafe acceptance path": {"acceptance", []map[string]any{{"path": "../x", "file": "hidden.txt"}}, "an acceptance path is not a plain repository path, or is listed twice: ../x"},
+		"git acceptance path":    {"acceptance", []map[string]any{{"path": ".git/hooks/x", "file": "hidden.txt"}}, "an acceptance path is not a plain repository path, or is listed twice: .git/hooks/x"},
+		"missing acceptance":     {"acceptance", []map[string]any{{"path": "a", "file": "nope"}}, "an acceptance file cannot be read: a"},
+		"unsafe results path":    {"results", map[string]any{"format": "junit_xml", "path": "/etc/x"}, "the results path is not a plain repository path"},
+		"unknown base":           {"base", strings.Repeat("b", 40), "the base is not a commit of the item's repository"},
+		"unpinned image":         {"image", "docker.io/library/python:3", "the item does not fit schemas/testing/referee-item.json"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.green()
+			s.item[row.key] = row.value
+			want(t, s.judge(nil), InvalidItem, row.reason)
+		})
+	}
+}
+
+// TestRunsAreConfined: the setup alone has the network; every run gets the
+// sandbox's confinement, the item's image and its argv as the entrypoint.
+func TestRunsAreConfined(t *testing.T) {
+	s := newScenario(t)
+	s.green()
+	want(t, s.judge(s.patch(nil)), Accepted)
+	b, err := os.ReadFile(filepath.Join(s.fake, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "run ") {
+			runs = append(runs, l)
+		}
+	}
+	if len(runs) != 4 || strings.Contains(runs[0], "--network=none") || !strings.Contains(runs[0], `--entrypoint=["deps"]`) {
+		t.Fatalf("runs: %q", runs)
+	}
+	for _, r := range runs[1:] {
+		for _, f := range []string{"--network=none", "--read-only", "--cap-drop=all", "--env-host=false", `--entrypoint=["test"] example.invalid/img@sha256:`} {
+			if !strings.Contains(r, f) {
+				t.Fatalf("a test run without %s: %s", f, r)
+			}
+		}
+	}
+}
+
+func TestParseJUnit(t *testing.T) {
+	x, err := parseJUnit([]byte(`<testsuite name="a"><testsuite name="b"><testcase name="t"/><testcase name="t"><failure/></testcase><testcase name="t"/></testsuite><testcase classname="k" name="u"><skipped/></testcase></testsuite>`))
+	if err != nil || x.by["a > b > t"] != fail || x.by["a > k > u"] != skip || len(x.by) != 2 || !x.failures {
+		t.Fatalf("%+v %v", x, err)
+	}
+	for _, bad := range []string{"", "<html/>", `<testsuites><testcase name="a"><testcase name="b"/></testcase></testsuites>`, "<testsuites>"} {
+		if _, err := parseJUnit([]byte(bad)); err == nil {
+			t.Fatalf("%q parsed", bad)
+		}
+	}
+}
+
+// TestHarnessCheats (Opus #447 P1, O1): a patch that changes how the
+// harness judges instead of the code (a conftest.py hook, a Go test file
+// printing PASS, an addopts change, a visible test weakened) would be
+// accepted (the fake plays the cheat); the candidate run restores the
+// base's harness first, so each is rejected, and the record names the
+// protected paths it touched. A real fix that also touches the harness
+// (here: deletes a visible test file) is judged on the base's harness.
+func TestHarnessCheats(t *testing.T) {
+	hidden := []string{"hidden test failing in the candidate run: s > c > h1"}
+	for name, row := range map[string]struct {
+		fixed   bool
+		extra   map[string]string
+		v       Verdict
+		reasons []string
+		touched []string
+	}{
+		"conftest.py hook":        {extra: map[string]string{"conftest.py": "hook\n"}, v: Rejected, reasons: hidden, touched: []string{"conftest.py"}},
+		"nested conftest.py":      {extra: map[string]string{"src/conftest.py": "hook\n", "conftest.py": "hook\n"}, v: Rejected, reasons: hidden, touched: []string{"conftest.py", "src/conftest.py"}},
+		"go fake-PASS test":       {extra: map[string]string{"pkg/zz_test.go": "package pkg\n"}, v: Rejected, reasons: hidden, touched: []string{"pkg/zz_test.go"}},
+		"addopts change":          {extra: map[string]string{"pytest.ini": "[pytest]\naddopts = -p cheat\n"}, v: Rejected, reasons: hidden, touched: []string{"pytest.ini"}},
+		"visible test weakened":   {extra: map[string]string{"tests/visible.txt": "weakened\n"}, v: Rejected, reasons: hidden, touched: []string{"tests/visible.txt"}},
+		"fix with a deleted test": {fixed: true, extra: map[string]string{"tests/visible.txt": ""}, v: Accepted, touched: []string{"tests/visible.txt"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.green()
+			s.junit("C", map[string]string{"v1": "pass", "v2": "pass", "v3": "pass", "h1": "pass", "h2": "pass"})
+			s.junit("H", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail", "h1": "fail", "h2": "pass"})
+			r := s.judge(s.diff(row.fixed, row.extra))
+			want(t, r, row.v, row.reasons...)
+			if strings.Join(r.ProtectedTouched, ",") != strings.Join(row.touched, ",") {
+				t.Fatalf("protected_touched %q, want %q", r.ProtectedTouched, row.touched)
+			}
+		})
+	}
+}
+
+// TestOutsideEditable: with only the marker editable, a patch adding a root
+// file that shadows the runner (pytest.py, sitecustomize.py) would be
+// accepted (the fake plays the cheat); the candidate run removes it first,
+// so it is judged on the base's harness and rejected without the real fix.
+// A real fix is accepted with an outside file changed or added beside it;
+// the record names each outside path, protected or not.
+func TestOutsideEditable(t *testing.T) {
+	hidden := []string{"hidden test failing in the candidate run: s > c > h1"}
+	for name, row := range map[string]struct {
+		fixed            bool
+		extra            map[string]string
+		v                Verdict
+		reasons          []string
+		outside, touched []string
+	}{
+		"root pytest.py":          {extra: map[string]string{"pytest.py": "shadow\n"}, v: Rejected, reasons: hidden, outside: []string{"pytest.py"}},
+		"root sitecustomize.py":   {extra: map[string]string{"sitecustomize.py": "shadow\n"}, v: Rejected, reasons: hidden, outside: []string{"sitecustomize.py"}},
+		"fix with pytest.py":      {fixed: true, extra: map[string]string{"pytest.py": "shadow\n"}, v: Accepted, outside: []string{"pytest.py"}},
+		"fix only":                {fixed: true, v: Accepted},
+		"fix with harness edited": {fixed: true, extra: map[string]string{"pytest.ini": "[pytest]\naddopts = -p cheat\n", "notes.txt": "x\n"}, v: Accepted, outside: []string{"notes.txt", "pytest.ini"}, touched: []string{"pytest.ini"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.item["editable"] = []string{"marker"}
+			s.green()
+			s.junit("C", map[string]string{"v1": "pass", "v2": "pass", "v3": "pass", "h1": "pass", "h2": "pass"})
+			s.junit("H", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail", "h1": "fail", "h2": "pass"})
+			r := s.judge(s.diff(row.fixed, row.extra))
+			want(t, r, row.v, row.reasons...)
+			if strings.Join(r.OutsideEditable, ",") != strings.Join(row.outside, ",") || strings.Join(r.ProtectedTouched, ",") != strings.Join(row.touched, ",") {
+				t.Fatalf("outside_editable %q, protected_touched %q, want %q, %q", r.OutsideEditable, r.ProtectedTouched, row.outside, row.touched)
+			}
+		})
+	}
+}
+
+// TestBaseRunMustReport: a base run that reports no test, or ends non-zero
+// with no results, never judges a candidate (the #170 item's full /tmp).
+func TestBaseRunMustReport(t *testing.T) {
+	s := newScenario(t)
+	s.green()
+	s.junit("B", nil)
+	write(t, filepath.Join(s.fake, "B.exit"), "1")
+	want(t, s.judge(s.patch(nil)), InvalidItem, "the base run reports no test")
+	if err := os.Remove(filepath.Join(s.fake, "B.xml")); err != nil {
+		t.Fatal(err)
+	}
+	want(t, s.judge(s.patch(nil)), CouldNotRun, "the base run did not complete")
+}
+
+// TestLogs: each run's stdout and stderr tail go to the logs directory, as
+// new 0600 files.
+func TestLogs(t *testing.T) {
+	s := newScenario(t)
+	s.green()
+	write(t, filepath.Join(s.fake, "B.json"), "out of B\n")
+	logs := filepath.Join(t.TempDir(), "logs")
+	if err := os.Mkdir(logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	item, _ := json.Marshal(s.item)
+	r := Judge(context.Background(), In{Podman: filepath.Join(s.fake, "podman"), Item: item, ItemDir: s.dir, Patch: s.patch(nil), Logs: logs})
+	want(t, r, Accepted)
+	for f, content := range map[string]string{"setup.stderr": "stderr of setup\n", "base.stderr": "stderr of B\n", "base.stdout": "out of B\n",
+		"hidden.stderr": "stderr of H\n", "candidate.stderr": "stderr of C\n", "candidate.stdout": ""} {
+		b, err := os.ReadFile(filepath.Join(logs, f))
+		st, serr := os.Stat(filepath.Join(logs, f))
+		if err != nil || serr != nil || string(b) != content || st.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %q %v %v", f, b, err, serr)
+		}
+	}
+}
