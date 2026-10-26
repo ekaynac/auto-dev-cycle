@@ -78,7 +78,7 @@ func lib(t *testing.T, root, dir string) {
 		"fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json": "{}", "fixtures/m1/stub-provider/server.mjs": "",
 		"scripts/installed-cycle.sh": "", "scripts/lib/clean-shell.sh": "", "scripts/lib/secrets.sh": "", "scripts/lib/base-remote.sh": "",
 		"scripts/lib/sandbox-root.sh": "", "scripts/lib/cycle-case.sh": "", "scripts/lib/cycle-expect.mjs": "", "scripts/lib/cycle-live.sh": "",
-		"fixtures/m1/review-qualification/suite.json": "{}", "adapters/package.json": "{}", "adapters/pnpm-workspace.yaml": "", "adapters/pnpm-lock.yaml": "",
+		"fixtures/m1/review-qualification/suite.json": "{}", "fixtures/m1/issues/170/task.json": "{}", "adapters/package.json": "{}", "adapters/pnpm-workspace.yaml": "", "adapters/pnpm-lock.yaml": "",
 	} {
 		write(t, filepath.Join(l, name), content, 0o755)
 	}
