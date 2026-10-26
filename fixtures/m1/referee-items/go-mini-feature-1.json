@@ -29,6 +29,9 @@
     "example.com/gomini/inventory > TestHiddenTransferMovesStockAndPrice",
     "example.com/gomini/inventory > TestHiddenTransferToSelfIsRejected"
   ],
+  "editable": [
+    "inventory/**"
+  ],
   "protected": [
     "go.mod",
     "go.sum",

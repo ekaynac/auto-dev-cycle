@@ -28,6 +28,10 @@
     "example.com/gomini/sku > TestHiddenNormalize",
     "example.com/gomini/sku > TestHiddenNormalizeRejects"
   ],
+  "editable": [
+    "inventory/**",
+    "sku/**"
+  ],
   "protected": [
     "go.mod",
     "go.sum",

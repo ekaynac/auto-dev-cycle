@@ -21,6 +21,7 @@
     "PYTHONPATH=/workspace/.deps",
     "PYTHONDONTWRITEBYTECODE=1",
     "python",
+    "-P",
     "-m",
     "pytest",
     "-q",
@@ -44,6 +45,9 @@
     "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[50-0.05]",
     "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[51-0.05]",
     "pytest > tests.test_hidden_bulk_thresholds > test_thresholds_are_inclusive[99-0.05]"
+  ],
+  "editable": [
+    "invoicekit/**"
   ],
   "protected": [
     "**/conftest.py",

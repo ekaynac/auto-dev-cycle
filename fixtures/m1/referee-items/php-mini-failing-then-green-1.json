@@ -31,6 +31,9 @@
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testCountingDoesNotChangeTheCart",
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testCountsUnitsOfAMergedLine"
   ],
+  "editable": [
+    "src/**"
+  ],
   "protected": [
     "composer.json",
     "composer.lock",

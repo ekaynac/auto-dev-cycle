@@ -21,6 +21,7 @@
     "PYTHONPATH=/workspace/.deps",
     "PYTHONDONTWRITEBYTECODE=1",
     "python",
+    "-P",
     "-m",
     "pytest",
     "-q",
@@ -44,6 +45,9 @@
     "pytest > tests.test_hidden_format_grouping > test_grouping[1000000000-EUR 1,000,000,000.00]",
     "pytest > tests.test_hidden_format_grouping > test_grouping[999.99-EUR 999.99]",
     "pytest > tests.test_hidden_format_grouping > test_rendered_invoice_groups_totals"
+  ],
+  "editable": [
+    "invoicekit/**"
   ],
   "protected": [
     "**/conftest.py",

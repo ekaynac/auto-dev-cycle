@@ -39,6 +39,8 @@ type RefereeItem struct {
 	Setup *Argv `json:"setup,omitempty"`
 	// The project's own test command, run in the workspace with no network.
 	TestCommand Argv `json:"test_command"`
+	// The paths a solution may change: globs such as src/**, internal/**. The candidate run restores the base's version of each path outside them the patch changed and removes each file outside them it added, before the acceptance overlay, so a new root file shadowing the runner (pytest.py, sitecustomize.py) never runs; the verdict record lists them (outside_editable). protected still applies inside them.
+	Editable []Glob `json:"editable"`
 	// The harness: globs of the paths that decide how tests run and are judged (test configuration and hooks, runner and dependency files, the visible tests, setup's outputs), such as **/conftest.py, pyproject.toml, phpunit.xml*, package.json, go.mod, **/*_test.go, tests/**. The candidate run restores the base's version of each protected path the patch changed and removes each protected file it added, before the acceptance overlay; the verdict record lists them (protected_touched).
 	Protected []Glob `json:"protected"`
 	// Where and how the test command reports per-test results.

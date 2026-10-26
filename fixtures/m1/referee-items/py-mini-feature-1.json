@@ -21,6 +21,7 @@
     "PYTHONPATH=/workspace/.deps",
     "PYTHONDONTWRITEBYTECODE=1",
     "python",
+    "-P",
     "-m",
     "pytest",
     "-q",
@@ -49,6 +50,9 @@
     "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[100.00-7]",
     "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[1234.567-6]",
     "pytest > tests.test_hidden_split_evenly > test_single_part_is_the_rounded_amount"
+  ],
+  "editable": [
+    "invoicekit/**"
   ],
   "protected": [
     "**/conftest.py",

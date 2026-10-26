@@ -26,6 +26,9 @@
     "formatCents negative amounts (acceptance) > test > leaves zero and positive amounts unsigned",
     "formatCents negative amounts (acceptance) > test > works for every currency"
   ],
+  "editable": [
+    "src/**"
+  ],
   "protected": [
     "package.json",
     "tsconfig.json",

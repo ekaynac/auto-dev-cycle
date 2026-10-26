@@ -28,6 +28,9 @@
     "parseCoupon > test > parses percent coupons",
     "parseCoupon > test > rejects unknown, empty and out-of-range codes"
   ],
+  "editable": [
+    "src/**"
+  ],
   "protected": [
     "package.json",
     "tsconfig.json",

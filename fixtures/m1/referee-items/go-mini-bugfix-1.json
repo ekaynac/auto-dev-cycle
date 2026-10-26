@@ -27,6 +27,9 @@
     "example.com/gomini/inventory > TestHiddenLowStockAfterRemove",
     "example.com/gomini/inventory > TestHiddenLowStockExcludesItemsAtThreshold"
   ],
+  "editable": [
+    "inventory/**"
+  ],
   "protected": [
     "go.mod",
     "go.sum",

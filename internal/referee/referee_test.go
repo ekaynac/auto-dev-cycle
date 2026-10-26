@@ -17,7 +17,8 @@ import (
 // scenario's run. A run with no --network=none is the setup; one whose
 // workspace holds the acceptance file is H, or C when the patch's marker is
 // in it too, or when a harness cheat is (a conftest.py, an addopts line in
-// pytest.ini, a weakened visible test, a pkg/zz_test.go): the fake plays
+// pytest.ini, a weakened visible test, a pkg/zz_test.go, a root pytest.py or
+// sitecustomize.py shadowing the runner): the fake plays
 // the harness turning every result into C's; any other is B. Each run
 // writes <fake>/<run>.xml to junit.xml (or prints <fake>/<run>.json),
 // prints "stderr of <run>" on stderr, sleeps <fake>/<run>.sleep seconds,
@@ -38,7 +39,7 @@ run=B
 if [ -f "$ws/accept/hidden.txt" ]; then
   run=H
   grep -q fixed "$ws/marker" && run=C
-  [ -f "$ws/conftest.py" ] || [ -f "$ws/pkg/zz_test.go" ] || grep -qs addopts "$ws/pytest.ini" || grep -qs weakened "$ws/tests/visible.txt" && run=C
+  [ -f "$ws/conftest.py" ] || [ -f "$ws/pkg/zz_test.go" ] || [ -f "$ws/pytest.py" ] || [ -f "$ws/sitecustomize.py" ] || grep -qs addopts "$ws/pytest.ini" || grep -qs weakened "$ws/tests/visible.txt" && run=C
 fi
 echo "stderr of $run" >&2
 [ -f "$fake/$run.xml" ] && cp "$fake/$run.xml" "$ws/junit.xml"
@@ -79,7 +80,7 @@ func write(t *testing.T, p, s string) {
 
 // newScenario makes a repository (marker "base", a visible test file, a
 // pytest.ini), the acceptance file, the fake podman and a junit_xml item
-// whose harness is protected.
+// whose harness is protected and every path editable.
 func newScenario(t *testing.T) *scenario {
 	s := &scenario{t: t, dir: t.TempDir(), fake: t.TempDir()}
 	repo := filepath.Join(s.dir, "repo")
@@ -99,6 +100,7 @@ func newScenario(t *testing.T) *scenario {
 		"acceptance":   []map[string]any{{"path": "accept/hidden.txt", "file": "hidden.txt"}},
 		"hidden_tests": []string{"s > c > h1", "s > c > h2"}, "timeout_seconds": 30,
 		"protected": []string{"**/conftest.py", "pytest.ini", "tests/**", "**/*_test.go"},
+		"editable":  []string{"**"},
 	}
 	return s
 }
@@ -393,6 +395,42 @@ func TestHarnessCheats(t *testing.T) {
 			want(t, r, row.v, row.reasons...)
 			if strings.Join(r.ProtectedTouched, ",") != strings.Join(row.touched, ",") {
 				t.Fatalf("protected_touched %q, want %q", r.ProtectedTouched, row.touched)
+			}
+		})
+	}
+}
+
+// TestOutsideEditable: with only the marker editable, a patch adding a root
+// file that shadows the runner (pytest.py, sitecustomize.py) would be
+// accepted (the fake plays the cheat); the candidate run removes it first,
+// so it is judged on the base's harness and rejected without the real fix.
+// A real fix is accepted with an outside file changed or added beside it;
+// the record names each outside path, protected or not.
+func TestOutsideEditable(t *testing.T) {
+	hidden := []string{"hidden test failing in the candidate run: s > c > h1"}
+	for name, row := range map[string]struct {
+		fixed            bool
+		extra            map[string]string
+		v                Verdict
+		reasons          []string
+		outside, touched []string
+	}{
+		"root pytest.py":          {extra: map[string]string{"pytest.py": "shadow\n"}, v: Rejected, reasons: hidden, outside: []string{"pytest.py"}},
+		"root sitecustomize.py":   {extra: map[string]string{"sitecustomize.py": "shadow\n"}, v: Rejected, reasons: hidden, outside: []string{"sitecustomize.py"}},
+		"fix with pytest.py":      {fixed: true, extra: map[string]string{"pytest.py": "shadow\n"}, v: Accepted, outside: []string{"pytest.py"}},
+		"fix only":                {fixed: true, v: Accepted},
+		"fix with harness edited": {fixed: true, extra: map[string]string{"pytest.ini": "[pytest]\naddopts = -p cheat\n", "notes.txt": "x\n"}, v: Accepted, outside: []string{"notes.txt", "pytest.ini"}, touched: []string{"pytest.ini"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.item["editable"] = []string{"marker"}
+			s.green()
+			s.junit("C", map[string]string{"v1": "pass", "v2": "pass", "v3": "pass", "h1": "pass", "h2": "pass"})
+			s.junit("H", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail", "h1": "fail", "h2": "pass"})
+			r := s.judge(s.diff(row.fixed, row.extra))
+			want(t, r, row.v, row.reasons...)
+			if strings.Join(r.OutsideEditable, ",") != strings.Join(row.outside, ",") || strings.Join(r.ProtectedTouched, ",") != strings.Join(row.touched, ",") {
+				t.Fatalf("outside_editable %q, protected_touched %q, want %q, %q", r.OutsideEditable, r.ProtectedTouched, row.outside, row.touched)
 			}
 		})
 	}

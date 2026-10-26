@@ -26,6 +26,9 @@
     "fixed discounts larger than the subtotal > test > leave discounts within the subtotal unchanged",
     "fixed discounts larger than the subtotal > test > never produce a negative total or negative tax"
   ],
+  "editable": [
+    "src/**"
+  ],
   "protected": [
     "package.json",
     "tsconfig.json",

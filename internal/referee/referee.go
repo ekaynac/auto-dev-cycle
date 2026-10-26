@@ -13,17 +13,21 @@
 // path and no results path either). Three runs then start, each in a fresh
 // copy, in rootless Podman with the sandbox's confinement and no network:
 // base (B, visible tests only), hidden (H, the acceptance overlaid) and
-// candidate (C, the patch applied, then the item's protected paths, its
-// harness, restored to the base's (each one the patch changed back to the
-// base's version, each protected file it added removed), then the acceptance
+// candidate (C, the patch applied, then every path it touched outside the
+// item's editable globs, and the item's protected paths, its harness, inside
+// them, restored to the base's (each one the patch changed back to the
+// base's version, each file it added there removed), then the acceptance
 // overlaid). So a patch's edit of a test hook (conftest.py), a runner's
-// configuration (addopts, phpunit.xml), a test file or a dependency never
-// runs; the record lists the protected paths it touched for audit.
+// configuration (addopts, phpunit.xml), a test file or a dependency, or a new
+// file outside the solution's paths (a root pytest.py or sitecustomize.py
+// shadowing the runner), never runs; the record lists the protected paths
+// and the paths outside editable it touched for audit.
 //
 // Residual: C still runs the candidate's own code, in the same process as
 // the tests. Code under test can forge results from inside (write the
 // results file at exit, print framed test2json lines, patch the assertion
-// library at import). The protected set closes the harness routes only.
+// library at import). The editable and protected sets close the harness
+// routes only.
 //
 // Verdict: invalid_item when B reports no test at all, when B reports a
 // hidden test (it is not hidden), or when every hidden test passes in H (an
@@ -98,7 +102,11 @@ type Report struct {
 	// ProtectedTouched are the protected paths the patch changed, added or
 	// deleted: the candidate run had the base's versions instead.
 	ProtectedTouched []string `json:"protected_touched"`
-	Seconds          float64  `json:"seconds"`
+	// OutsideEditable are the paths outside the item's editable globs the
+	// patch changed, added or deleted: the candidate run had the base's
+	// versions instead (none where the base had none).
+	OutsideEditable []string `json:"outside_editable"`
+	Seconds         float64  `json:"seconds"`
 }
 
 // In is one judgement: the item's bytes and the directory its relative
@@ -128,7 +136,7 @@ func found(v Verdict, format string, a ...any) error {
 // referee itself could not complete.
 func Judge(ctx context.Context, in In) Report {
 	start := time.Now()
-	r := Report{Verdict: Accepted, PatchSHA256: digest(in.Patch), ItemSHA256: digest(in.Item), Runs: map[string]*Run{}, Reasons: []string{}, ProtectedTouched: []string{}}
+	r := Report{Verdict: Accepted, PatchSHA256: digest(in.Patch), ItemSHA256: digest(in.Item), Runs: map[string]*Run{}, Reasons: []string{}, ProtectedTouched: []string{}, OutsideEditable: []string{}}
 	var f *finding
 	if err := judge(ctx, in, &r); errors.As(err, &f) {
 		r.Verdict, r.Reasons = f.verdict, slices.Sorted(slices.Values(f.reasons))
@@ -177,6 +185,10 @@ func judge(ctx context.Context, in In, r *Report) error {
 	if err != nil {
 		return found(InvalidItem, "a protected glob is not a repository path pattern")
 	}
+	editable, err := profile.Matcher(it.Editable)
+	if err != nil {
+		return found(InvalidItem, "an editable glob is not a repository path pattern")
+	}
 	tmp, err := os.MkdirTemp("", "adc-referee-")
 	if err != nil {
 		return err
@@ -185,13 +197,14 @@ func judge(ctx context.Context, in In, r *Report) error {
 	if tmp, err = filepath.EvalSymlinks(tmp); err != nil { // the clone takes canonical paths only
 		return err
 	}
-	w := &work{podman: in.Podman, item: it, logs: in.Logs, protected: protected, host: sandbox.Host{Podman: in.Podman, Root: filepath.Join(tmp, "sandbox")}}
+	w := &work{podman: in.Podman, item: it, logs: in.Logs, protected: protected, editable: editable, host: sandbox.Host{Podman: in.Podman, Root: filepath.Join(tmp, "sandbox")}}
 	defer w.teardown()
 	if err := w.prepare(ctx, filepath.Join(tmp, "stage"), filepath.Join(tmp, "repo"), abs(in.ItemDir, it.Repo)); err != nil {
 		return err
 	}
 	err = w.check(ctx, in.Patch, files)
 	r.ProtectedTouched = append(r.ProtectedTouched, slices.Compact(slices.Sorted(slices.Values(w.touched)))...)
+	r.OutsideEditable = append(r.OutsideEditable, slices.Compact(slices.Sorted(slices.Values(w.outside)))...)
 	if err != nil {
 		return err
 	}

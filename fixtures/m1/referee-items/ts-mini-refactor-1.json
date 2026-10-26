@@ -25,6 +25,9 @@
     "tax module > test > keeps the tax behaviour",
     "tax module > test > owns taxCents, and the old exports are the same function"
   ],
+  "editable": [
+    "src/**"
+  ],
   "protected": [
     "package.json",
     "tsconfig.json",

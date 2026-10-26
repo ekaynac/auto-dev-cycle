@@ -21,6 +21,7 @@
     "PYTHONPATH=/workspace/.deps",
     "PYTHONDONTWRITEBYTECODE=1",
     "python",
+    "-P",
     "-m",
     "pytest",
     "-q",
@@ -40,6 +41,9 @@
     "pytest > tests.test_hidden_rounding_module > test_behaviour_is_unchanged",
     "pytest > tests.test_hidden_rounding_module > test_old_import_paths_still_work",
     "pytest > tests.test_hidden_rounding_module > test_round_money_lives_in_the_rounding_module"
+  ],
+  "editable": [
+    "invoicekit/**"
   ],
   "protected": [
     "**/conftest.py",

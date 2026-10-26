@@ -26,6 +26,9 @@
   "hidden_tests": [
     "example.com/gomini/inventory > TestHiddenFormatCentsSigns"
   ],
+  "editable": [
+    "inventory/**"
+  ],
   "protected": [
     "go.mod",
     "go.sum",

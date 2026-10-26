@@ -49,7 +49,9 @@ type work struct {
 	item      types.RefereeItem
 	logs      string // a private directory for the runs' logs, or ""
 	protected func(path string) bool
+	editable  func(path string) bool
 	touched   []string // the protected paths the patch changes
+	outside   []string // the paths outside editable the patch changes
 	host      sandbox.Host
 	repo      sandbox.Repo
 	pristine  *sandbox.Attempt // the base's workspace, after setup
@@ -152,7 +154,7 @@ func (w *work) cmd(ctx context.Context, args ...string) *exec.Cmd {
 
 // check refuses a patch accept refuses, or one touching an acceptance path
 // or the results path, a directory holding one, or a path below one. It
-// notes the protected paths the patch touches.
+// notes the protected paths the patch touches and those outside editable.
 func (w *work) check(ctx context.Context, patch []byte, files []overlay) error {
 	pol, err := accept.PolicyOf(types.ProjectProfile{})
 	if err != nil {
@@ -172,6 +174,9 @@ func (w *work) check(ctx context.Context, patch []byte, files []overlay) error {
 				}
 				if w.protected(p) {
 					w.touched = append(w.touched, p)
+				}
+				if !w.editable(p) {
+					w.outside = append(w.outside, p)
 				}
 			}
 		}
@@ -206,7 +211,8 @@ func (w *work) setup(ctx context.Context, r *Report) error {
 }
 
 // test runs the test command in a fresh copy of the pristine workspace,
-// with patch applied, the protected paths it touched restored, and files
+// with patch applied, the protected paths and those outside editable it
+// touched restored, and files
 // overlaid, and reads its results.
 func (w *work) test(ctx context.Context, r *Report, name string, patch []byte, files []overlay) (result, error) {
 	a, err := w.attempt()
@@ -289,7 +295,7 @@ func readResults(root *os.Root, path string) ([]byte, error) {
 }
 
 // restore gives the workspace (root) the base's version of each protected
-// path the patch touched: removed, then copied back from the pristine
+// path, and each path outside editable, the patch touched: removed, then copied back from the pristine
 // workspace (the base after setup) when it is there.
 func (w *work) restore(root *os.Root) error {
 	base, err := os.OpenRoot(w.pristine.Workspace())
@@ -297,7 +303,7 @@ func (w *work) restore(root *os.Root) error {
 		return err
 	}
 	defer base.Close()
-	for _, p := range w.touched {
+	for _, p := range slices.Concat(w.touched, w.outside) {
 		if err := root.RemoveAll(p); err != nil {
 			return err
 		}

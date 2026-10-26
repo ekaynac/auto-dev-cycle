@@ -35,6 +35,9 @@
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testSplitsByRatio",
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testSplitsEvenlyAndGivesLeftoverCentsToTheFirstParts"
   ],
+  "editable": [
+    "src/**"
+  ],
   "protected": [
     "composer.json",
     "composer.lock",
