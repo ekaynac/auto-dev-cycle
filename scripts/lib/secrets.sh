@@ -56,7 +56,10 @@ forms() {
   b64="$(printf '%s' "$1" | base64 -w0)" || return 1
   pad="$std"
   while ((${#pad} % 4)); do pad+="="; done
-  hex="$(base64 -d <<<"$pad" 2>/dev/null | od -An -tx1 | tr -d ' \n')" || hex=""
+  # Whether it is base64 decided by its text, never by a producer's status;
+  # the hex form then checked like the rest (Opus #443 r2 B2).
+  hex=""
+  if [[ "$pad" =~ ^[A-Za-z0-9+/]*={0,2}$ ]]; then hex="$(base64 -d <<<"$pad" | od -An -tx1 | tr -d ' \n')" || return 1; fi
   printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$b64"
   if [[ -n "$hex" ]]; then printf '%s\n' "$hex"; fi
 }

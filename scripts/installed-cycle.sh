@@ -327,7 +327,7 @@ step "the stub provider with scenario $scenario"
 "${run_env[@]}" "$node" "$fixtures/m1/stub-provider/server.mjs" --scenario "$fixtures/m1/stub-provider/scenarios/$scenario.json" \
   --listen 127.0.0.1:0 --log "$work/out/stub.jsonl" --barriers "$work/out" >"$work/out/stub.out" 2>"$work/out/stub.err" &
 stub=$!
-record_pid "$work" "$stub"
+record_pid "$work" "$stub" || cannot "the stub provider's start time cannot be read (its sweep record)"
 listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(excerpt "$work/out/stub.err" 400)"; grep -q '^listening ' "$work/out/stub.out"; }
 within 30 "the stub provider" listening
 base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
@@ -360,7 +360,7 @@ start_adcd() {
   (clean_exec $((${#run_vars[@]} + ${#cred[@]})) "${run_vars[@]}" "${cred[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" \
     --resource-groups "$fixtures/m1/config/groups.json" --registry "$work/registry.json" "${sandbox[@]}") >"$log" 2>&1 &
   adcd=$!
-  record_pid "$work" "$adcd"
+  record_pid "$work" "$adcd" || cannot "adcd's start time cannot be read (its sweep record)"
 }
 # how STATUS: an exit status as the shell gives it, a signal's named (128+N:
 # SIGTERM is "signal TERM"), so a process killed before it logs anything is

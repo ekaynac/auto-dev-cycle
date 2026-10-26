@@ -68,9 +68,10 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 		},
 	}
 	// A status discarded (`< <(`, `|| true`, `|| :`), or lost in a command
-	// substitution inside a test, a case word or an echo/printf argument (Opus #443).
-	discard := regexp.MustCompile(`< <\(|\|\|\s*(true|:)(\s|;|\)|}|$)|\[\[[^]]*\$\([^(]|case "?\$\([^(]|\b(echo|printf)\b[^#]*\$\([^(]`)
-	for l, want := range map[string]bool{`x || true`: true, `x || :`: true, `{ x || true; }`: true, `done < <(y)`: true, `x || rc=$?`: false, `x || die "y"`: false, `x <<<"$y"`: false, `[[ "$(f)" == y ]]`: true, `case "$(f)" in`: true, `echo "a $(f)"`: true, `printf '%s' "$((1 + 2))"`: false, `x="$(f)" || die y`: false} {
+	// substitution inside a test (past any bracket expression in it; Opus #443
+	// r2 O2), a case word or an echo/printf argument (Opus #443).
+	discard := regexp.MustCompile(`< <\(|\|\|\s*(true|:)(\s|;|\)|}|$)|\[\[([^]]|\][^]])*\$\([^(]|case "?\$\([^(]|\b(echo|printf)\b[^#]*\$\([^(]`)
+	for l, want := range map[string]bool{`x || true`: true, `x || :`: true, `{ x || true; }`: true, `done < <(y)`: true, `x || rc=$?`: false, `x || die "y"`: false, `x <<<"$y"`: false, `[[ "$(f)" == y ]]`: true, `[[ "$p" =~ ^[0-9]+$ && "$(f)" == y ]] && z`: true, `[[ "$p" =~ ^[0-9]+$ ]] && x="$(f)"`: false, `case "$(f)" in`: true, `echo "a $(f)"`: true, `printf '%s' "$((1 + 2))"`: false, `x="$(f)" || die y`: false} {
 		if discard.MatchString(l) != want {
 			t.Errorf("the row reads %q as discarding a status: %v", l, !want)
 		}
@@ -150,19 +151,27 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 }
 
 // A producer that fails is refused, never read as a shorter list or a clean
-// result: the forms of a secret (known, scan), the filter of scan's own file
-// (grep's 1 mapped, anything else refused; Astra #441 r3 High 3), and the
-// hostile files of a base remote's overlay.
+// result: the forms of a secret (known, scan; the hex form too, Opus #443 r2
+// B2: an od that fails or is killed), the filter of scan's own file (grep's
+// 1 mapped, anything else refused; Astra #441 r3 High 3), and the hostile
+// files of a base remote's overlay.
 func TestProducersThatFailRefuse(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "tree/leak"), "sk-filter-PROBE-0123456789abcdef\n", 0o600)
 	write(t, filepath.Join(dir, "tree/own"), "sk-filter-PROBE-0123456789abcdef\n", 0o600)
+	// The hex of the secret's bytes alone (it is base64url): the form od makes.
+	write(t, filepath.Join(dir, "hex/leak"), "b24f9f8a5b5eafe3d138113ed35db7e39ebbf3d69b71d79f\n", 0o600)
 	for name, c := range map[string]struct{ script, want string }{
 		"known, its forms failing":  {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; known x; echo ran`, "known: the forms of a secret could not be made"},
 		"scan, its forms failing":   {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; scan "" x "$D/tree"; echo ran`, "scan: the forms of the secret could not be made"},
 		"scan, its filter failing":  {`grep() { if [[ "$1" == -vxF ]]; then return 2; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the filter of OWN failed (exit 2)"},
 		"known, its base64 failing": {`base64() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
 		"known, its tr failing":     {`tr() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		"known, its od failing":     {`od() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		"known, its od killed":      {`od() { kill -9 $BASHPID; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		"scan, its od failing":      {`od() { return 1; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "scan: the forms of the secret could not be made"},
+		"scan, its od killed":       {`od() { kill -9 $BASHPID; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "scan: the forms of the secret could not be made"},
+		"scan, the hex form found":  {`scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "a secret appears in: " + filepath.Join(dir, "hex/leak")},
 		"scan, its filter clean":    {`rm "$D/tree/leak"; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "ran"},
 	} {
 		cmd := exec.Command("bash", "-c", "set -euo pipefail; . ../../scripts/lib/secrets.sh; "+c.script)

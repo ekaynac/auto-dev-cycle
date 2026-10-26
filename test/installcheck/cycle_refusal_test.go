@@ -255,14 +255,16 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	}
 
 	// A run killed before its cleanup (SIGKILL runs no trap) leaves its work
-	// directory, each recording its owner (pid and start time): the next run
-	// stops the processes that run recorded (.pids), still themselves, and
-	// removes it; a process it did not record, though its command line names
-	// that directory, and a recorded pid whose start time is another
-	// process's (a reused pid), are never killed (no pattern kill: several
+	// directory, each recording its owner (pid, start time and PID
+	// namespace): the next run stops the processes that run recorded
+	// (.pids), still themselves, and removes it; a process it did not
+	// record, though its command line names that directory, a recorded pid
+	// whose start time is another process's (a reused pid), and one recorded
+	// in another PID namespace, are never killed (no pattern kill: several
 	// runs share a host). A live owner's directory, and a kept one's (no
 	// owner), are never touched. The stale owner is a pid above the kernel's
 	// pid_max limit (4194304): never a live process.
+	ns := pidNS(t)
 	tmpdir = t.TempDir()
 	startOf := func(pid int) string {
 		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
@@ -271,7 +273,7 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 		}
 		return strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+2:]))[19]
 	}
-	dirs := map[string]string{"stale": "4194305 0\n", "live": strconv.Itoa(os.Getpid()) + " " + startOf(os.Getpid()) + "\n", "kept": ""}
+	dirs := map[string]string{"stale": "4194305 0 " + ns + "\n", "live": strconv.Itoa(os.Getpid()) + " " + startOf(os.Getpid()) + " " + ns + "\n", "kept": ""}
 	for name, owner := range dirs {
 		write(t, filepath.Join(tmpdir, "adc-cycle."+name, "state/x"), "", 0o600)
 		if owner != "" {
@@ -291,7 +293,8 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	orphan, orphanDone := spawn()
 	bystander, bystanderDone := spawn()
 	reused, reusedDone := spawn()
-	write(t, filepath.Join(tmpdir, "adc-cycle.stale/.pids"), fmt.Sprintf("%d %s\n%d 1\n", orphan.Process.Pid, startOf(orphan.Process.Pid), reused.Process.Pid), 0o600)
+	foreign, foreignDone := spawn()
+	write(t, filepath.Join(tmpdir, "adc-cycle.stale/.pids"), fmt.Sprintf("%d %s %s\n%d 1 %s\n%d %s pid:[1]\n", orphan.Process.Pid, startOf(orphan.Process.Pid), ns, reused.Process.Pid, ns, foreign.Process.Pid, startOf(foreign.Process.Pid)), 0o600)
 	if out, code := run("--setup-only"); code != 0 {
 		t.Fatalf("the sweeping run: exit %d, %s", code, out)
 	}
@@ -300,14 +303,14 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Error("the stale run's recorded child still runs")
 	}
-	for name, done := range map[string]chan error{"an unrecorded process naming the directory": bystanderDone, "a recorded pid of another start time": reusedDone} {
+	for name, done := range map[string]chan error{"an unrecorded process naming the directory": bystanderDone, "a recorded pid of another start time": reusedDone, "a recorded pid of another PID namespace": foreignDone} {
 		select {
 		case <-done:
 			t.Errorf("%s was killed", name)
 		default:
 		}
 	}
-	_, _ = bystander, reused
+	_, _, _ = bystander, reused, foreign
 	for name := range dirs {
 		if _, err := os.Stat(filepath.Join(tmpdir, "adc-cycle."+name)); (err == nil) == (name == "stale") {
 			t.Errorf("adc-cycle.%s: present %v after the sweep", name, err == nil)
@@ -434,7 +437,7 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 		t.Errorf("the root %s is still there", root)
 	}
 
-	runs := map[string]string{"stale": "4194305 0", "live": sh("owner_of $PPID")}
+	runs := map[string]string{"stale": "4194305 0 " + pidNS(t), "live": sh("owner_of $PPID")}
 	for name, owner := range runs {
 		dir := sh("mktemp -d /dev/shm/adcrXXXXXX")
 		t.Cleanup(func() { os.RemoveAll(dir) })
@@ -459,7 +462,7 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	write(t, probe, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != --root ]; do shift; done\nr=$(dirname \"$2\")\n[ -s \"$r/.owner\" ] && echo \"$r owned\" >>"+seen+"\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\nexec \"$@\"\n", 0o755)
 	orphan := sh("mktemp -d /dev/shm/adcrXXXXXX")
 	t.Cleanup(func() { os.RemoveAll(orphan) })
-	write(t, filepath.Join(orphan, ".owner"), "4194305 0\n", 0o600)
+	write(t, filepath.Join(orphan, ".owner"), "4194305 0 "+pidNS(t)+"\n", 0o600)
 	_ = sh("PODMAN=" + probe + "; sandbox_roots_stale")
 	got, _ := os.ReadFile(seen)
 	if _, err := os.Stat(orphan); err == nil || !strings.Contains(string(got), " owned") {
@@ -666,5 +669,10 @@ case "$*" in *nonexistent*) echo "installed-cycle: could_not_run: rootless Podma
 	}
 	if out, err := run("ADC_CLEAN_SHELL=1", "OTHER=x"); err == nil || !strings.Contains(out, "installed-cycle-set: could_not_run: the environment holds more than the re-exec's allowlist (ADC_CLEAN_SHELL set by the caller)") {
 		t.Errorf("the set with its marker set by the caller: %v %s", err, out)
+	}
+	// Opus #443 r2 O3: the set's prelude comes from its own $0 too; an
+	// inherited BASH_SOURCE chooses none of its libraries.
+	if out, err := run("BASH_SOURCE=/nonexistent/installed-cycle-set.sh"); err != nil || !strings.Contains(out, "installed-cycle-set: a missing prerequisite refuses the case, exit 2, named") {
+		t.Errorf("the set with an inherited BASH_SOURCE: %v %s", err, out)
 	}
 }

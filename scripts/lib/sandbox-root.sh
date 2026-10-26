@@ -21,7 +21,8 @@
 #                               characters), canonical, its runs/ a link to a
 #                               directory of /dev/shm; prints the root. A root
 #                               it makes records its owner (.owner: the
-#                               calling shell's pid and start time), the
+#                               calling shell's pid, start time and PID
+#                               namespace), the
 #                               shell whose exit removes it (a given DIR is
 #                               its caller's, and records none)
 #   root_podman ROOT ARGS...    podman ($PODMAN, the caller's) over the root,
@@ -54,13 +55,16 @@
 #                               or the search never ran
 #
 # Ownership (the lead's ruling on Mythos #435 M1): a leftover's owner is a
-# pid with its start time (.owner, .pids; owner_of), not a locked manifest
+# pid with its start time and PID namespace (.owner, .pids; owner_of), not a
+# locked manifest
 # like scripts/test-sandbox.sh's. Several drivers' runs share this host; a
 # lock held by no one cannot say whether its owner died or never took it,
 # and a bare pid may be reused. Only the pid with the start time it had
 # tells a dead owner from a live one, which is what a sweep must know
 # before it kills or removes anything (the restart failures of #435, lesson
-# 7). The two schemes stay apart on purpose.
+# 7). The two schemes stay apart on purpose. A pid means something only in
+# its own PID namespace: a sweep from another one (a bwrap or a container
+# sharing /tmp or /dev/shm) never reads its record as gone (Opus #443 r2 B1).
 
 host_arch() {
   case "$(uname -m)" in
@@ -75,15 +79,19 @@ rootless_podman() {
 }
 
 # owner_of PID: PID's start time (field 22 of /proc/PID/stat), so a reused
-# pid is not taken for the owner; nothing when PID is gone.
+# pid is not taken for the owner, and its PID namespace, so a pid of another
+# namespace is never taken for one of this; nothing, and 1, unless all were
+# read.
 owner_of() {
-  local stat start
+  local stat start ns
   stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
   stat="${stat##*) }"
   # The start time read, and numeric, or no owner at all (Opus #443 H1a).
   start="$(cut -d' ' -f20 <<<"$stat")" || return 1
   [[ "$start" =~ ^[0-9]+$ ]] || return 1
-  echo "$1 $start"
+  ns="$(readlink "/proc/$1/ns/pid")" || return 1
+  [[ "$ns" =~ ^pid:\[[0-9]+\]$ ]] || return 1
+  echo "$1 $start $ns"
 }
 
 sandbox_root() {
@@ -130,7 +138,7 @@ runs_required() {
 
 # stale DIR: DIR is ours and records an owner (.owner) that is gone.
 stale() {
-  local owner pid now
+  local owner pid ns here now
   [[ -d "$1" && ! -L "$1" && -O "$1" && -f "$1/.owner" ]] || return 1
   # Stale only on evidence (Opus #443 H1a): a well-formed record whose pid is
   # gone, or whose start time was read and differs. A record that cannot be
@@ -138,8 +146,12 @@ stale() {
   # Readable first: an unreadable file in $(<…) ends the whole shell.
   [[ -r "$1/.owner" ]] || return 1
   owner="$(<"$1/.owner")" || return 1
-  [[ "$owner" =~ ^([0-9]+)\ [0-9]+$ ]] || return 1
-  pid="${BASH_REMATCH[1]}"
+  [[ "$owner" =~ ^([0-9]+)\ [0-9]+\ (pid:\[[0-9]+\])$ ]] || return 1
+  pid="${BASH_REMATCH[1]}" ns="${BASH_REMATCH[2]}"
+  # Only a record of this PID namespace says anything here: another's pid
+  # is absent from this /proc, or another process (Opus #443 r2 B1).
+  here="$(readlink /proc/self/ns/pid)" || return 1
+  [[ "$ns" == "$here" ]] || return 1
   [[ -e "/proc/$pid" ]] || return 0
   now="$(owner_of "$pid")" || return 1
   [[ "$now" != "$owner" ]]
@@ -226,18 +238,22 @@ root_secret_scan() {
 
 # work_dirs_stale PARENT...: removes each PARENT/adc-cycle.* work directory
 # whose owner is gone, after stopping what still runs on it: only the
-# processes its driver started and recorded (.pids: pid and start time,
+# processes its driver started and recorded (.pids: owner_of's lines,
 # record_pid), each still that process (a killed driver's children outlive
 # it); never a process found by a pattern (the host rule: several runs
 # share this host).
 work_dirs_stale() {
-  local p w pid start
+  local p w rec pid now
   for p in "$@"; do
     for w in "$p"/adc-cycle.*; do
       stale "$w" || continue
       if [[ -f "$w/.pids" ]]; then
-        while read -r pid start; do
-          [[ "$pid" =~ ^[0-9]+$ && "$(owner_of "$pid")" == "$pid $start" ]] && kill -9 "$pid" 2>/dev/null
+        while read -r rec; do
+          [[ "$rec" =~ ^([0-9]+)\ [0-9]+\ pid:\[[0-9]+\]$ ]] || continue
+          pid="${BASH_REMATCH[1]}"
+          # A record that cannot be read now is not that process: never killed.
+          now="$(owner_of "$pid")" || continue
+          [[ "$now" == "$rec" ]] && kill -9 "$pid" 2>/dev/null
         done <"$w/.pids"
       fi
       rm -rf "$w" 2>/dev/null || true
@@ -245,7 +261,7 @@ work_dirs_stale() {
   done
 }
 
-# record_pid WORK PID: records PID (with its start time) in WORK/.pids, for
+# record_pid WORK PID: records PID (owner_of's line) in WORK/.pids, for
 # work_dirs_stale should WORK's driver be killed before its own cleanup. A
 # PID already gone has nothing to record; one whose start time cannot be
 # read fails it.
