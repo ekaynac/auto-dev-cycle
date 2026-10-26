@@ -27,5 +27,14 @@
     "example.com/gomini/inventory > TestHiddenLowStockAfterRemove",
     "example.com/gomini/inventory > TestHiddenLowStockExcludesItemsAtThreshold"
   ],
+  "protected": [
+    "go.mod",
+    "go.sum",
+    "go.work",
+    "go.work.sum",
+    "vendor/**",
+    "**/*_test.go",
+    "**/testdata/**"
+  ],
   "timeout_seconds": 600
 }

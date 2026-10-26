@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -34,6 +35,7 @@ const (
 	cpus     = "4"
 	pids     = "4096"
 	maxCopy  = 4 << 30
+	maxTail  = 64 << 10 // of a run's stderr kept for its log
 	rmTime   = 30 * time.Second
 	pullTime = 15 * time.Minute
 )
@@ -43,12 +45,15 @@ var errPodman = errors.New("referee: podman could not run the container")
 
 // work is one judgement's controller-side clone and run directories.
 type work struct {
-	podman   string
-	item     types.RefereeItem
-	host     sandbox.Host
-	repo     sandbox.Repo
-	pristine *sandbox.Attempt // the base's workspace, after setup
-	attempts []*sandbox.Attempt
+	podman    string
+	item      types.RefereeItem
+	logs      string // a private directory for the runs' logs, or ""
+	protected func(path string) bool
+	touched   []string // the protected paths the patch changes
+	host      sandbox.Host
+	repo      sandbox.Repo
+	pristine  *sandbox.Attempt // the base's workspace, after setup
+	attempts  []*sandbox.Attempt
 }
 
 // result is one test run's results and how it ended.
@@ -145,20 +150,28 @@ func (w *work) cmd(ctx context.Context, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, w.podman, args...)
 }
 
-// check refuses a patch accept refuses, or one touching an acceptance
-// path, a directory holding one, or a path below one.
+// check refuses a patch accept refuses, or one touching an acceptance path
+// or the results path, a directory holding one, or a path below one. It
+// notes the protected paths the patch touches.
 func (w *work) check(ctx context.Context, patch []byte, files []overlay) error {
 	pol, err := accept.PolicyOf(types.ProjectProfile{})
 	if err != nil {
 		return err
 	}
+	overlaps := func(p, q string) bool { return p == q || strings.HasPrefix(q, p+"/") || strings.HasPrefix(p, q+"/") }
 	guard := func(_ context.Context, changes []accept.Change, _ accept.Reader) (blocks, _ []accept.Block, _ error) {
 		for _, c := range changes {
 			for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
 				for _, f := range files {
-					if p == f.path || strings.HasPrefix(f.path, p+"/") || strings.HasPrefix(p, f.path+"/") {
+					if overlaps(p, f.path) {
 						blocks = append(blocks, accept.Block{Reason: vocab.ReasonProtectedPath, Path: p, What: "an acceptance path"})
 					}
+				}
+				if res := string(w.item.Results.Path); res != "stdout" && overlaps(p, res) {
+					blocks = append(blocks, accept.Block{Reason: vocab.ReasonProtectedPath, Path: p, What: "the results path"})
+				}
+				if w.protected(p) {
+					w.touched = append(w.touched, p)
 				}
 			}
 		}
@@ -184,7 +197,7 @@ func (w *work) setup(ctx context.Context, r *Report) error {
 	if w.item.Setup == nil {
 		return nil
 	}
-	_, run, err := w.run(ctx, w.pristine.Workspace(), *w.item.Setup, true)
+	_, run, err := w.run(ctx, "setup", w.pristine.Workspace(), *w.item.Setup, true)
 	r.Runs["setup"] = run
 	if err != nil || run.TimedOut || run.Exit != 0 {
 		return found(CouldNotRun, "the setup step failed")
@@ -193,7 +206,8 @@ func (w *work) setup(ctx context.Context, r *Report) error {
 }
 
 // test runs the test command in a fresh copy of the pristine workspace,
-// with patch applied and files overlaid, and reads its results.
+// with patch applied, the protected paths it touched restored, and files
+// overlaid, and reads its results.
 func (w *work) test(ctx context.Context, r *Report, name string, patch []byte, files []overlay) (result, error) {
 	a, err := w.attempt()
 	if err != nil {
@@ -215,6 +229,11 @@ func (w *work) test(ctx context.Context, r *Report, name string, patch []byte, f
 		return result{}, err
 	}
 	defer root.Close()
+	if len(patch) > 0 {
+		if err := w.restore(root); err != nil {
+			return result{}, err
+		}
+	}
 	for _, f := range files {
 		if errors.Join(root.MkdirAll(filepath.Dir(f.path), 0o700), root.WriteFile(f.path, f.data, 0o600)) != nil {
 			return result{}, found(CouldNotRun, "the acceptance cannot be overlaid on the workspace")
@@ -226,7 +245,7 @@ func (w *work) test(ctx context.Context, r *Report, name string, patch []byte, f
 			return result{}, err
 		}
 	}
-	out, run, err := w.run(ctx, ws, w.item.TestCommand, false)
+	out, run, err := w.run(ctx, name, ws, w.item.TestCommand, false)
 	r.Runs[name] = run
 	if err != nil {
 		return result{}, err
@@ -269,14 +288,53 @@ func readResults(root *os.Root, path string) ([]byte, error) {
 	return b, err
 }
 
+// restore gives the workspace (root) the base's version of each protected
+// path the patch touched: removed, then copied back from the pristine
+// workspace (the base after setup) when it is there.
+func (w *work) restore(root *os.Root) error {
+	base, err := os.OpenRoot(w.pristine.Workspace())
+	if err != nil {
+		return err
+	}
+	defer base.Close()
+	for _, p := range w.touched {
+		if err := root.RemoveAll(p); err != nil {
+			return err
+		}
+		st, err := base.Lstat(p)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
+			return err
+		case st.Mode()&fs.ModeSymlink != 0:
+			var target string
+			if target, err = base.Readlink(p); err == nil {
+				err = errors.Join(root.MkdirAll(filepath.Dir(p), 0o700), root.Symlink(target, p))
+			}
+		case st.Mode().IsRegular():
+			var b []byte
+			if b, err = base.ReadFile(p); err == nil {
+				err = errors.Join(root.MkdirAll(filepath.Dir(p), 0o700), root.WriteFile(p, b, st.Mode().Perm()))
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // run runs argv in the item's image on ws, with the sandbox's confinement,
 // no network unless network, and the item's timeout; the container is then
 // removed by name whatever happened. It returns the run's stdout (bounded).
-func (w *work) run(ctx context.Context, ws string, argv types.Argv, network bool) ([]byte, *Run, error) {
-	run := &Run{Exit: -1}
+// With a logs directory, the run's stdout and its stderr's tail go there as
+// <run>.stdout and <run>.stderr.
+func (w *work) run(ctx context.Context, run string, ws string, argv types.Argv, network bool) ([]byte, *Run, error) {
+	x := &Run{Exit: -1}
 	entry, err := json.Marshal([]string(argv))
 	if err != nil || strings.ContainsAny(ws, ",\n") {
-		return nil, run, errPodman
+		return nil, x, errPodman
 	}
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
@@ -293,29 +351,57 @@ func (w *work) run(ctx context.Context, ws string, argv types.Argv, network bool
 	defer cancel()
 	cmd := w.cmd(rctx, args...)
 	var out capped
-	cmd.Stdout = &out
+	var stderr tail
+	cmd.Stdout, cmd.Stderr = &out, &stderr
 	start := time.Now()
 	err = cmd.Run()
-	run.Seconds = time.Since(start).Seconds()
+	x.Seconds = time.Since(start).Seconds()
 	rm, cancelRm := context.WithTimeout(context.WithoutCancel(ctx), rmTime)
 	defer cancelRm()
 	_ = w.cmd(rm, "rm", "--force", "--ignore", "--time=0", name).Run()
+	if w.logs != "" {
+		if lerr := errors.Join(writeLog(w.logs, run+".stdout", out.b.Bytes()), writeLog(w.logs, run+".stderr", stderr.bytes())); lerr != nil {
+			return nil, x, lerr
+		}
+	}
 	var exit *exec.ExitError
 	switch {
 	case errors.Is(rctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
-		run.TimedOut = true
+		x.TimedOut = true
 	case err == nil:
-		run.Exit = 0
+		x.Exit = 0
 	case errors.As(err, &exit) && exit.ExitCode() != 125:
-		run.Exit = exit.ExitCode()
+		x.Exit = exit.ExitCode()
 	default:
-		return nil, run, errPodman
+		return nil, x, errPodman
 	}
 	if out.over {
-		return nil, run, nil
+		return nil, x, nil
 	}
-	return out.b.Bytes(), run, nil
+	return out.b.Bytes(), x, nil
 }
+
+// writeLog writes a new file, 0600, in the logs directory.
+func writeLog(dir, name string, b []byte) error {
+	f, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(b)
+	return errors.Join(err, f.Close())
+}
+
+// tail keeps the last maxTail bytes written.
+type tail struct{ b []byte }
+
+func (t *tail) Write(p []byte) (int, error) {
+	if t.b = append(t.b, p...); len(t.b) > 2*maxTail {
+		t.b = append([]byte(nil), t.b[len(t.b)-maxTail:]...)
+	}
+	return len(p), nil
+}
+
+func (t *tail) bytes() []byte { return t.b[max(0, len(t.b)-maxTail):] }
 
 // capped keeps up to results.MaxStream bytes and notes any beyond.
 type capped struct {

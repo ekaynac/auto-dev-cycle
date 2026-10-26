@@ -41,5 +41,17 @@
     "pytest > tests.test_hidden_rounding_module > test_old_import_paths_still_work",
     "pytest > tests.test_hidden_rounding_module > test_round_money_lives_in_the_rounding_module"
   ],
+  "protected": [
+    "**/conftest.py",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "requirements-dev.txt",
+    "tests/**",
+    "**/sitecustomize.py",
+    "**/usercustomize.py",
+    ".deps/**"
+  ],
   "timeout_seconds": 600
 }

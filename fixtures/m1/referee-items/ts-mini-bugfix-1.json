@@ -26,5 +26,15 @@
     "fixed discounts larger than the subtotal > test > leave discounts within the subtotal unchanged",
     "fixed discounts larger than the subtotal > test > never produce a negative total or negative tax"
   ],
+  "protected": [
+    "package.json",
+    "tsconfig.json",
+    "node.config.json",
+    "test/**",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "**/*.test.mjs",
+    "node_modules/**"
+  ],
   "timeout_seconds": 600
 }

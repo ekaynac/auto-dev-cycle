@@ -31,5 +31,13 @@
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testCountingDoesNotChangeTheCart",
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testCountsUnitsOfAMergedLine"
   ],
+  "protected": [
+    "composer.json",
+    "composer.lock",
+    "phpunit.xml*",
+    "phpunit.dist.xml",
+    "tests/**",
+    "vendor/**"
+  ],
   "timeout_seconds": 600
 }

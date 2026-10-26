@@ -10,19 +10,31 @@
 // a fresh workspace; the setup step alone runs with the network, before
 // anything hidden is in the workspace. The patch is checked by accept (no
 // unsafe path, symlink, gitlink or git control path; here, no acceptance
-// path either). Three runs then start, each in a fresh copy, in rootless
-// Podman with the sandbox's confinement and no network: base (B, visible
-// tests only), hidden (H, the acceptance overlaid) and candidate (C, the
-// patch applied and the acceptance overlaid).
+// path and no results path either). Three runs then start, each in a fresh
+// copy, in rootless Podman with the sandbox's confinement and no network:
+// base (B, visible tests only), hidden (H, the acceptance overlaid) and
+// candidate (C, the patch applied, then the item's protected paths, its
+// harness, restored to the base's (each one the patch changed back to the
+// base's version, each protected file it added removed), then the acceptance
+// overlaid). So a patch's edit of a test hook (conftest.py), a runner's
+// configuration (addopts, phpunit.xml), a test file or a dependency never
+// runs; the record lists the protected paths it touched for audit.
 //
-// Verdict: invalid_item when B reports a hidden test (it is not hidden), or
-// when every hidden test passes in H (an acceptance that passes at base
-// proves nothing; some of its tests may guard what the base already does);
-// accepted when C completed (no timeout or crash; a non-zero exit only with
-// failures reported), every hidden test is reported in C and passes, and
-// every test that passed in B is reported in C and passes. Reasons are fixed
-// texts naming test ids or paths; no acceptance file's content is ever
-// printed.
+// Residual: C still runs the candidate's own code, in the same process as
+// the tests. Code under test can forge results from inside (write the
+// results file at exit, print framed test2json lines, patch the assertion
+// library at import). The protected set closes the harness routes only.
+//
+// Verdict: invalid_item when B reports no test at all, when B reports a
+// hidden test (it is not hidden), or when every hidden test passes in H (an
+// acceptance that passes at base proves nothing; some of its tests may
+// guard what the base already does); accepted when C completed (no timeout
+// or crash; a non-zero exit only with failures reported), every hidden test
+// is reported in C and passes, and every test that passed in B is reported
+// in C and passes. Reasons are fixed texts naming test ids or paths; no
+// acceptance file's content is ever printed. With a logs directory, each
+// run's stdout and the tail of its stderr are written there (they may hold
+// the hidden tests' names and output: the directory is private).
 package referee
 
 import (
@@ -40,6 +52,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/accept"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/profile"
 	"github.com/ekaynac/auto-dev-cycle/internal/regularfile"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
@@ -82,16 +95,21 @@ type Report struct {
 	PatchSHA256 string          `json:"patch_sha256"`
 	ItemSHA256  string          `json:"item_sha256"`
 	Runs        map[string]*Run `json:"runs"` // setup, base, hidden, candidate
-	Seconds     float64         `json:"seconds"`
+	// ProtectedTouched are the protected paths the patch changed, added or
+	// deleted: the candidate run had the base's versions instead.
+	ProtectedTouched []string `json:"protected_touched"`
+	Seconds          float64  `json:"seconds"`
 }
 
 // In is one judgement: the item's bytes and the directory its relative
-// paths are taken from, the patch, and the podman binary.
+// paths are taken from, the patch, the podman binary, and a private
+// directory for the runs' logs ("" for none).
 type In struct {
 	Podman  string
 	Item    []byte
 	ItemDir string
 	Patch   []byte
+	Logs    string
 }
 
 // finding ends a judgement with a verdict and its fixed reasons.
@@ -110,7 +128,7 @@ func found(v Verdict, format string, a ...any) error {
 // referee itself could not complete.
 func Judge(ctx context.Context, in In) Report {
 	start := time.Now()
-	r := Report{Verdict: Accepted, PatchSHA256: digest(in.Patch), ItemSHA256: digest(in.Item), Runs: map[string]*Run{}, Reasons: []string{}}
+	r := Report{Verdict: Accepted, PatchSHA256: digest(in.Patch), ItemSHA256: digest(in.Item), Runs: map[string]*Run{}, Reasons: []string{}, ProtectedTouched: []string{}}
 	var f *finding
 	if err := judge(ctx, in, &r); errors.As(err, &f) {
 		r.Verdict, r.Reasons = f.verdict, slices.Sorted(slices.Values(f.reasons))
@@ -155,6 +173,10 @@ func judge(ctx context.Context, in In, r *Report) error {
 	if res := string(it.Results.Path); res != "stdout" && !accept.Plain(res) {
 		return found(InvalidItem, "the results path is not a plain repository path")
 	}
+	protected, err := profile.Matcher(it.Protected)
+	if err != nil {
+		return found(InvalidItem, "a protected glob is not a repository path pattern")
+	}
 	tmp, err := os.MkdirTemp("", "adc-referee-")
 	if err != nil {
 		return err
@@ -163,12 +185,14 @@ func judge(ctx context.Context, in In, r *Report) error {
 	if tmp, err = filepath.EvalSymlinks(tmp); err != nil { // the clone takes canonical paths only
 		return err
 	}
-	w := &work{podman: in.Podman, item: it, host: sandbox.Host{Podman: in.Podman, Root: filepath.Join(tmp, "sandbox")}}
+	w := &work{podman: in.Podman, item: it, logs: in.Logs, protected: protected, host: sandbox.Host{Podman: in.Podman, Root: filepath.Join(tmp, "sandbox")}}
 	defer w.teardown()
 	if err := w.prepare(ctx, filepath.Join(tmp, "stage"), filepath.Join(tmp, "repo"), abs(in.ItemDir, it.Repo)); err != nil {
 		return err
 	}
-	if err := w.check(ctx, in.Patch, files); err != nil {
+	err = w.check(ctx, in.Patch, files)
+	r.ProtectedTouched = append(r.ProtectedTouched, slices.Compact(slices.Sorted(slices.Values(w.touched)))...)
+	if err != nil {
 		return err
 	}
 	if err := w.setup(ctx, r); err != nil {
@@ -178,6 +202,9 @@ func judge(ctx context.Context, in In, r *Report) error {
 	b, err := w.test(ctx, r, "base", nil, nil)
 	if err := ran(b, err, "base"); err != nil {
 		return err
+	}
+	if len(b.by) == 0 {
+		return found(InvalidItem, "the base run reports no test")
 	}
 	h, err := w.test(ctx, r, "hidden", nil, files)
 	if err := ran(h, err, "hidden"); err != nil {

@@ -50,5 +50,17 @@
     "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[1234.567-6]",
     "pytest > tests.test_hidden_split_evenly > test_single_part_is_the_rounded_amount"
   ],
+  "protected": [
+    "**/conftest.py",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "requirements-dev.txt",
+    "tests/**",
+    "**/sitecustomize.py",
+    "**/usercustomize.py",
+    ".deps/**"
+  ],
   "timeout_seconds": 600
 }

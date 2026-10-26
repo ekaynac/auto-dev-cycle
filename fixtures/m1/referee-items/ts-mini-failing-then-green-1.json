@@ -26,5 +26,15 @@
     "formatCents negative amounts (acceptance) > test > leaves zero and positive amounts unsigned",
     "formatCents negative amounts (acceptance) > test > works for every currency"
   ],
+  "protected": [
+    "package.json",
+    "tsconfig.json",
+    "node.config.json",
+    "test/**",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "**/*.test.mjs",
+    "node_modules/**"
+  ],
   "timeout_seconds": 600
 }

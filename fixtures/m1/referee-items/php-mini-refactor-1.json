@@ -34,5 +34,13 @@
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testTheBoundsAreAllowed",
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testTheCartUsesTheSameRule"
   ],
+  "protected": [
+    "composer.json",
+    "composer.lock",
+    "phpunit.xml*",
+    "phpunit.dist.xml",
+    "tests/**",
+    "vendor/**"
+  ],
   "timeout_seconds": 600
 }

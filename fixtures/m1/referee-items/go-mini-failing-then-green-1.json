@@ -26,5 +26,14 @@
   "hidden_tests": [
     "example.com/gomini/inventory > TestHiddenFormatCentsSigns"
   ],
+  "protected": [
+    "go.mod",
+    "go.sum",
+    "go.work",
+    "go.work.sum",
+    "vendor/**",
+    "**/*_test.go",
+    "**/testdata/**"
+  ],
   "timeout_seconds": 600
 }

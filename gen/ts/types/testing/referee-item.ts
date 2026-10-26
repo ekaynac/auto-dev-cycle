@@ -32,6 +32,15 @@ export interface RefereeItem {
   setup?: Argv;
   test_command: Argv1;
   /**
+   * The harness: globs of the paths that decide how tests run and are judged (test configuration and hooks, runner and dependency files, the visible tests, setup's outputs), such as ** /conftest.py, pyproject.toml, phpunit.xml*, package.json, go.mod, ** /*_test.go, tests/**. The candidate run restores the base's version of each protected path the patch changed and removes each protected file it added, before the acceptance overlay; the verdict record lists them (protected_touched).
+   *
+   * @minItems 1
+   * @maxItems 256
+   *
+   * Items: A repository path pattern: slash-separated segments, each '**' or a path.Match pattern (internal/profile compiles it).
+   */
+  protected: [string, ...string[]];
+  /**
    * Where and how the test command reports per-test results.
    */
   results: {
@@ -40,7 +49,7 @@ export interface RefereeItem {
      */
     format: "junit_xml" | "go_test_json";
     /**
-     * The results file, a repository path inside the workspace (removed before each run), or stdout: the command's standard output.
+     * The results file, a repository path inside the workspace (removed before each run; a patch touching it, or a path above or below it, is refused), or stdout: the command's standard output.
      */
     path: string;
   };

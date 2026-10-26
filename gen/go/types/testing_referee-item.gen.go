@@ -16,7 +16,7 @@ const (
 type RefereeItemResults struct {
 	// junit_xml: a JUnit XML file (pytest, node --test, PHPUnit, gotestsum, Surefire); go_test_json: a go test -json stream.
 	Format RefereeItemResultsFormat `json:"format"`
-	// The results file, a repository path inside the workspace (removed before each run), or stdout: the command's standard output.
+	// The results file, a repository path inside the workspace (removed before each run; a patch touching it, or a path above or below it, is refused), or stdout: the command's standard output.
 	Path RepoPath `json:"path"`
 }
 
@@ -39,6 +39,8 @@ type RefereeItem struct {
 	Setup *Argv `json:"setup,omitempty"`
 	// The project's own test command, run in the workspace with no network.
 	TestCommand Argv `json:"test_command"`
+	// The harness: globs of the paths that decide how tests run and are judged (test configuration and hooks, runner and dependency files, the visible tests, setup's outputs), such as **/conftest.py, pyproject.toml, phpunit.xml*, package.json, go.mod, **/*_test.go, tests/**. The candidate run restores the base's version of each protected path the patch changed and removes each protected file it added, before the acceptance overlay; the verdict record lists them (protected_touched).
+	Protected []Glob `json:"protected"`
 	// Where and how the test command reports per-test results.
 	Results RefereeItemResults `json:"results"`
 	// The hidden acceptance: files overlaid on the workspace at their paths for the hidden and candidate runs. The agent never sees them, and a patch touching one of their paths is refused.

@@ -15,6 +15,7 @@ An item `adc dev referee` judges an outside agent's patch on (stage 2, P-A). The
 | `image` | yes | [PinnedImage](config-project-profile.md#pinnedimage) | The image every run starts, pinned by digest. |
 | `setup` |  | [Argv](config-project-profile.md#argv) | Run once in the base's workspace, with the network, before the test runs (a dependency step); what it writes is in every test run's workspace. Absent: no setup. |
 | `test_command` | yes | [Argv](config-project-profile.md#argv) | The project's own test command, run in the workspace with no network. |
+| `protected` | yes | array of [Glob](config-project-profile.md#glob) (minItems `1`, maxItems `256`, unique items) | The harness: globs of the paths that decide how tests run and are judged (test configuration and hooks, runner and dependency files, the visible tests, setup's outputs), such as **/conftest.py, pyproject.toml, phpunit.xml*, package.json, go.mod, **/*_test.go, tests/**. The candidate run restores the base's version of each protected path the patch changed and removes each protected file it added, before the acceptance overlay; the verdict record lists them (protected_touched). |
 | `results` | yes | object ([fields](#fields-of-results)) | Where and how the test command reports per-test results. |
 | `acceptance` | yes | array of object ([fields](#fields-of-acceptance)) (minItems `1`, maxItems `64`) | The hidden acceptance: files overlaid on the workspace at their paths for the hidden and candidate runs. The agent never sees them, and a patch touching one of their paths is refused. |
 | `hidden_tests` | yes | array of string (minLength `1`, maxLength `1024`) (minItems `1`, maxItems `1024`, unique items) | The acceptance's test ids, written with it: each must be reported and pass in the candidate run. None may be reported at the base without the acceptance, and at least one must not pass at the base with it. A test id is its enclosing JUnit testsuite names, its classname and its name (a go_test_json test: its package and its name), joined by " &gt; ", empty parts left out. |
@@ -27,7 +28,7 @@ No other fields are allowed.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `format` | yes | one of `junit_xml`, `go_test_json` | junit_xml: a JUnit XML file (pytest, node --test, PHPUnit, gotestsum, Surefire); go_test_json: a go test -json stream. |
-| `path` | yes | [RepoPath](config-project-profile.md#repopath) | The results file, a repository path inside the workspace (removed before each run), or stdout: the command's standard output. |
+| `path` | yes | [RepoPath](config-project-profile.md#repopath) | The results file, a repository path inside the workspace (removed before each run; a patch touching it, or a path above or below it, is refused), or stdout: the command's standard output. |
 
 No other fields are allowed.
 

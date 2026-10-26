@@ -29,5 +29,14 @@
     "example.com/gomini/inventory > TestHiddenTransferMovesStockAndPrice",
     "example.com/gomini/inventory > TestHiddenTransferToSelfIsRejected"
   ],
+  "protected": [
+    "go.mod",
+    "go.sum",
+    "go.work",
+    "go.work.sum",
+    "vendor/**",
+    "**/*_test.go",
+    "**/testdata/**"
+  ],
   "timeout_seconds": 600
 }

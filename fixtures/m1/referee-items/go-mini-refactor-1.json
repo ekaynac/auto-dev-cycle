@@ -28,5 +28,14 @@
     "example.com/gomini/sku > TestHiddenNormalize",
     "example.com/gomini/sku > TestHiddenNormalizeRejects"
   ],
+  "protected": [
+    "go.mod",
+    "go.sum",
+    "go.work",
+    "go.work.sum",
+    "vendor/**",
+    "**/*_test.go",
+    "**/testdata/**"
+  ],
   "timeout_seconds": 600
 }

@@ -25,5 +25,15 @@
     "tax module > test > keeps the tax behaviour",
     "tax module > test > owns taxCents, and the old exports are the same function"
   ],
+  "protected": [
+    "package.json",
+    "tsconfig.json",
+    "node.config.json",
+    "test/**",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "**/*.test.mjs",
+    "node_modules/**"
+  ],
   "timeout_seconds": 600
 }

@@ -5,13 +5,21 @@
   "description": "An item `adc dev referee` judges an outside agent's patch on (stage 2, P-A). The item supplies everything language-specific: its image, its setup and test commands, where the results are, and its hidden acceptance; the referee adds nothing per language. Relative paths (repo, acceptance files) are taken from the item file's directory.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["repo", "base", "image", "test_command", "results", "acceptance", "hidden_tests", "timeout_seconds"],
+  "required": ["repo", "base", "image", "test_command", "results", "acceptance", "hidden_tests", "protected", "timeout_seconds"],
   "properties": {
     "repo": {"description": "A local git repository (a work tree or a bare repository) holding base.", "type": "string", "minLength": 1},
     "base": {"description": "The base commit: a full sha1 id. The agent worked on its tree; the patch is a diff against it.", "type": "string", "pattern": "^[0-9a-f]{40}$"},
     "image": {"description": "The image every run starts, pinned by digest.", "$ref": "../config/project-profile.json#/$defs/PinnedImage"},
     "setup": {"description": "Run once in the base's workspace, with the network, before the test runs (a dependency step); what it writes is in every test run's workspace. Absent: no setup.", "$ref": "../config/project-profile.json#/$defs/Argv"},
     "test_command": {"description": "The project's own test command, run in the workspace with no network.", "$ref": "../config/project-profile.json#/$defs/Argv"},
+    "protected": {
+      "description": "The harness: globs of the paths that decide how tests run and are judged (test configuration and hooks, runner and dependency files, the visible tests, setup's outputs), such as **/conftest.py, pyproject.toml, phpunit.xml*, package.json, go.mod, **/*_test.go, tests/**. The candidate run restores the base's version of each protected path the patch changed and removes each protected file it added, before the acceptance overlay; the verdict record lists them (protected_touched).",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {"$ref": "../config/project-profile.json#/$defs/Glob"}
+    },
     "results": {
       "description": "Where and how the test command reports per-test results.",
       "type": "object",
@@ -19,7 +27,7 @@
       "required": ["format", "path"],
       "properties": {
         "format": {"description": "junit_xml: a JUnit XML file (pytest, node --test, PHPUnit, gotestsum, Surefire); go_test_json: a go test -json stream.", "enum": ["junit_xml", "go_test_json"]},
-        "path": {"description": "The results file, a repository path inside the workspace (removed before each run), or stdout: the command's standard output.", "$ref": "../config/project-profile.json#/$defs/RepoPath"}
+        "path": {"description": "The results file, a repository path inside the workspace (removed before each run; a patch touching it, or a path above or below it, is refused), or stdout: the command's standard output.", "$ref": "../config/project-profile.json#/$defs/RepoPath"}
       }
     },
     "acceptance": {

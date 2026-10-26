@@ -28,5 +28,15 @@
     "parseCoupon > test > parses percent coupons",
     "parseCoupon > test > rejects unknown, empty and out-of-range codes"
   ],
+  "protected": [
+    "package.json",
+    "tsconfig.json",
+    "node.config.json",
+    "test/**",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "**/*.test.mjs",
+    "node_modules/**"
+  ],
   "timeout_seconds": 600
 }

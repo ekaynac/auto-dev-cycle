@@ -56,4 +56,22 @@ func TestDevRefereeOutput(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(dir, "absent.json")); err == nil {
 		t.Fatal("written through a symlink")
 	}
+	// --logs: a new private directory; an existing one is refused, and so
+	// is an existing --out, with no directory left behind.
+	logs := filepath.Join(dir, "logs")
+	if _, code := run("--item", item, "--patch", patch, "--out", filepath.Join(dir, "v2.json"), "--logs", logs, "--podman", "/bin/false"); code != entry.ExitRefused {
+		t.Fatalf("--logs: exit %d", code)
+	}
+	if st, err := os.Stat(logs); err != nil || st.Mode().Perm() != 0o700 || !st.IsDir() {
+		t.Fatalf("--logs: %v %v", st, err)
+	}
+	if _, code := run("--item", item, "--patch", patch, "--out", filepath.Join(dir, "v3.json"), "--logs", logs, "--podman", "/bin/false"); code != entry.ExitUsage {
+		t.Fatalf("an existing --logs: exit %d", code)
+	}
+	if _, code := run("--item", item, "--patch", patch, "--out", out, "--logs", filepath.Join(dir, "logs2"), "--podman", "/bin/false"); code != entry.ExitUsage {
+		t.Fatalf("--logs with an existing --out: exit %d", code)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "logs2")); err == nil {
+		t.Fatal("a logs directory left behind")
+	}
 }

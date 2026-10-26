@@ -32,5 +32,13 @@
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyNegativeFormatTest > PhpMini.Shop.Tests.MoneyNegativeFormatTest > testFormatsARefund",
     "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyNegativeFormatTest > PhpMini.Shop.Tests.MoneyNegativeFormatTest > testFormatsAWholeNegativeAmount"
   ],
+  "protected": [
+    "composer.json",
+    "composer.lock",
+    "phpunit.xml*",
+    "phpunit.dist.xml",
+    "tests/**",
+    "vendor/**"
+  ],
   "timeout_seconds": 600
 }

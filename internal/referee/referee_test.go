@@ -16,9 +16,12 @@ import (
 // exists and rm, and for run finds the workspace in its mount and plays a
 // scenario's run. A run with no --network=none is the setup; one whose
 // workspace holds the acceptance file is H, or C when the patch's marker is
-// in it too; any other is B. Each run writes <fake>/<run>.xml to junit.xml
-// (or prints <fake>/<run>.json), sleeps <fake>/<run>.sleep seconds, and
-// exits <fake>/<run>.exit. Every call's arguments go to <fake>/calls.
+// in it too, or when a harness cheat is (a conftest.py, an addopts line in
+// pytest.ini, a weakened visible test, a pkg/zz_test.go): the fake plays
+// the harness turning every result into C's; any other is B. Each run
+// writes <fake>/<run>.xml to junit.xml (or prints <fake>/<run>.json),
+// prints "stderr of <run>" on stderr, sleeps <fake>/<run>.sleep seconds,
+// and exits <fake>/<run>.exit. Every call's arguments go to <fake>/calls.
 const fakePodman = `#!/bin/sh
 fake=%s
 echo "$*" >> "$fake/calls"
@@ -30,9 +33,14 @@ for a in "$@"; do
     --mount=type=bind,src=*) ws=${a#--mount=type=bind,src=}; ws=${ws%%,dst=*} ;;
   esac
 done
-if [ $net = 1 ]; then touch "$ws/.setup-done"; exit 0; fi
+if [ $net = 1 ]; then touch "$ws/.setup-done"; echo "stderr of setup" >&2; exit 0; fi
 run=B
-if [ -f "$ws/accept/hidden.txt" ]; then run=H; grep -q fixed "$ws/marker" && run=C; fi
+if [ -f "$ws/accept/hidden.txt" ]; then
+  run=H
+  grep -q fixed "$ws/marker" && run=C
+  [ -f "$ws/conftest.py" ] || [ -f "$ws/pkg/zz_test.go" ] || grep -qs addopts "$ws/pytest.ini" || grep -qs weakened "$ws/tests/visible.txt" && run=C
+fi
+echo "stderr of $run" >&2
 [ -f "$fake/$run.xml" ] && cp "$fake/$run.xml" "$ws/junit.xml"
 [ -f "$fake/$run.json" ] && cat "$fake/$run.json"
 [ -f "$fake/$run.sleep" ] && sleep "$(cat "$fake/$run.sleep")"
@@ -69,13 +77,15 @@ func write(t *testing.T, p, s string) {
 	}
 }
 
-// newScenario makes a repository (marker "base", a visible test file), the
-// acceptance file, the fake podman and a junit_xml item.
+// newScenario makes a repository (marker "base", a visible test file, a
+// pytest.ini), the acceptance file, the fake podman and a junit_xml item
+// whose harness is protected.
 func newScenario(t *testing.T) *scenario {
 	s := &scenario{t: t, dir: t.TempDir(), fake: t.TempDir()}
 	repo := filepath.Join(s.dir, "repo")
 	write(t, filepath.Join(repo, "marker"), "base\n")
 	write(t, filepath.Join(repo, "tests/visible.txt"), "visible\n")
+	write(t, filepath.Join(repo, "pytest.ini"), "[pytest]\n")
 	git(t, repo, "init", "-q")
 	git(t, repo, "add", "-A")
 	git(t, repo, "commit", "-q", "-m", "base")
@@ -88,6 +98,7 @@ func newScenario(t *testing.T) *scenario {
 		"results":      map[string]any{"format": "junit_xml", "path": "junit.xml"},
 		"acceptance":   []map[string]any{{"path": "accept/hidden.txt", "file": "hidden.txt"}},
 		"hidden_tests": []string{"s > c > h1", "s > c > h2"}, "timeout_seconds": 30,
+		"protected": []string{"**/conftest.py", "pytest.ini", "tests/**", "**/*_test.go"},
 	}
 	return s
 }
@@ -114,11 +125,23 @@ func (s *scenario) junit(run string, tests map[string]string) {
 }
 
 // patch is a git diff against the base: the marker fixed, and extra.
-func (s *scenario) patch(extra map[string]string) []byte {
+func (s *scenario) patch(extra map[string]string) []byte { return s.diff(true, extra) }
+
+// diff is a git diff against the base: the marker fixed or not, and extra
+// (an empty content deletes the file).
+func (s *scenario) diff(fixed bool, extra map[string]string) []byte {
 	work := filepath.Join(s.t.TempDir(), "w")
 	git(s.t, "/", "clone", "-q", filepath.Join(s.dir, "repo"), work)
-	write(s.t, filepath.Join(work, "marker"), "fixed\n")
+	if fixed {
+		write(s.t, filepath.Join(work, "marker"), "fixed\n")
+	}
 	for p, c := range extra {
+		if c == "" {
+			if err := os.Remove(filepath.Join(work, p)); err != nil {
+				s.t.Fatal(err)
+			}
+			continue
+		}
 		write(s.t, filepath.Join(work, p), c)
 	}
 	git(s.t, work, "add", "-A")
@@ -253,6 +276,8 @@ func TestPatchRefusals(t *testing.T) {
 	}{
 		"acceptance path":      {extra: map[string]string{"accept/hidden.txt": "mine\n"}, reason: "the patch is refused: an acceptance path: accept/hidden.txt"},
 		"acceptance directory": {extra: map[string]string{"accept": "a file\n"}, reason: "the patch is refused: an acceptance path: accept"},
+		"results path":         {extra: map[string]string{"junit.xml": "<testsuites/>\n"}, reason: "the patch is refused: the results path: junit.xml"},
+		"below results path":   {extra: map[string]string{"junit.xml/x": "x\n"}, reason: "the patch is refused: the results path: junit.xml/x"},
 		"git control":          {extra: map[string]string{".gitattributes": "* filter=x\n"}, reason: "the patch is refused: a protected path: .gitattributes"},
 		"symlink":              {raw: symlink, reason: "the patch is refused: a symlink: link"},
 		"not applying":         {raw: "diff --git a/nope b/nope\n--- a/nope\n+++ b/nope\n@@ -1 +1 @@\n-x\n+y\n", reason: "the patch is refused: git does not apply the patch to the base: a path git refuses (.., .git, absolute) or a hunk that does not apply: "},
@@ -332,6 +357,80 @@ func TestParseJUnit(t *testing.T) {
 	for _, bad := range []string{"", "<html/>", `<testsuites><testcase name="a"><testcase name="b"/></testcase></testsuites>`, "<testsuites>"} {
 		if _, err := parseJUnit([]byte(bad)); err == nil {
 			t.Fatalf("%q parsed", bad)
+		}
+	}
+}
+
+// TestHarnessCheats (Opus #447 P1, O1): a patch that changes how the
+// harness judges instead of the code (a conftest.py hook, a Go test file
+// printing PASS, an addopts change, a visible test weakened) would be
+// accepted (the fake plays the cheat); the candidate run restores the
+// base's harness first, so each is rejected, and the record names the
+// protected paths it touched. A real fix that also touches the harness
+// (here: deletes a visible test file) is judged on the base's harness.
+func TestHarnessCheats(t *testing.T) {
+	hidden := []string{"hidden test failing in the candidate run: s > c > h1"}
+	for name, row := range map[string]struct {
+		fixed   bool
+		extra   map[string]string
+		v       Verdict
+		reasons []string
+		touched []string
+	}{
+		"conftest.py hook":        {extra: map[string]string{"conftest.py": "hook\n"}, v: Rejected, reasons: hidden, touched: []string{"conftest.py"}},
+		"nested conftest.py":      {extra: map[string]string{"src/conftest.py": "hook\n", "conftest.py": "hook\n"}, v: Rejected, reasons: hidden, touched: []string{"conftest.py", "src/conftest.py"}},
+		"go fake-PASS test":       {extra: map[string]string{"pkg/zz_test.go": "package pkg\n"}, v: Rejected, reasons: hidden, touched: []string{"pkg/zz_test.go"}},
+		"addopts change":          {extra: map[string]string{"pytest.ini": "[pytest]\naddopts = -p cheat\n"}, v: Rejected, reasons: hidden, touched: []string{"pytest.ini"}},
+		"visible test weakened":   {extra: map[string]string{"tests/visible.txt": "weakened\n"}, v: Rejected, reasons: hidden, touched: []string{"tests/visible.txt"}},
+		"fix with a deleted test": {fixed: true, extra: map[string]string{"tests/visible.txt": ""}, v: Accepted, touched: []string{"tests/visible.txt"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newScenario(t)
+			s.green()
+			s.junit("C", map[string]string{"v1": "pass", "v2": "pass", "v3": "pass", "h1": "pass", "h2": "pass"})
+			s.junit("H", map[string]string{"v1": "pass", "v2": "pass", "v3": "fail", "h1": "fail", "h2": "pass"})
+			r := s.judge(s.diff(row.fixed, row.extra))
+			want(t, r, row.v, row.reasons...)
+			if strings.Join(r.ProtectedTouched, ",") != strings.Join(row.touched, ",") {
+				t.Fatalf("protected_touched %q, want %q", r.ProtectedTouched, row.touched)
+			}
+		})
+	}
+}
+
+// TestBaseRunMustReport: a base run that reports no test, or ends non-zero
+// with no results, never judges a candidate (the #170 item's full /tmp).
+func TestBaseRunMustReport(t *testing.T) {
+	s := newScenario(t)
+	s.green()
+	s.junit("B", nil)
+	write(t, filepath.Join(s.fake, "B.exit"), "1")
+	want(t, s.judge(s.patch(nil)), InvalidItem, "the base run reports no test")
+	if err := os.Remove(filepath.Join(s.fake, "B.xml")); err != nil {
+		t.Fatal(err)
+	}
+	want(t, s.judge(s.patch(nil)), CouldNotRun, "the base run did not complete")
+}
+
+// TestLogs: each run's stdout and stderr tail go to the logs directory, as
+// new 0600 files.
+func TestLogs(t *testing.T) {
+	s := newScenario(t)
+	s.green()
+	write(t, filepath.Join(s.fake, "B.json"), "out of B\n")
+	logs := filepath.Join(t.TempDir(), "logs")
+	if err := os.Mkdir(logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	item, _ := json.Marshal(s.item)
+	r := Judge(context.Background(), In{Podman: filepath.Join(s.fake, "podman"), Item: item, ItemDir: s.dir, Patch: s.patch(nil), Logs: logs})
+	want(t, r, Accepted)
+	for f, content := range map[string]string{"setup.stderr": "stderr of setup\n", "base.stderr": "stderr of B\n", "base.stdout": "out of B\n",
+		"hidden.stderr": "stderr of H\n", "candidate.stderr": "stderr of C\n", "candidate.stdout": ""} {
+		b, err := os.ReadFile(filepath.Join(logs, f))
+		st, serr := os.Stat(filepath.Join(logs, f))
+		if err != nil || serr != nil || string(b) != content || st.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %q %v %v", f, b, err, serr)
 		}
 	}
 }
