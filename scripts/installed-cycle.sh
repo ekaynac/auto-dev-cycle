@@ -134,6 +134,8 @@ lib="$prefix/lib/adc"
 node="$lib/node/bin/node"
 fixtures="$lib/fixtures"
 for f in "$prefix/bin/adcd" "$prefix/bin/adc" "$node"; do [[ -x "$f" ]] || cannot "$f is not installed"; done
+# The release's adc runs every secret and canary search (secrets.sh's known and scan; #226 entry 206).
+adc_scan="$prefix/bin/adc"
 [[ -f "$fixtures/m1/profiles/$project.json" && -d "$fixtures/t0/$project/repo" ]] || cannot "no project $project in $fixtures"
 case_file=""
 if [[ "$case" != preflight ]]; then
@@ -265,11 +267,17 @@ if [[ -n "$overlay" ]]; then
 fi
 if [[ -n "$case_file" ]]; then
   step "the case's profile, its canary minted for this run"
-  canary="ADC-CANARY-$case-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  hex="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" || die "no random canary"
+  [[ "$hex" =~ ^[0-9a-f]{16}$ ]] || die "no random canary"
+  canary="ADC-CANARY-$case-$hex"
+  # Redacted from every line at once, and never a process's argument (Astra #443 r2 High 3): node reads it from
+  # out/canary, grep takes it as its pattern file.
+  known_text "$canary"
   printf '%s\n' "$canary" >"$work/out/canary"
   # The profile_overlay merged over the profile (RFC 7396), {canary} replaced in every string; then the run's
   # own: its base remote, and the stub as the one allowed destination.
-  "$node" -e 'const fs = require("node:fs"); const [profile, file, canary, remote, out] = process.argv.slice(1);
+  "$node" -e 'const fs = require("node:fs"); const [profile, file, canaryFile, remote, out] = process.argv.slice(1);
+    const canary = fs.readFileSync(canaryFile, "utf8").replace(/\n$/, "");
     const merge = (t, p) => { if (p === null || typeof p !== "object" || Array.isArray(p)) return p;
       const r = t !== null && typeof t === "object" && !Array.isArray(t) ? { ...t } : {};
       for (const [k, v] of Object.entries(p)) { if (v === null) delete r[k]; else r[k] = merge(r[k], v); } return r; };
@@ -279,12 +287,12 @@ if [[ -n "$case_file" ]]; then
     const p = sub(merge(JSON.parse(fs.readFileSync(profile, "utf8")), c.profile_overlay ?? {}));
     p.repo.url = remote; p.data_policy.allowed_destinations = ["stub"];
     fs.writeFileSync(out, JSON.stringify(p))' \
-    "$fixtures/m1/profiles/$project.json" "$case_file" "$canary" "$work/remote.git" "$work/profile.json" || die "the case's profile failed"
+    "$fixtures/m1/profiles/$project.json" "$case_file" "$work/out/canary" "$work/remote.git" "$work/profile.json" || die "the case's profile failed"
   # grep's statuses mapped: 1 is "no {canary} in the case", any other a read that failed (#226 entry 203).
   rc=0
   grep -q '{canary}' "$case_file" || rc=$?
   case "$rc" in
-    0) grep -qF "$canary" "$work/profile.json" || die "the case's profile does not carry its canary" ;;
+    0) grep -qF -f "$work/out/canary" "$work/profile.json" || die "the case's profile does not carry its canary" ;;
     1) ;;
     *) die "the case could not be read for its canary (exit $rc)" ;;
   esac

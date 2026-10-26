@@ -28,16 +28,19 @@ cycle_case() {
   [[ "$prj" == prj_* ]] || die "project create: no project id: $(excerpt "$work/out/project.out" 400)"
 
   step "task create ($task, its hidden/ attached as its acceptance)"
-  local t="$fixtures/t0/$project/tasks/$task" att=() hidden f second
+  local t="$fixtures/t0/$project/tasks/$task" att=() list f second
   "$node" -e 'const fs = require("node:fs"); const [task, prj, out] = process.argv.slice(1); const t = JSON.parse(fs.readFileSync(task, "utf8"));
     fs.writeFileSync(out, JSON.stringify({project: prj, title: t.title, requirement: t.requirement}))' "$t/task.json" "$prj" "$work/spec.json"
   # Each acceptance file at its repository path, where the gate overlays it (adc task create's --attach REPO_PATH=FILE).
-  # Listed whole first (#226 entry 203): a find that fails refuses, never fewer attachments.
-  hidden="$(cd "$t/hidden" && find . -type f | LC_ALL=C sort)" || die "the task's hidden files could not be listed"
-  while IFS= read -r f; do
-    [[ -n "$f" ]] || continue
+  # Listed whole first, each name NUL-terminated (Astra #443 r2 High 4): find and sort -z into a checked file, each
+  # name read whole by read -d '', so a newline in a name is part of the name (the CLI then refuses it), never a
+  # boundary that names another file; a list cut short refuses, never fewer attachments (#226 entry 203).
+  list="$work/out/hidden.list"
+  (cd "$t/hidden" && find . -type f -print0) | LC_ALL=C sort -z >"$list" || die "the task's hidden files could not be listed"
+  while IFS= read -r -d '' f; do
     att+=(--attach "${f#./}=$t/hidden/${f#./}")
-  done <<<"$hidden"
+  done <"$list"
+  [[ -z "$f" ]] || die "the task's hidden files: the list ends in a name cut short"
   adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task.out" 2>&1 ||
     die "task create failed: $(excerpt "$work/out/task.out" 400)"
   tsk="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task.out" | head -n 1)" || die "task create: its output cannot be read"

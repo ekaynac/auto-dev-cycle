@@ -457,9 +457,10 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if _, err := os.Stat("/dev/shm"); err != nil {
 		t.Skip("no /dev/shm")
 	}
+	scanner := adcScan(t)
 	sh := func(script string) string {
 		t.Helper()
-		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; "+script)
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/base-remote.sh; . ../../scripts/lib/sandbox-root.sh; adc_scan="+scanner+"; "+script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -594,9 +595,10 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if err := os.Chmod(locked, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Opus #441 r3 L3: a launch that loses the patterns on their way in (no
-	// stdin, or only part of it) is grep's failure (2), never a clean scan.
-	for what, body := range map[string]string{"no stdin": "exec \"$@\" </dev/null", "one pattern of all": "head -n 1 | \"$@\""} {
+	// Opus #441 r3 L3: a launch that loses the secret on its way in (no
+	// stdin, or only part of it) is a search that did not complete (2),
+	// never a clean scan.
+	for what, body := range map[string]string{"no stdin": "exec \"$@\" </dev/null", "part of the secret": "head -c 10 | \"$@\""} {
 		lossy := filepath.Join(t.TempDir(), "podman")
 		write(t, lossy, "#!/bin/sh\nwhile [ $# -gt 0 ] && [ \"$1\" != unshare ]; do shift; done\nshift\n"+body+"\n", 0o755)
 		if out := sh("PODMAN=" + lossy + "; rc=0; root_secret_scan " + made + " " + secret + " || rc=$?; echo rc=$rc"); !strings.HasSuffix(out, "rc=2") {

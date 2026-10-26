@@ -44,15 +44,16 @@
 #   root_canary_path ROOT NAME  canary_path over the root and its runs/ (3:
 #                               runs/ unresolved or the search never ran)
 #   root_secret_scan ROOT SECRET
-#                               no form of SECRET (secrets.sh's forms) in any
-#                               file under the root or its runs/, searched in
-#                               the root's user namespace: a container's
-#                               config and environment (storage/
-#                               overlay-containers) and its run files
-#                               (runs/, which must resolve: runs_required);
-#                               prints each file that holds one and
-#                               fails 1; 2: grep failed; 3: runs/ unresolved
-#                               or the search never ran
+#                               no form of SECRET in any file under the root
+#                               or its runs/ (adc dev scan, secrets.sh's
+#                               adc_scan), searched in the root's user
+#                               namespace: a container's config and
+#                               environment (storage/overlay-containers)
+#                               and its run files (runs/, which must
+#                               resolve: runs_required); prints each file
+#                               that holds one and fails 1; 2: the search
+#                               did not complete; 3: runs/ unresolved or the
+#                               search never ran
 #
 # Ownership (the lead's ruling on Mythos #435 M1): a leftover's owner is a
 # pid with its start time and PID namespace (.owner, .pids; owner_of), not a
@@ -176,9 +177,9 @@ sandbox_roots_stale() {
   done
 }
 
-# root_canary_path ROOT NAME: canary_path (base-remote.sh, sourced beside
-# this file) over ROOT and its runs/ directory, each run in the root's user
-# namespace (a run's files may be a container's): the first path named NAME
+# root_canary_path ROOT NAME: canary_path's two name searches (adc dev scan
+# --name) over ROOT and its runs/ directory, each run in the root's user
+# namespace (a run's files may be a container's): every path named NAME
 # under either, or beside either (their parents, at depth 1), printed, and
 # exit 1 when there is one (§2.7's canary_paths: an escape past an
 # attempt's directory outlives its teardown; Opus #435 M2; one search,
@@ -186,12 +187,18 @@ sandbox_roots_stale() {
 root_canary_path() {
   local root="$1" name="$2" runs d rc
   [[ -d "$root" && -n "$name" && "$name" != */* ]] || { echo "root_canary_path: ROOT must exist, NAME be a plain name" >&2; return 2; }
+  [[ "${adc_scan:-}" == /* && -x "${adc_scan:-}" ]] || { echo "root_canary_path: no scan program (adc_scan)" >&2; return 3; }
   runs="$(runs_required "$root")" || return 3
   for d in "$root" "$runs"; do
     rc=0
-    # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments
-    root_scanned "$root" "$(declare -f canary_path)"'; canary_path "$1" "$2"' "$d" "$name" </dev/null || rc=$?
-    ((rc == 0)) || return "$rc"
+    # Under D, then beside it; the first that finds or fails ends the script with its status.
+    # shellcheck disable=SC2016 # $1, $2 and $3 are the inner bash's arguments
+    root_scanned "$root" '"$1" dev scan --name "$2" -- "$3" && "$1" dev scan --name "$2" --depth 1 -- "${3%/*}"' "$adc_scan" "$name" "$d" </dev/null || rc=$?
+    case "$rc" in
+      0) ;;
+      1) return 1 ;;
+      *) return 3 ;;
+    esac
   done
 }
 
@@ -214,26 +221,23 @@ root_scanned() {
   return "$n"
 }
 
-# root_secret_scan ROOT SECRET (Opus #438 N1): see the header. Devices and
-# fifos are skipped (a container's run files may hold one). 1: a file holds
-# a form of SECRET (printed); 2: grep failed; 3: the search never ran.
+# root_secret_scan ROOT SECRET (Opus #438 N1): see the header. The secret
+# reaches adc dev scan on its stdin (through podman unshare); its walk
+# follows links, refuses what it cannot read, and reads no device, fifo or
+# socket (a container's run files may hold one). 1: a file holds a form of
+# SECRET (printed); 2: the search did not complete; 3: it never ran.
 root_secret_scan() {
-  local root="$1" secret="$2" runs found pats n rc=0
+  local root="$1" secret="$2" runs found rc=0
   [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
+  [[ "${adc_scan:-}" == /* && -x "${adc_scan:-}" ]] || { echo "root_secret_scan: no scan program (adc_scan)" >&2; return 2; }
   runs="$(runs_required "$root")" || return 3
-  # The forms whole, or no search (Astra #443 High 2): a producer cut short is grep's failure, never fewer patterns.
-  pats="$(forms "$secret")" || return 2
-  n="$(grep -c '' <<<"$pats")" || return 2
-  # Inside: the patterns come on stdin (never an argument), and fewer than the
-  # N sent is grep's failure (2), never an empty, clean search (Opus #441 r3
-  # L3); grep's "nothing found" (1) is the clean result (0), a match is 1,
-  # anything else grep's failure (2).
   # shellcheck disable=SC2016 # the inner bash's own expansions
-  found="$(printf '%s\n' "$pats" | root_scanned "$root" 'n="$1"; shift; p="$(cat)"; [[ -n "$p" && "$(grep -c "" <<<"$p")" -ge "$n" ]] || exit 2; rc=0; grep -rlaF -D skip -f - -- "$@" <<<"$p" || rc=$?; case $rc in 0) exit 1 ;; 1) exit 0 ;; *) exit 2 ;; esac' "$n" "$root" "$runs")" || rc=$?
+  found="$(printf '%s\n' "$secret" | root_scanned "$root" '"$@"' "$adc_scan" dev scan --secrets - -- "$root" "$runs")" || rc=$?
   case "$rc" in
     0) ;;
     1) printf '%s\n' "$found"; return 1 ;;
-    *) return "$rc" ;;
+    3) return 3 ;;
+    *) return 2 ;;
   esac
 }
 

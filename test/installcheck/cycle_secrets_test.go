@@ -27,7 +27,7 @@ func TestNoSecretInArgv(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	log := filepath.Join(dir, "argv.log")
-	for name, real := range map[string]string{"grep": "/usr/bin/grep", "env": "/usr/bin/env"} {
+	for name, real := range map[string]string{"grep": "/usr/bin/grep", "env": "/usr/bin/env", "adc": adcScan(t)} {
 		write(t, filepath.Join(bin, name), "#!/bin/sh\nprintf '%s %s\\n' "+name+" \"$*\" >>"+log+"\nexec "+real+" \"$@\"\n", 0o755)
 	}
 	work := filepath.Join(dir, "work")
@@ -57,6 +57,7 @@ sleep 0.2
 found="$(printf '%s\n' "$secret" | /usr/bin/grep -laF -f - /proc/[0-9]*/cmdline 2>/dev/null || true)"
 kill "$probe"; wait "$probe" 2>/dev/null || true
 [[ "$found" == *"/proc/$probe/cmdline"* ]] || { echo "the detector found nothing: $found"; exit 1; }
+adc_scan="$D/bin/adc"
 known "$secret"
 scan "" "$secret" "$D/work/tree"
 work="$D/work" prefix="$D/prefix" run=0 groups_file=/dev/null fixtures="$D" sandbox=() capture=()
@@ -85,8 +86,8 @@ echo ok`
 		t.Fatalf("%v %s", err, out)
 	}
 	logged, _ := os.ReadFile(log)
-	if !strings.Contains(string(logged), "grep -rlaZF -f - --") {
-		t.Errorf("the scan's grep was not seen: %q", logged)
+	if !strings.Contains(string(logged), "adc dev scan --print-forms --secrets -\n") || !strings.Contains(string(logged), "adc dev scan --secrets - -- "+filepath.Join(work, "tree")+"\n") {
+		t.Errorf("the scan's adc was not seen: %q", logged)
 	}
 	for _, f := range []string{secret, secret[:16], secret[len(secret)-16:]} {
 		if strings.Contains(string(logged), f) {
@@ -149,8 +150,8 @@ func TestExcerptsAreRedacted(t *testing.T) {
 	write(t, cut, strings.Repeat("x", 395)+canary+"\n", 0o600)
 	short := filepath.Join(dir, "short.log")
 	write(t, short, "adcd: shutdown failed\n", 0o600)
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . ../../scripts/lib/secrets.sh; known_text "$1"; known_text "$2"; known "$3"
-excerpt "$4" 400; echo; excerpt "$5" 400; echo; excerpt "$5" 30 tail; echo; excerpt "$6" 400 tail; echo; (die "the secret: $3") 2>&1 || true`, "x", store, canary, secret, out, cut, short)
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . ../../scripts/lib/secrets.sh; adc_scan="$7"; known_text "$1"; known_text "$2"; known "$3"
+excerpt "$4" 400; echo; excerpt "$5" 400; echo; excerpt "$5" 30 tail; echo; excerpt "$6" 400 tail; echo; (die "the secret: $3") 2>&1 || true`, "x", store, canary, secret, out, cut, short, adcScan(t))
 	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 	got, err := cmd.CombinedOutput()
 	if err != nil {
@@ -220,5 +221,89 @@ func TestCleanExecRefusesWhatBashCannotSee(t *testing.T) {
 	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
 	if out, err := cmd.CombinedOutput(); err == nil || strings.Contains(string(out), "reassigned") || !strings.Contains(string(out), "readonly variable") {
 		t.Errorf("the probe reassigned: %v %s", err, out)
+	}
+}
+
+// Astra #443 r2 High 3: the canary a case's setup mints reaches no
+// process's arguments: every child of every case's --setup-only (each
+// program on PATH, and the release's node, logging its arguments) is given
+// the canary's file, never the canary. The driver's own re-exec is no child
+// (it replaces the driver, its arguments the operator's).
+func TestNoCanaryInArgv(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node on PATH")
+	}
+	root := t.TempDir()
+	prefix := filepath.Join(root, "prefix")
+	lib := filepath.Join(prefix, "lib/adc")
+	argv := filepath.Join(root, "argv.log")
+	wrap := filepath.Join(root, "wrap")
+	logs := func(real string) string {
+		return "#!/bin/sh\nprintf '%s %s\\n' \"$0\" \"$*\" >>" + argv + "\nexec " + real + " \"$@\"\n"
+	}
+	write(t, filepath.Join(prefix, "bin/adcd"), "#!/bin/sh\nexit 1\n", 0o755)
+	write(t, filepath.Join(prefix, "bin/adc"), "#!/bin/sh\nexit 1\n", 0o755)
+	write(t, filepath.Join(lib, "node/bin/node"), logs(node), 0o755)
+	for _, c := range []string{"git", "find", "grep", "sed", "cat", "cp", "mktemp", "stat", "od", "tr", "head", "tail", "sort", "env", "timeout",
+		"realpath", "dirname", "basename", "mkdir", "rm", "ln", "chmod", "sha256sum", "cut", "wc", "mv", "touch", "readlink", "curl"} {
+		if real, err := exec.LookPath(c); err == nil {
+			write(t, filepath.Join(wrap, c), logs(real), 0o755)
+		}
+	}
+	for _, s := range []string{"installed-cycle.sh", "lib/clean-shell.sh", "lib/secrets.sh", "lib/base-remote.sh", "lib/sandbox-root.sh"} {
+		b, err := os.ReadFile("../../scripts/" + s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(lib, "scripts", s), string(b), 0o755)
+	}
+	for _, d := range []string{"fixtures/m1/profiles", "fixtures/t0/go-mini", "fixtures/m1/cases"} {
+		if err := os.MkdirAll(filepath.Join(lib, filepath.Dir(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("cp", "-R", "../../"+d, filepath.Join(lib, filepath.Dir(d))+"/").CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v %s", d, err, out)
+		}
+	}
+	cases, err := os.ReadDir("../../fixtures/m1/cases")
+	if err != nil {
+		t.Fatal(err)
+	}
+	minted := 0
+	for _, c := range cases {
+		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), prefix, "--routes", "stub", "--project", "go-mini",
+			"--case", c.Name(), "--expect", "candidate", "--setup-only", "--keep")
+		cmd.Dir = root
+		cmd.Env = append(testguard.HomeEnv(t), "PATH="+wrap+":/usr/bin:/bin", "TMPDIR="+t.TempDir())
+		out, err := cmd.CombinedOutput()
+		_, kept, _ := strings.Cut(string(out), "installed-cycle: kept ")
+		kept, _, _ = strings.Cut(kept, "\n")
+		if err != nil || kept == "" {
+			t.Errorf("%s: --setup-only --keep: %v %s", c.Name(), err, out)
+			continue
+		}
+		canary, err := os.ReadFile(filepath.Join(kept, "out/canary"))
+		os.RemoveAll(kept)
+		if err != nil {
+			t.Errorf("%s: no canary: %v", c.Name(), err)
+			continue
+		}
+		minted++
+		logged, err := os.ReadFile(argv)
+		if err != nil || !strings.Contains(string(logged), "/node ") {
+			t.Fatalf("%s: the wrappers logged nothing (%v)", c.Name(), err)
+		}
+		for _, l := range strings.Split(string(logged), "\n") {
+			if !strings.Contains(l, " -i ADC_CLEAN_SHELL=1 ") && strings.Contains(l, strings.TrimSpace(string(canary))) {
+				t.Errorf("%s: a child's arguments hold the canary: %q", c.Name(), l)
+			}
+		}
+		if err := os.Remove(argv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if minted == 0 {
+		t.Error("no case minted a canary")
 	}
 }

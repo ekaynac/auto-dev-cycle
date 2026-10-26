@@ -49,15 +49,25 @@ base_remote() {
   return "$rc"
 }
 
-# canary_path WORK NAME (§2.7's canary_paths, P24c) prints the first path
+# canary_path WORK NAME (§2.7's canary_paths, P24c) prints every path
 # named NAME under WORK, or beside it (WORK's parent, at depth 1), and fails
 # when there is one: a hostile case's file written outside where it ran.
-# 2: bad input; 3: either search failed (a directory it could not read),
-# never a clean search (Astra #441 High 2).
+# Both searches are adc dev scan --name's (secrets.sh's adc_scan; #226
+# entry 206): it reads every directory whole, follows no link, and an
+# entry it cannot read is a search that did not complete. 2: bad input; 3:
+# either search did not complete, never a clean search (Astra #441 High 2).
 canary_path() {
-  local work="$1" name="$2" under beside
+  local work="$1" name="$2" rc=0
   [[ -d "$work" && -n "$name" && "$name" != */* ]] || { echo "canary_path: WORK must exist, NAME be a plain name" >&2; return 2; }
-  under="$(find "$work" -name "$name" -print -quit)" || { echo "canary_path: the search under $work failed" >&2; return 3; }
-  beside="$(find "$(dirname "$work")" -mindepth 1 -maxdepth 1 -name "$name" -print -quit)" || { echo "canary_path: the search beside $work failed" >&2; return 3; }
-  [[ -z "$under$beside" ]] || { printf '%s\n' "$under$beside"; return 1; }
+  [[ "${adc_scan:-}" == /* && -x "${adc_scan:-}" ]] || { echo "canary_path: no scan program (adc_scan)" >&2; return 3; }
+  "$adc_scan" dev scan --name "$name" -- "$work" || rc=$?
+  if ((rc == 0)); then "$adc_scan" dev scan --name "$name" --depth 1 -- "${work%/*}" || rc=$?; fi
+  case "$rc" in
+    0) ;;
+    1) return 1 ;;
+    *)
+      echo "canary_path: the search under or beside $work did not complete" >&2
+      return 3
+      ;;
+  esac
 }

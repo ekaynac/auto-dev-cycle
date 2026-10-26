@@ -8,8 +8,9 @@
 #     (SECRETS_TAG, set before sourcing).
 #   - known SECRET adds SECRET's forms; scan OWN SECRET DIR... fails when a
 #     form of SECRET appears in any file under the DIRs but OWN, and fails
-#     closed when a DIR is not a readable directory or grep cannot read a
-#     file under one.
+#     closed when the search could not complete. Both are adc dev scan's
+#     (internal/secretscan, #226 entry 206: the forms, the walk, links and
+#     names, in Go): the caller sets adc_scan to the release's adc first.
 #   - known_text TEXT redacts TEXT itself from now on (a text that is no
 #     credential but must be printed nowhere: the live route's canary);
 #     excerpt FILE N [tail] is FILE's first (or last) N characters on one
@@ -18,7 +19,7 @@
 #   - clean_exec N NAME=VALUE... CMD ARGS... execs CMD with only the N
 #     variables in its environment.
 #   No secret is ever a process argument (/proc/PID/cmdline is readable by
-#   every local user; Opus #440 H1): the scan's forms reach grep on its
+#   every local user; Opus #440 H1): a secret reaches adc dev scan on its
 #   stdin, and a secret for a process's environment is exported by a
 #   builtin, never passed to env(1).
 
@@ -26,11 +27,14 @@ secrets=()
 # The program clean_exec reads a child's environment with: set here and
 # readonly (its rows source a copy of this file naming one that fails).
 clean_exec_env=/usr/bin/env
-# Neither global is ever the caller's: an exported one of the same name
-# keeps its export attribute through an assignment, so it is removed here,
-# before clean_exec would unset it (Astra #441 r2 High 2). These are the
-# only variables this file and sandbox-root.sh set at the top level.
-export -n secrets clean_exec_env
+# The release's adc, whose dev scan known and scan run: empty until the
+# caller names it, never the caller's environment's.
+adc_scan=""
+# No global is ever the caller's: an exported one of the same name keeps
+# its export attribute through an assignment, so it is removed here, before
+# clean_exec would unset it (Astra #441 r2 High 2). These are the only
+# variables this file and sandbox-root.sh set at the top level.
+export -n secrets clean_exec_env adc_scan
 readonly clean_exec_env
 # redact VAR: every known secret form and known text in the variable VAR
 # replaced, in place; the one redaction rule, die's and excerpt's (Astra
@@ -46,27 +50,19 @@ die() {
   echo "${SECRETS_TAG:-adc}: $msg" >&2
   exit 1
 }
-# forms SECRET: the forms a leak of SECRET (base64url, or a token
-# tok_ID.SECRET) may take: as is, its secret part, that in standard base64,
-# its first and last 16 characters, the base64 of the whole, and, when it
-# is base64 (a registry credential need not be), the hex of its bytes.
-forms() {
-  local s="${1#*.}" std pad hex b64
-  std="$(tr -- '-_' '+/' <<<"$s")" || return 1
-  b64="$(printf '%s' "$1" | base64 -w0)" || return 1
-  pad="$std"
-  while ((${#pad} % 4)); do pad+="="; done
-  # Whether it is base64 decided by its text, never by a producer's status;
-  # the hex form then checked like the rest (Opus #443 r2 B2).
-  hex=""
-  if [[ "$pad" =~ ^[A-Za-z0-9+/]*={0,2}$ ]]; then hex="$(base64 -d <<<"$pad" | od -An -tx1 | tr -d ' \n')" || return 1; fi
-  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$b64"
-  if [[ -n "$hex" ]]; then printf '%s\n' "$hex"; fi
+# scanner: adc_scan, named by the caller and executable, or the run dies.
+scanner() {
+  [[ "$adc_scan" == /* && -x "$adc_scan" ]] || die "the scan's program (adc_scan) is not set to the release's adc"
 }
-# known SECRET: every form of SECRET is redacted from now on.
+# known SECRET: every form of SECRET (adc dev scan --print-forms: the
+# forms the scan searches for, one rule) is redacted from now on. The secret
+# reaches adc on its stdin; a producer that fails, or a form shorter than 16,
+# dies.
 known() {
   local f fs
-  fs="$(forms "$1")" || die "known: the forms of a secret could not be made"
+  scanner
+  fs="$(printf '%s\n' "$1" | "$adc_scan" dev scan --print-forms --secrets - 2>/dev/null)" || die "known: the forms of a secret could not be made"
+  [[ -n "$fs" ]] || die "known: the forms of a secret could not be made"
   while IFS= read -r f; do
     [[ ${#f} -ge 16 ]] || die "a secret form is shorter than expected"
     secrets+=("$f")
@@ -89,38 +85,27 @@ excerpt() {
   if [[ "${3:-}" == tail ]]; then printf '%s' "${text:$((${#text} > $2 ? ${#text} - $2 : 0))}"; else printf '%s' "${text:0:$2}"; fi
 }
 # scan OWN SECRET DIR...: no form of SECRET in any file under the DIRs but
-# OWN (none: ""). The forms are grep's patterns on its stdin. The names
-# grep finds keep their boundaries (Astra #443 High 1): NUL-terminated
-# (grep -Z), into a file no DIR holds (unlinked once opened: never one grep
-# meets), grep's status checked before any is read, each read whole by the
-# read builtin and compared whole with OWN; a name cut short is no clean
-# list. No NUL record goes through a command substitution.
+# OWN (none: ""), by adc dev scan (Astra #443 r2: a link's target searched
+# and reported by the link's path, OWN exempt by its own path only, a
+# dangling link, a cycle or an unreadable entry an incomplete search; its
+# own diagnostics one fixed line naming nothing). Its 1 is a finding (its
+# quoted paths, redacted), any status but 0 and 1 a search that did not
+# complete.
 scan() {
-  local own="$1" secret="$2" d pats list f q leaks="" rc=0 wfd rfd
+  local own="$1" secret="$2" d found rc=0 args=()
   shift 2
   (($# > 0)) || die "scan: no directory to scan"
   for d in "$@"; do
     [[ -d "$d" && -r "$d" && -x "$d" ]] || die "scan: $d is not a readable directory"
   done
-  pats="$(forms "$secret")" || die "scan: the forms of the secret could not be made"
-  list="$(mktemp)" || die "scan: no file for the list of files found"
-  # shellcheck disable=SC2094 # one file, two descriptors: grep writes it, the read builtin reads it after grep ended
-  exec {wfd}>"$list" {rfd}<"$list"
-  rm -f -- "$list"
-  grep -rlaZF -f - -- "$@" <<<"$pats" >&"$wfd" || rc=$?
-  exec {wfd}>&-
-  if ((rc > 1)); then
-    exec {rfd}<&-
-    die "scan: grep could not read everything under $* (exit $rc)"
-  fi
-  while IFS= read -r -d '' f <&"$rfd"; do
-    [[ -n "$own" && "$f" == "$own" ]] && continue
-    printf -v q '%q' "$f"
-    leaks+="${leaks:+ }$q"
-  done
-  exec {rfd}<&-
-  [[ -z "$f" ]] || die "scan: the list of files found ends in a name cut short"
-  [[ -z "$leaks" ]] || die "a secret appears in: $leaks"
+  scanner
+  if [[ -n "$own" ]]; then args=(--own "$own"); fi
+  found="$(printf '%s\n' "$secret" | "$adc_scan" dev scan --secrets - "${args[@]}" -- "$@")" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "a secret appears in: ${found//$'\n'/ }" ;;
+    *) die "scan: the search under $* did not complete (exit $rc)" ;;
+  esac
 }
 # clean_exec N NAME=VALUE... CMD ARGS...: in the calling (sub)shell, unsets
 # every exported variable and exported function, exports the N NAME=VALUE

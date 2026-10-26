@@ -51,7 +51,6 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 			{`printf '%s\n' "$rec" >>"$1/.pids" 2>/dev/null || true`, "record_pid's write alone: .pids serves only a sweep after this run is killed without its cleanup; a lost line leaves that process to end by itself"},
 			{`case "$(uname -m)" in`, "host_arch: an unknown or unread machine is no prepared platform, refused"},
 			{`[[ -x "$1" ]] && [[ "$("$1" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" == true ]]`, "rootless_podman: an info that fails is not rootless, refused"},
-			{`p="$(cat)"; [[ -n "$p" && "$(grep -c "" <<<"$p")" -ge "$n" ]] || exit 2;`, "inside the namespace script: a count that fails is no count, exit 2"},
 			{`root_podman "$1" rm --all --force --time 0 >/dev/null 2>&1 || true`, "sweeping a root's containers: removal, decides nothing"},
 			{`root_podman "$root" system reset --force >/dev/null 2>&1 || true`, "removing a private root: its storage, then the directory"},
 			{`root_podman "$root" unshare rm -rf "$root/storage" "$root/r" ${runs:+"$runs"} 2>/dev/null || true`, "removing a private root's files in its namespace"},
@@ -191,7 +190,9 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 			`. "$prefix/lib/adc/scripts/lib/sandbox-root.sh" || exit 2`,
 		},
 		"lib/cycle-case.sh": {
-			`  hidden="$(cd "$t/hidden" && find . -type f | LC_ALL=C sort)" || die "the task's hidden files could not be listed"`,
+			`  (cd "$t/hidden" && find . -type f -print0) | LC_ALL=C sort -z >"$list" || die "the task's hidden files could not be listed"`,
+			`  done <"$list"`,
+			`  [[ -z "$f" ]] || die "the task's hidden files: the list ends in a name cut short"`,
 			`  second="$(json "$case_file" 'd.expect.second_task_admitted === false')" || die "the case's second_task_admitted could not be read"`,
 			`  record_pid "$work" "$events" || cannot "the event reader's start time cannot be read (its sweep record)"`,
 		},
@@ -208,52 +209,106 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 	}
 }
 
-// A producer that fails is refused, never read as a shorter list or a clean
-// result: the forms of a secret (known, scan; the hex form too, Opus #443 r2
-// B2: an od that fails or is killed), the filter of scan's own file (grep's
-// 1 mapped, anything else refused; Astra #441 r3 High 3), and the hostile
-// files of a base remote's overlay.
-func TestProducersThatFailRefuse(t *testing.T) {
+// Astra #443 r2 High 4: the task's hidden files reach task create by their
+// whole names: a regular file named accept_test.go and a newline is
+// attached as that name (the CLI then refuses it), never as the
+// accept_test.go beside it, a symlink to another test (find lists no
+// link).
+func TestHiddenFilesKeepTheirNames(t *testing.T) {
 	dir := t.TempDir()
-	write(t, filepath.Join(dir, "tree/leak"), "sk-filter-PROBE-0123456789abcdef\n", 0o600)
-	write(t, filepath.Join(dir, "tree/own"), "sk-filter-PROBE-0123456789abcdef\n", 0o600)
-	// The hex of the secret's bytes alone (it is base64url): the form od makes.
+	hidden := filepath.Join(dir, "fx/t0/p/tasks/t/hidden/inventory")
+	write(t, filepath.Join(dir, "fx/t0/p/tasks/t/task.json"), "{}", 0o644)
+	write(t, filepath.Join(hidden, "accept_test.go\n"), "package inventory // the hidden test\n", 0o644)
+	write(t, filepath.Join(dir, "other/pass_test.go"), "package inventory // passes\n", 0o644)
+	if err := os.Symlink(filepath.Join(dir, "other/pass_test.go"), filepath.Join(hidden, "accept_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/cycle-case.sh
+step() { :; }
+adc() { if [[ "$1 $2" == "project create" ]]; then echo '{"project":"prj_x"}'; return 0; fi; printf '%s\0' "$@" >"$D/args"; return 7; }
+work="$D/work" fixtures="$D/fx" project=p task=t node=/bin/true
+mkdir -p "$work/out"
+cycle_case`)
+	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir)
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "task create failed") {
+		t.Fatalf("the stand-in task create: %v %s", err, out)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "\x00--attach\x00inventory/accept_test.go\n=" + filepath.Join(hidden, "accept_test.go\n") + "\x00"
+	if !strings.Contains(string(args), want) || strings.Count(string(args), "--attach") != 1 {
+		t.Errorf("the attachments: %q", args)
+	}
+}
+
+// A producer that fails is refused, never read as a shorter list or a clean
+// result: the forms of a secret and every search are adc dev scan's (#226
+// entry 206), so known dies when it fails or is cut short, and scan and
+// root_secret_scan take its 1 as a finding and anything else as a search
+// that did not complete; and the hostile files of a base remote's overlay.
+// The search itself: a link to OWN, and a copy named OWN's name and a
+// newline, are findings (Astra #443 High 1, r2 High 1); an unreadable file
+// whose name is the secret ends the search, its name printed nowhere (Astra
+// #443 r2 High 2).
+func TestProducersThatFailRefuse(t *testing.T) {
+	const secret = "sk-filter-PROBE-0123456789abcdef"
+	scanner := adcScan(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "tree/leak"), secret+"\n", 0o600)
+	write(t, filepath.Join(dir, "tree/own"), secret+"\n", 0o600)
+	// The hex of the secret's bytes alone (it is base64url).
 	write(t, filepath.Join(dir, "hex/leak"), "b24f9f8a5b5eafe3d138113ed35db7e39ebbf3d69b71d79f\n", 0o600)
+	// A scan program that prints part of the forms, then fails; one that fails at once.
+	partial := filepath.Join(dir, "bin/partial")
+	write(t, partial, "#!/bin/sh\necho sk-filter-PROBE-0123456789abcdef\nexit 1\n", 0o755)
+	failing := filepath.Join(dir, "bin/failing")
+	write(t, failing, "#!/bin/sh\nexit 3\n", 0o755)
 	for name, c := range map[string]struct{ script, want string }{
-		"known, its forms failing": {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; known x; echo ran`, "known: the forms of a secret could not be made"},
-		"scan, its forms failing":  {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; scan "" x "$D/tree"; echo ran`, "scan: the forms of the secret could not be made"},
-		// Astra #443 High 1: a leaked copy named OWN's name and a newline, beside OWN, is no OWN.
-		"scan, a copy named OWN and a newline": {`mkdir "$D/nl"; printf 'sk-filter-PROBE-0123456789abcdef\n' >"$D/nl/token"; printf 'sk-filter-PROBE-0123456789abcdef\n' >"$D/nl/token"$'\n'
-scan "$D/nl/token" sk-filter-PROBE-0123456789abcdef "$D/nl"; echo ran`, "a secret appears in: $'" + filepath.Join(dir, "nl/token") + `\n'`},
-		"scan, its grep failing partway": {`grep() { if [[ "$1" == -rlaZF ]]; then printf '%s\0' "$D/tree/leak"; return 2; fi; command grep "$@"; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: grep could not read everything under " + filepath.Join(dir, "tree") + " (exit 2)"},
-		"scan, a name cut short":         {`grep() { if [[ "$1" == -rlaZF ]]; then printf '%s' "$D/tree/own"; return 0; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the list of files found ends in a name cut short"},
-		// Each stand-in fails its one form alone (the hex form's base64 -d and tr -d still work).
-		"known, its base64 failing": {`base64() { if [[ "$1" == -w0 ]]; then return 1; fi; command base64 "$@"; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
-		"known, its tr failing":     {`tr() { if [[ "$1" == -- ]]; then return 1; fi; command tr "$@"; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
-		"known, its od failing":     {`od() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
-		"known, its od killed":      {`od() { kill -9 $BASHPID; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
-		"scan, its od failing":      {`od() { return 1; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "scan: the forms of the secret could not be made"},
-		"scan, its od killed":       {`od() { kill -9 $BASHPID; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "scan: the forms of the secret could not be made"},
-		"scan, the hex form found":  {`scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "a secret appears in: " + filepath.Join(dir, "hex/leak")},
-		"scan, its filter clean":    {`rm "$D/tree/leak"; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "ran"},
+		"known, its forms cut short": {`adc_scan=` + partial + `; known ` + secret + `; echo ran`, "known: the forms of a secret could not be made"},
+		"known, no scan program":     {`adc_scan=""; known ` + secret + `; echo ran`, "the scan's program (adc_scan) is not set to the release's adc"},
+		"scan, its program failing":  {`adc_scan=` + failing + `; scan "" ` + secret + ` "$D/tree"; echo ran`, "scan: the search under " + filepath.Join(dir, "tree") + " did not complete (exit 3)"},
+		"scan, no scan program":      {`adc_scan=""; scan "" ` + secret + ` "$D/tree"; echo ran`, "the scan's program (adc_scan) is not set to the release's adc"},
+		"scan, a copy named OWN and a newline": {`mkdir "$D/nl"; printf '%s\n' "$S" >"$D/nl/token"; printf '%s\n' "$S" >"$D/nl/token"$'\n'
+scan "$D/nl/token" "$S" "$D/nl"; echo ran`, `a secret appears in: "` + filepath.Join(dir, "nl/token") + `\n"`},
+		"scan, a link to OWN": {`mkdir -p "$D/ln/home" "$D/ln/out"; printf '%s\n' "$S" >"$D/ln/home/token"; ln -s ../home/token "$D/ln/out/copy"
+scan "$D/ln/home/token" "$S" "$D/ln"; echo ran`, `a secret appears in: "` + filepath.Join(dir, "ln/out/copy") + `"`},
+		"scan, an unreadable file named the secret": {`mkdir "$D/ur"; : >"$D/ur/$S"; chmod 0 "$D/ur/$S"; scan "" "$S" "$D/ur"; echo ran`,
+			"scan: the search under " + filepath.Join(dir, "ur") + " did not complete (exit 2)"},
+		"scan, the hex form found": {`scan "" ` + secret + ` "$D/hex"; echo ran`, `a secret appears in: "` + filepath.Join(dir, "hex/leak") + `"`},
+		"scan, OWN exempt":         {`rm "$D/tree/leak"; scan "$D/tree/own" ` + secret + ` "$D/tree"; echo ran`, "ran"},
 	} {
-		cmd := exec.Command("bash", "-c", "set -euo pipefail; . ../../scripts/lib/secrets.sh; "+c.script)
-		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir)
+		cmd := exec.Command("bash", "-c", "set -euo pipefail; . ../../scripts/lib/secrets.sh; adc_scan="+scanner+"; "+c.script)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir, "S="+secret)
 		out, _ := cmd.CombinedOutput()
 		if !strings.Contains(string(out), c.want) || (c.want != "ran" && strings.Contains(string(out), "ran")) {
 			t.Errorf("%s: %s", name, out)
 		}
+		if strings.Contains(name, "unreadable") && strings.Contains(string(out), secret) {
+			t.Errorf("%s: the secret printed: %s", name, out)
+		}
 	}
-	// Astra #443 High 2: root_secret_scan's forms cut short (six printed, then
-	// the producer fails) is grep's failure (2), never a search of fewer
-	// patterns that comes back clean. The root's own search stands in clean.
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/sandbox-root.sh
-mkdir -p "$D/root"; runs_required() { echo "$D/root"; }; root_scanned() { cat >/dev/null; return 0; }
-forms() { printf '%s\n' f1-0123456789abcdef f2-0123456789abcdef f3-0123456789abcdef f4-0123456789abcdef f5-0123456789abcdef f6-0123456789abcdef; return 1; }
-rc=0; root_secret_scan "$D/root" sk-filter-PROBE-0123456789abcdef || rc=$?; echo "root_secret_scan: $rc"`)
-	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir)
-	if out, _ := cmd.CombinedOutput(); !strings.Contains(string(out), "root_secret_scan: 2") {
-		t.Errorf("root_secret_scan, its forms cut short: %s", out)
+	// root_secret_scan, its search standing in run here (podman unshare's
+	// part): a link in the root to a file holding the secret is a finding
+	// (1); a scan program that fails is a search that did not complete (2).
+	write(t, filepath.Join(dir, "outside/key"), secret, 0o600)
+	if err := os.MkdirAll(filepath.Join(dir, "root"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "outside/key"), filepath.Join(dir, "root/key")); err != nil {
+		t.Fatal(err)
+	}
+	incomplete := filepath.Join(dir, "bin/incomplete")
+	write(t, incomplete, "#!/bin/sh\necho 'adc dev scan: could_not_run: the search did not complete' >&2\nexit 2\n", 0o755)
+	for prog, want := range map[string]string{scanner: "root_secret_scan: 1", incomplete: "root_secret_scan: 2"} {
+		cmd := exec.Command("bash", "-c", `set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/sandbox-root.sh
+adc_scan="$P"; runs_required() { echo "$D/root"; }; root_scanned() { shift 2; "$@"; }
+rc=0; root_secret_scan "$D/root" "$S" || rc=$?; echo "root_secret_scan: $rc"`)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir, "S="+secret, "P="+prog)
+		if out, _ := cmd.CombinedOutput(); !strings.Contains(string(out), want) {
+			t.Errorf("root_secret_scan with %s: %s", prog, out)
+		}
 	}
 	// base_remote: a listing of the overlay's hostile files that fails (a
 	// find that dies after printing part of its list) fails the base remote,
