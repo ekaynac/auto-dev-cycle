@@ -389,7 +389,7 @@ step() { :; }; root_scan() { :; }; runs_required() { if [ "$ROOT_STATUS" = 4 ]; 
 D="$2"
 root_scanned() { echo "$*" >>"$D/root-searched"; if [ "$ROOT_STATUS" = 1 ]; then echo "$D/x"; fi; return "$ROOT_STATUS"; }
 json() { "$node" -e 'const d = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]) ?? "")' "$1" "$2"; }
-node="$1" work="$2/work" root="$2/root" here="$3" issue_dir="$2/issue" repo_url="$2/repo.git" live_secret=() adc_scan="$4"
+node="$1" work="$2/work" root="$2/root" here="$3" issue_dir="$2/issue" repo_url="$2/repo.git" repo_label="the mirror's main" live_secret=() adc_scan="$4"
 IFS= read -r live_canary <"$work/out/canary"
 main_before="$(git ls-remote -- "$repo_url" refs/heads/main | cut -f1)"
 live_after
