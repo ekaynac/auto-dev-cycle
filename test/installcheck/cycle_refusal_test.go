@@ -540,6 +540,16 @@ func TestSandboxRootRemovalStaysInItsRuns(t *testing.T) {
 	if out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc"); !strings.Contains(out, filepath.Join(runsDir, "att_1/x", name)) || !strings.HasSuffix(out, "rc=1") {
 		t.Errorf("a canary under the root's runs/: %q", out)
 	}
+	// Beside runs/ (its parent, /dev/shm, at depth 1): found too.
+	os.Remove(filepath.Join(made, "runs/att_1/x", name))
+	beside := filepath.Join(filepath.Dir(runsDir), name)
+	write(t, beside, "", 0o600)
+	out := sh("PODMAN=" + fake + "; rc=0; root_canary_path " + made + " " + name + " || rc=$?; echo rc=$rc")
+	os.Remove(beside)
+	if !strings.Contains(out, beside) || !strings.HasSuffix(out, "rc=1") {
+		t.Errorf("a canary beside the root's runs/: %q", out)
+	}
+	write(t, filepath.Join(made, "runs/att_1/x", name), "", 0o600)
 
 	// Opus #438 N1: a credential in a container's config under the root's
 	// storage, or in a run file under runs/, is found (in the root's user
