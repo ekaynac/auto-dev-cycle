@@ -14,7 +14,9 @@
 #               the profile (this repository's, its allowed destinations the
 #               registry's), the run's own expect block, out/canary and
 #               out/canary-forms, each form redacted from every excerpt
-#               (known_text), and reads GitHub main's SHA;
+#               (known_text), and reads GitHub main's SHA; the profile's gate
+#               command is the issue's baseline.json command, measured in the
+#               profile's gate environment, or the run is refused;
 #   live_case   creates the project and the task (create_task: the copies
 #               attached at their repository paths) and reads the task
 #               until it ends, at most 90 minutes;
@@ -151,16 +153,38 @@ live_setup() {
     live_cred+=("$var=$val") live_secret+=("$val")
   done <"$work/out/credential-env"
 
-  step "the profile (this repository's, the registry's destinations allowed) and the expect block"
-  local prj want
+  step "the profile (this repository's, the registry's destinations allowed, the gate the issue's measured baseline's) and the expect block"
+  local prj want refusal rc=0
   prj="$(json "$profile_file" d.id)" || cannot "the profile cannot be read"
   want="$(json "$t" d.project)" || cannot "issue $issue's task.json cannot be read"
   [[ -n "$prj" && "$prj" == "$want" ]] || cannot "issue $issue's task is project ${want}'s, the profile is $prj"
-  "$node" -e 'const fs = require("node:fs"); const [profile, registry, out, mirror] = process.argv.slice(1);
+  # The gate's command is the one the issue's baseline was measured with (live run 4: the profile's ./... is not
+  # green in the gate sandbox, so adcd found no baseline for it), in the environment the profile's gate names:
+  # its platform, and the profile's pinned image (which pins the Go release). Otherwise the run is refused (exit 2, named).
+  # shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals
+  refusal="$("$node" -e 'const fs = require("node:fs"); const [profile, registry, baseline, out, mirror] = process.argv.slice(1);
     const p = JSON.parse(fs.readFileSync(profile, "utf8")); const r = JSON.parse(fs.readFileSync(registry, "utf8"));
+    const refuse = (why) => { console.log(why); process.exit(3); };
+    let b;
+    try { b = JSON.parse(fs.readFileSync(baseline, "utf8")); } catch { refuse("has no readable baseline.json"); }
+    const c = b.command;
+    if (!Array.isArray(c) || c.length === 0 || !c.every((a) => typeof a === "string" && a !== "")) refuse("its baseline.json has no command");
+    const e = b.environment ?? {}; const envs = p.gate?.environments ?? [];
+    if (envs.length === 0) refuse("the profile names no gate environment");
+    for (const g of envs) {
+      const rt = g.facts?.runtime ?? {}; const platform = `${rt.os}/${rt.arch}`;
+      if (e.platform !== platform || e.image !== p.toolchain?.images?.go)
+        refuse(`its baseline.json was measured in another environment (${e.image}, ${e.platform}) than the profile gate environment ${g.name} (${p.toolchain?.images?.go}, ${platform})`);
+    }
+    p.gate.command = c;
     p.data_policy.allowed_destinations = [...new Set(r.executors.map((e) => e.destination.id))].sort();
     if (mirror) p.repo.url = mirror;
-    fs.writeFileSync(out, JSON.stringify(p))' "$profile_file" "$registry" "$work/profile.json" "$mirror" || die "the profile failed"
+    fs.writeFileSync(out, JSON.stringify(p))' "$profile_file" "$registry" "$issue_dir/baseline.json" "$work/profile.json" "$mirror")" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) cannot "issue $issue $refusal" ;;
+    *) die "the profile failed" ;;
+  esac
   live_canary_known
   # shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals
   "$node" -e 'const fs = require("node:fs"); const [issue, out] = process.argv.slice(1);

@@ -151,7 +151,29 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 	g(work, "init", "-q")
 	g(work, "commit", "-q", "--allow-empty", "-m", "base")
 	base := g(work, "rev-parse", "HEAD")
-	write(t, filepath.Join(lib, "fixtures/m1/issues/170/baseline.json"), `{"base":"`+base+`"}`, 0o644)
+	// Issue 170's baseline: the measured one, its base this repository's; 172's without a command, 173's measured
+	// in another image (each 170's task): the gate's command is the baseline's, in the profile's gate environment.
+	measured, err := os.ReadFile("../../fixtures/m1/issues/170/baseline.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := func(n string, edit func(map[string]any)) {
+		t.Helper()
+		var b map[string]any
+		if err := json.Unmarshal(measured, &b); err != nil {
+			t.Fatal(err)
+		}
+		b["base"] = base
+		edit(b)
+		out, _ := json.Marshal(b)
+		write(t, filepath.Join(lib, "fixtures/m1/issues", n, "baseline.json"), string(out), 0o644)
+		write(t, filepath.Join(lib, "fixtures/m1/issues", n, "task.json"), string(issue), 0o644)
+	}
+	baseline("170", func(map[string]any) {})
+	baseline("172", func(b map[string]any) { delete(b, "command") })
+	baseline("173", func(b map[string]any) {
+		b["environment"].(map[string]any)["image"] = "ghcr.io/example/other@sha256:" + strings.Repeat("0", 64)
+	})
 	mirror := filepath.Join(root, "mirror.git")
 	g(root, "clone", "-q", "--bare", work, mirror)
 	noMain := filepath.Join(root, "no-main.git")
@@ -190,7 +212,9 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 		"a canary of whitespace":     {held, []string{"--acceptance", given, "--canary-file", canaryFile("blank", "\t\t   \n", 0o600)}, "at least 16 characters past its whitespace"},
 		// Opus #441 r3 H1: the credential crosses the driver's re-exec on fd 3
 		// and is found by its name: the run gets past it, to the profile.
-		"the credential received": {held, []string{"--issue", "171", "--acceptance", given, "--canary-file", own}, "issue 171's task is project other's"},
+		"the credential received":     {held, []string{"--issue", "171", "--acceptance", given, "--canary-file", own}, "issue 171's task is project other's"},
+		"a baseline with no command":  {held, []string{"--issue", "172", "--acceptance", given, "--canary-file", own}, "issue 172 its baseline.json has no command"},
+		"a baseline in another image": {held, []string{"--issue", "173", "--acceptance", given, "--canary-file", own}, "issue 173 its baseline.json was measured in another environment (ghcr.io/example/other@sha256:"},
 		// Astra #440 H5: a live run's sandbox root is always its own.
 		"a shared sandbox root": {held, []string{"--acceptance", given, "--canary-file", own, "--sandbox-root", root}, "--sandbox-root: the live route always makes a sandbox root of its own"},
 	} {
@@ -209,10 +233,17 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 		if kept == nil {
 			t.Fatalf("a good mirror: no kept work directory: %s", out)
 		}
-		var prof struct{ Repo struct{ URL string } }
+		var prof struct {
+			Repo struct{ URL string }
+			Gate struct{ Command []string }
+		}
 		b, err := os.ReadFile(filepath.Join(kept[1], "profile.json"))
 		if err != nil || json.Unmarshal(b, &prof) != nil || prof.Repo.URL != mirror {
 			t.Errorf("a good mirror: the run's profile's repo.url is %q (%v), not %s", prof.Repo.URL, err, mirror)
+		}
+		// The run's gate command is the issue's measured baseline's, not the profile's ./...
+		if got := strings.Join(prof.Gate.Command, " "); got != "go test -count=1 -json ./internal/cli/..." {
+			t.Errorf("the run's profile's gate command is %q, not the baseline's", got)
 		}
 	}
 	// Opus #440 L1: a kept live run says what its directory holds.

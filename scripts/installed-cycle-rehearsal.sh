@@ -17,7 +17,8 @@
 #      go-mini-feature-1's base); the issue (fixtures/m1/issues/999) is
 #      go-mini-feature-1's task, its acceptance the task's hidden test with a
 #      canary line added ("\tconst rehearsalCanary = \"ADC-<…>-HEX\"": a tab,
-#      quotes and angle brackets, which JSON and Go escape).
+#      quotes and angle brackets, which JSON and Go escape), its baseline
+#      go-mini's measured one (fixtures/m1/stub/go-mini/baseline.json).
 #   2. One stub provider (scenario go-mini-feature-1) is the registry's one
 #      destination (fixtures/m1/config/registry-stub.json, its endpoint the
 #      stub's, its id "rehearsal": adc dev bench record refuses the stub's
@@ -104,6 +105,7 @@ mkdir -p "$lib/fixtures/m1/issues/$issue"
   p.repo.url = remote; fs.writeFileSync(outProfile, JSON.stringify(p));' \
   "$t/task.json" "$lib/fixtures/m1/profiles/go-mini.json" "$scratch/acceptance/transfer_hidden_test.go" "$scratch/remote.git" \
   "$lib/fixtures/m1/issues/$issue/task.json" "$lib/fixtures/m1/profiles/auto-dev-cycle.json"
+cp -- "$lib/fixtures/m1/stub/go-mini/baseline.json" "$lib/fixtures/m1/issues/$issue/baseline.json" || die "issue $issue's baseline"
 
 say "the stub provider as the live endpoint, answering the qualification suite's prompts by their digests"
 "$node" -e 'const s = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
