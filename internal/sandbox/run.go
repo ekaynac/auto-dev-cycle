@@ -163,6 +163,18 @@ func (h Host) mounts(r Run) ([]string, error) {
 	return mounts, nil
 }
 
+// Confinement are the podman run flags every sandboxed run gets, whatever
+// its mode, mounts and limits: no hosts file, a fixed hostname, the rootless
+// uid, no capability and no privilege gained, a read-only root with a private
+// /tmp and HOME, no host environment, proxy or log, and the workspace as the
+// working directory. adc dev referee's runs (internal/referee) get them too.
+func Confinement() []string {
+	return []string{"--no-hosts", "--hostname=sandbox", "--user=0:0", "--cap-drop=all", "--security-opt=no-new-privileges",
+		"--read-only", "--read-only-tmpfs=false", "--systemd=false", "--env-host=false", "--http-proxy=false", "--log-driver=none",
+		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
+		"--env=HOME=" + homeDir, "--workdir=" + WorkspaceDir}
+}
+
 // args are podman's arguments for r, or a refusal.
 func (h Host) args(r Run, name string) ([]string, error) {
 	if err := h.Validate(); err != nil {
@@ -184,14 +196,10 @@ func (h Host) args(r Run, name string) ([]string, error) {
 	// to kill the client (a crash; #374 M3). It is that backstop, not the
 	// deadline: the controller's (the session's, Start's) comes first, by
 	// conmonGrace (#374 Mythos L1).
-	args := []string{"run", "--rm", "--name=" + name, "--pull=never", "--network=none", "--no-hosts", "--hostname=sandbox",
-		"--user=0:0", "--cap-drop=all", "--security-opt=no-new-privileges", "--read-only", "--read-only-tmpfs=false",
-		"--systemd=false", "--env-host=false", "--http-proxy=false", "--log-driver=none",
-		"--memory=" + strconv.FormatInt(l.Memory, 10), "--cpus=" + l.CPUs, "--pids-limit=" + strconv.Itoa(l.PIDs),
-		"--timeout=" + strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds()))+int64(conmonGrace/time.Second), 10),
-		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
-		"--env=HOME=" + homeDir, "--workdir=" + WorkspaceDir,
-		"--mount=type=bind,src=" + m[0] + ",dst=" + WorkspaceDir + ro, "--mount=type=bind,src=" + m[1] + ",dst=" + ResultsDir}
+	args := append([]string{"run", "--rm", "--name=" + name, "--pull=never", "--network=none"}, Confinement()...)
+	args = append(args, "--memory="+strconv.FormatInt(l.Memory, 10), "--cpus="+l.CPUs, "--pids-limit="+strconv.Itoa(l.PIDs),
+		"--timeout="+strconv.FormatInt(int64(math.Ceil(l.Timeout.Seconds()))+int64(conmonGrace/time.Second), 10),
+		"--mount=type=bind,src="+m[0]+",dst="+WorkspaceDir+ro, "--mount=type=bind,src="+m[1]+",dst="+ResultsDir)
 	if r.Mode == Build {
 		args = append(args, "--mount=type=bind,src="+m[2]+",dst="+GatewaySocket)
 	}

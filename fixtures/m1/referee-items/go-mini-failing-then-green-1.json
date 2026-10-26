@@ -1,0 +1,30 @@
+{
+  "repo": "repos/go-mini.git",
+  "base": "8b3e7b327b35db4bddf9821ab32742549de535f9",
+  "image": "docker.io/library/golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66",
+  "test_command": [
+    "env",
+    "GOCACHE=/tmp/gocache",
+    "GOTOOLCHAIN=local",
+    "GOFLAGS=-mod=mod",
+    "GOPROXY=off",
+    "go",
+    "test",
+    "-json",
+    "./..."
+  ],
+  "results": {
+    "format": "go_test_json",
+    "path": "stdout"
+  },
+  "acceptance": [
+    {
+      "path": "inventory/money_hidden_test.go",
+      "file": "../../t0/go-mini/tasks/go-mini-failing-then-green-1/hidden/inventory/money_hidden_test.go"
+    }
+  ],
+  "hidden_tests": [
+    "example.com/gomini/inventory > TestHiddenFormatCentsSigns"
+  ],
+  "timeout_seconds": 600
+}

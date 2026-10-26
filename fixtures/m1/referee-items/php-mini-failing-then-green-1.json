@@ -1,0 +1,35 @@
+{
+  "repo": "repos/php-mini.git",
+  "base": "90c0c2396d184812e6a65477cbc3a58839987e3b",
+  "image": "docker.io/library/composer:2@sha256:af98f42dfff7c68ba8d53c2164fd9fde1087b7d449514baa38c418b1f6bc4bac",
+  "setup": [
+    "env",
+    "COMPOSER_HOME=/tmp/composer",
+    "composer",
+    "install",
+    "--no-interaction",
+    "--no-progress",
+    "--prefer-dist"
+  ],
+  "test_command": [
+    "vendor/bin/phpunit",
+    "--log-junit",
+    "junit.xml"
+  ],
+  "results": {
+    "format": "junit_xml",
+    "path": "junit.xml"
+  },
+  "acceptance": [
+    {
+      "path": "tests/CartItemCountMergeTest.php",
+      "file": "../../t0/php-mini/tasks/php-mini-failing-then-green-1/hidden/tests/CartItemCountMergeTest.php"
+    }
+  ],
+  "hidden_tests": [
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testASingleUnitCountsAsOne",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testCountingDoesNotChangeTheCart",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\CartItemCountMergeTest > PhpMini.Shop.Tests.CartItemCountMergeTest > testCountsUnitsOfAMergedLine"
+  ],
+  "timeout_seconds": 600
+}

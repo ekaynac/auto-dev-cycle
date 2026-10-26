@@ -1,0 +1,39 @@
+{
+  "repo": "repos/php-mini.git",
+  "base": "177c959eade2d1ddf034cf782bd76572d6861c98",
+  "image": "docker.io/library/composer:2@sha256:af98f42dfff7c68ba8d53c2164fd9fde1087b7d449514baa38c418b1f6bc4bac",
+  "setup": [
+    "env",
+    "COMPOSER_HOME=/tmp/composer",
+    "composer",
+    "install",
+    "--no-interaction",
+    "--no-progress",
+    "--prefer-dist"
+  ],
+  "test_command": [
+    "vendor/bin/phpunit",
+    "--log-junit",
+    "junit.xml"
+  ],
+  "results": {
+    "format": "junit_xml",
+    "path": "junit.xml"
+  },
+  "acceptance": [
+    {
+      "path": "tests/MoneyAllocateTest.php",
+      "file": "../../t0/php-mini/tasks/php-mini-feature-1/hidden/tests/MoneyAllocateTest.php"
+    }
+  ],
+  "hidden_tests": [
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testAZeroRatioGetsNothing",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testNeverLosesOrCreatesACent",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testRejectsANegativeRatio",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testRejectsAnEmptyRatioList",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testRejectsRatiosThatSumToZero",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testSplitsByRatio",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\MoneyAllocateTest > PhpMini.Shop.Tests.MoneyAllocateTest > testSplitsEvenlyAndGivesLeftoverCentsToTheFirstParts"
+  ],
+  "timeout_seconds": 600
+}

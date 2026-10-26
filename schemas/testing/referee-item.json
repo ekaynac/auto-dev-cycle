@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/testing/referee-item.json",
+  "title": "RefereeItem",
+  "description": "An item `adc dev referee` judges an outside agent's patch on (stage 2, P-A). The item supplies everything language-specific: its image, its setup and test commands, where the results are, and its hidden acceptance; the referee adds nothing per language. Relative paths (repo, acceptance files) are taken from the item file's directory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "base", "image", "test_command", "results", "acceptance", "hidden_tests", "timeout_seconds"],
+  "properties": {
+    "repo": {"description": "A local git repository (a work tree or a bare repository) holding base.", "type": "string", "minLength": 1},
+    "base": {"description": "The base commit: a full sha1 id. The agent worked on its tree; the patch is a diff against it.", "type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "image": {"description": "The image every run starts, pinned by digest.", "$ref": "../config/project-profile.json#/$defs/PinnedImage"},
+    "setup": {"description": "Run once in the base's workspace, with the network, before the test runs (a dependency step); what it writes is in every test run's workspace. Absent: no setup.", "$ref": "../config/project-profile.json#/$defs/Argv"},
+    "test_command": {"description": "The project's own test command, run in the workspace with no network.", "$ref": "../config/project-profile.json#/$defs/Argv"},
+    "results": {
+      "description": "Where and how the test command reports per-test results.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "path"],
+      "properties": {
+        "format": {"description": "junit_xml: a JUnit XML file (pytest, node --test, PHPUnit, gotestsum, Surefire); go_test_json: a go test -json stream.", "enum": ["junit_xml", "go_test_json"]},
+        "path": {"description": "The results file, a repository path inside the workspace (removed before each run), or stdout: the command's standard output.", "$ref": "../config/project-profile.json#/$defs/RepoPath"}
+      }
+    },
+    "acceptance": {
+      "description": "The hidden acceptance: files overlaid on the workspace at their paths for the hidden and candidate runs. The agent never sees them, and a patch touching one of their paths is refused.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "file"],
+        "properties": {
+          "path": {"description": "Where the file goes: a plain repository path.", "$ref": "../config/project-profile.json#/$defs/RepoPath"},
+          "file": {"description": "The file on the host (at most 1 MiB).", "type": "string", "minLength": 1}
+        }
+      }
+    },
+    "hidden_tests": {
+      "description": "The acceptance's test ids, written with it: each must be reported and pass in the candidate run. None may be reported at the base without the acceptance, and at least one must not pass at the base with it. A test id is its enclosing JUnit testsuite names, its classname and its name (a go_test_json test: its package and its name), joined by \" > \", empty parts left out.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+    },
+    "timeout_seconds": {"description": "Each run's timeout.", "type": "integer", "minimum": 1, "maximum": 86400}
+  }
+}

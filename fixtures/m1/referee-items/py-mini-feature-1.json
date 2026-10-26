@@ -1,0 +1,54 @@
+{
+  "repo": "repos/py-mini.git",
+  "base": "f64fc46fda78dedd8f8727feeb6d130caa7dbab8",
+  "image": "docker.io/library/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70",
+  "setup": [
+    "python",
+    "-m",
+    "pip",
+    "install",
+    "--no-cache-dir",
+    "--disable-pip-version-check",
+    "--require-hashes",
+    "--only-binary=:all:",
+    "--target",
+    "/workspace/.deps",
+    "-r",
+    "requirements-dev.txt"
+  ],
+  "test_command": [
+    "env",
+    "PYTHONPATH=/workspace/.deps",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "python",
+    "-m",
+    "pytest",
+    "-q",
+    "--junitxml=junit.xml"
+  ],
+  "results": {
+    "format": "junit_xml",
+    "path": "junit.xml"
+  },
+  "acceptance": [
+    {
+      "path": "tests/test_hidden_split_evenly.py",
+      "file": "../../t0/py-mini/tasks/py-mini-feature-1/hidden/tests/test_hidden_split_evenly.py"
+    }
+  ],
+  "hidden_tests": [
+    "pytest > tests.test_hidden_split_evenly > test_even_split",
+    "pytest > tests.test_hidden_split_evenly > test_exported_from_the_package",
+    "pytest > tests.test_hidden_split_evenly > test_negative_amounts_put_the_larger_magnitudes_first",
+    "pytest > tests.test_hidden_split_evenly > test_parts_must_be_positive[-2]",
+    "pytest > tests.test_hidden_split_evenly > test_parts_must_be_positive[0]",
+    "pytest > tests.test_hidden_split_evenly > test_remainder_cents_go_to_the_first_shares",
+    "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[-10.00-3]",
+    "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[0-2]",
+    "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[0.01-4]",
+    "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[100.00-7]",
+    "pytest > tests.test_hidden_split_evenly > test_shares_sum_to_the_rounded_amount_and_differ_by_at_most_a_cent[1234.567-6]",
+    "pytest > tests.test_hidden_split_evenly > test_single_part_is_the_rounded_amount"
+  ],
+  "timeout_seconds": 600
+}

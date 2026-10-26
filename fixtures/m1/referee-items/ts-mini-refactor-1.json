@@ -1,0 +1,29 @@
+{
+  "repo": "repos/ts-mini.git",
+  "base": "191bf2f8d83b648b51436cf26392369e7f6f3945",
+  "image": "docker.io/library/node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d",
+  "test_command": [
+    "node",
+    "--test",
+    "--test-reporter=spec",
+    "--test-reporter-destination=stdout",
+    "--test-reporter=junit",
+    "--test-reporter-destination=junit.xml",
+    "test/**/*.test.ts"
+  ],
+  "results": {
+    "format": "junit_xml",
+    "path": "junit.xml"
+  },
+  "acceptance": [
+    {
+      "path": "test/tax.test.ts",
+      "file": "../../t0/ts-mini/tasks/ts-mini-refactor-1/hidden/test/tax.test.ts"
+    }
+  ],
+  "hidden_tests": [
+    "tax module > test > keeps the tax behaviour",
+    "tax module > test > owns taxCents, and the old exports are the same function"
+  ],
+  "timeout_seconds": 600
+}

@@ -1,0 +1,33 @@
+{
+  "repo": "repos/go-mini.git",
+  "base": "250c9a7ec3ed456e051c52c5da17120ae5d6a330",
+  "image": "docker.io/library/golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66",
+  "test_command": [
+    "env",
+    "GOCACHE=/tmp/gocache",
+    "GOTOOLCHAIN=local",
+    "GOFLAGS=-mod=mod",
+    "GOPROXY=off",
+    "go",
+    "test",
+    "-json",
+    "./..."
+  ],
+  "results": {
+    "format": "go_test_json",
+    "path": "stdout"
+  },
+  "acceptance": [
+    {
+      "path": "inventory/transfer_hidden_test.go",
+      "file": "../../t0/go-mini/tasks/go-mini-feature-1/hidden/inventory/transfer_hidden_test.go"
+    }
+  ],
+  "hidden_tests": [
+    "example.com/gomini/inventory > TestHiddenTransferAllDropsSourceItem",
+    "example.com/gomini/inventory > TestHiddenTransferFailureChangesNothing",
+    "example.com/gomini/inventory > TestHiddenTransferMovesStockAndPrice",
+    "example.com/gomini/inventory > TestHiddenTransferToSelfIsRejected"
+  ],
+  "timeout_seconds": 600
+}

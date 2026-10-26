@@ -1,0 +1,38 @@
+{
+  "repo": "repos/php-mini.git",
+  "base": "177c959eade2d1ddf034cf782bd76572d6861c98",
+  "image": "docker.io/library/composer:2@sha256:af98f42dfff7c68ba8d53c2164fd9fde1087b7d449514baa38c418b1f6bc4bac",
+  "setup": [
+    "env",
+    "COMPOSER_HOME=/tmp/composer",
+    "composer",
+    "install",
+    "--no-interaction",
+    "--no-progress",
+    "--prefer-dist"
+  ],
+  "test_command": [
+    "vendor/bin/phpunit",
+    "--log-junit",
+    "junit.xml"
+  ],
+  "results": {
+    "format": "junit_xml",
+    "path": "junit.xml"
+  },
+  "acceptance": [
+    {
+      "path": "tests/PercentDiscountTest.php",
+      "file": "../../t0/php-mini/tasks/php-mini-refactor-1/hidden/tests/PercentDiscountTest.php"
+    }
+  ],
+  "hidden_tests": [
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testAppliesToAnAmountRoundingTheDiscountHalfUp",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testExposesItsPercentage",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testRejectsANegativePercentage",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testRejectsAPercentageAboveOneHundred",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testTheBoundsAreAllowed",
+    "/workspace/phpunit.xml > php-mini > PhpMini\\Shop\\Tests\\PercentDiscountTest > PhpMini.Shop.Tests.PercentDiscountTest > testTheCartUsesTheSameRule"
+  ],
+  "timeout_seconds": 600
+}
