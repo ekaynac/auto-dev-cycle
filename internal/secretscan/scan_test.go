@@ -4,6 +4,8 @@ package secretscan
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -349,6 +351,30 @@ func TestCanaryTrimAndKeys(t *testing.T) {
 	write(t, root+"/f", string(b), 0o600)
 	if got, err := (Search{Forms: forms, Decode: true}).Run(context.Background(), []string{root}); err != nil || len(got) != 1 {
 		t.Errorf("the canary in a key, three strings deep: %v %q", err, got)
+	}
+}
+
+// OwnDigests: a file holding a form is exempt when its bytes are one of
+// them (the live route's acceptance, wherever adcd or a gate put it).
+func TestSearchOwnDigests(t *testing.T) {
+	forms, err := CanaryForms("\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\"")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	accept := "package x\n\n\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\"\n"
+	write(t, root+"/blobs/a", accept, 0o600)
+	write(t, root+"/log", "x "+accept, 0o600)
+	sum := sha256.Sum256([]byte(accept))
+	got, err := Search{Forms: forms, OwnDigests: []string{"sha256:" + hex.EncodeToString(sum[:])}}.Run(context.Background(), []string{root})
+	if err != nil || !slices.Equal(got, []string{root + "/log"}) {
+		t.Errorf("%v %q", err, got)
+	}
+	// The digest is of the file the walk listed: an acceptance copy swapped in after the hit exempts nothing.
+	la, _ := os.Lstat(root + "/log")
+	w := walker{ctx: context.Background(), s: Search{OwnDigests: []string{"sha256:" + hex.EncodeToString(sum[:])}}}
+	if _, err := w.ownDigest(root+"/blobs/a", la); !errors.Is(err, regularfile.ErrChanged) {
+		t.Errorf("another file than the one listed: %v", err)
 	}
 }
 

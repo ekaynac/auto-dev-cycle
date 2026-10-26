@@ -5,7 +5,9 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,6 +147,30 @@ func TestDevScan(t *testing.T) {
 		t.Errorf("a link out, --links-inside: exit %d %q", code, errs)
 	}
 	if _, _, code := run(secret, "--secrets", "-", links); code != entry.ExitOK {
-		t.Errorf("a link out, recorded only: exit %d", code)
+		t.Errorf("a link out, neither followed nor reported: exit %d", code)
+	}
+	// The canary's forms for the driver (--print-forms --canary); --own-digests exempts a copy of an acceptance by its bytes.
+	canary := put("canary", "\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\"\n", 0o600)
+	if out, _, code := run("", "--print-forms", "--canary", canary); code != entry.ExitOK || !strings.Contains(out, `ADC-\u003cq7v\u003e`) {
+		t.Errorf("--print-forms --canary: exit %d %q", code, out)
+	}
+	accept := "package x\n\n\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\"\n"
+	put("acc/copy", accept, 0o600)
+	sum := sha256.Sum256([]byte(accept))
+	digests := put("digests", "sha256:"+hex.EncodeToString(sum[:])+"\n", 0o644)
+	if _, _, code := run("", "--canary", canary, "--own-digests", digests, filepath.Join(dir, "acc")); code != entry.ExitOK {
+		t.Errorf("an acceptance copy, by its digest: exit %d", code)
+	}
+	put("acc2/copy", accept, 0o600)
+	put("acc2/log", "x "+accept, 0o600)
+	if out, _, code := run("", "--canary", canary, "--own-digests", digests, filepath.Join(dir, "acc2")); code != entry.ExitRefused ||
+		!strings.Contains(out, "acc2/log") || strings.Contains(out, "acc2/copy") {
+		t.Errorf("only the acceptance's own bytes exempt: exit %d %q", code, out)
+	}
+	if _, _, code := run("", "--canary", canary, filepath.Join(dir, "acc")); code != entry.ExitRefused {
+		t.Errorf("an acceptance copy, no digests: exit %d", code)
+	}
+	if _, _, code := run("", "--canary", canary, "--own-digests", canary, filepath.Join(dir, "acc")); code != entry.ExitCouldNotRun {
+		t.Errorf("digests that are none: exit %d", code)
 	}
 }

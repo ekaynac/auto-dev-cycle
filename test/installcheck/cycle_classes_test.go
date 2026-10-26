@@ -62,6 +62,12 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 			{`  wait "$events" 2>/dev/null || true`, "reaping the stopped event reader"},
 		},
 		"lib/base-remote.sh": {},
+		"lib/cycle-live.sh":  {},
+		"installed-cycle-rehearsal.sh": {
+			{`if [[ -n "$stub" ]]; then kill "$stub" 2>/dev/null || true; wait "$stub" 2>/dev/null || true; fi`, "the rehearsal's cleanup: stopping its own stub; one already gone is the goal"},
+			{`kill "$stub" 2>/dev/null || true`, "stopping the rehearsal's stub before it is started again on its port; the restart's listen is checked"},
+			{`wait "$stub" 2>/dev/null || true`, "reaping that stub; its status decides nothing"},
+		},
 		"lib/clean-shell.sh": {
 			{`exec 3< <(n=0; for v in "${!ADC_CREDENTIAL_@}"`, "the fd-3 writer, no loop of a check: its stream ends in a counting record clean_shell_credentials checks"},
 		},
@@ -180,7 +186,7 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 			`. "$here/lib/secrets.sh" || exit 2`,
 			`. "$here/lib/base-remote.sh" || exit 2`,
 			`. "$here/lib/sandbox-root.sh" || exit 2`,
-			`record_pid "$work" "$stub" || cannot "the stub provider's start time cannot be read (its sweep record)"`,
+			`  record_pid "$work" "$stub" || cannot "the stub provider's start time cannot be read (its sweep record)"`,
 			`  record_pid "$work" "$adcd" || cannot "adcd's start time cannot be read (its sweep record)"`,
 			`  known_text "$canary"`,
 		},
@@ -196,6 +202,16 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 			`  [[ -z "$f" ]] || die "the task's hidden files: the list ends in a name cut short"`,
 			`  second="$(json "$case_file" 'd.expect.second_task_admitted === false')" || die "the case's second_task_admitted could not be read"`,
 			`  record_pid "$work" "$events" || cannot "the event reader's start time cannot be read (its sweep record)"`,
+			`  "$adc_scan" dev scan --print-forms --canary "$work/out/canary" >"$work/out/canary-forms" 2>/dev/null || die "the canary's forms could not be made"`,
+		},
+		"lib/cycle-live.sh": {
+			`  "$adc_scan" dev scan --print-forms --canary "$work/out/canary" >"$work/out/canary-forms" 2>/dev/null || die "the canary's forms could not be made"`,
+			`    sum="$(sha256sum <"$work/acceptance/$i" | cut -d' ' -f1)" || cannot "--acceptance $name: its copy cannot be hashed"`,
+			`  got="$(printf '%s\n' "${given[@]}" | LC_ALL=C sort)" || cannot "the --acceptance names cannot be sorted"`,
+			`  want="$(LC_ALL=C sort <<<"$names")" || cannot "issue $issue's attachments cannot be sorted"`,
+			`      *) cannot "the acceptance files could not be searched for the canary (exit $rc)" ;;`,
+			`    die "the reviewer calls' captured bodies could not be listed"`,
+			`  done <<<"$digests"`,
 		},
 	} {
 		b, err := os.ReadFile("../../scripts/" + file)
@@ -279,6 +295,9 @@ scan "$D/ln/home/token" "$S" "$D/ln"; echo ran`, `a secret appears in: "` + file
 			"scan: the search under " + filepath.Join(dir, "ur") + " did not complete (exit 2)"},
 		"scan, the hex form found": {`scan "" ` + secret + ` "$D/hex"; echo ran`, `a secret appears in: "` + filepath.Join(dir, "hex/leak") + `"`},
 		"scan, OWN exempt":         {`rm "$D/tree/leak"; scan "$D/tree/own" ` + secret + ` "$D/tree"; echo ran`, "ran"},
+		// The run's own directory (scan's --links-inside): a link out of it is a search that did not complete.
+		"scan, a link out of the work directory": {`mkdir "$D/lo"; ln -s /etc/hostname "$D/lo/host"; scan "" "$S" "$D/lo"; echo ran`,
+			"scan: the search under " + filepath.Join(dir, "lo") + " did not complete (exit 2)"},
 	} {
 		cmd := exec.Command("bash", "-c", "set -euo pipefail; . ../../scripts/lib/secrets.sh; adc_scan="+scanner+"; "+c.script)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir, "S="+secret)

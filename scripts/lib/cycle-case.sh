@@ -5,9 +5,14 @@
 # by installed-cycle.sh once adcd runs and the operator is bootstrapped (the
 # driver's variables: work, prefix, node, fixtures, project, task, case,
 # case_file, run_env, sock, here):
-#   cycle_case       creates the case's project (its profile) and task (its
-#                    T0 task's title and requirement, its hidden/ files
-#                    attached as the acceptance), then waits, at most 25
+#   create_task TASK_JSON ATTACH...
+#                    the project (the run's profile, work/profile.json) and
+#                    its task: TASK_JSON's title and requirement, each
+#                    ATTACH (REPO_PATH=FILE) attached as its acceptance at
+#                    its repository path; sets prj and tsk. Both routes'
+#                    (cycle_case, live_case: Astra #440 M7);
+#   cycle_case       creates the case's project and task (its T0 task, its
+#                    hidden/ files the acceptance), then waits, at most 25
 #                    minutes (a gate's bounded retries wait 1+2+4+8 minutes
 #                    before its terminal hold), until the task ends (ended);
 #                    a hold that is not a runner's retry ends the wait at
@@ -20,32 +25,39 @@
 #                    block (cycle-expect.mjs); sets summary to its row.
 
 # shellcheck disable=SC2154 # the driver's variables, above
-cycle_case() {
-  step "project create (the case's profile)"
+create_task() {
+  local t="$1" a att=()
+  shift
+  step "project create (the run's profile)"
   adc project create --expect 0 --reason installed-cycle --json --scope-file "$work/profile.json" >"$work/out/project.out" 2>&1 ||
     die "project create failed: $(excerpt "$work/out/project.out" 400)"
   prj="$(sed -n 's/.*"project":"\(prj_[a-z0-9]*\)".*/\1/p' "$work/out/project.out" | head -n 1)" || die "project create: its output cannot be read"
   [[ "$prj" == prj_* ]] || die "project create: no project id: $(excerpt "$work/out/project.out" 400)"
-
-  step "task create ($task, its hidden/ attached as its acceptance)"
-  local t="$fixtures/t0/$project/tasks/$task" att=() list f second
+  step "task create (its acceptance attached at its repository paths)"
   "$node" -e 'const fs = require("node:fs"); const [task, prj, out] = process.argv.slice(1); const t = JSON.parse(fs.readFileSync(task, "utf8"));
-    fs.writeFileSync(out, JSON.stringify({project: prj, title: t.title, requirement: t.requirement}))' "$t/task.json" "$prj" "$work/spec.json"
+    fs.writeFileSync(out, JSON.stringify({project: prj, title: t.title, requirement: t.requirement}))' "$t" "$prj" "$work/spec.json"
   # Each acceptance file at its repository path, where the gate overlays it (adc task create's --attach REPO_PATH=FILE).
+  for a in "$@"; do att+=(--attach "$a"); done
+  task_attach=("${att[@]}")
+  adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task.out" 2>&1 ||
+    die "task create failed: $(excerpt "$work/out/task.out" 400)"
+  tsk="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task.out" | head -n 1)" || die "task create: its output cannot be read"
+  [[ "$tsk" == tsk_* ]] || die "task create: no task id: $(excerpt "$work/out/task.out" 400)"
+}
+
+# shellcheck disable=SC2154 # the driver's variables, above
+cycle_case() {
+  local t="$fixtures/t0/$project/tasks/$task" list f acc=() second
   # Listed whole first, each name NUL-terminated (Astra #443 r2 High 4): find and sort -z into a checked file, each
   # name read whole by read -d '', so a newline in a name is part of the name (the CLI then refuses it), never a
   # boundary that names another file; a list cut short refuses, never fewer attachments (#226 entry 203).
   list="$work/out/hidden.list"
   (cd "$t/hidden" && find . -type f -print0) | LC_ALL=C sort -z >"$list" || die "the task's hidden files could not be listed"
   while IFS= read -r -d '' f; do
-    att+=(--attach "${f#./}=$t/hidden/${f#./}")
+    acc+=("${f#./}=$t/hidden/${f#./}")
   done <"$list"
   [[ -z "$f" ]] || die "the task's hidden files: the list ends in a name cut short"
-  adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task.out" 2>&1 ||
-    die "task create failed: $(excerpt "$work/out/task.out" 400)"
-  tsk="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task.out" | head -n 1)" || die "task create: its output cannot be read"
-  [[ "$tsk" == tsk_* ]] || die "task create: no task id: $(excerpt "$work/out/task.out" 400)"
-
+  create_task "$t/task.json" "${acc[@]}"
   until="$(json "$case_file" d.expect.until)" || die "the case's expect.until could not be read"
   step "waiting for task $tsk to end ($until)"
   local deadline=$((SECONDS + 1500))
@@ -56,7 +68,7 @@ cycle_case() {
   second="$(json "$case_file" 'd.expect.second_task_admitted === false')" || die "the case's second_task_admitted could not be read"
   if [[ "$second" == true ]]; then
     step "a second task while the first is held: it stays unadmitted (I22)"
-    adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task2.out" 2>&1 ||
+    adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${task_attach[@]}" >"$work/out/task2.out" 2>&1 ||
       die "the second task create failed: $(excerpt "$work/out/task2.out" 400)"
     tsk2="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task2.out" | head -n 1)" || die "the second task create: its output cannot be read"
     [[ "$tsk2" == tsk_* ]] || die "the second task create: no task id"
@@ -65,23 +77,25 @@ cycle_case() {
   fi
 }
 
-# ended waits for the task with adc task wait --until closed,held (its
-# one-task read without the bench ledger, every second, at most 5 s; read
-# again until the deadline) into out/show.json, and reports whether it
-# ended: closed; its gate completed and its review held review_inactive
-# (stub mode's end: nothing more runs); or a node of it but a review held,
-# on a hold that is not a runner's bounded retry ("runner: retry N until
-# ...", which clears itself). cycle_check reads the whole task, its bench
-# included, once. Each read first checks that adcd still runs: one that
-# exited fails the case at once (started: its exit status and its log's
-# excerpt), never at the deadline (Mythos #435 L1).
+# ended reads the task into out/poll.json and reports whether it ended:
+# closed; its gate completed and its review held review_inactive (stub
+# mode's end: nothing more runs); or a node of it but a review held, on a
+# hold that is not a runner's bounded retry ("runner: retry N until ...",
+# which clears itself). It polls with adc task wait (the one-task read
+# without its bench ledger, which grows with the task's calls); a wait that
+# sees neither state within its 5 s prints nothing and is read again.
+# cycle_check reads the whole task, its bench included, once. Each read
+# first checks that adcd still runs: one that exited fails the case at once
+# (started: its exit status and its log's excerpt), never at the deadline
+# (Mythos #435 L1).
 ended() {
   local rc=0
   kill -0 "$adcd" 2>/dev/null || started ""
-  adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/show.json" 2>"$work/out/show.err" || rc=$?
+  adc task wait "$tsk" --until closed,held --timeout 5s --every 1s --json >"$work/out/poll.json" 2>"$work/out/poll.err" || rc=$?
   # 5: neither state within the 5 s, read again; 6, with closed,held asked: its card is unplaced (no column), which no wait ends.
-  if ((rc == 6)); then die "task $tsk's card is unplaced: $(excerpt "$work/out/show.err" 300)"; fi
+  if ((rc == 6)); then die "task $tsk's card is unplaced: $(excerpt "$work/out/poll.err" 300)"; fi
   ((rc == 0)) || return 1
+  cp "$work/out/poll.json" "$work/out/show.json"
   "$node" -e 'const fs = require("node:fs"); const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     const nodes = s.card?.nodes ?? []; const holds = (n) => (n.holds ?? []).map((h) => h.hold);
     const closed = s.card?.column === "done_candidate" || s.card?.column === "done";
@@ -109,8 +123,11 @@ cycle_check() {
   wait "$events" 2>/dev/null || true
   events=""
   adc dev capabilities --json >"$work/out/capabilities.json" 2>&1 || die "adc dev capabilities failed: $(excerpt "$work/out/capabilities.json" 300)"
-  step "the case's expect block"
-  local rc=0
-  summary="$("$node" "$here/lib/cycle-expect.mjs" "$case_file" "$work/out" "$case")" || rc=$?
-  if ((rc != 0)); then die "the case's expectations do not hold:"$'\n'"$summary"; fi
+  step "the expect block"
+  local rc=0 mode=stub expect_file="$case_file"
+  if ((live)); then mode=live expect_file="$work/live-expect.json"; fi
+  # The canary's forms for the checker's search of the requests and the operator's reads: adc's, the one rule (#226 entry 206).
+  "$adc_scan" dev scan --print-forms --canary "$work/out/canary" >"$work/out/canary-forms" 2>/dev/null || die "the canary's forms could not be made"
+  summary="$("$node" "$here/lib/cycle-expect.mjs" "$expect_file" "$work/out" "$case" "$mode")" || rc=$?
+  if ((rc != 0)); then die "the expectations do not hold:"$'\n'"$summary"; fi
 }

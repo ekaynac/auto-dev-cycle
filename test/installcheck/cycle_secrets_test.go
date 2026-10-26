@@ -3,9 +3,13 @@
 package installcheck
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -305,5 +309,226 @@ func TestNoCanaryInArgv(t *testing.T) {
 	}
 	if minted == 0 {
 		t.Error("no case minted a canary")
+	}
+}
+
+// Opus #440 H2, L3: live_after finds the canary in a captured request
+// body in any form JSON gives it, decoded (Astra #440 H4: a tab-and-quote
+// line, JSON.stringify'd; a write_file argument's JSON string inside the
+// body as Go's json.Marshal escapes it, \u003c and \u003e for its angle
+// brackets), and in any other artifact of the work directory (H6: adcd's
+// log), but not in the intended copies (out/canary, an acceptance copy by
+// its digest); it searches the sandbox root too, and fails when that search
+// finds the canary or never ran; it requires the body of every reviewer
+// call in the capture store, and passes a clean run. The stand-in
+// repository's main is unchanged.
+func TestLiveAfterCapture(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node on PATH")
+	}
+	scanner := adcScan(t)
+	// The scripts by absolute path: the git calls run outside this repository.
+	scripts, err := filepath.Abs("../../scripts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canary = "\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\""
+	const requirement = "the requirement of issue 170, its first line"
+	setup := func(t *testing.T, body string, kept bool) string {
+		dir := t.TempDir()
+		work := filepath.Join(dir, "work")
+		write(t, filepath.Join(work, "out/canary"), canary+"\n", 0o600)
+		forms, err := exec.Command(scanner, "dev", "scan", "--print-forms", "--canary", filepath.Join(work, "out/canary")).Output()
+		if err != nil {
+			t.Fatalf("the canary's forms: %v", err)
+		}
+		write(t, filepath.Join(work, "out/canary-forms"), string(forms), 0o600)
+		accept := "package inventory\n\n" + canary + "\n"
+		write(t, filepath.Join(work, "acceptance/1"), accept, 0o600)
+		as := sha256.Sum256([]byte(accept))
+		write(t, filepath.Join(work, "out/acceptance-digests"), "sha256:"+hex.EncodeToString(as[:])+"\n", 0o600)
+		write(t, filepath.Join(work, "out/adcd-1.log"), "adcd: started\n", 0o600)
+		sum := sha256.Sum256([]byte(body))
+		h := hex.EncodeToString(sum[:])
+		write(t, filepath.Join(work, "state/captures/blobs/sha256", h[:2], h[2:4], h), body, 0o600)
+		show, _ := json.Marshal(map[string]any{"bench": map[string]any{"leases": []map[string]any{{"id": "lse_r", "role": "reviewer", "calls": []map[string]any{{"id": "cal_r1"}}}}}})
+		write(t, filepath.Join(work, "out/show.json"), string(show), 0o600)
+		call := "cal_r1"
+		if !kept {
+			call = "cal_other"
+		}
+		ev, _ := json.Marshal(map[string]any{"seq": 1, "kind": "blob.capture_kept/v1", "payload": map[string]any{"call": call, "digest": "sha256:" + h}})
+		write(t, filepath.Join(work, "out/events.jsonl"), string(ev)+"\n", 0o600)
+		task, _ := json.Marshal(map[string]any{"requirement": requirement + "\nmore"})
+		write(t, filepath.Join(dir, "issue/task.json"), string(task), 0o600)
+		if err := os.MkdirAll(filepath.Join(dir, "root"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		repo := filepath.Join(dir, "repo.git")
+		git := func(args ...string) string {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid", "GIT_CONFIG_NOSYSTEM=1")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v %s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+		git("init", "-q", "--bare", repo)
+		git("--git-dir", repo, "update-ref", "refs/heads/main", git("--git-dir", repo, "commit-tree", "-m", "m", "4b825dc642cb6eb9a060e54bf8d69288fbee4904"))
+		return dir
+	}
+	// The sandbox root's search stands in as ROOT_STATUS says (0 clean, 1 a hit, 3 never ran, 4 its runs/ unresolved), and records it ran.
+	run := func(dir string, rootStatus int) (string, error) {
+		script := `set -euo pipefail
+. "$3/lib/secrets.sh"; . "$3/lib/cycle-live.sh"
+step() { :; }; root_scan() { :; }; runs_required() { if [ "$ROOT_STATUS" = 4 ]; then return 3; fi; echo "$D/runs"; }
+D="$2"
+root_scanned() { echo "$*" >>"$D/root-searched"; if [ "$ROOT_STATUS" = 1 ]; then echo "$D/x"; fi; return "$ROOT_STATUS"; }
+json() { "$node" -e 'const d = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]) ?? "")' "$1" "$2"; }
+node="$1" work="$2/work" root="$2/root" here="$3" issue_dir="$2/issue" repo_url="$2/repo.git" repo_label="the mirror's main" live_secret=() adc_scan="$4"
+IFS= read -r live_canary <"$work/out/canary"
+main_before="$(git ls-remote -- "$repo_url" refs/heads/main | cut -f1)"
+live_after
+echo ok`
+		cmd := exec.Command("bash", "-c", script, "x", node, dir, scripts, scanner)
+		cmd.Dir = dir
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "ROOT_STATUS="+strconv.Itoa(rootStatus))
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	stringify := func(content string) string {
+		b, err := exec.Command(node, "-e", `process.stdout.write(JSON.stringify({messages: [{role: "user", content: process.argv[1]}]}))`, content).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	// The real composition: the adapter's JSON.stringify of a tool call whose argument is itself JSON.stringify'd,
+	// carried by Go's json.Marshal as a RawMessage (HTML-escaped: \u003c, \u003e).
+	inner, err := exec.Command(node, "-e", `process.stdout.write(JSON.stringify({messages: [{role: "assistant", tool_calls: [{type: "function",
+		function: {name: "write_file", arguments: JSON.stringify({path: "x.go", content: process.argv[1]})}}]}]}))`, requirement+"\n"+canary).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goBody, err := json.Marshal(map[string]json.RawMessage{"request": inner})
+	if err != nil || !strings.Contains(string(goBody), `\u003cq7v\u003e`) {
+		t.Fatalf("the Go-escaped body: %v %s", err, goBody)
+	}
+	goEscaped, err := json.Marshal(canary)
+	if err != nil || !strings.Contains(string(goEscaped), `\u003cq7v\u003e`) {
+		t.Fatalf("Go's escaping of the canary: %v %s", err, goEscaped)
+	}
+	clean := stringify(requirement + ": review it")
+	dir := setup(t, clean, true)
+	if out, err := run(dir, 0); err != nil || !strings.HasSuffix(strings.TrimSpace(out), "ok") {
+		t.Errorf("a clean run: %v %s", err, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "root-searched")); !strings.Contains(string(b), "dev scan --canary "+filepath.Join(dir, "work/out/canary")+" --own-digests "+filepath.Join(dir, "work/out/acceptance-digests")+" -- "+filepath.Join(dir, "root")+" "+filepath.Join(dir, "runs")+"\n") {
+		t.Errorf("the sandbox root was not searched for the canary: %q", b)
+	}
+	leaked := stringify(requirement + "\n" + canary)
+	if strings.Contains(leaked, canary) {
+		t.Fatal("the stand-in body holds the canary verbatim; the row needs it JSON-escaped")
+	}
+	for name, c := range map[string]struct {
+		body string
+		kept bool
+		edit func(dir string)
+		root int
+		want string
+	}{
+		"the canary JSON-escaped in a body":    {leaked, true, nil, 0, `the acceptance canary appears in: "%DIR%/work/state/captures/`},
+		"its trimmed core in a body":           {stringify(requirement + " " + strings.TrimSpace(canary)), true, nil, 0, `the acceptance canary appears in: "%DIR%/work/state/captures/`},
+		"in a write_file argument, Go-escaped": {requirement + string(goBody), true, nil, 0, `the acceptance canary appears in: "%DIR%/work/state/captures/`},
+		// No pattern form is four JSON strings deep: only decoding finds it.
+		"four JSON strings deep": {stringify(stringify(stringify(stringify(requirement + "\n" + canary)))), true, nil, 0, `the acceptance canary appears in: "%DIR%/work/state/captures/`},
+		// A line that is no JSON document, holding the canary as Go escapes it: only its escaped form finds it.
+		"Go-escaped in a log line": {clean, true, func(d string) {
+			write(t, filepath.Join(d, "work/out/adcd-1.log"), "adcd: a payload "+strings.TrimSuffix(strings.TrimPrefix(string(goEscaped), `"`), `"`)+"\n", 0o600)
+		}, 0, `the acceptance canary appears in: "%DIR%/work/out/adcd-1.log"`},
+		"in adcd's log": {clean, true, func(d string) { write(t, filepath.Join(d, "work/out/adcd-1.log"), "adcd: "+canary+"\n", 0o600) }, 0, `the acceptance canary appears in: "%DIR%/work/out/adcd-1.log"`},
+		// The work directory's own: a link out of it is a scan error (--links-inside).
+		"a link out of the work directory": {clean, true, func(d string) {
+			if err := os.Symlink("/etc/hostname", filepath.Join(d, "work/out/host")); err != nil {
+				t.Fatal(err)
+			}
+		}, 0, "the work directory could not be searched for the canary (exit 2)"},
+		"in the sandbox root":                 {clean, true, nil, 1, "the acceptance canary appears in the sandbox root: %DIR%/x"},
+		"the sandbox root's search never ran": {clean, true, nil, 3, "the sandbox root could not be searched for the canary (exit 3)"},
+		"the sandbox root's runs/ unresolved": {clean, true, nil, 4, "the sandbox root's runs/ could not be resolved for the canary search"},
+		"a reviewer call's body not kept":     {clean, false, nil, 0, "no reviewer call's body was captured"},
+	} {
+		dir := setup(t, c.body, c.kept)
+		if c.edit != nil {
+			c.edit(dir)
+		}
+		want := strings.ReplaceAll(c.want, "%DIR%", dir)
+		if out, err := run(dir, c.root); err == nil || !strings.Contains(out, want) {
+			t.Errorf("%s: %v %s", name, err, out)
+		}
+	}
+	// A kept capture whose bytes are gone.
+	dir = setup(t, clean, true)
+	if err := os.RemoveAll(filepath.Join(dir, "work/state/captures/blobs/sha256")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "work/state/captures/other"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "work/state/captures/other/body"), clean, 0o600)
+	if out, err := run(dir, 0); err == nil || !strings.Contains(out, "is not in the capture store") {
+		t.Errorf("a reviewer call's body gone: %v %s", err, out)
+	}
+	// A requirement whose first line is empty: an empty pattern matches every capture, so it is no search (#226 entry 202).
+	dir = setup(t, clean, true)
+	write(t, filepath.Join(dir, "issue/task.json"), `{"requirement": "\nmore"}`, 0o600)
+	if out, err := run(dir, 0); err == nil || !strings.Contains(out, "nothing to find in the capture") {
+		t.Errorf("an empty requirement line: %v %s", err, out)
+	}
+}
+
+// Opus #440 H1: the acceptance reaches adc task create as the work
+// directory's copies (made by redirection), never by its store path; each
+// copy holds its file's bytes.
+func TestLiveAttachesTheCopies(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node on PATH")
+	}
+	dir := t.TempDir()
+	const canary = "// ADC-CANARY-attach-0123456789"
+	body := "package cli\n\n" + canary + "\n"
+	store := filepath.Join(dir, "store/accept_hidden_test.go")
+	write(t, store, body, 0o600)
+	sum := sha256.Sum256([]byte(body))
+	task, _ := json.Marshal(map[string]any{"attachments": []map[string]string{{"name": "internal/cli/accept_hidden_test.go", "digest": "sha256:" + hex.EncodeToString(sum[:])}}})
+	write(t, filepath.Join(dir, "issue/task.json"), string(task), 0o600)
+	script := `set -euo pipefail
+. ../../scripts/lib/secrets.sh; . ../../scripts/lib/cycle-live.sh
+cannot() { echo "cannot: $*"; exit 2; }
+json() { "$node" -e 'const d = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); console.log(eval(process.argv[2]) ?? "")' "$1" "$2"; }
+node="$1" work="$2/work" issue_dir="$2/issue" issue=170 live_canary="$4"
+mkdir -p "$work/out"
+acceptance=("internal/cli/accept_hidden_test.go=$3")
+live_acceptance
+printf "%s\n" "${live_pairs[@]}"`
+	cmd := exec.Command("bash", "-c", script, "x", node, dir, store, canary)
+	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	copy := filepath.Join(dir, "work/acceptance/1")
+	digests, _ := os.ReadFile(filepath.Join(dir, "work/out/acceptance-digests"))
+	if got := strings.TrimSpace(string(out)); got != "internal/cli/accept_hidden_test.go="+copy || strings.Contains(got, store) ||
+		string(digests) != "sha256:"+hex.EncodeToString(sum[:])+"\n" {
+		t.Errorf("live_pairs: %q; acceptance-digests %q", got, digests)
+	}
+	if b, _ := os.ReadFile(copy); string(b) != body {
+		t.Errorf("the copy: %q", b)
 	}
 }

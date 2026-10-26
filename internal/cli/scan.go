@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,23 +22,26 @@ import (
 // devScan runs `adc dev scan`, the installed cycle harness's one search
 // (#226 entry 206; secretscan):
 //
-//	adc dev scan [--secrets FILE] [--canary FILE] [--name NAME]... [--own PATH]... [--links-inside] [--depth N] [--null] ROOT...
-//	adc dev scan --print-forms --secrets FILE
+//	adc dev scan [--secrets FILE] [--canary FILE] [--name NAME]... [--own PATH]... [--own-digests FILE] [--links-inside] [--depth N] [--null] ROOT...
+//	adc dev scan --print-forms (--secrets FILE | --canary FILE)
 //
 // --secrets: one secret a line (secretscan.SecretForms); --canary: the
 // canary, its first line (secretscan.CanaryForms, JSON decoded too). Each
 // FILE is "-" (stdin, once) or a regular file of this user's, mode 0600: a
 // secret is never an argument. --name: an entry of that name below a root
 // is a finding; --own: a regular file whose content is its own (a link to
-// it is a finding); --links-inside: a link out of the roots is an
+// it is a finding); --own-digests: a file of "sha256:HEX" lines, a file
+// with one of these digests holding its content wherever it is (the live
+// route's acceptance); --links-inside: a link out of the roots is an
 // incomplete search (the run's own directory; never a sandbox root's);
 // --depth: at most N below a root. No link is followed. It prints each
 // finding's path (quoted, or NUL-terminated with --null), every form of
 // every secret and canary in it redacted, and exits 0 when there is none,
 // 1 when there is one, 2 when the search could not complete or its input
 // could not be read: one fixed line on stderr, naming no path and no
-// secret. --print-forms prints the secrets' forms, one a line, for the
-// driver's redaction (secrets.sh's known).
+// secret. --print-forms prints the secrets' or the canary's forms, one a
+// line, for the driver's redaction (secrets.sh's known, the live route's
+// canary) and the checker's search of the requests.
 func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	const name = "adc dev scan"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -48,6 +52,7 @@ func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	null := fs.Bool("null", false, "")
 	printForms := fs.Bool("print-forms", false, "")
 	linksInside := fs.Bool("links-inside", false, "")
+	ownDigests := fs.String("own-digests", "", "")
 	var names, own multi
 	fs.Var(&names, "name", "")
 	fs.Var(&own, "own", "")
@@ -61,7 +66,7 @@ func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if *secrets == "-" && *canary == "-" {
 		return usage()
 	}
-	if *printForms != (fs.NArg() == 0) || (*printForms && (*secrets == "" || *canary != "" || len(names)+len(own) > 0)) ||
+	if *printForms != (fs.NArg() == 0) || (*printForms && ((*secrets == "") == (*canary == "") || len(names)+len(own) > 0 || *ownDigests != "")) ||
 		(!*printForms && *secrets == "" && *canary == "" && len(names) == 0) {
 		return usage()
 	}
@@ -88,13 +93,7 @@ func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			forms = append(forms, f...)
 		}
 	}
-	if *printForms {
-		for _, f := range forms {
-			fmt.Fprintln(stdout, f)
-		}
-		return entry.ExitOK
-	}
-	search := secretscan.Search{Names: names, Own: own, Depth: *depth, LinksInside: *linksInside}
+	decode := false
 	if *canary != "" {
 		lines, err := readInput(*canary, stdin)
 		if err != nil || len(lines) != 1 {
@@ -105,9 +104,27 @@ func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return cannot()
 		}
 		forms = append(forms, f...)
-		search.Decode = true
+		decode = true
 	}
-	search.Forms = forms
+	if *printForms {
+		for _, f := range forms {
+			fmt.Fprintln(stdout, f)
+		}
+		return entry.ExitOK
+	}
+	search := secretscan.Search{Forms: forms, Decode: decode, Names: names, Own: own, Depth: *depth, LinksInside: *linksInside}
+	if *ownDigests != "" {
+		b, err := os.ReadFile(*ownDigests)
+		if err != nil {
+			return cannot()
+		}
+		for _, d := range strings.Fields(string(b)) {
+			if !digestText.MatchString(d) {
+				return cannot()
+			}
+			search.OwnDigests = append(search.OwnDigests, d)
+		}
+	}
 	// The search ends with adc's context (its first signal): never a scan that cannot be stopped (Opus #443 r3 O1).
 	found, err := search.Run(ctx, fs.Args())
 	if err != nil {
@@ -128,6 +145,8 @@ func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	return entry.ExitOK
 }
+
+var digestText = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 type multi []string
 
