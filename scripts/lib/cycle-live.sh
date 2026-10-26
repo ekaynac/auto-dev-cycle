@@ -102,10 +102,34 @@ live_acceptance() {
 }
 
 # shellcheck disable=SC2154 # the driver's variables, above
+# live_mirror checks --repo-mirror DIR, when given (the repository is private:
+# neither git ls-remote nor adcd's credential-less clone can read GitHub's):
+# a bare git repository of the caller's, holding refs/heads/main and the
+# issue's base commit (baseline.json's base). DIR then stands for GitHub:
+# the run's profile's repo.url, and the main read before and after the run.
+# shellcheck disable=SC2154 # the driver's variables, above
+live_mirror() {
+  local base bare
+  repo_label="GitHub main"
+  [[ -n "$mirror" ]] || return 0
+  repo_label="the mirror's main"
+  [[ -d "$mirror" && -O "$mirror" ]] || cannot "--repo-mirror $mirror: a bare git repository of yours"
+  mirror="$(cd -- "$mirror" && pwd -P)" || cannot "--repo-mirror $mirror cannot be entered"
+  bare="$(mgit rev-parse --is-bare-repository 2>/dev/null)" || bare=""
+  [[ "$bare" == true ]] || cannot "--repo-mirror $mirror: a bare git repository of yours"
+  mgit rev-parse -q --verify refs/heads/main >/dev/null 2>&1 || cannot "--repo-mirror $mirror holds no refs/heads/main"
+  base="$(json "$issue_dir/baseline.json" d.base 2>/dev/null)" || base=""
+  [[ "$base" =~ ^[0-9a-f]{40}$ ]] || cannot "issue $issue records no base commit (baseline.json's base)"
+  mgit cat-file -e "$base^{commit}" 2>/dev/null || cannot "--repo-mirror $mirror lacks issue $issue's base commit $base"
+}
+# git on the mirror, with no configuration but the repository's own.
+mgit() { env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$mirror" "$@"; }
+
 live_setup() {
   local t="$issue_dir/task.json" ref var f
   step "issue $issue: its task, its acceptance, the registry's credentials"
   live_acceptance
+  live_mirror
 
   # Every registry credential, by reference, from the caller's environment, by the variable gateway.EnvName gives it
   # (adc dev credential-env: names only; Astra #440 M7), as the driver received it across its re-exec, on fd 3
@@ -129,10 +153,11 @@ live_setup() {
   prj="$(json "$profile_file" d.id)" || cannot "the profile cannot be read"
   want="$(json "$t" d.project)" || cannot "issue $issue's task.json cannot be read"
   [[ -n "$prj" && "$prj" == "$want" ]] || cannot "issue $issue's task is project ${want}'s, the profile is $prj"
-  "$node" -e 'const fs = require("node:fs"); const [profile, registry, out] = process.argv.slice(1);
+  "$node" -e 'const fs = require("node:fs"); const [profile, registry, out, mirror] = process.argv.slice(1);
     const p = JSON.parse(fs.readFileSync(profile, "utf8")); const r = JSON.parse(fs.readFileSync(registry, "utf8"));
     p.data_policy.allowed_destinations = [...new Set(r.executors.map((e) => e.destination.id))].sort();
-    fs.writeFileSync(out, JSON.stringify(p))' "$profile_file" "$registry" "$work/profile.json" || die "the profile failed"
+    if (mirror) p.repo.url = mirror;
+    fs.writeFileSync(out, JSON.stringify(p))' "$profile_file" "$registry" "$work/profile.json" "$mirror" || die "the profile failed"
   live_canary_known
   # shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals
   "$node" -e 'const fs = require("node:fs"); const [issue, out] = process.argv.slice(1);
@@ -143,8 +168,8 @@ live_setup() {
         nodes: { build: r("found", "completed_with_findings"), accept: r("empty", "completed_clean"), gate: r("empty", "completed_clean"), review: r("empty", "completed_clean") } } }))' \
     "$issue" "$work/live-expect.json" || die "the expect block failed"
 
-  step "GitHub main's SHA, before the run"
-  repo_url="$(json "$profile_file" d.repo.url)" || cannot "the profile cannot be read"
+  step "$repo_label's SHA, before the run"
+  repo_url="$(json "$work/profile.json" d.repo.url)" || cannot "the profile cannot be read"
   main_before="$(env -i PATH=/usr/bin:/bin GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     timeout 60 git ls-remote -- "$repo_url" refs/heads/main | cut -f1)" || cannot "$repo_url cannot be read"
   [[ "$main_before" =~ ^[0-9a-f]{40}$ ]] || cannot "$repo_url names no main"
@@ -234,10 +259,10 @@ live_after() {
   done <<<"$digests"
   ((n > 0)) || die "no reviewer call's body was captured"
   live_canary_scan
-  step "GitHub main's SHA, after the run: unchanged"
+  step "$repo_label's SHA, after the run: unchanged"
   main_after="$(env -i PATH=/usr/bin:/bin GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     timeout 60 git ls-remote -- "$repo_url" refs/heads/main | cut -f1)" || die "$repo_url cannot be read after the run"
-  [[ "$main_after" == "$main_before" ]] || die "GitHub main moved during the run: $main_before → $main_after"
+  [[ "$main_after" == "$main_before" ]] || die "$repo_label moved during the run: $main_before → $main_after"
 }
 
 # live_write_bench: out/bench.json published at --bench, the driver's last

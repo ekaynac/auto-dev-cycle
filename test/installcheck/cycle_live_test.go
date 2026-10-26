@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -130,6 +131,40 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 		return f
 	}
 	own := canaryFile("canary", canary+"\n", 0o600)
+	// --repo-mirror (the repository is private): a bare repository holding
+	// main and issue 170's base (its baseline.json's), and three that are not.
+	g := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	work := filepath.Join(root, "mirror-work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g(work, "init", "-q")
+	g(work, "commit", "-q", "--allow-empty", "-m", "base")
+	base := g(work, "rev-parse", "HEAD")
+	write(t, filepath.Join(lib, "fixtures/m1/issues/170/baseline.json"), `{"base":"`+base+`"}`, 0o644)
+	mirror := filepath.Join(root, "mirror.git")
+	g(root, "clone", "-q", "--bare", work, mirror)
+	noMain := filepath.Join(root, "no-main.git")
+	g(root, "init", "-q", "--bare", noMain)
+	noBase := filepath.Join(root, "no-base.git")
+	g(root, "init", "-q", "--bare", noBase)
+	elsewhere := filepath.Join(root, "other-work")
+	if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g(elsewhere, "init", "-q")
+	g(elsewhere, "commit", "-q", "--allow-empty", "-m", "elsewhere")
+	g(elsewhere, "push", "-q", noBase, "main")
 	for name, c := range map[string]struct {
 		env  []string
 		args []string
@@ -137,6 +172,9 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 	}{
 		"another file":               {held, []string{"--acceptance", "internal/cli/accept_hidden_test.go=" + other, "--canary-file", own}, "its file is not the recorded sha256:"},
 		"an entry without =":         {held, []string{"--acceptance", acceptance, "--canary-file", own}, "--acceptance: an entry without '=' (REPO_PATH=FILE)"},
+		"a mirror not bare":          {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", work}, "--repo-mirror " + work + ": a bare git repository of yours"},
+		"a mirror with no main":      {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", noMain}, "--repo-mirror " + noMain + " holds no refs/heads/main"},
+		"a mirror without the base":  {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", noBase}, "--repo-mirror " + noBase + " lacks issue 170's base commit " + base},
 		"another name":               {held, []string{"--acceptance", "internal/cli/x_test.go=" + acceptance, "--canary-file", own}, "names no such attachment"},
 		"a canary not in it":         {held, []string{"--acceptance", given, "--canary-file", canaryFile("elsewhere", "// ADC-CANARY-somewhere-else-0123\n", 0o600)}, "the canary is no line of the acceptance files"},
 		"no credential":              {nil, []string{"--acceptance", given, "--canary-file", own}, "the registry's credential api-reviewer is not in this environment (ADC_CREDENTIAL_API_REVIEWER)"},
@@ -154,6 +192,22 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 		out, code := run(c.env, c.args...)
 		if code != 2 || !strings.Contains(out, "installed-cycle: could_not_run: ") || !strings.Contains(out, c.want) {
 			t.Errorf("%s: exit %d, %s", name, code, out)
+		}
+	}
+	// A good mirror stands for GitHub: the run's profile's repo.url is it, and
+	// main is read from it. The run gets past the setup, to the sandbox's Podman.
+	if out, code := run(held, "--acceptance", given, "--canary-file", own, "--repo-mirror", mirror, "--podman", "/nonexistent/podman", "--keep"); code != 2 ||
+		!strings.Contains(out, "the mirror's main's SHA, before the run") || !strings.Contains(out, "rootless Podman (/nonexistent/podman) is required") {
+		t.Errorf("a good mirror: exit %d, %s", code, out)
+	} else {
+		kept := regexp.MustCompile(`kept (\S+)`).FindStringSubmatch(out)
+		if kept == nil {
+			t.Fatalf("a good mirror: no kept work directory: %s", out)
+		}
+		var prof struct{ Repo struct{ URL string } }
+		b, err := os.ReadFile(filepath.Join(kept[1], "profile.json"))
+		if err != nil || json.Unmarshal(b, &prof) != nil || prof.Repo.URL != mirror {
+			t.Errorf("a good mirror: the run's profile's repo.url is %q (%v), not %s", prof.Repo.URL, err, mirror)
 		}
 	}
 	// Opus #440 L1: a kept live run says what its directory holds.

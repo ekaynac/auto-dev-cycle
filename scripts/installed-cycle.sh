@@ -56,7 +56,7 @@
 #
 #   installed-cycle.sh PREFIX --routes live --project repo --issue N --until candidate
 #     --bench FILE --registry FILE --groups FILE --acceptance REPO_PATH=FILE...
-#     --canary-file FILE [--podman PATH] [--keep]
+#     --canary-file FILE [--repo-mirror DIR] [--podman PATH] [--keep]
 #
 # runs §2.3's live route (scripts/lib/cycle-live.sh), always on a sandbox
 # root of its own (--sandbox-root is refused: a shared root's sweep would
@@ -115,17 +115,17 @@ for v in "${caller_cred[@]}"; do cred_names+="${v%%=*} "; done
 # (printed once the run's label is known, below, redacted: a name may hold a registered value; Astra #443 High 3)
 usage() {
   cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]
-   or: installed-cycle.sh PREFIX --routes live --project repo --issue N --until candidate --bench FILE --registry FILE --groups FILE --acceptance REPO_PATH=FILE... --canary-file FILE [--podman PATH] [--keep]"
+   or: installed-cycle.sh PREFIX --routes live --project repo --issue N --until candidate --bench FILE --registry FILE --groups FILE --acceptance REPO_PATH=FILE... --canary-file FILE [--repo-mirror DIR] [--podman PATH] [--keep]"
 }
 
 [[ $# -ge 1 ]] || usage
 prefix="$1"
 shift
 routes="" project="" case="" keep=0 expect="" shared="" setup_only=0 PODMAN=/usr/bin/podman
-issue="" until_="" bench="" registry="" groups="" acceptance=() live_canary="" canary_file=""
+issue="" until_="" bench="" registry="" groups="" acceptance=() live_canary="" canary_file="" mirror=""
 while [[ $# -gt 0 ]]; do
   # A value flag given last, with no value, is a usage refusal (exit 2), never a failed shift (Opus #435 L1).
-  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman | --issue | --until | --bench | --registry | --groups | --acceptance | --canary-file) [[ $# -ge 2 ]] || usage ;; esac
+  case "$1" in --routes | --project | --case | --expect | --sandbox-root | --podman | --issue | --until | --bench | --registry | --groups | --acceptance | --canary-file | --repo-mirror) [[ $# -ge 2 ]] || usage ;; esac
   case "$1" in
     --routes) routes="$2" && shift 2 ;;
     --project) project="$2" && shift 2 ;;
@@ -141,6 +141,7 @@ while [[ $# -gt 0 ]]; do
     --groups) groups="$2" && shift 2 ;;
     --acceptance) acceptance+=("$2") && shift 2 ;;
     --canary-file) canary_file="$2" && shift 2 ;;
+    --repo-mirror) mirror="$2" && shift 2 ;;
     --keep) keep=1 && shift ;;
     *) usage ;;
   esac
@@ -149,7 +150,7 @@ done
 live=0
 case "$routes" in
   stub)
-    [[ -n "$project" && -n "$case" && -z "$issue$until_$bench$registry$groups$canary_file" && ${#acceptance[@]} -eq 0 ]] || usage
+    [[ -n "$project" && -n "$case" && -z "$issue$until_$bench$registry$groups$canary_file$mirror" && ${#acceptance[@]} -eq 0 ]] || usage
     [[ "$project" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && "$case" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || usage
     [[ "$project" == go-mini ]] || cannot "--project $project: only go-mini has cycle cases"
     ;;
