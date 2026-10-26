@@ -3,13 +3,18 @@
 package secretscan
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The forms are the shell's (secrets.sh's forms, recorded before it was
@@ -86,7 +91,7 @@ func link(t *testing.T, target, path string) {
 // ending there, or a link to a directory holding it, is a finding by the
 // link's own path. In the run's own directory (LinksInside) a link out of
 // the roots ends the search incomplete; under a sandbox root a dangling or
-// absolute system link is only recorded. An unreadable file or directory
+// absolute system link is neither followed nor reported. An unreadable file or directory
 // ends the search; a newline in a name is a name; every form is found
 // alone.
 func TestSearchWalk(t *testing.T) {
@@ -148,7 +153,7 @@ func TestSearchWalk(t *testing.T) {
 		if c.own != "" {
 			own = []string{filepath.Join(root, c.own)}
 		}
-		got, err := Search{Forms: forms, Own: own, LinksInside: c.inside}.Run([]string{root})
+		got, err := Search{Forms: forms, Own: own, LinksInside: c.inside}.Run(context.Background(), []string{root})
 		var want []string
 		for _, w := range c.want {
 			want = append(want, filepath.Join(root, w))
@@ -161,7 +166,7 @@ func TestSearchWalk(t *testing.T) {
 	for _, f := range forms {
 		root := t.TempDir()
 		write(t, root+"/f", "x "+f+" y", 0o600)
-		if got, err := (Search{Forms: forms}).Run([]string{root}); err != nil || len(got) != 1 {
+		if got, err := (Search{Forms: forms}).Run(context.Background(), []string{root}); err != nil || len(got) != 1 {
 			t.Errorf("the form %q alone: %v %q", f, err, got)
 		}
 	}
@@ -181,10 +186,141 @@ func TestSearchWalk(t *testing.T) {
 		}
 		root := t.TempDir()
 		build(root)
-		if got, err := (Search{Forms: forms, LinksInside: true}).Run([]string{root}); !errors.Is(err, ErrIncomplete) || got != nil {
+		if got, err := (Search{Forms: forms, LinksInside: true}).Run(context.Background(), []string{root}); !errors.Is(err, ErrIncomplete) || got != nil {
 			t.Errorf("%s: %v %q", name, err, got)
 		}
 		_ = os.Chmod(filepath.Join(root, "locked"), 0o700)
+	}
+}
+
+// Opus #443 r3 B1: a name search beside the work directory lists a shared
+// /tmp while other runs create and remove files there; an entry gone by
+// the time it is looked at is gone, never a search that did not complete.
+// 200 runs under a writer's churn: none incomplete, the planted name always
+// found.
+func TestSearchNamesUnderChurn(t *testing.T) {
+	dir := t.TempDir()
+	for i := range 200 {
+		write(t, filepath.Join(dir, fmt.Sprintf("e%03d", i)), "", 0o600)
+	}
+	write(t, filepath.Join(dir, "canary-x"), "", 0o600)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for n := 0; ; n++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			p := filepath.Join(dir, fmt.Sprintf("churn%02d", n%50))
+			if f, err := os.Create(p); err == nil {
+				f.Close()
+			}
+			os.Remove(p)
+		}
+	}()
+	incomplete, missed := 0, 0
+	for range 200 {
+		got, err := Search{Names: []string{"canary-x"}, Depth: 1}.Run(context.Background(), []string{dir})
+		if err != nil {
+			incomplete++
+		} else if !slices.Equal(got, []string{filepath.Join(dir, "canary-x")}) {
+			missed++
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if incomplete != 0 || missed != 0 {
+		t.Errorf("under churn: %d of 200 incomplete, %d missed the name", incomplete, missed)
+	}
+	// A content search stays strict: an entry that cannot be looked at is never skipped (the unreadable rows above).
+}
+
+// Opus #443 r3 O1: a FIFO swapped in for a listed regular file never hangs
+// the search (no link followed, no FIFO blocked on, the opened file checked
+// to be the one listed); and a search ends with its context.
+func TestSearchUnderASwap(t *testing.T) {
+	forms, err := SecretForms("sk-filter-PROBE-0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "f")
+	write(t, f, "nothing\n", 0o600)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fifo, reg := filepath.Join(dir, ".fifo"), filepath.Join(dir, ".reg")
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if syscall.Mkfifo(fifo, 0o600) == nil {
+				os.Rename(fifo, f)
+			}
+			if os.WriteFile(reg, []byte("nothing\n"), 0o600) == nil {
+				os.Rename(reg, f)
+			}
+		}
+	}()
+	for i := range 300 {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = Search{Forms: forms}.Run(context.Background(), []string{dir})
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			close(stop)
+			t.Fatalf("scan %d hung on a FIFO swapped in", i)
+		}
+	}
+	close(stop)
+	wg.Wait()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Both checks: at each entry (an empty root holds no file to read) and between a file's reads.
+	for _, root := range []string{t.TempDir(), dir} {
+		if got, err := (Search{Forms: forms}).Run(ctx, []string{root}); !errors.Is(err, ErrIncomplete) || got != nil {
+			t.Errorf("an ended context over %s: %v %q", root, err, got)
+		}
+	}
+}
+
+// Opus #443 r3 O3: JavaScript's trim (U+FEFF too, never U+0085), and a
+// JSON key decoded as a value, as cycle-expect.mjs's rule does.
+func TestCanaryTrimAndKeys(t *testing.T) {
+	const core = "ADC-CANARY-trim-0123456789abcdef"
+	forms, err := CanaryForms("\ufeff\t" + core + "\u00a0")
+	if err != nil || !slices.Contains(forms, core) {
+		t.Errorf("U+FEFF and U+00A0 trimmed: %v %q", err, forms)
+	}
+	if got := jsTrim("\u0085" + core); got != "\u0085"+core {
+		t.Errorf("U+0085 is no JavaScript whitespace: %q", got)
+	}
+	quoted := "\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\""
+	forms, err = CanaryForms(quoted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deep := quoted
+	for range 3 {
+		b, _ := json.Marshal(map[string]string{"c": deep})
+		deep = string(b)
+	}
+	b, _ := json.Marshal(map[string]int{deep: 1})
+	root := t.TempDir()
+	write(t, root+"/f", string(b), 0o600)
+	if got, err := (Search{Forms: forms, Decode: true}).Run(context.Background(), []string{root}); err != nil || len(got) != 1 {
+		t.Errorf("the canary in a key, three strings deep: %v %q", err, got)
 	}
 }
 
@@ -197,16 +333,16 @@ func TestSearchNames(t *testing.T) {
 	if err := os.MkdirAll(root+"/canary-x", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Search{Names: []string{"canary-x"}}.Run([]string{root})
+	got, err := Search{Names: []string{"canary-x"}}.Run(context.Background(), []string{root})
 	want := []string{root + "/a/b/canary-x", root + "/c/canary-x", root + "/canary-x"}
 	if err != nil || !slices.Equal(got, want) {
 		t.Errorf("under: %v %q", err, got)
 	}
-	got, err = Search{Names: []string{"canary-x"}, Depth: 1}.Run([]string{root})
+	got, err = Search{Names: []string{"canary-x"}, Depth: 1}.Run(context.Background(), []string{root})
 	if err != nil || !slices.Equal(got, []string{root + "/canary-x"}) {
 		t.Errorf("at depth 1: %v %q", err, got)
 	}
-	if got, err := (Search{Names: []string{"canary-x"}}).Run([]string{root + "/canary-x"}); err != nil || got != nil {
+	if got, err := (Search{Names: []string{"canary-x"}}).Run(context.Background(), []string{root + "/canary-x"}); err != nil || got != nil {
 		t.Errorf("the root itself is no finding: %v %q", err, got)
 	}
 }
@@ -238,13 +374,13 @@ func TestSearchDecodesTheCanary(t *testing.T) {
 	} {
 		root := t.TempDir()
 		write(t, root+"/f", body, 0o600)
-		if got, err := (Search{Forms: forms, Decode: true}).Run([]string{root}); err != nil || len(got) != 1 {
+		if got, err := (Search{Forms: forms, Decode: true}).Run(context.Background(), []string{root}); err != nil || len(got) != 1 {
 			t.Errorf("%s: %v %q", name, err, got)
 		}
 	}
 	root := t.TempDir()
 	write(t, root+"/f", str(map[string]any{"content": "nothing"}), 0o600)
-	if got, err := (Search{Forms: forms, Decode: true}).Run([]string{root}); err != nil || got != nil {
+	if got, err := (Search{Forms: forms, Decode: true}).Run(context.Background(), []string{root}); err != nil || got != nil {
 		t.Errorf("clean: %v %q", err, got)
 	}
 }

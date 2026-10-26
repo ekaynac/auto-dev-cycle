@@ -224,8 +224,8 @@ root_scanned() {
 # root_secret_scan ROOT SECRET (Opus #438 N1): see the header. The secret
 # reaches adc dev scan on its stdin (through podman unshare). Its walk
 # follows no link (a container's layers hold absolute and dangling ones:
-# each is recorded, never resolved past the check against an OWN, which a
-# root has none of), refuses what it cannot read, and reads no device,
+# none is followed or reported; a root has no OWN a link could resolve to),
+# refuses what it cannot read, and reads no device,
 # fifo or socket (a container's run files may hold one). 1: a file holds a
 # form of SECRET (printed); 2: the search did not complete; 3: it never
 # ran.

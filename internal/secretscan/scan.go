@@ -4,6 +4,7 @@ package secretscan
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/regularfile"
 )
 
 // ErrIncomplete: the search could not look at everything it was given (an
@@ -38,7 +41,8 @@ type Search struct {
 	// leads nowhere) lies outside every root ends the search incomplete
 	// (the run's own directory: a link out of it is unexpected). Without
 	// it (a sandbox root: a container's layers hold absolute and dangling
-	// links) a link is only checked against Own.
+	// links) a link is neither followed nor reported, unless it resolves to
+	// an Own file.
 	LinksInside bool
 	// Depth: entries at most this far below a root (1: a root's own
 	// entries); 0 or less, no limit.
@@ -52,14 +56,19 @@ const decodeLimit = 64 << 20
 // Run walks each root in lexical order and returns the findings, each by
 // the path the walk reached it at. Every entry is read with Lstat, and no
 // link is ever followed (the lead's ruling on #443; #226 entry 206): only
-// regular files are read, each at its real path, so whatever a link inside
-// a root points at is read where it is. A link is resolved as a path only,
-// for Own and LinksInside. An entry or file that cannot be read ends the
-// search with ErrIncomplete, never a skip. A device, fifo or socket holds
-// no file's bytes and is not read. A root is named by its caller and
-// resolved once.
-func (s Search) Run(roots []string) ([]string, error) {
-	w := walker{s: s, own: map[string]bool{}}
+// regular files are read, each at its real path, opened as regularfile
+// opens (no link, no FIFO swapped in) and checked to be the file the Lstat
+// saw, so whatever a link inside a root points at is read where it is. A
+// link is resolved as a path only, for Own and LinksInside. An entry or
+// file that cannot be read ends the search with ErrIncomplete, never a
+// skip; so does ctx ending. A device, fifo or socket holds no file's bytes
+// and is not read. A name search (no Forms) matches each listed name
+// before it looks at the entry, and takes an entry below a root that is
+// gone by then (another process removed it: a shared /tmp) as gone, never
+// as a search that did not complete (Opus #443 r3 B1); a content search
+// stays strict. A root is named by its caller and resolved once.
+func (s Search) Run(ctx context.Context, roots []string) ([]string, error) {
+	w := walker{ctx: ctx, s: s, own: map[string]bool{}}
 	for _, f := range s.Forms {
 		w.forms = append(w.forms, []byte(f))
 		w.longest = max(w.longest, len(f))
@@ -96,6 +105,7 @@ func (s Search) Run(roots []string) ([]string, error) {
 }
 
 type walker struct {
+	ctx     context.Context
 	s       Search
 	forms   [][]byte
 	longest int
@@ -112,8 +122,7 @@ func within(path, dir string) bool {
 
 // entry: one path, at depth below its root.
 func (w *walker) entry(path string, depth int) error {
-	fi, err := os.Lstat(path)
-	if err != nil {
+	if err := w.ctx.Err(); err != nil {
 		return err
 	}
 	if depth > 0 && len(w.s.Names) > 0 {
@@ -124,9 +133,18 @@ func (w *walker) entry(path string, depth int) error {
 			}
 		}
 	}
+	nameOnly := len(w.forms) == 0
+	gone := func(err error) bool { return nameOnly && depth > 0 && errors.Is(err, fs.ErrNotExist) }
+	fi, err := os.Lstat(path)
+	if gone(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	switch {
 	case fi.Mode()&fs.ModeSymlink != 0:
-		if len(w.forms) == 0 {
+		if nameOnly {
 			return nil // a name search reads no content
 		}
 		return w.link(path)
@@ -135,6 +153,9 @@ func (w *walker) entry(path string, depth int) error {
 			return nil
 		}
 		names, err := readDirNames(path)
+		if gone(err) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -145,10 +166,10 @@ func (w *walker) entry(path string, depth int) error {
 		}
 		return nil
 	case fi.Mode().IsRegular():
-		if len(w.forms) == 0 || w.own[path] {
+		if nameOnly || w.own[path] {
 			return nil
 		}
-		hit, err := w.holds(path)
+		hit, err := w.holds(path, fi)
 		if err != nil {
 			return err
 		}
@@ -206,16 +227,17 @@ func readDirNames(path string) ([]string, error) {
 	return names, nil
 }
 
-// holds reports whether the file at path holds a form: in its bytes, read
-// in chunks that overlap by the longest form; or, with Decode, in a JSON
-// string inside it.
-func (w *walker) holds(path string) (bool, error) {
-	f, err := os.Open(path)
+// holds reports whether the regular file at path (fi, its Lstat) holds a
+// form: in its bytes, read in chunks that overlap by the longest form; or,
+// with Decode, in a JSON string inside it. It opens as regularfile opens
+// and checks that it opened fi's file (Opus #443 r3 O1).
+func (w *walker) holds(path string, want fs.FileInfo) (bool, error) {
+	f, err := os.OpenFile(path, regularfile.Flags, 0)
 	if err != nil {
 		return false, err
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	fi, err := regularfile.Check(f, want)
 	if err != nil {
 		return false, err
 	}
@@ -231,6 +253,9 @@ func (w *walker) holds(path string) (bool, error) {
 	buf := make([]byte, w.longest-1+1<<20)
 	keep := 0
 	for {
+		if err := w.ctx.Err(); err != nil {
+			return false, err
+		}
 		n, err := f.Read(buf[keep:])
 		if n > 0 {
 			end := keep + n
@@ -284,7 +309,7 @@ func (w *walker) inJSON(text string) bool {
 }
 
 func parseJSON(s string) (any, bool) {
-	t := strings.TrimSpace(s)
+	t := jsTrim(s)
 	if t == "" || !strings.ContainsRune(`[{"`, rune(t[0])) {
 		return nil, false
 	}
@@ -314,7 +339,7 @@ func (w *walker) inValue(v any, depth int) bool {
 		}
 	case map[string]any:
 		for k, e := range x {
-			if w.inText(k) || w.inValue(e, depth) {
+			if w.inValue(k, depth) || w.inValue(e, depth) { // a key decoded as a value is (the reference rule)
 				return true
 			}
 		}

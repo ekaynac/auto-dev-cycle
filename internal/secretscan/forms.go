@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -64,7 +65,7 @@ func SecretForms(secret string) ([]string, error) {
 // of the two (JavaScript's inside Go's, Go's inside JavaScript's).
 func CanaryForms(canary string) ([]string, error) {
 	var forms []string
-	for _, s := range []string{canary, strings.TrimSpace(canary)} {
+	for _, s := range []string{canary, jsTrim(canary)} {
 		forms = append(forms, s, jsEscape(s), jsEscape(jsEscape(s)), goEscape(s), goEscape(goEscape(s)),
 			goHTML(jsEscape(jsEscape(s))), jsEscape(goEscape(s)))
 	}
@@ -132,6 +133,20 @@ func goHTML(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// jsTrim is JavaScript's String.prototype.trim: its WhiteSpace (tab, VT,
+// FF, space, U+00A0, U+FEFF and every Zs) and its LineTerminators (LF, CR,
+// U+2028, U+2029), from both ends; never U+0085, which Go's TrimSpace
+// takes, nor keeping U+FEFF, which it keeps (Opus #443 r3 O3).
+func jsTrim(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		switch r {
+		case '\t', '\v', '\f', ' ', '\u00a0', '\ufeff', '\n', '\r', '\u2028', '\u2029':
+			return true
+		}
+		return unicode.Is(unicode.Zs, r)
+	})
 }
 
 // goEscape is cycle-expect.mjs's goEsc: JSON's escaping, then Go's HTML

@@ -3,8 +3,7 @@
 package cli
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/regularfile"
 	"github.com/ekaynac/auto-dev-cycle/internal/secretscan"
 )
 
@@ -38,7 +38,7 @@ import (
 // could not be read: one fixed line on stderr, naming no path and no
 // secret. --print-forms prints the secrets' forms, one a line, for the
 // driver's redaction (secrets.sh's known).
-func devScan(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func devScan(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	const name = "adc dev scan"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -108,7 +108,8 @@ func devScan(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		search.Decode = true
 	}
 	search.Forms = forms
-	found, err := search.Run(fs.Args())
+	// The search ends with adc's context (its first signal): never a scan that cannot be stopped (Opus #443 r3 O1).
+	found, err := search.Run(ctx, fs.Args())
 	if err != nil {
 		return cannot()
 	}
@@ -143,30 +144,30 @@ func readInput(file string, stdin io.Reader) ([]string, error) {
 			return nil, err
 		}
 	} else {
-		f, err := os.Open(file)
+		f, err := os.OpenFile(file, regularfile.Flags, 0)
 		if err != nil {
 			return nil, err
 		}
 		defer f.Close()
-		fi, err := f.Stat()
+		fi, err := regularfile.Check(f, nil)
 		if err != nil {
 			return nil, err
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 || !ok || int(st.Uid) != os.Getuid() {
+		if fi.Mode().Perm()&0o077 != 0 || !ok || int(st.Uid) != os.Getuid() {
 			return nil, errors.New("not a private file of this user's")
 		}
 		if b, err = io.ReadAll(f); err != nil {
 			return nil, err
 		}
 	}
+	// Split on "\n" alone: a CR is the secret's own byte, never a line end
+	// dropped (its base64 and hex forms are of the whole; Opus #443 r3 O2).
 	var lines []string
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	for sc.Scan() {
-		if l := sc.Text(); l != "" {
+	for _, l := range strings.Split(string(b), "\n") {
+		if l != "" {
 			lines = append(lines, l)
 		}
 	}
-	return lines, sc.Err()
+	return lines, nil
 }

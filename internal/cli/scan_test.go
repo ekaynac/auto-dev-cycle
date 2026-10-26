@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,8 +115,25 @@ func TestDevScan(t *testing.T) {
 	if out, _, code := run("\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\"\n", "--canary", "-", filepath.Join(dir, "caps")); code != entry.ExitRefused || !strings.Contains(out, "caps/body") {
 		t.Errorf("the canary in a body: exit %d %q", code, out)
 	}
+	// Opus #443 r3 O2: a secret's CR is its own byte: its base64 is of the whole, the CR included.
+	crSecret := "sk-filter-PROBE-0123456789abcdef\r"
+	if out, _, code := run(crSecret+"\n", "--print-forms", "--secrets", "-"); code != entry.ExitOK ||
+		!strings.Contains(out, base64.StdEncoding.EncodeToString([]byte(crSecret))+"\n") {
+		t.Errorf("a secret ending in CR: exit %d %q", code, out)
+	}
+	// Opus #443 r3 O1: the search ends with adc's context (its first signal), the fixed line.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	old := stdin
+	stdin = strings.NewReader(secret)
+	var out, errs bytes.Buffer
+	code := Main(ctx, []string{"dev", "scan", "--secrets", "-", tree}, &out, &errs, nil)
+	stdin = old
+	if code != entry.ExitCouldNotRun || errs.String() != "adc dev scan: could_not_run: the search did not complete\n" {
+		t.Errorf("an ended context: exit %d %q", code, errs.String())
+	}
 	// No link is followed: a link out of the roots is an incomplete search with --links-inside (the run's own
-	// directory), recorded only without it (a sandbox root's layers).
+	// directory), neither followed nor reported without it (a sandbox root's layers).
 	links := filepath.Join(dir, "links")
 	if err := os.MkdirAll(links, 0o700); err != nil {
 		t.Fatal(err)
