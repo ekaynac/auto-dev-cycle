@@ -104,12 +104,12 @@ live_acceptance() {
 # shellcheck disable=SC2154 # the driver's variables, above
 # live_mirror checks --repo-mirror DIR, when given (the repository is private:
 # neither git ls-remote nor adcd's credential-less clone can read GitHub's):
-# a bare git repository of the caller's, holding refs/heads/main and the
+# a bare git repository of the caller's, its refs/heads/main exactly the
 # issue's base commit (baseline.json's base). DIR then stands for GitHub:
 # the run's profile's repo.url, and the main read before and after the run.
 # shellcheck disable=SC2154 # the driver's variables, above
 live_mirror() {
-  local base bare
+  local base bare main
   repo_label="GitHub main"
   [[ -n "$mirror" ]] || return 0
   repo_label="the mirror's main"
@@ -121,6 +121,9 @@ live_mirror() {
   base="$(json "$issue_dir/baseline.json" d.base 2>/dev/null)" || base=""
   [[ "$base" =~ ^[0-9a-f]{40}$ ]] || cannot "issue $issue records no base commit (baseline.json's base)"
   mgit cat-file -e "$base^{commit}" 2>/dev/null || cannot "--repo-mirror $mirror lacks issue $issue's base commit $base"
+  # Its main is the base exactly (Opus #445 r2 R1): a descendant would give the run another main than the issue's.
+  main="$(mgit rev-parse -q --verify refs/heads/main 2>/dev/null)" || main=""
+  [[ "$main" == "$base" ]] || cannot "--repo-mirror $mirror: its main is $main, not issue $issue's base commit $base"
 }
 # git on the mirror, with no configuration but the repository's own.
 mgit() { env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$mirror" "$@"; }

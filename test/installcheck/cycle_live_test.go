@@ -165,6 +165,10 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 	g(elsewhere, "init", "-q")
 	g(elsewhere, "commit", "-q", "--allow-empty", "-m", "elsewhere")
 	g(elsewhere, "push", "-q", noBase, "main")
+	ahead := filepath.Join(root, "ahead.git")
+	g(root, "clone", "-q", "--bare", work, ahead)
+	g(work, "commit", "-q", "--allow-empty", "-m", "after the base")
+	g(work, "push", "-q", ahead, "main")
 	for name, c := range map[string]struct {
 		env  []string
 		args []string
@@ -175,6 +179,7 @@ func TestInstalledCycleLiveRefusals(t *testing.T) {
 		"a mirror not bare":          {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", work}, "--repo-mirror " + work + ": a bare git repository of yours"},
 		"a mirror with no main":      {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", noMain}, "--repo-mirror " + noMain + " holds no refs/heads/main"},
 		"a mirror without the base":  {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", noBase}, "--repo-mirror " + noBase + " lacks issue 170's base commit " + base},
+		"a mirror past the base":     {held, []string{"--acceptance", given, "--canary-file", own, "--repo-mirror", ahead}, "--repo-mirror " + ahead + ": its main is " + g(work, "rev-parse", "HEAD") + ", not issue 170's base commit " + base},
 		"another name":               {held, []string{"--acceptance", "internal/cli/x_test.go=" + acceptance, "--canary-file", own}, "names no such attachment"},
 		"a canary not in it":         {held, []string{"--acceptance", given, "--canary-file", canaryFile("elsewhere", "// ADC-CANARY-somewhere-else-0123\n", 0o600)}, "the canary is no line of the acceptance files"},
 		"no credential":              {nil, []string{"--acceptance", given, "--canary-file", own}, "the registry's credential api-reviewer is not in this environment (ADC_CREDENTIAL_API_REVIEWER)"},
