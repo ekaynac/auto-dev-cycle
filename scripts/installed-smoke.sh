@@ -31,8 +31,8 @@
 # Usage: scripts/installed-smoke.sh PREFIX
 set -euo pipefail
 
-# The shared secret scan (scripts/lib/secrets.sh: secrets, die, forms,
-# known, scan), mounted at /secrets.sh inside the sandbox: the --inside run
+# The shared secret scan (scripts/lib/secrets.sh: secrets, die, known,
+# scan, adc dev scan's), mounted at /secrets.sh inside the sandbox: the --inside run
 # sources that, the outer run the file beside this script.
 SECRETS_TAG=installed-smoke
 secrets_lib="$(dirname "${BASH_SOURCE[0]}")/lib/secrets.sh"
@@ -65,7 +65,8 @@ fi
 # Only ever inside the sandbox: it would otherwise write to the real /tmp.
 [[ -e /smoke.sh && "${ADC_SMOKE_SANDBOX:-}" == 1 ]] || die "--inside runs only in the sandbox; run installed-smoke.sh PREFIX"
 
-# Inside the sandbox from here on.
+# Inside the sandbox from here on. The release's adc runs the secret scans (secrets.sh's known and scan).
+adc_scan=/p/bin/adc
 cd /tmp || die "no /tmp in the sandbox"
 umask 077
 mkdir state op sup out

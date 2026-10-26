@@ -58,6 +58,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 2 && args[0] == "dev" && args[1] == "credential-env" {
 		return devCredentialEnv(args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "dev" && args[1] == "scan" {
+		return devScan(ctx, args[2:], stdin, stdout, stderr)
+	}
 	if len(args) >= 3 && args[0] == "dev" && args[1] == "bench" && args[2] == "record" {
 		return benchRecord(ctx, args[3:], stdout, stderr, c)
 	}

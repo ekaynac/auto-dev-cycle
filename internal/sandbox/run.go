@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/regularfile"
 )
 
 // ErrSpec marks a run that is refused before anything starts.
@@ -477,13 +479,13 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 		case !d.Type().IsRegular():
 			return nil
 		}
-		in, err := root.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+		in, err := root.OpenFile(p, regularfile.Flags, 0)
 		if err != nil {
 			return err
 		}
 		defer in.Close()
-		st, err := in.Stat()
-		if err != nil || !st.Mode().IsRegular() {
+		st, err := regularfile.Check(in, nil)
+		if err != nil {
 			return fmt.Errorf("%w: %s changed type", ErrSpec, p)
 		}
 		mode := os.FileMode(0o600)

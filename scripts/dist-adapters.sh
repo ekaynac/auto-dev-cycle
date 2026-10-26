@@ -46,7 +46,7 @@ done
 [[ -f "$out/fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json" ]] || die "py-mini-feature-1 is missing"
 for f in fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json fixtures/m1/stub-provider/server.mjs fixtures/m1/profiles/go-mini.json \
   fixtures/m1/review-qualification/suite.json adapters/pnpm-lock.yaml \
-  scripts/installed-cycle.sh scripts/lib/secrets.sh scripts/lib/base-remote.sh scripts/lib/sandbox-root.sh scripts/lib/cycle-case.sh scripts/lib/cycle-expect.mjs; do
+  scripts/installed-cycle.sh scripts/lib/clean-shell.sh scripts/lib/secrets.sh scripts/lib/base-remote.sh scripts/lib/sandbox-root.sh scripts/lib/cycle-case.sh scripts/lib/cycle-expect.mjs; do
   [[ -f "$out/$f" ]] || die "$f is missing"
 done
 ln -s ../../adapters/contract "$out/node_modules/@adc/contract"
