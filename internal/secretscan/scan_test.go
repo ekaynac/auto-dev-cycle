@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/regularfile"
 )
 
 // The forms are the shell's (secrets.sh's forms, recorded before it was
@@ -292,6 +294,32 @@ func TestSearchUnderASwap(t *testing.T) {
 		if got, err := (Search{Forms: forms}).Run(ctx, []string{root}); !errors.Is(err, ErrIncomplete) || got != nil {
 			t.Errorf("an ended context over %s: %v %q", root, err, got)
 		}
+	}
+}
+
+// Opus #443 r3 O1, deterministically: holds reads only the file its walk's
+// Lstat saw, never another regular file nor a FIFO now at that path.
+func TestHoldsChecksTheFileListed(t *testing.T) {
+	dir := t.TempDir()
+	a, b, p := filepath.Join(dir, "a"), filepath.Join(dir, "b"), filepath.Join(dir, "p")
+	write(t, a, "x", 0o600)
+	write(t, b, "x", 0o600)
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	la, _ := os.Lstat(a)
+	lb, _ := os.Lstat(b)
+	w := walker{ctx: context.Background(), forms: [][]byte{[]byte("0123456789abcdef")}, longest: 16}
+	for name, c := range map[string]struct {
+		path string
+		want os.FileInfo
+	}{"another regular file": {a, lb}, "a FIFO": {p, la}} {
+		if _, err := w.holds(c.path, c.want); !errors.Is(err, regularfile.ErrChanged) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if hit, err := w.holds(a, la); err != nil || hit {
+		t.Errorf("the file listed: %v %v", hit, err)
 	}
 }
 
