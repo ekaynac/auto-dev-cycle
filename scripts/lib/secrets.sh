@@ -89,24 +89,37 @@ excerpt() {
   if [[ "${3:-}" == tail ]]; then printf '%s' "${text:$((${#text} > $2 ? ${#text} - $2 : 0))}"; else printf '%s' "${text:0:$2}"; fi
 }
 # scan OWN SECRET DIR...: no form of SECRET in any file under the DIRs but
-# OWN (none: ""). The forms are grep's patterns on its stdin.
+# OWN (none: ""). The forms are grep's patterns on its stdin. The names
+# grep finds keep their boundaries (Astra #443 High 1): NUL-terminated
+# (grep -Z), into a file no DIR holds (unlinked once opened: never one grep
+# meets), grep's status checked before any is read, each read whole by the
+# read builtin and compared whole with OWN; a name cut short is no clean
+# list. No NUL record goes through a command substitution.
 scan() {
-  local own="$1" secret="$2" d pats leaks rc=0
+  local own="$1" secret="$2" d pats list f q leaks="" rc=0 wfd rfd
   shift 2
   (($# > 0)) || die "scan: no directory to scan"
   for d in "$@"; do
     [[ -d "$d" && -r "$d" && -x "$d" ]] || die "scan: $d is not a readable directory"
   done
   pats="$(forms "$secret")" || die "scan: the forms of the secret could not be made"
-  leaks="$(grep -rlaF -f - -- "$@" <<<"$pats")" || rc=$?
-  ((rc <= 1)) || die "scan: grep could not read everything under $* (exit $rc)"
-  # OWN's own line taken out: grep's 1 is "nothing else", any other status a
-  # filter that failed, never a clean scan (Astra #441 r3 High 3).
-  if [[ -n "$own" && -n "$leaks" ]]; then
-    rc=0
-    leaks="$(grep -vxF -e "$own" <<<"$leaks")" || rc=$?
-    ((rc <= 1)) || die "scan: the filter of OWN failed (exit $rc)"
+  list="$(mktemp)" || die "scan: no file for the list of files found"
+  # shellcheck disable=SC2094 # one file, two descriptors: grep writes it, the read builtin reads it after grep ended
+  exec {wfd}>"$list" {rfd}<"$list"
+  rm -f -- "$list"
+  grep -rlaZF -f - -- "$@" <<<"$pats" >&"$wfd" || rc=$?
+  exec {wfd}>&-
+  if ((rc > 1)); then
+    exec {rfd}<&-
+    die "scan: grep could not read everything under $* (exit $rc)"
   fi
+  while IFS= read -r -d '' f <&"$rfd"; do
+    [[ -n "$own" && "$f" == "$own" ]] && continue
+    printf -v q '%q' "$f"
+    leaks+="${leaks:+ }$q"
+  done
+  exec {rfd}<&-
+  [[ -z "$f" ]] || die "scan: the list of files found ends in a name cut short"
   [[ -z "$leaks" ]] || die "a secret appears in: $leaks"
 }
 # clean_exec N NAME=VALUE... CMD ARGS...: in the calling (sub)shell, unsets

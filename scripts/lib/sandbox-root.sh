@@ -110,7 +110,7 @@ sandbox_root() {
     if ((owned)); then cp "$root/.owner" "$runs/.owner" || return 1; fi
     ln -s "$runs" "$root/runs" || return 1
   fi
-  runs="$(runs_of "$root")"
+  runs="$(runs_of "$root")" || return 1
   [[ -n "$runs" ]] || { echo "sandbox_root: $root/runs is not a directory /dev/shm/adcrXXXXXX" >&2; return 1; }
   echo "$root"
 }
@@ -131,7 +131,7 @@ runs_of() {
 # validator, Astra #441 r3 M4).
 runs_required() {
   local runs
-  runs="$(runs_of "$1")"
+  runs="$(runs_of "$1")" || return 3
   [[ -n "$runs" ]] || { echo "runs_required: $1/runs does not resolve to a directory /dev/shm/adcrXXXXXX" >&2; return 3; }
   echo "$runs"
 }
@@ -221,7 +221,8 @@ root_secret_scan() {
   local root="$1" secret="$2" runs found pats n rc=0
   [[ -d "$root" && -n "$secret" ]] || { echo "root_secret_scan: ROOT must exist, SECRET be given" >&2; return 2; }
   runs="$(runs_required "$root")" || return 3
-  pats="$(forms "$secret")"
+  # The forms whole, or no search (Astra #443 High 2): a producer cut short is grep's failure, never fewer patterns.
+  pats="$(forms "$secret")" || return 2
   n="$(grep -c '' <<<"$pats")" || return 2
   # Inside: the patterns come on stdin (never an argument), and fewer than the
   # N sent is grep's failure (2), never an empty, clean search (Opus #441 r3
@@ -302,7 +303,8 @@ sandbox_root_sweep() {
 sandbox_root_remove() {
   local root="$1" runs
   [[ -d "$root" ]] || return 0
-  runs="$(runs_of "$root")"
+  # runs_of never fails (nothing, when runs/ does not resolve); a removal has nothing to refuse.
+  runs="$(runs_of "$root")" || runs=""
   if [[ -d "$root/storage" ]]; then
     sandbox_root_sweep "$root"
     root_podman "$root" system reset --force >/dev/null 2>&1 || true

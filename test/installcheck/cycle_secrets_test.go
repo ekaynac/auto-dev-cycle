@@ -85,7 +85,7 @@ echo ok`
 		t.Fatalf("%v %s", err, out)
 	}
 	logged, _ := os.ReadFile(log)
-	if !strings.Contains(string(logged), "grep -rlaF -f - --") {
+	if !strings.Contains(string(logged), "grep -rlaZF -f - --") {
 		t.Errorf("the scan's grep was not seen: %q", logged)
 	}
 	for _, f := range []string{secret, secret[:16], secret[len(secret)-16:]} {

@@ -76,6 +76,16 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 			t.Errorf("the row reads %q as discarding a status: %v", l, !want)
 		}
 	}
+	// Every library the drivers source is in the row: a new one is audited, never left out.
+	libs, err := filepath.Glob("../../scripts/lib/*.sh")
+	if err != nil || len(libs) == 0 {
+		t.Fatalf("the libraries: %v %v", libs, err)
+	}
+	for _, l := range libs {
+		if _, ok := allowed["lib/"+filepath.Base(l)]; !ok {
+			t.Errorf("lib/%s is not in the row", filepath.Base(l))
+		}
+	}
 	for file, uses := range allowed {
 		b, err := os.ReadFile("../../scripts/" + file)
 		if err != nil {
@@ -101,6 +111,51 @@ func TestNoDiscardedStatusInTheDrivers(t *testing.T) {
 		for i, u := range uses {
 			if seen[i] != 1 {
 				t.Errorf("%s: the listed use %q (%s) is matched %d times, not once", file, u.line, u.reason, seen[i])
+			}
+		}
+	}
+}
+
+// Astra #443 High 2: in the libraries the drivers source (scripts/lib/*.sh),
+// every assignment of a command substitution is checked (`x="$(cmd)" ||
+// ...`): a library function runs in its caller's condition, where errexit
+// never reaches, so an unchecked one hands its check a list cut short. No
+// `local x="$(...)"` either: local's own status hides the substitution's.
+// The statement runs from its line to the first that closes a substitution
+// (`)"` at its end, or before `||`).
+func TestLibrariesCheckEveryAssignment(t *testing.T) {
+	assign := regexp.MustCompile(`^\s*(local\s+)?[A-Za-z_][A-Za-z0-9_]*\+?="?\$\([^(]`)
+	closes := regexp.MustCompile(`\)"?\s*(\|\||$)`)
+	checked := regexp.MustCompile(`\)"?\s*\|\|`)
+	for l, want := range map[string]bool{`x="$(f)" || die y`: true, `x="$(f)"`: false, `  x="$(f | g)" ||`: true} {
+		if checked.MatchString(l) != want || !closes.MatchString(l) {
+			t.Errorf("the row reads %q as checked: %v", l, !want)
+		}
+	}
+	files, err := filepath.Glob("../../scripts/lib/*.sh")
+	if err != nil || len(files) < 5 {
+		t.Fatalf("the libraries: %v %v", files, err)
+	}
+	for _, file := range files {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(b), "\n")
+		for i, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), "#") || !assign.MatchString(l) {
+				continue
+			}
+			if strings.HasPrefix(strings.TrimSpace(l), "local ") {
+				t.Errorf("%s:%d: local hides the substitution's status: %s", filepath.Base(file), i+1, strings.TrimSpace(l))
+				continue
+			}
+			j := i
+			for j < len(lines)-1 && !closes.MatchString(lines[j]) {
+				j++
+			}
+			if !checked.MatchString(lines[j]) {
+				t.Errorf("%s:%d: an unchecked assignment: %s", filepath.Base(file), i+1, strings.TrimSpace(l))
 			}
 		}
 	}
@@ -167,7 +222,11 @@ func TestProducersThatFailRefuse(t *testing.T) {
 	for name, c := range map[string]struct{ script, want string }{
 		"known, its forms failing": {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; known x; echo ran`, "known: the forms of a secret could not be made"},
 		"scan, its forms failing":  {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; scan "" x "$D/tree"; echo ran`, "scan: the forms of the secret could not be made"},
-		"scan, its filter failing": {`grep() { if [[ "$1" == -vxF ]]; then return 2; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the filter of OWN failed (exit 2)"},
+		// Astra #443 High 1: a leaked copy named OWN's name and a newline, beside OWN, is no OWN.
+		"scan, a copy named OWN and a newline": {`mkdir "$D/nl"; printf 'sk-filter-PROBE-0123456789abcdef\n' >"$D/nl/token"; printf 'sk-filter-PROBE-0123456789abcdef\n' >"$D/nl/token"$'\n'
+scan "$D/nl/token" sk-filter-PROBE-0123456789abcdef "$D/nl"; echo ran`, "a secret appears in: $'" + filepath.Join(dir, "nl/token") + `\n'`},
+		"scan, its grep failing partway": {`grep() { if [[ "$1" == -rlaZF ]]; then printf '%s\0' "$D/tree/leak"; return 2; fi; command grep "$@"; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: grep could not read everything under " + filepath.Join(dir, "tree") + " (exit 2)"},
+		"scan, a name cut short":         {`grep() { if [[ "$1" == -rlaZF ]]; then printf '%s' "$D/tree/own"; return 0; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the list of files found ends in a name cut short"},
 		// Each stand-in fails its one form alone (the hex form's base64 -d and tr -d still work).
 		"known, its base64 failing": {`base64() { if [[ "$1" == -w0 ]]; then return 1; fi; command base64 "$@"; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
 		"known, its tr failing":     {`tr() { if [[ "$1" == -- ]]; then return 1; fi; command tr "$@"; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
@@ -184,6 +243,17 @@ func TestProducersThatFailRefuse(t *testing.T) {
 		if !strings.Contains(string(out), c.want) || (c.want != "ran" && strings.Contains(string(out), "ran")) {
 			t.Errorf("%s: %s", name, out)
 		}
+	}
+	// Astra #443 High 2: root_secret_scan's forms cut short (six printed, then
+	// the producer fails) is grep's failure (2), never a search of fewer
+	// patterns that comes back clean. The root's own search stands in clean.
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/sandbox-root.sh
+mkdir -p "$D/root"; runs_required() { echo "$D/root"; }; root_scanned() { cat >/dev/null; return 0; }
+forms() { printf '%s\n' f1-0123456789abcdef f2-0123456789abcdef f3-0123456789abcdef f4-0123456789abcdef f5-0123456789abcdef f6-0123456789abcdef; return 1; }
+rc=0; root_secret_scan "$D/root" sk-filter-PROBE-0123456789abcdef || rc=$?; echo "root_secret_scan: $rc"`)
+	cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir)
+	if out, _ := cmd.CombinedOutput(); !strings.Contains(string(out), "root_secret_scan: 2") {
+		t.Errorf("root_secret_scan, its forms cut short: %s", out)
 	}
 	// base_remote: a listing of the overlay's hostile files that fails (a
 	// find that dies after printing part of its list) fails the base remote,

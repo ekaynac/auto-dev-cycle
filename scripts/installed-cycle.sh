@@ -98,7 +98,11 @@ case "$rc" in
 esac
 cred_names=""
 for v in "${caller_cred[@]}"; do cred_names+="${v%%=*} "; done
-if [[ -n "$cred_names" ]]; then echo "installed-cycle: the caller's credentials, received on fd 3: $cred_names" >&2; fi
+# A name is the caller's text too: redacted like any other line (a name may hold a registered value; Astra #443 High 3).
+if [[ -n "$cred_names" ]]; then
+  redact cred_names
+  echo "installed-cycle: the caller's credentials, received on fd 3: $cred_names" >&2
+fi
 usage() { cannot "usage: installed-cycle.sh PREFIX --routes stub --project go-mini --case CASE [--expect candidate] [--sandbox-root DIR] [--podman PATH] [--setup-only] [--keep]"; }
 
 [[ $# -ge 1 ]] || usage

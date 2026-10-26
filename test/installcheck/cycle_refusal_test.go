@@ -399,6 +399,15 @@ func TestInstalledCycleRefusesWithoutPodman(t *testing.T) {
 	}
 	extra = nil
 
+	// Astra #443 High 3: a valid credential name that holds a registered
+	// value (its own) prints that value redacted, never whole.
+	const inName = "0123456789ABCDEF0123456789ABCDEF"
+	extra = []string{"ADC_CREDENTIAL_" + inName + "=" + inName}
+	if out, code := run("--setup-only"); code != 0 || strings.Contains(out, inName) || !strings.Contains(out, "received on fd 3: ADC_CREDENTIAL_[redacted]") {
+		t.Errorf("a credential name holding its value: exit %d, %s", code, out)
+	}
+	extra = nil
+
 	// Opus #443 r2 O1: a child whose sweep record cannot be made (its PID
 	// namespace not read: a readlink stand-in that fails for the Kth child
 	// of the driver, the driver read from its own .owner) refuses the run,

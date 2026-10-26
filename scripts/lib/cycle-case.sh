@@ -24,7 +24,7 @@ cycle_case() {
   step "project create (the case's profile)"
   adc project create --expect 0 --reason installed-cycle --json --scope-file "$work/profile.json" >"$work/out/project.out" 2>&1 ||
     die "project create failed: $(excerpt "$work/out/project.out" 400)"
-  prj="$(sed -n 's/.*"project":"\(prj_[a-z0-9]*\)".*/\1/p' "$work/out/project.out" | head -n 1)"
+  prj="$(sed -n 's/.*"project":"\(prj_[a-z0-9]*\)".*/\1/p' "$work/out/project.out" | head -n 1)" || die "project create: its output cannot be read"
   [[ "$prj" == prj_* ]] || die "project create: no project id: $(excerpt "$work/out/project.out" 400)"
 
   step "task create ($task, its hidden/ attached as its acceptance)"
@@ -40,10 +40,10 @@ cycle_case() {
   done <<<"$hidden"
   adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task.out" 2>&1 ||
     die "task create failed: $(excerpt "$work/out/task.out" 400)"
-  tsk="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task.out" | head -n 1)"
+  tsk="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task.out" | head -n 1)" || die "task create: its output cannot be read"
   [[ "$tsk" == tsk_* ]] || die "task create: no task id: $(excerpt "$work/out/task.out" 400)"
 
-  until="$(json "$case_file" d.expect.until)"
+  until="$(json "$case_file" d.expect.until)" || die "the case's expect.until could not be read"
   step "waiting for task $tsk to end ($until)"
   local deadline=$((SECONDS + 1500))
   until ended; do
@@ -55,7 +55,7 @@ cycle_case() {
     step "a second task while the first is held: it stays unadmitted (I22)"
     adc task create --expect 0 --reason installed-cycle --json --scope-file "$work/spec.json" "${att[@]}" >"$work/out/task2.out" 2>&1 ||
       die "the second task create failed: $(excerpt "$work/out/task2.out" 400)"
-    tsk2="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task2.out" | head -n 1)"
+    tsk2="$(sed -n 's/.*"task":"\(tsk_[a-z0-9]*\)".*/\1/p' "$work/out/task2.out" | head -n 1)" || die "the second task create: its output cannot be read"
     [[ "$tsk2" == tsk_* ]] || die "the second task create: no task id"
     sleep 15 # three of the reconcile loop's 5-second passes (daemon.reconcileEvery), each of which admits a task when none is admitted
     adc task show "$tsk2" --json >"$work/out/second.json" 2>&1 || die "adc task show (the second task) failed: $(excerpt "$work/out/second.json" 300)"
