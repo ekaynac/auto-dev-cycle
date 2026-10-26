@@ -182,6 +182,7 @@ func TestChecksConsumeCheckedLists(t *testing.T) {
 			`. "$here/lib/sandbox-root.sh" || exit 2`,
 			`record_pid "$work" "$stub" || cannot "the stub provider's start time cannot be read (its sweep record)"`,
 			`  record_pid "$work" "$adcd" || cannot "adcd's start time cannot be read (its sweep record)"`,
+			`  known_text "$canary"`,
 		},
 		"installed-cycle-set.sh": {
 			`shopt -s inherit_errexit`,
