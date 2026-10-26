@@ -113,11 +113,11 @@ func (w *work) prepare(ctx context.Context, stage, dst, src string) error {
 	return w.image(ctx)
 }
 
-// gitPlain runs git in dir with no configuration but a repository's own,
-// never finding a repository above dir.
+// gitPlain runs git in dir with no configuration but a repository's own (no
+// HOME: no user configuration either), never finding a repository above dir.
 func gitPlain(ctx context.Context, dir string, stdin []byte, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, args...)...)
-	cmd.Dir, cmd.Env = dir, []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1",
+	cmd.Dir, cmd.Env = dir, []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_CEILING_DIRECTORIES=" + filepath.Dir(dir)}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
@@ -138,15 +138,11 @@ func (w *work) image(ctx context.Context) error {
 	return nil
 }
 
-// cmd is podman with its own environment only: what it needs to find the
-// user's storage. The container gets none of it (--env-host=false).
+// cmd is the user's podman, with the referee's environment (its storage
+// and runtime directory are found from it). The container gets none of it
+// (--env-host=false, --http-proxy=false).
 func (w *work) cmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, w.podman, args...)
-	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + os.Getenv("HOME")}
-	if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
-		cmd.Env = append(cmd.Env, "XDG_RUNTIME_DIR="+x)
-	}
-	return cmd
+	return exec.CommandContext(ctx, w.podman, args...)
 }
 
 // check refuses a patch accept refuses, or one touching an acceptance
