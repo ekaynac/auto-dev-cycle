@@ -5,12 +5,15 @@ package secretscan
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/regularfile"
@@ -37,6 +40,11 @@ type Search struct {
 	// exact path only. A link that resolves to one, or to a directory
 	// holding one (a chain too), is a finding: another readable path to it.
 	Own []string
+	// OwnDigests: "sha256:HEX" of files whose content is theirs to hold
+	// wherever they are (the live route's acceptance attachments: its
+	// copies, adcd's blobs of them, a gate's overlay); a file holding a form
+	// is exempt when its bytes are one of these.
+	OwnDigests []string
 	// LinksInside: a link whose target (resolved, or lexically when it
 	// leads nowhere) lies outside every root ends the search incomplete
 	// (the run's own directory: a link out of it is unexpected). Without
@@ -174,7 +182,13 @@ func (w *walker) entry(path string, depth int) error {
 			return err
 		}
 		if hit {
-			w.found = append(w.found, path)
+			own, err := w.ownDigest(path, fi)
+			if err != nil {
+				return err
+			}
+			if !own {
+				w.found = append(w.found, path)
+			}
 		}
 		return nil
 	default:
@@ -212,6 +226,28 @@ func (w *walker) link(path string) error {
 		return errors.New("a link out of the roots")
 	}
 	return nil
+}
+
+// ownDigest: the file's bytes are one of OwnDigests. It opens as holds
+// does: the file the walk's Lstat saw, never a FIFO or another file swapped
+// in to be exempt (Opus #443 r3 O1).
+func (w *walker) ownDigest(path string, want fs.FileInfo) (bool, error) {
+	if len(w.s.OwnDigests) == 0 {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, regularfile.Flags, 0)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	if _, err := regularfile.Check(f, want); err != nil {
+		return false, err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false, err
+	}
+	return slices.Contains(w.s.OwnDigests, "sha256:"+hex.EncodeToString(h.Sum(nil))), nil
 }
 
 // readDirNames: a directory's entries, sorted, read whole.

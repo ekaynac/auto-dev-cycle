@@ -53,7 +53,7 @@ BINARIES   := adcd adc adc-harness adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check inventory-count vocab-check build dist install-check installed-cycle-setup installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check inventory-count vocab-check build dist install-check installed-cycle-setup installed-cycle-stub installed-cycle-rehearsal fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -115,6 +115,10 @@ installed-cycle-setup: dist build ## make ci's installed cycle rows, which need 
 installed-cycle-stub: dist build ## The stub set until the candidate, over the installed prefix from outside the checkout; needs rootless Podman and the pinned go-mini image for this host's platform, else exit 2 named (P24b)
 	@$(INSTALL_PREFIX) \
 	  && scripts/installed-cycle-set.sh run "$$tmp/prefix" $(STUB_CASES)
+
+installed-cycle-rehearsal: dist build ts-deps ## The live route's rehearsal against the stub (#440; #226 entry 201): its reviewer qualified by the real procedure in a scratch release only; needs rootless Podman and the pinned go-mini image, as installed-cycle-stub
+	@$(INSTALL_PREFIX) \
+	  && scripts/installed-cycle-rehearsal.sh "$$tmp/prefix"
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
