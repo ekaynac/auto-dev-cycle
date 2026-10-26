@@ -168,8 +168,9 @@ func TestProducersThatFailRefuse(t *testing.T) {
 		"known, its forms failing":  {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; known x; echo ran`, "known: the forms of a secret could not be made"},
 		"scan, its forms failing":   {`forms() { printf 'sk-filter-PROBE-0123456789abcdef\n'; return 1; }; scan "" x "$D/tree"; echo ran`, "scan: the forms of the secret could not be made"},
 		"scan, its filter failing":  {`grep() { if [[ "$1" == -vxF ]]; then return 2; fi; command grep "$@"; }; scan "$D/tree/own" sk-filter-PROBE-0123456789abcdef "$D/tree"; echo ran`, "scan: the filter of OWN failed (exit 2)"},
-		"known, its base64 failing": {`base64() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
-		"known, its tr failing":     {`tr() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		// Each stand-in fails its one form alone (the hex form's base64 -d and tr -d still work).
+		"known, its base64 failing": {`base64() { if [[ "$1" == -w0 ]]; then return 1; fi; command base64 "$@"; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
+		"known, its tr failing":     {`tr() { if [[ "$1" == -- ]]; then return 1; fi; command tr "$@"; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
 		"known, its od failing":     {`od() { return 1; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
 		"known, its od killed":      {`od() { kill -9 $BASHPID; }; known sk-filter-PROBE-0123456789abcdef; echo ran`, "known: the forms of a secret could not be made"},
 		"scan, its od failing":      {`od() { return 1; }; scan "" sk-filter-PROBE-0123456789abcdef "$D/hex"; echo ran`, "scan: the forms of the secret could not be made"},
