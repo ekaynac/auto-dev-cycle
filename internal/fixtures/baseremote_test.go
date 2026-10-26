@@ -138,11 +138,13 @@ func TestCanaryPath(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	scanner := adcScan(t)
 	for name, want := range map[string]string{"canary-deep": plant["canary-deep"], "canary-beside": plant["canary-beside"], "canary-far": "", "canary-none": ""} {
-		cmd := exec.Command("bash", "-c", `. ../../scripts/lib/base-remote.sh && canary_path "$@"`, "canary_path", work, name)
-		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		cmd := exec.Command("bash", "-c", `. ../../scripts/lib/base-remote.sh && adc_scan="$ADC" && canary_path "$@"`, "canary_path", work, name)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "ADC="+scanner)
 		out, err := cmd.Output()
-		if got := strings.TrimSpace(string(out)); want == "" && (err != nil || got != "") || want != "" && (err == nil || got != filepath.Join(parent, want)) {
+		// Each path quoted (adc dev scan's output).
+		if got := strings.TrimSpace(string(out)); want == "" && (err != nil || got != "") || want != "" && (err == nil || got != `"`+filepath.Join(parent, want)+`"`) {
 			t.Errorf("%s: %q, %v", name, got, err)
 		}
 	}

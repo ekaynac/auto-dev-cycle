@@ -10,16 +10,18 @@ import (
 	"testing"
 )
 
-// P24a: scripts/lib/secrets.sh's scan OWN SECRET DIR... passes when no form
-// of SECRET is under the DIRs but in OWN, and fails, never printing the
-// secret, when one is elsewhere, when a DIR is missing, when no DIR is given,
-// and when grep cannot read a file under one.
+// P24a: scripts/lib/secrets.sh's scan OWN SECRET DIR... (adc dev scan's;
+// #226 entry 206) passes when no form of SECRET is under the DIRs but in
+// OWN, and fails, never printing the secret, when one is elsewhere, when a
+// DIR is missing, when no DIR is given, and when the search cannot read a
+// file under one.
 func TestSecretsScan(t *testing.T) {
 	const secret = "tok_0123456789abcdef.c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0"
+	scanner := adcScan(t)
 	scan := func(args ...string) (string, error) {
-		cmd := exec.Command("bash", append([]string{"-c", `set -euo pipefail; SECRETS_TAG=t; . ../../scripts/lib/secrets.sh; known "$2"; scan "$@"`,
+		cmd := exec.Command("bash", append([]string{"-c", `set -euo pipefail; SECRETS_TAG=t; . ../../scripts/lib/secrets.sh; adc_scan="$ADC"; known "$2"; scan "$@"`,
 			"scan"}, args...)...)
-		cmd.Env = []string{"PATH=/usr/bin:/bin"}
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "ADC=" + scanner}
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -44,7 +46,7 @@ func TestSecretsScan(t *testing.T) {
 	}{
 		"a missing root":    {[]string{own, secret, root, filepath.Join(root, "typo")}, "is not a readable directory"},
 		"no root":           {[]string{own, secret}, "no directory to scan"},
-		"the secret leaked": {[]string{"", secret, root}, "a secret appears in: " + own},
+		"the secret leaked": {[]string{"", secret, root}, `a secret appears in: "` + own + `"`},
 	} {
 		out, err := scan(tc.args...)
 		if err == nil || !strings.Contains(out, tc.want) || strings.Contains(out, secret) {
@@ -64,7 +66,7 @@ func TestSecretsScan(t *testing.T) {
 		return // root reads a file at mode 000
 	}
 	write(filepath.Join(root, "state/unreadable"), "", 0)
-	if out, err := scan(own, secret, root); err == nil || !strings.Contains(out, "grep could not read everything") {
+	if out, err := scan(own, secret, root); err == nil || !strings.Contains(out, "did not complete") {
 		t.Errorf("an unreadable file: %v %q", err, out)
 	}
 }
