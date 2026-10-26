@@ -131,13 +131,15 @@ func TestSearchWalk(t *testing.T) {
 			write(t, r+"/home/token\n", secret, 0o600)
 		}, "home/token", true, []string{"home/token\n"}},
 		"its hex alone": {func(r string) { write(t, r+"/hex", "b24f9f8a5b5eafe3d138113ed35db7e39ebbf3d69b71d79f", 0o600) }, "", true, []string{"hex"}},
-		// The first read takes 1 MiB and the longest form less one byte: the secret straddles its end.
+		// The first read takes 1 MiB and the longest form less one byte: the hex form (no part of it is
+		// another form) straddles its end, half in each read.
 		"a form across two reads": {func(r string) {
+			const hexForm = "b24f9f8a5b5eafe3d138113ed35db7e39ebbf3d69b71d79f"
 			longest := 0
 			for _, f := range forms {
 				longest = max(longest, len(f))
 			}
-			write(t, r+"/big", strings.Repeat("x", 1<<20+longest-1-5)+secret+strings.Repeat("y", 100), 0o600)
+			write(t, r+"/big", strings.Repeat("x", 1<<20+longest-1-len(hexForm)/2)+hexForm+strings.Repeat("y", 100), 0o600)
 		}, "", true, []string{"big"}},
 	} {
 		root := t.TempDir()
