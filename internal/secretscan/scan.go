@@ -11,18 +11,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // ErrIncomplete: the search could not look at everything it was given (an
-// entry that cannot be read, a link that leads nowhere, a cycle). It never
-// names the entry: a path may hold a secret.
+// entry that cannot be read; with LinksInside, a link that leads out of the
+// roots). It never names the entry: a path may hold a secret.
 var ErrIncomplete = errors.New("the search did not complete")
 
 // Search is one walk's question.
 type Search struct {
-	// Forms: the content forms; a file holding one is a finding. None: no
-	// content is read and no link followed (a name search).
+	// Forms: the content forms; a regular file holding one is a finding.
+	// None: no content is read (a name search).
 	Forms []string
 	// Decode: also decode a file that parses as JSON (or JSON lines), and
 	// each JSON string inside it that parses as JSON again, at most 16 deep,
@@ -31,10 +30,16 @@ type Search struct {
 	// Names: an entry below a root with one of these names is a finding,
 	// whatever it is (a file, a directory, a link).
 	Names []string
-	// Own: paths whose content is theirs to hold, compared whole with the
-	// path the walk reached (never a link to one, never one reached
-	// through a linked directory).
+	// Own: regular files whose content is theirs to hold, each exempt at its
+	// exact path only. A link that resolves to one, or to a directory
+	// holding one (a chain too), is a finding: another readable path to it.
 	Own []string
+	// LinksInside: a link whose target (resolved, or lexically when it
+	// leads nowhere) lies outside every root ends the search incomplete
+	// (the run's own directory: a link out of it is unexpected). Without
+	// it (a sandbox root: a container's layers hold absolute and dangling
+	// links) a link is only checked against Own.
+	LinksInside bool
 	// Depth: entries at most this far below a root (1: a root's own
 	// entries); 0 or less, no limit.
 	Depth int
@@ -44,14 +49,15 @@ type Search struct {
 // is searched by its bytes alone.
 const decodeLimit = 64 << 20
 
-// Run walks each root (filepath.WalkDir's order: lexical) and returns the
-// findings, each by the path the walk reached it at. Every entry is read
-// with Lstat. A content search follows a link: its target, a file, is
-// searched and reported by the link's own path; a directory is walked
-// below the link's path. A link that leads nowhere, a directory reached
-// again below itself (a cycle), and any entry or file that cannot be read
-// end the search with ErrIncomplete, never a skip. A device, fifo or socket
-// holds no file's bytes and is not read.
+// Run walks each root in lexical order and returns the findings, each by
+// the path the walk reached it at. Every entry is read with Lstat, and no
+// link is ever followed (the lead's ruling on #443; #226 entry 206): only
+// regular files are read, each at its real path, so whatever a link inside
+// a root points at is read where it is. A link is resolved as a path only,
+// for Own and LinksInside. An entry or file that cannot be read ends the
+// search with ErrIncomplete, never a skip. A device, fifo or socket holds
+// no file's bytes and is not read. A root is named by its caller and
+// resolved once.
 func (s Search) Run(roots []string) ([]string, error) {
 	w := walker{s: s, own: map[string]bool{}}
 	for _, f := range s.Forms {
@@ -59,37 +65,53 @@ func (s Search) Run(roots []string) ([]string, error) {
 		w.longest = max(w.longest, len(f))
 	}
 	for _, o := range s.Own {
-		w.own[filepath.Clean(o)] = true
+		// The walk reaches files under the roots' resolved paths: OWN is
+		// compared there, its parent resolved, itself never.
+		o = filepath.Clean(o)
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(o)); err == nil {
+			o = filepath.Join(dir, filepath.Base(o))
+		}
+		w.own[o] = true
+		real, err := filepath.EvalSymlinks(o)
+		if err != nil {
+			real = o
+		}
+		w.ownReal = append(w.ownReal, real)
 	}
+	var real []string
 	for _, r := range roots {
-		if err := w.entry(filepath.Clean(r), 0, nil); err != nil {
+		p, err := filepath.EvalSymlinks(r)
+		if err != nil {
+			return nil, ErrIncomplete
+		}
+		real = append(real, p)
+	}
+	w.roots = real
+	for _, r := range real {
+		if err := w.entry(r, 0); err != nil {
 			return nil, ErrIncomplete
 		}
 	}
 	return w.found, nil
 }
 
-type fileID struct{ dev, ino uint64 }
-
 type walker struct {
 	s       Search
 	forms   [][]byte
 	longest int
 	own     map[string]bool
+	ownReal []string
+	roots   []string
 	found   []string
 }
 
-func idOf(fi fs.FileInfo) (fileID, bool) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fileID{}, false
-	}
-	return fileID{uint64(st.Dev), st.Ino}, true //nolint:unconvert // Dev's type differs by platform
+// within: path is dir or below it.
+func within(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
 }
 
-// entry: one path, at depth below its root, chain the directories walked
-// to reach it (by device and inode).
-func (w *walker) entry(path string, depth int, chain []fileID) error {
+// entry: one path, at depth below its root.
+func (w *walker) entry(path string, depth int) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -102,37 +124,22 @@ func (w *walker) entry(path string, depth int, chain []fileID) error {
 			}
 		}
 	}
-	if fi.Mode()&fs.ModeSymlink != 0 {
-		if len(w.forms) == 0 {
-			return nil // a name search reads no content and follows no link
-		}
-		target, err := os.Stat(path) // a link that leads nowhere, or round, is an error
-		if err != nil {
-			return err
-		}
-		fi = target
-	}
 	switch {
+	case fi.Mode()&fs.ModeSymlink != 0:
+		if len(w.forms) == 0 {
+			return nil // a name search reads no content
+		}
+		return w.link(path)
 	case fi.IsDir():
 		if w.s.Depth > 0 && depth >= w.s.Depth {
 			return nil
-		}
-		id, ok := idOf(fi)
-		if !ok {
-			return errors.New("no file identity")
-		}
-		for _, c := range chain {
-			if c == id {
-				return errors.New("a cycle")
-			}
 		}
 		names, err := readDirNames(path)
 		if err != nil {
 			return err
 		}
-		next := append(chain[:len(chain):len(chain)], id)
 		for _, n := range names {
-			if err := w.entry(filepath.Join(path, n), depth+1, next); err != nil {
+			if err := w.entry(filepath.Join(path, n), depth+1); err != nil {
 				return err
 			}
 		}
@@ -152,6 +159,38 @@ func (w *walker) entry(path string, depth int, chain []fileID) error {
 	default:
 		return nil
 	}
+}
+
+// link: a link, resolved as a path and never read through. One that
+// resolves to an Own file, or to a directory holding one, is a finding;
+// with LinksInside, one that leads out of every root is an error.
+func (w *walker) link(path string) error {
+	t, err := os.Readlink(path)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(t) {
+		t = filepath.Join(filepath.Dir(path), t)
+	}
+	target := filepath.Clean(t)
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		target = r // the end of the chain; one that leads nowhere is judged by its first step
+	}
+	for _, o := range w.ownReal {
+		if within(o, target) {
+			w.found = append(w.found, path)
+			return nil
+		}
+	}
+	if w.s.LinksInside {
+		for _, r := range w.roots {
+			if within(target, r) {
+				return nil
+			}
+		}
+		return errors.New("a link out of the roots")
+	}
+	return nil
 }
 
 // readDirNames: a directory's entries, sorted, read whole.

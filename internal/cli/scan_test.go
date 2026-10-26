@@ -114,4 +114,19 @@ func TestDevScan(t *testing.T) {
 	if out, _, code := run("\tconst q7vCanary = \"ADC-<q7v>-0123456789abcdef\"\n", "--canary", "-", filepath.Join(dir, "caps")); code != entry.ExitRefused || !strings.Contains(out, "caps/body") {
 		t.Errorf("the canary in a body: exit %d %q", code, out)
 	}
+	// No link is followed: a link out of the roots is an incomplete search with --links-inside (the run's own
+	// directory), recorded only without it (a sandbox root's layers).
+	links := filepath.Join(dir, "links")
+	if err := os.MkdirAll(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/hostname", filepath.Join(links, "host")); err != nil {
+		t.Fatal(err)
+	}
+	if _, errs, code := run(secret, "--secrets", "-", "--links-inside", links); code != entry.ExitCouldNotRun || errs != "adc dev scan: could_not_run: the search did not complete\n" {
+		t.Errorf("a link out, --links-inside: exit %d %q", code, errs)
+	}
+	if _, _, code := run(secret, "--secrets", "-", links); code != entry.ExitOK {
+		t.Errorf("a link out, recorded only: exit %d", code)
+	}
 }

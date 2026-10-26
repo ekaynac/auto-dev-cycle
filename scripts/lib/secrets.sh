@@ -85,12 +85,12 @@ excerpt() {
   if [[ "${3:-}" == tail ]]; then printf '%s' "${text:$((${#text} > $2 ? ${#text} - $2 : 0))}"; else printf '%s' "${text:0:$2}"; fi
 }
 # scan OWN SECRET DIR...: no form of SECRET in any file under the DIRs but
-# OWN (none: ""), by adc dev scan (Astra #443 r2: a link's target searched
-# and reported by the link's path, OWN exempt by its own path only, a
-# dangling link, a cycle or an unreadable entry an incomplete search; its
-# own diagnostics one fixed line naming nothing). Its 1 is a finding (its
-# quoted paths, redacted), any status but 0 and 1 a search that did not
-# complete.
+# OWN (none: ""), by adc dev scan --links-inside (Astra #443 r2; #226 entry
+# 206): no link is followed, every regular file read at its real path; a
+# link to OWN (or a chain ending there) is a finding, a link out of the DIRs
+# or an unreadable entry an incomplete search; its own diagnostics one
+# fixed line naming nothing. Its 1 is a finding (its quoted paths,
+# redacted), any status but 0 and 1 a search that did not complete.
 scan() {
   local own="$1" secret="$2" d found rc=0 args=()
   shift 2
@@ -100,7 +100,7 @@ scan() {
   done
   scanner
   if [[ -n "$own" ]]; then args=(--own "$own"); fi
-  found="$(printf '%s\n' "$secret" | "$adc_scan" dev scan --secrets - "${args[@]}" -- "$@")" || rc=$?
+  found="$(printf '%s\n' "$secret" | "$adc_scan" dev scan --secrets - --links-inside "${args[@]}" -- "$@")" || rc=$?
   case "$rc" in
     0) ;;
     1) die "a secret appears in: ${found//$'\n'/ }" ;;

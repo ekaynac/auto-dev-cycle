@@ -86,7 +86,7 @@ echo ok`
 		t.Fatalf("%v %s", err, out)
 	}
 	logged, _ := os.ReadFile(log)
-	if !strings.Contains(string(logged), "adc dev scan --print-forms --secrets -\n") || !strings.Contains(string(logged), "adc dev scan --secrets - -- "+filepath.Join(work, "tree")+"\n") {
+	if !strings.Contains(string(logged), "adc dev scan --print-forms --secrets -\n") || !strings.Contains(string(logged), "adc dev scan --secrets - --links-inside -- "+filepath.Join(work, "tree")+"\n") {
 		t.Errorf("the scan's adc was not seen: %q", logged)
 	}
 	for _, f := range []string{secret, secret[:16], secret[len(secret)-16:]} {

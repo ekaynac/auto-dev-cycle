@@ -21,20 +21,23 @@ import (
 // devScan runs `adc dev scan`, the installed cycle harness's one search
 // (#226 entry 206; secretscan):
 //
-//	adc dev scan [--secrets FILE] [--canary FILE] [--name NAME]... [--own PATH]... [--depth N] [--null] ROOT...
+//	adc dev scan [--secrets FILE] [--canary FILE] [--name NAME]... [--own PATH]... [--links-inside] [--depth N] [--null] ROOT...
 //	adc dev scan --print-forms --secrets FILE
 //
 // --secrets: one secret a line (secretscan.SecretForms); --canary: the
 // canary, its first line (secretscan.CanaryForms, JSON decoded too). Each
 // FILE is "-" (stdin, once) or a regular file of this user's, mode 0600: a
 // secret is never an argument. --name: an entry of that name below a root
-// is a finding; --own: a path whose content is its own; --depth: at most N
-// below a root. It prints each finding's path (quoted, or NUL-terminated
-// with --null), every form of every secret and canary in it redacted, and
-// exits 0 when there is none, 1 when there is one, 2 when the search could
-// not complete or its input could not be read: one fixed line on stderr,
-// naming no path and no secret. --print-forms prints the secrets' forms, one
-// a line, for the driver's redaction (secrets.sh's known).
+// is a finding; --own: a regular file whose content is its own (a link to
+// it is a finding); --links-inside: a link out of the roots is an
+// incomplete search (the run's own directory; never a sandbox root's);
+// --depth: at most N below a root. No link is followed. It prints each
+// finding's path (quoted, or NUL-terminated with --null), every form of
+// every secret and canary in it redacted, and exits 0 when there is none,
+// 1 when there is one, 2 when the search could not complete or its input
+// could not be read: one fixed line on stderr, naming no path and no
+// secret. --print-forms prints the secrets' forms, one a line, for the
+// driver's redaction (secrets.sh's known).
 func devScan(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	const name = "adc dev scan"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -44,6 +47,7 @@ func devScan(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	depth := fs.Int("depth", 0, "")
 	null := fs.Bool("null", false, "")
 	printForms := fs.Bool("print-forms", false, "")
+	linksInside := fs.Bool("links-inside", false, "")
 	var names, own multi
 	fs.Var(&names, "name", "")
 	fs.Var(&own, "own", "")
@@ -90,7 +94,7 @@ func devScan(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return entry.ExitOK
 	}
-	search := secretscan.Search{Names: names, Own: own, Depth: *depth}
+	search := secretscan.Search{Names: names, Own: own, Depth: *depth, LinksInside: *linksInside}
 	if *canary != "" {
 		lines, err := readInput(*canary, stdin)
 		if err != nil || len(lines) != 1 {

@@ -80,45 +80,60 @@ func link(t *testing.T, target, path string) {
 	}
 }
 
-// The walk (#226 entry 206; Astra #443 r2 High 1): a link's target is
-// searched and reported by the link's own path; OWN is exempt by its own
-// path only, never through a link or a linked directory; a link chain is
-// followed; a cycle, a dangling link and an unreadable file end the search
-// incomplete; a newline in a name is a name; every form is found alone.
+// The walk (#226 entry 206; the lead's ruling on Astra #443 r2 High 1): no
+// link is followed and only regular files are read, each at its real path.
+// OWN is exempt at its own path only; a link that resolves to OWN, a chain
+// ending there, or a link to a directory holding it, is a finding by the
+// link's own path. In the run's own directory (LinksInside) a link out of
+// the roots ends the search incomplete; under a sandbox root a dangling or
+// absolute system link is only recorded. An unreadable file or directory
+// ends the search; a newline in a name is a name; every form is found
+// alone.
 func TestSearchWalk(t *testing.T) {
 	const secret = "sk-filter-PROBE-0123456789abcdef"
 	forms, err := SecretForms(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := func(root string, own ...string) ([]string, error) {
-		return Search{Forms: forms, Own: own}.Run([]string{root})
-	}
 	for name, c := range map[string]struct {
-		build func(root string)
-		own   string
-		want  []string
+		build  func(root string)
+		own    string
+		inside bool
+		want   []string
 	}{
-		"clean":         {func(r string) { write(t, r+"/a/b", "nothing\n", 0o600) }, "", nil},
-		"OWN alone":     {func(r string) { write(t, r+"/home/token", secret, 0o600) }, "home/token", nil},
-		"a link to OWN": {func(r string) { write(t, r+"/home/token", secret, 0o600); link(t, "../home/token", r+"/out/copy") }, "home/token", []string{"out/copy"}},
-		"OWN through a linked directory": {func(r string) {
+		"clean":         {func(r string) { write(t, r+"/a/b", "nothing\n", 0o600) }, "", true, nil},
+		"OWN alone":     {func(r string) { write(t, r+"/home/token", secret, 0o600) }, "home/token", true, nil},
+		"a link to OWN": {func(r string) { write(t, r+"/home/token", secret, 0o600); link(t, "../home/token", r+"/out/copy") }, "home/token", true, []string{"out/copy"}},
+		"a chain to OWN": {func(r string) {
+			write(t, r+"/home/token", secret, 0o600)
+			link(t, "../home/token", r+"/y/one")
+			link(t, "one", r+"/y/two")
+		}, "home/token", true, []string{"y/one", "y/two"}},
+		"a link to OWN's directory": {func(r string) {
 			write(t, r+"/home/token", secret, 0o600)
 			link(t, "../home", r+"/out/alias")
-		}, "home/token", []string{"out/alias/token"}},
-		"a link chain": {func(r string) {
+		}, "home/token", true, []string{"out/alias"}},
+		"a link to a leak, read where it is": {func(r string) {
 			write(t, r+"/x/leak", secret, 0o600)
 			link(t, "../x/leak", r+"/y/one")
-			link(t, "one", r+"/y/two")
-		}, "", []string{"x/leak", "y/one", "y/two"}},
+		}, "", true, []string{"x/leak"}},
+		"a link to OWN under a sandbox root":   {func(r string) { write(t, r+"/home/token", secret, 0o600); link(t, "../home/token", r+"/out/copy") }, "home/token", false, []string{"out/copy"}},
+		"a cycle, never followed":              {func(r string) { link(t, "..", r+"/d/up") }, "", true, nil},
+		"a link to itself":                     {func(r string) { link(t, "self", r+"/self") }, "", true, nil},
+		"a dangling link inside":               {func(r string) { link(t, "nowhere", r+"/d/gone") }, "", true, nil},
+		"a dangling link under a sandbox root": {func(r string) { link(t, "/nonexistent/adc-scan-probe", r+"/layer/etc/gone") }, "", false, nil},
+		"an absolute system link under a sandbox root": {func(r string) {
+			link(t, "/usr/bin", r+"/layer/bin")
+			link(t, "/etc/hostname", r+"/layer/etc/hostname")
+		}, "", false, nil},
 		"a newline in a name": {func(r string) {
 			write(t, r+"/home/token", secret, 0o600)
 			write(t, r+"/home/token\n", secret, 0o600)
-		}, "home/token", []string{"home/token\n"}},
-		"its hex alone": {func(r string) { write(t, r+"/hex", "b24f9f8a5b5eafe3d138113ed35db7e39ebbf3d69b71d79f", 0o600) }, "", []string{"hex"}},
+		}, "home/token", true, []string{"home/token\n"}},
+		"its hex alone": {func(r string) { write(t, r+"/hex", "b24f9f8a5b5eafe3d138113ed35db7e39ebbf3d69b71d79f", 0o600) }, "", true, []string{"hex"}},
 		"a form across two reads": {func(r string) {
 			write(t, r+"/big", strings.Repeat("x", 1<<20-5)+secret, 0o600)
-		}, "", []string{"big"}},
+		}, "", true, []string{"big"}},
 	} {
 		root := t.TempDir()
 		c.build(root)
@@ -126,7 +141,7 @@ func TestSearchWalk(t *testing.T) {
 		if c.own != "" {
 			own = []string{filepath.Join(root, c.own)}
 		}
-		got, err := run(root, own...)
+		got, err := Search{Forms: forms, Own: own, LinksInside: c.inside}.Run([]string{root})
 		var want []string
 		for _, w := range c.want {
 			want = append(want, filepath.Join(root, w))
@@ -139,16 +154,15 @@ func TestSearchWalk(t *testing.T) {
 	for _, f := range forms {
 		root := t.TempDir()
 		write(t, root+"/f", "x "+f+" y", 0o600)
-		if got, err := run(root); err != nil || len(got) != 1 {
+		if got, err := (Search{Forms: forms}).Run([]string{root}); err != nil || len(got) != 1 {
 			t.Errorf("the form %q alone: %v %q", f, err, got)
 		}
 	}
-	// Never a skip: a cycle, a dangling link, an unreadable file or directory.
+	// Never a skip: an unreadable file or directory; in the run's own directory, a link out of it.
 	for name, build := range map[string]func(root string){
-		"a cycle":            func(r string) { link(t, "..", r+"/d/up") },
-		"a dangling link":    func(r string) { link(t, "nowhere", r+"/d/gone") },
-		"a link to itself":   func(r string) { link(t, "self", r+"/self") },
-		"an unreadable file": func(r string) { write(t, r+"/"+secret, "x", 0o000) },
+		"a link out of the roots": func(r string) { link(t, "/etc/hostname", r+"/out/host") },
+		"a dangling link out":     func(r string) { link(t, "/nonexistent/adc-scan-probe", r+"/out/gone") },
+		"an unreadable file":      func(r string) { write(t, r+"/"+secret, "x", 0o000) },
 		"an unreadable directory": func(r string) {
 			if err := os.MkdirAll(r+"/locked", 0o000); err != nil {
 				t.Fatal(err)
@@ -160,7 +174,7 @@ func TestSearchWalk(t *testing.T) {
 		}
 		root := t.TempDir()
 		build(root)
-		if got, err := run(root); !errors.Is(err, ErrIncomplete) || got != nil {
+		if got, err := (Search{Forms: forms, LinksInside: true}).Run([]string{root}); !errors.Is(err, ErrIncomplete) || got != nil {
 			t.Errorf("%s: %v %q", name, err, got)
 		}
 		_ = os.Chmod(filepath.Join(root, "locked"), 0o700)

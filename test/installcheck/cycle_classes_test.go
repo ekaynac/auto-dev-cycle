@@ -290,25 +290,37 @@ scan "$D/ln/home/token" "$S" "$D/ln"; echo ran`, `a secret appears in: "` + file
 		}
 	}
 	// root_secret_scan, its search standing in run here (podman unshare's
-	// part): a link in the root to a file holding the secret is a finding
-	// (1); a scan program that fails is a search that did not complete (2).
-	write(t, filepath.Join(dir, "outside/key"), secret, 0o600)
-	if err := os.MkdirAll(filepath.Join(dir, "root"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(dir, "outside/key"), filepath.Join(dir, "root/key")); err != nil {
-		t.Fatal(err)
+	// part; the lead's ruling on #443: no link followed under a root): a
+	// dangling link and an absolute system link (a container layer's) are
+	// clean, never followed; a file holding the secret is a finding (1); a
+	// scan program that fails is a search that did not complete (2).
+	for _, l := range [][2]string{{"/nonexistent/adc-scan-probe", "root/layer/etc/gone"}, {"/usr/bin", "root/layer/bin"}, {"/etc/hostname", "root/layer/etc/hostname"}} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(l[1])), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(l[0], filepath.Join(dir, l[1])); err != nil {
+			t.Fatal(err)
+		}
 	}
 	incomplete := filepath.Join(dir, "bin/incomplete")
 	write(t, incomplete, "#!/bin/sh\necho 'adc dev scan: could_not_run: the search did not complete' >&2\nexit 2\n", 0o755)
-	for prog, want := range map[string]string{scanner: "root_secret_scan: 1", incomplete: "root_secret_scan: 2"} {
+	rootScan := func(prog string) string {
 		cmd := exec.Command("bash", "-c", `set -euo pipefail; PODMAN=/nonexistent/podman; . ../../scripts/lib/secrets.sh; . ../../scripts/lib/sandbox-root.sh
 adc_scan="$P"; runs_required() { echo "$D/root"; }; root_scanned() { shift 2; "$@"; }
 rc=0; root_secret_scan "$D/root" "$S" || rc=$?; echo "root_secret_scan: $rc"`)
 		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin", "D="+dir, "S="+secret, "P="+prog)
-		if out, _ := cmd.CombinedOutput(); !strings.Contains(string(out), want) {
-			t.Errorf("root_secret_scan with %s: %s", prog, out)
-		}
+		out, _ := cmd.CombinedOutput()
+		return string(out)
+	}
+	if out := rootScan(scanner); !strings.Contains(out, "root_secret_scan: 0") {
+		t.Errorf("root_secret_scan over a layer's dangling and absolute links: %s", out)
+	}
+	write(t, filepath.Join(dir, "root/config.json"), `{"env":["ADC_CREDENTIAL_STUB=`+secret+`"]}`, 0o600)
+	if out := rootScan(scanner); !strings.Contains(out, "root_secret_scan: 1") || !strings.Contains(out, filepath.Join(dir, "root/config.json")) {
+		t.Errorf("root_secret_scan over a config holding the secret: %s", out)
+	}
+	if out := rootScan(incomplete); !strings.Contains(out, "root_secret_scan: 2") {
+		t.Errorf("root_secret_scan with a scan that did not complete: %s", out)
 	}
 	// base_remote: a listing of the overlay's hostile files that fails (a
 	// find that dies after printing part of its list) fails the base remote,
