@@ -465,7 +465,7 @@ Dollar figures are CLI estimates unless labelled as a provider receipt; under
 | Builder key probe | system `nobetci-builder-key-probe.timer` (root) | 30 min | key usage/limit/credits numbers |
 | Alert sink | `nobetci-alert-sink.service` → `bin/nb-alert-sink` | always | signed-webhook receiver for the *product's* alerts (evidence for silent-loop checks) |
 | Sweeper | `nobetci-sweeper.timer/.service` → `nb-sweep once` | continuous, yields to main cycle | see 4.2; drain between tasks `nb_sweep_boundary.py` (mode off/dry_run); main-only deploy `nb-sweep-deploy` |
-| Dashboard | `nobetci-dashboard.service` → `/home/mega/nobetci-dash/nbdash.py --bind 172.16.0.192 --port 8765` | always | read-only stdlib HTTP page + `/api/status`, `/api/gate`; synthwave UI built from `dash/ui-src` (npm) |
+| Dashboard | `nobetci-dashboard.service` → `/home/mega/nobetci-dash/nbdash.py --bind <dashboard-bind> --port 8765` | always | read-only stdlib HTTP page + `/api/status`, `/api/gate`; synthwave UI built from `dash/ui-src` (npm) |
 
 Dashboard: source `/home/mega/nobetci-dev/dash/` (11 `nbdash*.py`, 3202 lines, 4 test
 files / 65 tests, `samples/`, `ui/` built, `ui-src/` Vite-style project), installed by
@@ -502,8 +502,8 @@ User-unit files live only in `~/.config/systemd/user/` (17 unit files); sources 
 | `ops/evidence-jobs/inframedic-*.json`, `ops/claims/inframedic/`, `ops/obligations/inframedic/`, `ops/approvals/*` (70), `ops/task-context/*` (40), `ops/limits/*`, `ops/reviewer/verification-inframedic.json`, `ops/baselines/` | product/operator records | drop from release; keep schemas + one synthetic example |
 | `etc/phase-audit-inframedic.json` (31 KB) | roadmap path, ledgers, phases 1, 1.3–1.6, doctrines, `Faz` heading regexes, Turkish roadmap vocabulary, evidence topics | becomes `examples/`; core needs a documented schema |
 | `etc/evidence-profile-inframedic.json`, `etc/tasks/R-1.3-2-8.conf`, `etc/authorization`, `etc/budget.conf`, `etc/baseline*.lock` | product instances | templates only |
-| `etc/execution-profile.json` | `adapter: pytest`, `/srv/nobetci/venv/bin/pytest`, runner sha binding, `brief` about `docs/notes/phase-1.3-audit.json`, `gate_command .venv/bin/pytest -q -n 8`, `canon_definition deploy/bin/canon-paths`, `commit_guard deploy/hooks/pre-commit`, `phase_evidence_command inframedic-phase-evidence`, `delivery.edge.host gns3@192.168.20.36`, tree `/home/gns3/linux-verify/inframedic`, `apply deploy/bin/deploy-from-dev.sh`, `verify deploy/bin/verify-deploy.sh`, `post_apply` sudo `inframedic corpus index --apply`, `test_integrity.production_globs inframedic/**`, `browser_walk` (console URL 100.101.24.56:8300, lab DC 100.68.102.86, lab SSH key path, LDAP identities `reader-ankara/kayseri`, node + playwright paths under `/home/mega`) | profile mechanism is the right abstraction; values must become an example profile |
-| `etc/silent-scan.json` | container `nb-embedder`, embedder URL 172.16.0.195:11434 (`bge-m3`) | example only |
+| `etc/execution-profile.json` | `adapter: pytest`, `/srv/nobetci/venv/bin/pytest`, runner sha binding, `brief` about `docs/notes/phase-1.3-audit.json`, `gate_command .venv/bin/pytest -q -n 8`, `canon_definition deploy/bin/canon-paths`, `commit_guard deploy/hooks/pre-commit`, `phase_evidence_command inframedic-phase-evidence`, `delivery.edge.host <lab-delivery-host>` (user and private LAN address), tree `<remote-tree>`, `apply deploy/bin/deploy-from-dev.sh`, `verify deploy/bin/verify-deploy.sh`, `post_apply` sudo `inframedic corpus index --apply`, `test_integrity.production_globs inframedic/**`, `browser_walk` (lab console URL `<lab-console>` on a private overlay network, lab domain controller `<lab-dc>`, a lab SSH key path, LDAP test identities `<ldap-identities>`, node + playwright paths under `/home/mega`) | profile mechanism is the right abstraction; values must become an example profile |
+| `etc/silent-scan.json` | container `nb-embedder`, embedder URL `<embedder-url>` (`bge-m3`) | example only |
 | `bin/nb-apply-staged-phase:56` | `phase-audit-inframedic.json` literal | fix: profile name from manifest |
 | `ops/install-phase-audit-profile.py:23` | default template `phase-audit-inframedic.json` | env default → required arg |
 | `ops/install-obligation-gate.py:20` | `ops/obligations/inframedic/phase-1.5.activation.json` | same |
@@ -538,7 +538,7 @@ User-unit files live only in `~/.config/systemd/user/` (17 unit files); sources 
 - `post_apply` with escalation class `permanent_knowledge_write` is InfraMedic's corpus index.
 - Tailscale installers `ops/install-tailscale-{edge,spark}.sh`.
 - Hardcoded host paths: `nb-env` PATH includes `$HOME/.nvm/versions/node/v24.20.0/bin`;
-  user units hardcode `/home/mega/...`, dashboard bind IP `172.16.0.192`; ~35 ops/bin files
+  user units hardcode `/home/mega/...`, dashboard bind IP `<dashboard-bind>`; ~35 ops/bin files
   contain `/home/mega` or private IPs (largest: `ops/inframedic-*`, `bin/nb-notify` 4,
   `ops/install-*` 1–3 each). `/srv/nobetci` paths are literals in `nb-iso`, worker, profile,
   executors registry (`etc/executors.json`, `toolchain.root /srv/nobetci/venv`).
