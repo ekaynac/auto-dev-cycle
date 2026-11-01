@@ -10,10 +10,10 @@ marked otherwise. Read them with `git show 9ee8a40a:<path>`.
 
 > **Caveat: T5 and the arms did not run on the same jobs.** T5 measured the earlier supervisor on **the private product** goals. Arms A and C
 > and T1 ran on **set G** (ADC's Go items) and **set P** (public Python/TypeScript repositories); the private product is private
-> and was never in the item set. **Arm B** (the successor supervisor on the same items) never ran: its first slice has only the
-> `inframedic` profile and a pytest-style failure parser, and no Go profile
+> and was never in the item set. **Arm B** (the successor supervisor on the same items) never ran: its first slice has only a
+> profile for the private product and a pytest-style failure parser, and no Go profile
 > (a private comparison note, not published). So T5's cost per goal is **not comparable** with
-> the arms' cost per accepted item. [INFERENCE] the private product goals are probably harder: a median T5 builder round is
+> the arms' cost per accepted item. [INFERENCE] The private product goals are probably harder: a median T5 builder round is
 > 66–67 Claude Code turns, against T1's 50-step cap for a whole run, and `F-2.8-audit` has taken 21 rounds so far. The
 > same-jobs comparison is the first thing a successor should run (§3).
 
@@ -27,7 +27,7 @@ and OpenHands 30/36. Locally, mini-swe-agent accepted 13/16 and OpenHands 11/16,
 time per accepted result (`2026-10-27-three-way-report.md` §3). Both workers meet the local acceptance rule. The
 decision-table row is still open: OpenHands stopped on a text-only turn (#5510) in 3 of 16 local runs, but those runs
 lacked the cloud prompt's "call the finish tool" line, and atolye reruns them with it. The gateway
-chain front filter + agentgateway is adopted. the memory service as memory works headless but did not help yet. T4 fails: neither
+chain front filter + agentgateway is adopted. The memory service works headless but did not help yet. T4 fails: neither
 cheap rules nor Qwen3.8-27B (zero-shot, calibrated abstention) auto-decided any test round at a bar from 80 % to 95 %
 (AUC 0.55; `2026-10-28-t4-model-results.md`, #226 entry 224), so the orchestrator stays a capable model and T4 is
 re-run as the successor supervisor's decision log grows. T5 is closed by the operator's rule (the first 5 completed goals, in time
@@ -44,7 +44,7 @@ the arms (see the caveat above). Full report: [`2026-10-29-stage2-report.md`](20
 | **The hidden-test overlay** (the gate's acceptance overlay for Go) | `internal/gate/acceptance.go` (`MaxOverlay`, `ErrAcceptance`), with `internal/gosel/gosel.go`; used by `internal/gate/gate.go` and `internal/daemon/gate.go`. P-A's language-agnostic overlay is in `internal/referee/work.go` | Reuse P-A's version for new work. The Go gate version shows how to refuse an acceptance without leaking its paths or names into logs. Hidden tests come from the acceptance files; the agent never sees them; a patch touching their paths is refused |
 | **The gateway rules** (rules only; the service is not extracted) | `internal/gateway/{gateway,egress,count,capture,secrets,serve}.go`; `internal/gateway/hostile_test.go`; `internal/gateway/testdata/mutations.py` | A checklist for atolye's front filter + agentgateway: exact model pin with re-encoded body (`egress.go:114-143`); refuse redirects, dial only the registered origin (`egress.go:44-62`); redact echoed credentials, including JSON-escaped and write-split ones; count usage from the stream. Port the tests as cases, not the code |
 | **The hostile-repository cases** | `fixtures/m1/cases/hostile-{gate-output,git-dir,instructions,model-switch,symlink,symlink-path,test-escape}/`; stub scenarios `fixtures/m1/stub-provider/scenarios/hostile-*.json`; controls `internal/fixtures/cycle_hostile_test.go`; schema `schemas/testing/cycle-case.json` | Run them against any worker sandbox: injected agent-instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`), git-dir tricks (`.gitattributes`, `.gitmodules`), symlink escapes, a test that probes the environment, a model switch request. Each case states the expected refusal |
-| **The review records, as T4 data** | `docs/reviews/` (507 files). Not on main: 19 files in `the lead's private workspace (`reviews/`, not published)` and the external-review outputs in the same private workspace | The T4 labels are already extracted: `stage2/t4/labels.jsonl` (629 rounds) and `features.jsonl`; scripts `t4/t4_baseline.py` (rules; `--refresh` re-reads main and gh) and `t4/model/run_t4_model.py` (the model step). The the earlier supervisor side re-runs both on its own decision log (`stage2/t5/t5-labels.jsonl`: 244 rows on 2026-10-29; no decision type has 200 yet, the largest has 35) |
+| **The review records, as T4 data** | `docs/reviews/` (507 files). Not on main: 19 review files and the external-review outputs, both in the lead's private workspace (not published) | The T4 labels are already extracted: `stage2/t4/labels.jsonl` (629 rounds) and `features.jsonl`; scripts `t4/t4_baseline.py` (rules; `--refresh` re-reads main and gh) and `t4/model/run_t4_model.py` (the model step). The earlier supervisor side re-runs both on its own decision log (`stage2/t5/t5-labels.jsonl`: 244 rows on 2026-10-29; no decision type has 200 yet, the largest has 35) |
 
 **Stage-2 harnesses (outside the repository, kept as evidence):** `stage2/`:
 `harness/` (mini-swe-agent `t1.yaml`, OpenHands runner), `t1/run_matrix.py`, `step0/`, `armA/`, `gateway/`, `t4/`,
@@ -52,7 +52,7 @@ the arms (see the caveat above). Full report: [`2026-10-29-stage2-report.md`](20
 
 ## 3. Not finished
 
-- **The same-jobs comparison (run this first).** Arm B (the successor supervisor on sets G and P) needs a non-the private product profile
+- **The same-jobs comparison (run this first).** Arm B (the successor supervisor on sets G and P) needs a Go profile (not only the private product's)
   and a `go test` failure parser. The alternative is arm C on the private product items, with hidden acceptance written before
   any run, in P-A format. Until one of them runs, the earlier supervisor and the worker loops have no cost figures for the same jobs.
 - **`F-2.8-audit`** (release 0.3.20): still open on the earlier supervisor's side; outside T5 now.
@@ -63,7 +63,7 @@ the arms (see the caveat above). Full report: [`2026-10-29-stage2-report.md`](20
 
 ## 4. The open ledger
 
-`The lead's obligations ledger (private workspace, not published)` has **52 rows** that end in `| open |`.
+The lead's obligations ledger (in the private workspace, not published) has **52 rows** that end in `| open |`.
 
 | Theme | Rows | Count | For a successor? |
 |---|---|---|---|
@@ -75,5 +75,5 @@ the arms (see the caveat above). Full report: [`2026-10-29-stage2-report.md`](20
 | Gateway rules | Opus #409 L2 (end-to-end gateway row); Astra #423 M1 (USD reservation per request); #226 193 (idle bound, call stop) | 3 | **Matter.** agentgateway also overshoots budgets under concurrency (3.1×) and does not cut in-flight streams on revoke (`stage2/gateway/T2-report.md`). Check them in atolye's stack |
 | Review records not committed | Mythos #408 r3 record; Astra #411 re-review record | 2 | **Matter for T4 only.** The files are in the lead's private workspace and already in `labels.jsonl`; keep that workspace readable |
 | Referee and hidden overlay | Opus #447 r3 Q1 (in-process result tampering); Opus #429 r8 L1 (quadratic `go/doc.Examples`, no deadline); Opus #446 A1 (acceptance outside the gate's packages) | 3 | **Matter.** #447 Q1 applies to P-A: keep the marker audit of every accepted patch. #429 L1 and #446 A1 apply if the Go overlay is reused |
-| Stage 2 | #226 208 (run stage 2); stage2 t1 `run_matrix.py` hang after a token cap | 2 | #226 208 closes with this note (T5 closed 2026-10-29); T4 re-runs move to the the earlier supervisor side. The `run_matrix.py` hang matters only if that runner is reused |
+| Stage 2 | #226 208 (run stage 2); stage2 t1 `run_matrix.py` hang after a token cap | 2 | #226 208 closes with this note (T5 closed 2026-10-29); T4 re-runs move to the earlier supervisor side. The `run_matrix.py` hang matters only if that runner is reused |
 | **Total** | | **52** | 8 matter (gateway 3, review records 2, referee 3); 44 die with ADC (the two stage-2 rows close or move) |

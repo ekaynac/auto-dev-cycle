@@ -14,12 +14,12 @@
 > **Read this first: T5 and the arms did not run on the same jobs.**
 > - **T5** measures the earlier supervisor on **the private product** goals.
 > - **Arms A and C and T1** ran on **set G** (ADC's Go items) and **set P** (public Python/TypeScript repositories).
->   the private product is private and was never in the item set.
-> - **Arm B** (the successor supervisor on the same items) never ran. Its first slice has one profile, `inframedic`, and parses only
+>   The private product is private and was never in the item set.
+> - **Arm B** (the successor supervisor on the same items) never ran. Its first slice has one profile, for the private product, and parses only
 >   pytest-style `FAILED`/`ERROR` lines; set G needs a Go profile and a `go test` parser
 >   (a private comparison note, not published).
 > - **So T5's cost per goal is not comparable with the arms' cost per accepted item.**
-> - [INFERENCE] the private product goals are probably harder. In T5's 13 jobs, the median builder round is 66 Claude Code turns
+> - [INFERENCE] The private product goals are probably harder. In T5's 13 jobs, the median builder round is 66 Claude Code turns
 >   (`builder_turns ÷ builder_rounds` per job, `t5-goals.jsonl`; the comparison report gives 67). T1 capped a whole
 >   run at 50 steps. `F-2.8-audit` has taken 21 rounds so far.
 > - **The same-jobs comparison is still needed:** arm B, or arm C on the private product items with hidden acceptance (§4).
@@ -59,7 +59,7 @@
 | T2 | adopt agentgateway, or extract ADC's gateway | agentgateway alone 7/8 (check 3 fails). Front filter + agentgateway 8/8, then 9/9 after review | **adopted: front filter + agentgateway** | ``ekaynac/atolye` `docs/gateway.md`` "T2 results"; #226 entry 218 |
 | T3 | works with no human; turns or reuse no worse | 18/18 runs headless, 0 infrastructure errors. Acceptance 8/9 with memory, 9/9 without. Input tokens +50 %. Turn-cap stops 8/9 against 5/9. Blind score 4.00 against 4.22 | **part 1 pass; part 2 fail** | T3R "Verdict"; BR "Verdict" 4 |
 | T4 | reference accuracy ±5 points, ≥ 30 % auto-decided | Labels: 629 review rounds (354 accept, 275 repair); time-ordered split, 440 train, 189 test. **Rules:** at train precision ≥ 0.90, 0 % auto-decided; mined rules 28.6 % coverage at 57.4 % accuracy (about the base rate). **Model** (Qwen3.8-27B NVFP4, zero-shot, Platt-calibrated logprob or stated score, abstention threshold fitted on train): reference accuracy 1.0, so the bar is ≥ 95 % agreement on ≥ 30 % of rounds; **0 % of test rounds auto-decided at every bar from 80 % to 95 %**, both scores. AUC 0.545 (logprob) / 0.53 (stated). Agreement at full coverage 54.5 % / 57.7 %, against a 58 % accept base rate (110 of 189) | **fail** (rules and model) | `stage2/t4/T4-baseline.md` "Result"; `2026-10-28-t4-model-results.md`; #226 entries 217, 224 |
-| T5 | none (the bar for T4) | **5 of 5 goals done** under the operator's rule: `F-2.8-fix-sources-api`, `F-2.8-polish-13-16`, `F-2.8-12`, `F-2.8-default-landing`, `1027-074049-0f23` (UI polish). `F-2.8-audit` open (partial row). the private product goals, not the arms' items. Arm B was not run | **closed** (the earlier supervisor side; collected read-only by adc-dev) | §1a; `stage2/t5/t5-goals.jsonl`; `t5-summary.md` |
+| T5 | none (the bar for T4) | **5 of 5 goals done** under the operator's rule: `F-2.8-fix-sources-api`, `F-2.8-polish-13-16`, `F-2.8-12`, `F-2.8-default-landing`, `1027-074049-0f23` (UI polish). `F-2.8-audit` open (partial row). These are the private product's goals, not the arms' items. Arm B was not run | **closed** (the earlier supervisor side; collected read-only by adc-dev) | §1a; `stage2/t5/t5-goals.jsonl`; `t5-summary.md` |
 
 **adc-dev's own T2 run** (`stage2/gateway/T2-report.md`) found the same check-3 failure for agentgateway alone. Its
 rule branch said "extract ADC's gateway". Revision 4 and #226 entry 218 replaced that branch with atolye's front
@@ -185,7 +185,7 @@ accepted result) and its role reading (OpenHands where MCP tools, a browser or t
 
 | Item | Owner | What it needs |
 |---|---|---|
-| **The same-jobs comparison (first for a successor):** arm B (the successor supervisor on sets G and P), or arm C on the private product items with hidden acceptance | atolye / the earlier supervisor | For arm B: a non-the private product profile and a `go test` failure parser in the successor supervisor. For arm C on the private product: items with hidden acceptance written before any run, in P-A format |
+| **The same-jobs comparison (first for a successor):** arm B (the successor supervisor on sets G and P), or arm C on the private product items with hidden acceptance | atolye / the earlier supervisor | For arm B: a Go profile (not only the private product's) and a `go test` failure parser in the successor supervisor. For arm C on the private product: items with hidden acceptance written before any run, in P-A format |
 | `F-2.8-audit` (release 0.3.20) | the earlier supervisor side | Outside T5 now; its partial cost is in §1a |
 | T4 re-run as the decision log grows | the earlier supervisor side, with adc-dev's scripts (`stage2/t4/t4_baseline.py`, `stage2/t4/model/run_t4_model.py`) | ≥ 200 labels per decision type in the successor supervisor's log (now 244 rows in all; largest type 35) |
 | Optional "A, tuned" (config only: smaller output budget, 2 builder slots) | nobody | The GPU slot was offered at 19:20 and not claimed; it is dropped with ADC's stop |
