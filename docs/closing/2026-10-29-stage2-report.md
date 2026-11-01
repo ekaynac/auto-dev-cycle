@@ -30,13 +30,14 @@
    workers meet the acceptance rule. The #5510 part is **open**, not a fail (correction of 2026-10-29, below).
    - Both workers meet the acceptance rule on the comparable items: OpenHands 90 %, mini-swe-agent 83 % of the cloud
      reference (rule: ≥ 60 %).
-   - Locally, OpenHands stopped on a text-only turn in 3 of 16 runs (rule: ≤ 1 in 10); in the cloud, 1 of 36. **But
+   - Locally, OpenHands stopped on a text-only turn in 3 of 20 runs (rule: ≤ 1 in 10); in the cloud, 1 of 36. **But
      the local runs lacked a prompt line that every cloud run had** ("When you are done, call the finish tool."):
-     adc-dev told atolye an incomplete prompt (C §6.22–6.23). atolye reruns the 20 OpenHands cells with the line in the
-     next GPU window. If the stops fall to ≤ 2/20, the row becomes "OpenHands passes locally".
+     adc-dev told atolye an incomplete prompt (C §6.22–6.23). The plan was to rerun the 20 OpenHands cells with the
+     line in the next GPU window; that rerun did not run before ADC stopped. If the stops fall to ≤ 2/20, the row
+     becomes "OpenHands passes locally".
 2. **T2: the chain front filter + agentgateway is adopted.** ADC's gateway is not extracted. Its rules stay as
    reference.
-3. **T3: the memory path works with no human, but it did not help.** the memory service `#121` (a search size budget) comes
+3. **T3: the memory path works with no human, but it did not help.** The memory service's `#121` (a search size budget) comes
    first.
 4. **T4 fails with both the rules and the model.** Qwen3.8-27B, zero-shot with a calibrated abstention threshold,
    auto-decided 0 % of test rounds at every bar from 80 % to 95 % (AUC 0.55). The orchestrator stays a capable
@@ -54,9 +55,9 @@
 | Step 0 | none (sizing) | Parallel 4 is the knee: about 77 tok/s warm aggregate, about 12.5 runs per hour, 19 min model time per 40-turn run. Prefill (1.5–1.8k tok/s) is the bottleneck. Cold first token up to 148 s | done | `stage2/step0/step0-report.md`; C §6.1 |
 | T1 cloud | reference only | 72 cells, 66 accepted. mini-swe-agent 36/36. OpenHands 30/36; all 6 rejections at the 50-turn or wall cap. 0 of 66 accepted patches flagged by the marker audit | done | `data/t1-cloud-{deepseek,qwen3.8}.csv`; #226 entry 220 |
 | T1 local, mini-swe-agent | local acceptance ≥ 60 % of cloud | 10/12 = 83 % against 36/36 = 100 % → **83 %** | **pass** | §2 below |
-| T1 local, OpenHands | local acceptance ≥ 60 % of cloud; #5510 stops ≤ 1 in 10 runs | acceptance 9/12 = 75 % against 30/36 = 83 % → **90 %**; #5510 stops **3/16 = 19 %**, in runs without the cloud prompt's finish line | **acceptance pass; #5510 open** (rerun with the same prompt pending) | §2 below; C §6.22–6.23 |
+| T1 local, OpenHands | local acceptance ≥ 60 % of cloud; #5510 stops ≤ 1 in 10 runs | acceptance 9/12 = 75 % against 30/36 = 83 % → **90 %**; #5510 stops **3/20 = 15 %**, in runs without the cloud prompt's finish line | **acceptance pass; #5510 open** (the rerun with the same prompt did not run before the stop) | §2 below; C §6.22–6.23 |
 | T1 local, arm A (ADC) | not in the rule (ADC is not a candidate worker) | ADC closed 0/3. P-A accepted 2 of 3 work trees at the 60-min wrapper limit | — | `data/armA.jsonl`; `stage2/armA/README.md`; TW §3 |
-| T2 | adopt agentgateway, or extract ADC's gateway | agentgateway alone 7/8 (check 3 fails). Front filter + agentgateway 8/8, then 9/9 after review | **adopted: front filter + agentgateway** | ``ekaynac/atolye` `docs/gateway.md`` "T2 results"; #226 entry 218 |
+| T2 | adopt agentgateway, or extract ADC's gateway | agentgateway alone 7/8 (check 3 fails). Front filter + agentgateway 8/8, then 9/9 after review | **adopted: front filter + agentgateway** | `ekaynac/atolye` `docs/gateway.md` "T2 results"; #226 entry 218 |
 | T3 | works with no human; turns or reuse no worse | 18/18 runs headless, 0 infrastructure errors. Acceptance 8/9 with memory, 9/9 without. Input tokens +50 %. Turn-cap stops 8/9 against 5/9. Blind score 4.00 against 4.22 | **part 1 pass; part 2 fail** | T3R "Verdict"; BR "Verdict" 4 |
 | T4 | reference accuracy ±5 points, ≥ 30 % auto-decided | Labels: 629 review rounds (354 accept, 275 repair); time-ordered split, 440 train, 189 test. **Rules:** at train precision ≥ 0.90, 0 % auto-decided; mined rules 28.6 % coverage at 57.4 % accuracy (about the base rate). **Model** (Qwen3.8-27B NVFP4, zero-shot, Platt-calibrated logprob or stated score, abstention threshold fitted on train): reference accuracy 1.0, so the bar is ≥ 95 % agreement on ≥ 30 % of rounds; **0 % of test rounds auto-decided at every bar from 80 % to 95 %**, both scores. AUC 0.545 (logprob) / 0.53 (stated). Agreement at full coverage 54.5 % / 57.7 %, against a 58 % accept base rate (110 of 189) | **fail** (rules and model) | `stage2/t4/T4-baseline.md` "Result"; `2026-10-28-t4-model-results.md`; #226 entries 217, 224 |
 | T5 | none (the bar for T4) | **5 of 5 goals done** under the operator's rule: `F-2.8-fix-sources-api`, `F-2.8-polish-13-16`, `F-2.8-12`, `F-2.8-default-landing`, `1027-074049-0f23` (UI polish). `F-2.8-audit` open (partial row). These are the private product's goals, not the arms' items. Arm B was not run | **closed** (the earlier supervisor side; collected read-only by adc-dev) | §1a; `stage2/t5/t5-goals.jsonl`; `t5-summary.md` |
@@ -125,8 +126,9 @@ cells, so it is left out. Per-item counts: TW §2.
 | OpenHands | 9/12 = 75.0 % | deepseek 16/18 = 88.9 %; qwen3.8-flash 14/18 = 77.8 %; both 30/36 = 83.3 % | 84 % / 96 % / **90 %** | pass |
 | mini-swe-agent | 10/12 = 83.3 % | deepseek 18/18; qwen3.8-flash 18/18; both 36/36 = 100 % | **83 %** | pass |
 
-All local runs, set P included: OpenHands 11/16, mini-swe-agent 13/16 (TW "Verdict" 2). The ratio passes against
-each cloud model alone too, so the choice of reference does not change the result.
+All local runs, set P included (2 repeats on all 10 items; set P repeat 2 ran on 2026-10-28, 11:13–11:49): OpenHands
+14/20, mini-swe-agent 16/20 (TW "Verdict" 2; C §6.18). Arm C rejected 10 runs in all; 6 of them hit the 50-turn cap.
+The ratio passes against each cloud model alone too, so the choice of reference does not change the result.
 
 **#5510 stops** (an OpenHands run that ends on a text-only turn). Classification rule: status `finished` and the last
 event is a `MessageEvent`, not the finish tool (`stage2/harness/openhands/run_openhands.py:118-121`). The same rule
@@ -135,14 +137,14 @@ is applied to arm C's `last_agent_event` field.
 | Cell | Runs | #5510 stops | Rate | Rule ≤ 1 in 10 |
 |---|---|---|---|---|
 | OpenHands, cloud (both models) | 36 | 1 (qwen3.8-flash; accepted) | 2.8 % | pass |
-| OpenHands, local (arm C v2) | 16 | **3** (`ts-mini` r1, `issue-170` r1, `adc-events` r1; all accepted) | **18.8 %** | **open**: these runs lacked the finish line |
+| OpenHands, local (arm C v2) | 20 | **3** (`ts-mini` r1, `issue-170` r1, `adc-events` r1; all accepted; 0 in set P repeat 2) | **15 %** | **open**: these runs lacked the finish line |
 
 Sources: `data/t1-cloud-qwen3.8.csv` `stop_cause`; atolye's arm-C run record `arm-c-v2.jsonl`
 `last_agent_event`.
 - atolye's reports do not count #5510 stops. This count is adc-dev's, from atolye's rows.
 - All three stops were accepted, so #5510 cost no acceptance here. The rule counts stops "with or without a recorded
   patch", so the result is still a fail.
-- [INFERENCE] The margin is small: with 16 runs, one stop fewer (2/16 = 12.5 %) still fails, and two fewer passes.
+- [INFERENCE] The margin is small: with 20 runs, one stop fewer (2/20 = 10 %) passes.
 
 **Decision row (plan §4): open.** With the stop count above it would be "only mini-swe-agent passes locally". But the
 local OpenHands runs did not get the same prompt as the cloud runs: they lacked the line "When you are done, call the
@@ -153,7 +155,7 @@ sends the same text. [INFERENCE] The missing line plausibly explains most of the
 - **Otherwise:** "only mini-swe-agent passes locally": OpenHands for the cloud profiles, mini-swe-agent as the local
   worker, and #5510 goes upstream (`software-agent-sdk#5510`; R19).
 
-This agrees with atolye's cost reading (TW "Verdict" 3: mini-swe-agent 0.48M against 1.05M input tokens per
+This agrees with atolye's cost reading (TW "Verdict" 3: mini-swe-agent 0.46M against 1.05M input tokens per
 accepted result) and its role reading (OpenHands where MCP tools, a browser or the Agent Server API are needed).
 
 **Other rows:**
@@ -169,14 +171,14 @@ accepted result) and its role reading (OpenHands where MCP tools, a browser or t
 
 | Caveat | Effect | Source |
 |---|---|---|
-| **Sample size.** Local: 1–2 repeats per cell (16 runs per worker). Arm A: 1 run per item, 3 items. T3: 9 per condition. BR: 2–13 diffs per group | Every local rate has a wide interval. The #5510 verdict depends on one or two runs | TW §5.3 |
-| **`vllm_exclusive` false.** An outside user was on vLLM all day | Arm C 1 of 32 rows exclusive; arm A 0 of 3; step 0 had a foreign 20k-token request. Prefix-cache shares are not reported | TW §5.1; step-0 report "Exclusivity" |
-| **Prompt versions.** Arm C pilot (atolye prompts, 16 runs) is excluded. Arm C v2 uses T1-cloud's prompts (`prompt_version` `t1-cloud-prefix` for OpenHands, `t1-cloud:5011ca644369` for mini-swe-agent). Arm A uses ADC's own pipeline. T3 "with" adds one hint line | Local against cloud differs only in model and wall limit. A against C differs by design. mini-swe-agent's template forbids test edits, which lowers its blind score | C §6.7; TW §1; BR "Verdict" 3 |
+| **Sample size.** Local: 2 repeats per cell (20 runs per worker); the 100-turn cap test 1 run per cell. Arm A: 1 run per item, 3 items. T3: 9 per condition. BR: 2–13 diffs per group | Every local rate has a wide interval. The #5510 verdict depends on one or two runs | TW §5.3 |
+| **`vllm_exclusive` false.** An outside user was on vLLM on both days | Arm C 1 of 40 main rows exclusive (1 of 46 with the cap-test rows); arm A 0 of 3; step 0 had a foreign 20k-token request. Prefix-cache shares are not reported | TW §5.1; step-0 report "Exclusivity" |
+| **Prompt versions.** Arm C pilot (atolye prompts, 16 runs) is excluded. Arm C v2 uses T1-cloud's prompts (`prompt_version` `t1-cloud-prefix` for OpenHands, `t1-cloud:5011ca644369` for mini-swe-agent). Arm A uses ADC's own pipeline. T3 "with" adds one hint line | For mini-swe-agent, local against cloud differs only in model and wall limit. For OpenHands, it also differs in the prompt: every local OpenHands run lacked the cloud prompt's "call the finish tool" line. A against C differs by design. mini-swe-agent's template forbids test edits, which lowers its blind score | C §6.7; TW §1, §5.4; BR "Verdict" 3 |
 | **Cloud reference model.** The plan named Evren `glm-5.3`. The operator replaced it with `qwen3.8-flash-next` and `deepseek-v4.1-flash` (glm-5.3 made no change in live runs 3–4) | The ratio passes against each model alone | #226 entries 211, 213 |
-| **Caps hit.** 50-turn/step cap: 6 of 8 local rejections. OpenHands cloud: 16 of 36 runs at the turn cap, 2 at the wall cap. Wall limit 30 min cloud, 60 min local. T1-cloud's 12M tokens per provider per day stopped the matrix at 26 cells (resumed next day). Arm A: all 3 runs at the 60-min wrapper; the 14:45 cut-off dropped `adc-graph-history-held`; ADC's requested output plus prompt exceeded the 262,144-token context | Failures are mostly budget, not wrong code. The cap experiment (100 turns) is not run | TW "Verdict" 4; #226 entries 216, 219; C §6.1 14:48 |
-| **Training contention after 18:02.** `track-a/train.py` resumed at about 18:02 with no marker. 9 of 16 runs per worker ran beside it (set P v2 from `humanize-parse-size`, and all r2 rows) | Verdicts and tokens stand. Wall times of those runs are excluded. No run reached the 60-min wall cap | C §6.10, §6.11; TW §5.2 |
+| **Caps hit.** 50-turn/step cap: 6 of 10 local rejections. OpenHands cloud: 16 of 36 runs at the turn cap, 2 at the wall cap. Wall limit 30 min cloud, 60 min local. T1-cloud's 12M tokens per provider per day stopped the matrix at 26 cells (resumed next day). Arm A: all 3 runs at the 60-min wrapper; the 14:45 cut-off dropped `adc-graph-history-held`; ADC's requested output plus prompt exceeded the 262,144-token context | Failures are mostly budget, not wrong code. The 100-turn cap test (2026-10-28) accepted 4 of the 5 cap-bound cells; only OpenHands on `humanize-parse-size` still failed (1 run per cell) | TW "Verdict" 4, §4b; #226 entries 216, 219; C §6.1 14:48, §6.18 |
+| **Training contention after 18:02.** `track-a/train.py` resumed at about 18:02 with no marker. 9 of 20 runs per worker ran beside it (set P v2 from `humanize-parse-size`, and the r2 rows of 2026-10-27); set P repeat 2 ran on 2026-10-28 | Verdicts and tokens stand. Wall times of those runs are excluded. No run reached the 60-min wall cap | C §6.10, §6.11; TW §5.2 |
 | **P-A residual.** Solution code inside the test process can change the results (10-line probe) | Every accepted patch was audited for harness markers: 0 flagged in T1 cloud | #226 entry 220; obligations row "Opus #447 r3 Q1" |
-| **Protected-path touches.** OpenHands touched paths outside `editable` or in `protected` in 6/16 local and 24/36 cloud runs (mini-swe-agent 1/16 and 1/36) | P-A restores them, so verdicts stand. It is a containment cost of OpenHands | TW §3; C §6.5 |
+| **Protected-path touches.** OpenHands touched paths outside `editable` or in `protected` in 6/20 local and 24/36 cloud runs (mini-swe-agent 1/20 and 1/36) | P-A restores them, so verdicts stand. It is a containment cost of OpenHands | TW §3; C §6.5 |
 | **T4 model deviations.** The decider is Qwen3.8-27B on the existing vLLM, not Kev-4B/9B (a second model server is not approved). Zero-shot, no fine-tune. Decision-time input is reconstructed (the reviewed head can be a later fix commit). 582 of 629 diffs are truncated to a 6,144-token cap. 32.8 GPU-min, `vllm_exclusive` false; one invocation stopped on a foreign GPU process (the training) | A fine-tuned small model with full diffs may do better. [INFERENCE] With AUC 0.55 at zero shot, the gap to the bar is large | `2026-10-28-t4-model-results.md` "Deviations"; #226 entry 224 |
 | **T5 is not on the arms' jobs.** T5 ran the private product goals; the arms and T1 ran sets G and P. Arm B never ran | T5's cost per goal does not compare with any arm's cost per accepted item. See the box at the top | `t5-summary.md`; TW "Verdict" 5; a private comparison note, not published |
 | **T5 measures.** Human minutes are not recorded; the earlier supervisor backfilled estimated `human_intervention` rows. Supervisor cost has two estimators (tagged, window), neither a bound. Builder $ uses a shared OpenRouter key (overlapped rounds include other jobs; 1 round unpriced). The fifth goal comes from the operator's rule, not from the collector's design slot (its `t5_slot` is empty), so `t5-summary.md`'s "Done goals together (4)" line leaves it out | Supervisor and human cost per goal are approximate | `t5/t5-summary.md` "How to read"; the supervisor side's reply in `stage2/t5/` |
@@ -189,5 +191,4 @@ accepted result) and its role reading (OpenHands where MCP tools, a browser or t
 | `F-2.8-audit` (release 0.3.20) | the earlier supervisor side | Outside T5 now; its partial cost is in §1a |
 | T4 re-run as the decision log grows | the earlier supervisor side, with adc-dev's scripts (`stage2/t4/t4_baseline.py`, `stage2/t4/model/run_t4_model.py`) | ≥ 200 labels per decision type in the successor supervisor's log (now 244 rows in all; largest type 35) |
 | Optional "A, tuned" (config only: smaller output budget, 2 builder slots) | nobody | The GPU slot was offered at 19:20 and not claimed; it is dropped with ADC's stop |
-| Set P repeats (repeat 2, 8 cells) and the 100-turn cap experiment | atolye | The GPU, when the operator frees it. Start only after `nvidia-smi` shows no non-vLLM process (atolye PR #11) |
 | The OpenHands #5510 rerun (20 cells, with the cloud prompt's finish line); upstream #5510 only if stops stay above 2/20 | atolye | The GPU window (D3) |

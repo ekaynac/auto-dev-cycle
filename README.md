@@ -26,10 +26,13 @@ the project is in [`docs/handoff/`](docs/handoff/). They are kept as the record.
 ## What we learned: our mistakes, honestly
 
 1. **We built a static pipeline, not a capable loop.** ADC fixed the steps (plan, build, gate, review, deliver) and
-   gave each step a narrow contract. In stage 2, plain agent loops did better on the same items. Locally,
-   mini-swe-agent accepted 13 of 16 and OpenHands 11 of 16. ADC's own pipeline closed 0 of 3, and was about 14 times
-   slower per accepted result. A loop that lets a capable model choose its next step was the better base.
-2. **Process and review cost grew larger than the system it replaced.** ADC has about 198,000 lines of Go and 507
+   gave each step a narrow contract. In stage 2, ADC's own pipeline closed 0 of 3 items on the local model, because
+   it stalled on capacity (see 5). Its work trees were not worse: on the same three items, the referee accepted 2 of
+   3 of ADC's work trees, and each plain agent loop accepted 4 of 6 runs, the same rate. But ADC's wall time per
+   accepted work tree was about 14 times that of OpenHands. On the broader set (10 items, 2 runs each), mini-swe-agent
+   accepted 16 of 20 and OpenHands 14 of 20. A loop that lets a capable model choose its next step was the better
+   base.
+2. **Process and review cost grew larger than the system it replaced.** ADC has about 198,000 lines of Go and 508
    review records in [`docs/reviews/`](docs/reviews/). Most pull requests had an internal review and one or more
    external review rounds. Reviewer quotas stopped the work 4 times in 3 days. After about 1,365 commits, ADC did not
    reach unattended operation; milestone M2 was not started.
@@ -71,7 +74,7 @@ the project is in [`docs/handoff/`](docs/handoff/). They are kept as the record.
 | Test | Result | Verdict |
 |---|---|---|
 | T1, mini-swe-agent, local against cloud | 83 % of the cloud reference (rule ≥ 60 %) | pass |
-| T1, OpenHands, local against cloud | 90 % of the cloud reference; text-only stops (#5510) 3 of 16 | acceptance pass; #5510 **open** (no rerun before the stop) |
+| T1, OpenHands, local against cloud | 90 % of the cloud reference; text-only stops (#5510) 3 of 20 | acceptance pass; #5510 **open** (no rerun before the stop) |
 | T1, arm A (ADC itself), local | 0 of 3 items closed | — |
 | T2, gateway | front filter + agentgateway 9/9 checks | adopted; ADC's gateway is not extracted |
 | T3, memory | works with no human; did not improve results | part 1 pass, part 2 fail |
@@ -88,7 +91,7 @@ The full report, with sources and caveats: [`docs/closing/2026-10-29-stage2-repo
 | **The hidden-test overlay** | language-agnostic: `internal/referee/work.go`; Go gate: `internal/gate/acceptance.go` with `internal/gosel/` | The agent never sees the hidden tests; they are laid over the tree only at judgement, and a patch that touches their paths is refused. Use the referee's version for new work. The Go version shows how to refuse an acceptance without leaking its paths or names into logs |
 | **The hostile-repository cases** | `fixtures/m1/cases/hostile-*/` (7 cases); stub scenarios `fixtures/m1/stub-provider/scenarios/hostile-*.json`; controls `internal/fixtures/cycle_hostile_test.go`; schema `schemas/testing/cycle-case.json` | Run them against any worker sandbox. They cover injected agent-instruction files, git-directory tricks (`.gitattributes`, `.gitmodules`), symlink escapes, a test that probes its environment, gate output that tries to steer the agent, and a request to switch models. Each case states the expected refusal |
 | **The gateway rules** (rules, not the service) | `internal/gateway/` (`egress.go`, `secrets.go`, `count.go`); `internal/gateway/hostile_test.go`; `internal/gateway/testdata/mutations.py` | Use them as a checklist for any model gateway: pin the exact model and re-encode the body; refuse redirects and dial only the registered origin; redact echoed credentials, also JSON-escaped and split across writes; count usage from the stream. Port the tests as cases, not the code. Known gaps in agentgateway to configure: budgets overshoot under concurrency, and revoking a key does not cut an in-flight stream |
-| **The review records, as data** | [`docs/reviews/`](docs/reviews/) (507 files) | Each record is one review round of one pull request, with severities and findings. Stage 2 extracted 629 rounds (354 accept, 275 repair) as labels for T4. Use them to train or test a review decider, or to study which fault classes recur |
+| **The review records, as data** | [`docs/reviews/`](docs/reviews/) (508 files) | Each record is one review round of one pull request, with severities and findings. Stage 2 extracted 629 rounds (354 accept, 275 repair) as labels for T4. Use them to train or test a review decider, or to study which fault classes recur |
 
 ## Where the work continues
 

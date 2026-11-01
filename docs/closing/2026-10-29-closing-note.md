@@ -22,11 +22,14 @@ marked otherwise. Read them with `git show 9ee8a40a:<path>`.
 ADC reached checkpoint (a): its pipeline closed #170 as a reviewed candidate in 15.3 minutes on free cloud models,
 after 5 live runs (#226 entry 212). In stage 2, ADC's own pipeline on the local Qwen3.8-27B closed 0 of 3 items:
 each build asked for more output than the context allows, and a capacity stall held the builder for the rest of the
-hour (#226 entry 219). On the same items, plain worker loops did better. In the cloud, mini-swe-agent accepted 36/36
-and OpenHands 30/36. Locally, mini-swe-agent accepted 13/16 and OpenHands 11/16, at about one fourteenth of ADC's wall
-time per accepted result (`2026-10-27-three-way-report.md` §3). Both workers meet the local acceptance rule. The
-decision-table row is still open: OpenHands stopped on a text-only turn (#5510) in 3 of 16 local runs, but those runs
-lacked the cloud prompt's "call the finish tool" line, and atolye reruns them with it. The gateway
+hour (#226 entry 219). ADC closed none because it stalled, not because its work trees were worse: on the same three
+items, P-A accepted 2 of 3 of ADC's work trees, and each plain worker loop accepted 4 of 6 runs, the same acceptance
+rate. But ADC's wall time per accepted work tree was about 14 times that of OpenHands (`2026-10-27-three-way-report.md`
+§3). On the broader set (10 items, 2 repeats each, set P repeat 2 included), mini-swe-agent accepted 16/20 and
+OpenHands 14/20 locally; in the cloud, mini-swe-agent accepted 36/36 and OpenHands 30/36. Both workers meet the local
+acceptance rule. The decision-table row is still open: OpenHands stopped on a text-only turn (#5510) in 3 of 20 local
+runs (15 %), but those runs lacked the cloud prompt's "call the finish tool" line. The rerun with that line did not
+run before the stop. With 100 turns instead of 50, 4 of the 5 cap-bound cells were accepted. The gateway
 chain front filter + agentgateway is adopted. The memory service works headless but did not help yet. T4 fails: neither
 cheap rules nor Qwen3.8-27B (zero-shot, calibrated abstention) auto-decided any test round at a bar from 80 % to 95 %
 (AUC 0.55; `2026-10-28-t4-model-results.md`, #226 entry 224), so the orchestrator stays a capable model and T4 is
@@ -58,7 +61,7 @@ the arms (see the caveat above). Full report: [`2026-10-29-stage2-report.md`](20
 - **`F-2.8-audit`** (release 0.3.20): still open on the earlier supervisor's side; outside T5 now.
 - **T4 re-runs:** wait for ≥ 200 labels per decision type in the successor supervisor's log.
 - **The optional "A, tuned" pass** (config only): not run. It dies with ADC.
-- **Set P repeat 2 and the 100-turn cap experiment**: atolye's, when the GPU is free.
+- **The OpenHands #5510 rerun** (20 cells, with the cloud prompt's finish line): atolye's, in a GPU window.
 - **ADC's own unattended operation:** never reached. Milestone M2 (OpenRouter, failover) was not started.
 
 ## 4. The open ledger
