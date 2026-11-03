@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# A synthetic pyproject.toml, written for this test: no upstream text. It
+# reproduces the shapes of networkx 3.3's (github.com/networkx/networkx,
+# 7fdddfa2ca), whose only pytest mention is a test extra, and whose
+# classifier "5 - Production/Stable" main's pyConf read as the option -
+# (the widen-b baseline, Opus #296 M1).
+
+[build-system]
+build-backend = 'setuptools.build_meta'
+requires = ['setuptools>=61.2']
+
+[project]
+name = 'graphlike'
+description = 'A graph library'
+requires-python = '>=3.10'
+dynamic = ['version']
+keywords = ['graph', 'network']
+classifiers = [
+    'Development Status :: 5 - Production/Stable',
+    'Programming Language :: Python :: 3 :: Only',
+]
+
+[[project.authors]]
+name = 'A. Author'
+email = 'author@example.org'
+
+[project.entry-points."graphlike.backends"]
+nx-loopback = 'graphlike.classes.tests.dispatch_interface:dispatcher'
+
+[project.optional-dependencies]
+default = [
+    'numpy>=1.23',
+    'scipy>=1.9,!=1.11.0,!=1.11.1',
+]
+test = [
+    'pytest>=7.2',
+    'pytest-cov>=4.0',
+]
+
+[tool.setuptools]
+zip-safe = false
+include-package-data = false
+packages = [
+    'graphlike',
+    'graphlike.algorithms',
+]
+
+[tool.setuptools.dynamic.version]
+attr = 'graphlike.__version__'
+
+[tool.ruff]
+line-length = 88
+target-version = 'py310'
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ['I']
+
+[[tool.mypy.overrides]]
+module = 'graphlike.classes'
+ignore_errors = true
